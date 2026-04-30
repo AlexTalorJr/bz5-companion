@@ -17,13 +17,14 @@ class Bz5Model {
   /// Паспортная ёмкость батареи (кВт·ч)
   static const double batteryCapacityKwh = 65.28;
 
-  /// Scale для 0B00 charge counter — 1 unit = 0.0456 кВт·ч
-  /// Откалибровано на 2.1 кВт зарядке: за 469 сек прирост = 6 единиц
+  /// Scale для 0B00 charge counter — 1 unit ≈ 45.6 Wh.
+  /// ВАЖНО: калибровка приближённая. На 2.1 кВт зарядке давало 45.6 Wh/unit,
+  /// на 2.8 кВт — порядка 577 Wh/unit (счётчик инкрементируется нелинейно).
+  /// Lifetime kWh показывается с пометкой "≈" как ориентировочное значение.
   static const double chargeCounterWh = 45.6;
 
-  /// Scale для 0009 discharge counter — 1 unit = ? Wh
-  /// (нужна калибровка от поездки)
-  static const double dischargeCounterWh = 0.07;  // оценка, может корректироваться
+  /// Scale для 0009 discharge counter — 1 unit = ? Wh (нужна калибровка).
+  static const double dischargeCounterWh = 0.07;
 
   /// Средний расход BZ5 по приборке = 14.4 кВт·ч / 100 км = 144 Wh/km
   static const double avgConsumptionWhKm = 144.0;
@@ -42,12 +43,12 @@ class ConnectionService extends ChangeNotifier {
   PollMode _pollMode = PollMode.full;
 
   final Map<String, Map<String, DecodedValue>> _latestValues = {};
-  
+
   // Tracking для charging power calculation
   int? _lastB00Value;
   DateTime? _lastB00Time;
   double _instantaneousChargingPowerKw = 0.0;
-  
+
   // Tracking для discharge rate (drive)
   int? _last0009Value;
   DateTime? _last0009Time;
@@ -59,6 +60,11 @@ class ConnectionService extends ChangeNotifier {
   double? _tripStartOdo;
   int? _tripStartCnt9;
   int? _tripStartB00;
+
+  /// v4: deferred trip creation — wait for first poll cycles to determine
+  /// whether we're charging or driving before creating a Trip record.
+  bool _wantTripCreation = false;
+  int _pollCyclesSinceStart = 0;
 
   List<int> _liveCells = [];
 
@@ -72,20 +78,26 @@ class ConnectionService extends ChangeNotifier {
   PollMode get pollMode => _pollMode;
   Map<String, Map<String, DecodedValue>> get latestValues => _latestValues;
   List<int> get liveCells => _liveCells;
-  
+
   double get chargingPowerKw => _instantaneousChargingPowerKw;
   double get drivePowerKw => _instantaneousDrivePowerKw;
 
-  /// Lifetime energy charged (kWh) since manufacturing
+  /// Lifetime energy charged (kWh) — приближённое значение
   double? get lifetimeChargedKwh {
     final b00 = readNumeric('790', '0B00');
     if (b00 == null) return null;
     return b00 * Bz5Model.chargeCounterWh / 1000.0;
   }
 
-  /// Lifetime discharge counter raw (тоже накопитель но scale TBD)
+  /// Lifetime discharge counter raw
   double? get lifetimeDischargeRaw {
     return readNumeric('790', '0009');
+  }
+
+  /// v4: Cycle count from BMS DID 0B02 — likely full-charge cycles
+  int? get cycleCount {
+    final v = readNumeric('790', '0B02');
+    return v?.toInt();
   }
 
   /// Range estimate в км
@@ -139,7 +151,8 @@ class ConnectionService extends ChangeNotifier {
     }
   }
 
-  Future<bool> connect(BluetoothDevice device) async {
+  /// v4: добавлен autoStart — после успешного подключения сразу запускает polling.
+  Future<bool> connect(BluetoothDevice device, {bool autoStart = true}) async {
     _setStatus(ConnectionStatus.connecting, msg: 'Подключение...');
     try {
       _ble = Elm327Ble(device);
@@ -150,6 +163,11 @@ class ConnectionService extends ChangeNotifier {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('last_adapter', _adapterAddress!);
       _setStatus(ConnectionStatus.connected, msg: 'Подключено');
+      // Auto-start polling on successful connection (v4).
+      // Schedule via microtask so connect() returns before polling begins.
+      if (autoStart) {
+        Future.microtask(() => startPolling());
+      }
       return true;
     } catch (e) {
       _setStatus(ConnectionStatus.error, msg: '$e');
@@ -167,13 +185,15 @@ class ConnectionService extends ChangeNotifier {
     _setStatus(ConnectionStatus.disconnected, msg: 'Отключено');
   }
 
+  /// v4: trip creation deferred — see _maybeStartTrip()
   Future<void> startPolling({bool startTrip = true}) async {
     if (_client == null || _polling) return;
     _polling = true;
     _samplesInTrip = 0;
     _tripStartB00 = null;
     _tripStartCnt9 = null;
-    if (startTrip) _currentTripId = await db.startTrip();
+    _wantTripCreation = startTrip;
+    _pollCyclesSinceStart = 0;
     _pollLoop();
     notifyListeners();
   }
@@ -187,6 +207,7 @@ class ConnectionService extends ChangeNotifier {
           endSoc: endSoc, endOdo: endOdo, sampleCount: _samplesInTrip);
       _currentTripId = null;
     }
+    _wantTripCreation = false;
     notifyListeners();
   }
 
@@ -207,26 +228,51 @@ class ConnectionService extends ChangeNotifier {
         }
         if (cycle % 2 == 0) await _pollCells();
         _updatePowerCalculations();
+        await _maybeStartTrip();
       } catch (e) {
         debugPrint('Poll error: $e');
       }
       cycle++;
+      _pollCyclesSinceStart++;
       await Future.delayed(const Duration(milliseconds: 250));
     }
   }
 
+  /// v4: Decide whether to create a Trip based on early-cycle data.
+  /// Skips Trip creation if we detect a charging session.
+  Future<void> _maybeStartTrip() async {
+    if (!_wantTripCreation) return;
+    if (_currentTripId != null) return;
+    // Wait for at least 2 full poll cycles before deciding
+    if (_pollCyclesSinceStart < 2) return;
+    // Need at least one indicator before making a decision
+    final hasOBC = readNumeric('782', '0057') != null;
+    final hasBMS = readNumeric('790', '0005') != null;
+    if (!hasOBC && !hasBMS) return;
+
+    if (isCharging) {
+      // Charging session — no Trip record
+      _wantTripCreation = false;
+      debugPrint('Polling started during charging — no Trip created.');
+    } else {
+      _currentTripId = await db.startTrip();
+      _wantTripCreation = false;
+      debugPrint('Trip #$_currentTripId created.');
+    }
+    notifyListeners();
+  }
+
   void _updatePowerCalculations() {
     final now = DateTime.now();
-    
+
     // Charging power from 0B00
     final b00 = readNumeric('790', '0B00');
     if (b00 != null) {
       final b00Int = b00.toInt();
       if (_lastB00Value != null && _lastB00Time != null) {
         final dt = now.difference(_lastB00Time!).inMilliseconds / 1000.0;
-        if (dt > 1.0) {  // обновляем не чаще раз в секунду
+        if (dt > 1.0) {
           final delta = b00Int - _lastB00Value!;
-          // delta units × 45.6 Wh/unit ÷ dt seconds × 3600 / 1000 = kW
           _instantaneousChargingPowerKw = delta * Bz5Model.chargeCounterWh / dt * 3.6 / 1000.0;
           _lastB00Value = b00Int;
           _lastB00Time = now;
@@ -237,7 +283,7 @@ class ConnectionService extends ChangeNotifier {
       }
       _tripStartB00 ??= b00Int;
     }
-    
+
     // Drive power from 0009
     final cnt9 = readNumeric('790', '0009');
     if (cnt9 != null) {
@@ -246,10 +292,7 @@ class ConnectionService extends ChangeNotifier {
         final dt = now.difference(_last0009Time!).inMilliseconds / 1000.0;
         if (dt > 1.0) {
           final delta = cnt9Int - _last0009Value!;
-          // С учётом приближённого scale 0.07 Wh/unit при 21.6/sec ≈ 1.5 W (не реалистично)
-          // В реальности нужен scale ~0.5-1 Wh для получения kW
-          // Используем для индикации только направления
-          _instantaneousDrivePowerKw = delta > 0 ? delta * 0.5 / dt : 0;  // approx
+          _instantaneousDrivePowerKw = delta > 0 ? delta * 0.5 / dt : 0;
           _last0009Value = cnt9Int;
           _last0009Time = now;
         }

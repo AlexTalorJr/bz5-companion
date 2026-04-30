@@ -71,6 +71,8 @@ class _Connected extends StatelessWidget {
     final isCharging = svc.isCharging;
     final rangeKm = svc.rangeEstimateKm;
     final tripEnergy = svc.tripEnergyKwh;
+    final cycles = svc.cycleCount;
+    final lifetimeKwh = svc.lifetimeChargedKwh;
 
     return ListView(
       padding: const EdgeInsets.all(16),
@@ -91,7 +93,9 @@ class _Connected extends StatelessWidget {
               icon: Icons.thermostat,
               color: Colors.orange,
               label: 'Battery',
-              value: tempRaw != null ? '${(tempRaw - 40).toInt()}°C' : '—',
+              // v4: decoder в ecu_registry уже применяет offset −40,
+              // поэтому здесь больше НЕ вычитаем 40.
+              value: tempRaw != null ? '${tempRaw.toInt()}°C' : '—',
             ),
             _MetricCard(
               icon: Icons.speed,
@@ -99,25 +103,30 @@ class _Connected extends StatelessWidget {
               label: 'Odometer',
               value: odo != null ? '${odo.toStringAsFixed(1)} km' : '—',
             ),
+            // v4: Range card убран — он дублировал значение в _SocCard.
+            // Вместо него — Cycle count из BMS DID 0B02.
             _MetricCard(
-              icon: Icons.bolt,
-              color: Colors.amber,
-              label: 'Range',
-              value: rangeKm != null ? '~${rangeKm.toInt()} km' : '—',
+              icon: Icons.refresh,
+              color: Colors.purpleAccent,
+              label: 'Cycles',
+              value: cycles != null ? '$cycles' : '—',
             ),
             _MetricCard(
               icon: Icons.electric_bolt,
               color: Colors.cyanAccent,
-              label: 'Lifetime ⚡in',
-              value: svc.lifetimeChargedKwh != null
-                  ? '${svc.lifetimeChargedKwh!.toStringAsFixed(0)} kWh'
+              // v4: лейбл с "≈" — калибровка приближённая
+              label: '≈ Lifetime in',
+              value: lifetimeKwh != null
+                  ? '${lifetimeKwh.toStringAsFixed(0)} kWh'
                   : '—',
             ),
             _MetricCard(
               icon: Icons.directions_car,
               color: Colors.lightBlueAccent,
               label: 'Gear',
-              value: _gearStr(gear),
+              // v4: на зарядке всегда показываем P (mapping для D/N/R/P
+              // ещё не верифицирован для всех положений рычага)
+              value: _gearStr(gear, isCharging),
             ),
           ],
         ),
@@ -132,7 +141,9 @@ class _Connected extends StatelessWidget {
     );
   }
 
-  String _gearStr(double? g) {
+  /// v4: gear logic with charging override
+  String _gearStr(double? g, bool isCharging) {
+    if (isCharging) return 'P';
     if (g == null) return '—';
     return switch (g.toInt()) {
       1 => 'D', 2 => 'N', 3 => 'R', 4 => 'P', _ => '?',
@@ -321,9 +332,10 @@ class _PhysicsModelCard extends StatelessWidget {
             ),
             const SizedBox(height: 8),
             const Text(
-              'Calibrated against real charging session at 2.1 kW.\n'
+              'Calibrated against real charging sessions.\n'
               '• Battery: 65.28 kWh (Toyota datasheet)\n'
-              '• Charge counter (BMS 0B00): 1 unit ≈ 45.6 Wh\n'
+              '• Charge counter (BMS 0B00): 1 unit ≈ 45.6 Wh — approximate\n'
+              '• Cycle count: BMS 0B02\n'
               '• Avg consumption: 14.4 kWh/100km',
               style: TextStyle(fontSize: 11, color: Colors.grey, height: 1.5),
             ),
