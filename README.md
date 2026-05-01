@@ -1,199 +1,199 @@
 # BZ5 Companion
 
-**Android-приложение для мониторинга Toyota BZ5** через OBD-II Bluetooth-адаптер.
+**An Android app for monitoring the Toyota BZ5** through an OBD-II Bluetooth adapter.
 
-Показывает то, что родная приборка не показывает: точное здоровье батареи, баланс ячеек, реальное напряжение, температуру, и многое другое — на одном экране, в реальном времени.
+Shows what the dashboard hides: precise battery health, cell balance, real pack voltage, temperature, and more — all in one place, in real time.
 
-> ⚠️ **Неофициальный проект.** Не связан с Toyota и FAW-Toyota. Создан владельцем BZ5 после того, как популярные приложения вроде CarScanner Pro отказались работать с этим автомобилем.
-
----
-
-## Зачем это нужно
-
-Toyota BZ5 — сравнительно новый электромобиль на платформе BYD с blade-аккумулятором LiFePO4 на 65.28 кВт·ч. Машина "общается" с диагностическим оборудованием на нестандартных адресах, и большинство универсальных OBD-сканеров её просто не видят.
-
-Это приложение разговаривает с машиной на её родном языке и показывает данные, которые иначе невозможно получить.
-
-## Что приложение показывает
-
-### Главный экран
-
-**Состояние заряда (SOC)** — крупно, с цветовой индикацией. Запас хода в километрах рассчитывается по реальному расходу 14.4 кВт·ч/100км.
-
-**Состояние здоровья батареи (SOH)** — в процентах. У новой машины 98-100%, со временем будет снижаться. Показывает то, что приборка скрывает.
-
-**Температура батареи** — в °C. Полезно зимой и в жару, чтобы понимать когда батарее некомфортно.
-
-**Напряжение пакета** — реальное напряжение всех ячеек суммарно. Меняется на разгоне (просадка) и при рекуперации (рост) — видно как машина "дышит".
-
-**Одометр** — точный, до 100 метров. Не путать с приборным, который округляет.
-
-**Цикл зарядки** — сколько эквивалентных полных зарядок прошло за всю жизнь батареи. Показатель "пробега" батареи помимо километров.
-
-**Передача и parking pawl** — какая передача активна (P/R/N/D) и зафиксирован ли механический фиксатор парковки (надёжнее ручника).
-
-### Зарядка
-
-Когда подключаете кабель, появляется отдельная карточка с:
-- Текущей мощностью зарядки в кВт
-- Расчётным временем до 100%
-- Сколько кВт·ч уже залили в этой сессии
-
-### Баланс ячеек
-
-Отдельный экран с напряжением каждой из 20 ячеек батареи. У здоровой батареи разница между минимальной и максимальной не больше:
-- 20-50 mV в среднем диапазоне SOC
-- 50-100 mV при 100% заряде (особенность LFP-химии)
-- если разница больше 150 mV — нужна диагностика
-
-Приложение само понимает контекст и оценивает баланс как Excellent/Good/Fair/Poor.
-
-### История поездок
-
-Каждая поездка сохраняется в локальной базе с временем, пройденным расстоянием, потраченной энергией, начальным и конечным SOC. Зарядки **не** записываются как поездки.
-
-### Все ECU автомобиля
-
-Для тех, кому интересны технические подробности — отдельный экран со всеми 30 электронными блоками управления и тем что они отдают.
+> ⚠️ **Unofficial project.** Not affiliated with Toyota or FAW-Toyota. Built by a BZ5 owner after popular apps like CarScanner Pro refused to work with this car.
 
 ---
 
-## Что нужно для использования
+## Why this exists
 
-### Оборудование
+The Toyota BZ5 is a relatively new EV built on the BYD platform with a 65.28 kWh blade LiFePO4 battery. The car talks to diagnostic equipment on non-standard addresses, and most generic OBD scanners simply don't see it.
 
-**Bluetooth ELM327-адаптер.** Проверено на Vgate iCar Pro BLE. Подойдёт любой ELM327 v2.1+ с BLE (не классический Bluetooth, а именно BLE/BT 4.0+).
+This app speaks the car's native language and surfaces data that's otherwise impossible to get.
 
-**Android-телефон** с Android 12 или новее. iOS-версии нет (нужен Apple Developer аккаунт для публикации, и у автора его нет).
+## What the app shows
 
-### Установка
+### Main screen
 
-APK можно скачать из раздела [Releases](../../releases) или собрать самому из исходников.
+**State of Charge (SOC)** — large, with color indication. Range estimate in kilometers is calculated against the real-world consumption of 14.4 kWh/100km.
 
-При первом запуске:
-1. Дайте разрешения на Bluetooth и Location (нужны для BLE-сканирования)
-2. Сядьте в машину, нажмите Start с тормозом → машина в Ready
-3. Откройте Settings в приложении → "Найти адаптер"
-4. Выберите ваш ELM327 в списке
-5. Готово — приложение само начнёт получать данные
+**State of Health (SOH)** — as a percentage. New cars sit at 98-100%; this number drops over time. Shows what the dashboard keeps to itself.
 
-Если после подключения данные не идут — проверьте что адаптер действительно подключился к OBD-порту (он находится слева под рулём, нужно немного присесть).
+**Battery temperature** — in °C. Useful in winter and summer to know when the battery is uncomfortable.
 
----
+**Pack voltage** — actual voltage across all cells combined. Drops under acceleration, rises during regen — you can watch the car "breathe."
 
-## Что приложение **не** делает
+**Odometer** — accurate to 100 meters. Don't confuse with the dashboard odometer, which rounds.
 
-- **Не управляет машиной.** Только читает данные. Никаких команд "запустить кондиционер", "открыть окна" и т.д.
-- **Не сбрасывает ошибки.** Это требует другого уровня доступа и потенциально может что-то сломать.
-- **Не работает при езде** в смысле UI — для безопасности рекомендуется смотреть на экран только на стоянке или зарядке. Записывать данные в фоне на ходу — нормально.
-- **Не показывает скорость и обороты в реальном времени.** Эти данные в Toyota BZ5 защищены архитектурно — диагностический порт изолирован от основной шины. Это не баг приложения, это защитная мера производителя.
-- **Не работает удалённо.** Только пока вы рядом с машиной с включённым Bluetooth.
+**Charge cycles** — how many full-equivalent charge cycles the battery has gone through in its lifetime. Battery "mileage" beyond kilometers driven.
 
----
+**Gear and parking pawl** — which gear is engaged (P/R/N/D) and whether the mechanical parking pawl is locked (more reliable than the parking brake).
 
-## Безопасность и приватность
+### Charging
 
-- Приложение **не отправляет никаких данных** на серверы. Всё хранится локально на телефоне.
-- Не требует регистрации, аккаунта, входа.
-- Подключается только к BLE-устройству OBD-адаптера. Никаких других сетевых подключений.
-- Открытый исходный код — можно проверить самостоятельно.
+When you plug in the cable, a dedicated card appears showing:
+- Current charging power in kW
+- Estimated time to 100%
+- How much energy has been added in this session
 
----
+### Cell balance
 
-## Часто задаваемые вопросы
+A separate screen with the voltage of every one of the 20 battery cells. On a healthy battery, the difference between the lowest and highest cell should be:
+- 20-50 mV in the mid-SOC range
+- 50-100 mV at 100% (a normal LFP chemistry quirk)
+- if it goes above 150 mV — diagnostics needed
 
-**Это безопасно для машины?**
-Да. Приложение использует только стандартные диагностические запросы — то же самое что делает официальный сервис при диагностике. Машина никак не "узнает" о подключении после отключения адаптера, никаких следов или изменений.
+The app understands the context and grades the balance as Excellent / Good / Fair / Poor.
 
-**Будет ли это работать на других машинах?**
-Только на Toyota BZ5 (FAW-Toyota). Параметры реверс-инжинирили специально под эту машину. Возможно частично заработает на родственных моделях BYD на той же платформе, но без гарантий.
+### Trip history
 
-**Почему адаптер должен быть BLE, а не классический Bluetooth?**
-Современные Android-устройства лучше поддерживают BLE для долгих фоновых соединений. К тому же Vgate и аналогичные адаптеры с классическим Bluetooth требуют пары через системные настройки, что усложняет UX.
+Every drive is saved locally with timestamp, distance, energy used, start and end SOC. Charging sessions are **not** logged as trips.
 
-**Расходует ли приложение батарейку машины?**
-Адаптер потребляет ~50 mA от 12V-батареи. За ночь — копейки. Если оставлять адаптер на неделю при выключенной машине — может посадить 12V-батарею. Поэтому лучше отключать адаптер когда не пользуетесь, или использовать адаптеры с автоматическим sleep-режимом.
+### All ECUs
 
-**Сколько времени занимает обновление данных?**
-Полный цикл опроса ~1-2 секунды. Графики и числа обновляются в реальном времени.
-
-**Что если у меня вопросы или нашёл баг?**
-Открывайте Issue в репозитории.
+For the curious — a separate screen showing all 30 electronic control units of the car and what they expose.
 
 ---
 
-## Благодарности
+## What you need
 
-Проект сделан одним человеком за один длинный вечер с помощью AI-ассистента (Claude Opus 4.7), который помогал с анализом протокола и кодом. Без AI это заняло бы недели. Без живой машины и желания понять "а почему CarScanner не работает" — не было бы вообще.
+### Hardware
 
-Спасибо сообществу EV-энтузиастов в Китае и России, чьи разрозненные посты в чатах и форумах подсказали что искать.
+**Bluetooth ELM327 adapter.** Tested with Vgate iCar Pro BLE. Any ELM327 v2.1+ with BLE should work (BLE / Bluetooth 4.0+, **not** classic Bluetooth).
+
+**Android phone** running Android 12 or newer. There's no iOS version (Apple Developer account required for distribution, and the author doesn't have one).
+
+### Setup
+
+You can grab the APK from [Releases](../../releases) or build it yourself from source.
+
+On first launch:
+1. Grant Bluetooth and Location permissions (needed for BLE scanning)
+2. Sit in the car, press Start with the brake pedal → car in Ready
+3. Open Settings in the app → "Find adapter"
+4. Pick your ELM327 from the list
+5. Done — the app will start receiving data automatically
+
+If data isn't coming after pairing, double-check that the adapter actually plugged into the OBD port (located under the steering wheel on the left, you'll need to crouch a little).
 
 ---
 
-## Лицензия
+## What the app does **not** do
 
-MIT. Используйте, форкайте, модифицируйте — на свой страх и риск.
+- **It doesn't control the car.** Read-only. No "start the AC", "open the windows", or similar commands.
+- **It doesn't clear error codes.** That requires a different access level and could potentially break things.
+- **The UI isn't meant to be used while driving.** For safety, only check the screen while parked or charging. Background data logging while driving is fine.
+- **It doesn't show speed or RPM in real time.** These signals on the BZ5 are architecturally protected — the diagnostic port is isolated from the main vehicle bus. This isn't an app bug; it's a manufacturer security measure.
+- **No remote access.** Only works while you're near the car with Bluetooth on.
+
+---
+
+## Security and privacy
+
+- The app **does not send any data** to any servers. Everything stays local on your phone.
+- No registration, account, or login required.
+- Connects only to the BLE OBD adapter. No other network connections.
+- Source is open — verify it yourself.
+
+---
+
+## Frequently Asked Questions
+
+**Is this safe for the car?**
+Yes. The app uses only standard diagnostic queries — the same kind an official dealer service uses during diagnostics. The car retains no record of the connection after the adapter is unplugged. No traces, no changes.
+
+**Will it work on other cars?**
+Only on the Toyota BZ5 (FAW-Toyota). Parameters were reverse-engineered specifically for this model. May partially work on related BYD vehicles on the same platform, but with no guarantees.
+
+**Why does the adapter have to be BLE and not classic Bluetooth?**
+Modern Android handles BLE better for long background connections. Classic-Bluetooth ELM327 adapters also need pairing through system settings, which complicates UX.
+
+**Does the app drain the car's battery?**
+The adapter pulls roughly 50 mA from the 12V battery. Overnight that's nothing. If you leave the adapter plugged in for a week with the car off, you might drain the 12V battery. Best to unplug when not in use, or get an adapter with auto-sleep.
+
+**How fast does data update?**
+A full poll cycle is 1-2 seconds. Numbers and charts update in real time.
+
+**What if I have questions or find a bug?**
+Open an Issue in this repository.
+
+---
+
+## Acknowledgments
+
+This project was built by one person over a long evening with help from an AI assistant (Claude Opus 4.7), which handled protocol analysis and code generation. Without AI it would have taken weeks. Without a real car and a "but why doesn't CarScanner work?" itch — it wouldn't exist at all.
+
+Thanks to the EV enthusiast communities in China and Russia, whose scattered forum posts and chat snippets pointed at what to look for.
+
+---
+
+## License
+
+MIT. Use, fork, modify — at your own risk.
 
 ---
 
 <details>
-<summary><strong>📡 Технические детали (для разработчиков)</strong></summary>
+<summary><strong>📡 Technical details (for developers)</strong></summary>
 
-### Архитектура
+### Architecture
 
 - **Flutter 3.27.4** + Dart 3, Material 3
-- **flutter_blue_plus** для BLE-транспорта
-- **Drift (SQLite)** для локального хранения trips/samples/snapshots
-- **fl_chart, provider, intl** для UI и state management
+- **flutter_blue_plus** for BLE transport
+- **Drift (SQLite)** for local trip / sample / snapshot storage
+- **fl_chart, provider, intl** for UI and state management
 
-### Протокол
+### Protocol
 
-- **ISO 15765-4 (CAN 11-bit, 500 kbps)** — protocol 6 в ELM327
-- **UDS** для диагностических запросов (`22 XX YY` для read DID)
-- 30 ECU обнаружено на нестандартных адресах вне диапазона 7E0-7E7
-- Правило адресации: RX = TX + 8
+- **ISO 15765-4 (CAN 11-bit, 500 kbps)** — protocol 6 in ELM327
+- **UDS** for diagnostic queries (`22 XX YY` for read DID)
+- 30 ECUs discovered on non-standard addresses outside the 7E0-7E7 range
+- Addressing rule: RX = TX + 8
 
-### Ключевые ECU
+### Key ECUs
 
-| TX→RX | Имя | Назначение |
+| TX→RX | Name | Purpose |
 |---|---|---|
-| 790→798 | BMS master | SOC, SOH, температура, ячейки, pack voltage, счётчики |
-| 791→799 | VCU | Одометр, gear, мощность, parking pawl, VIN |
-| 782→78A | OBC Charger | Состояние кабеля, параметры зарядника |
-| 757→75F | GPS (Asensing) | Координаты (placeholder когда стоит) |
-| 740→748 | Pack Monitor | Cached snapshots напряжения |
+| 790→798 | BMS master | SOC, SOH, temperature, cells, pack voltage, counters |
+| 791→799 | VCU | Odometer, gear, power, parking pawl, VIN |
+| 782→78A | OBC charger | Cable status, charger parameters |
+| 757→75F | GPS (Asensing) | Coordinates (placeholder when stationary) |
+| 740→748 | Pack monitor | Cached voltage snapshots |
 
-### Ключевые DID-ы (BMS, ECU 790)
+### Key DIDs (BMS, ECU 790)
 
-| DID | Семантика | Масштаб |
+| DID | Meaning | Scale |
 |---|---|---|
 | 0x0005 | SOC | % |
-| 0x0015 | Pack Voltage | × 0.02 V |
+| 0x0015 | Pack voltage | × 0.02 V |
 | 0x0029 | SOH | % |
 | 0x002B / 0x002D | Cell V min/max | mV |
 | 0x002F | Battery temp | offset −40 °C |
 | 0x016D-0x01B7 | 20 cell voltages | mV |
-| 0x0B00 | Lifetime charge counter | × 460 Wh (откалибровано) |
+| 0x0B00 | Lifetime charge counter | × 460 Wh (calibrated) |
 | 0x0B02 | Cycle count | unit |
 
-### Что не работает
+### What doesn't work
 
-- **Broadcast traffic (ATMA)** недоступен — диагностический gateway изолирован от основной шины
-- **Signed current** не экспортируется через UDS, надо вычислять косвенно через Power-A (VCU) / Pack Voltage
-- **Realtime obороты, скорость** — не доступны через диагностику
-- **DID 0x0009 на BMS** имеет неясную семантику, не используется
+- **Broadcast traffic (ATMA)** is unavailable — the diagnostic gateway is isolated from the main vehicle bus
+- **Signed current** isn't exposed via UDS, has to be inferred indirectly via Power-A (VCU) / Pack Voltage
+- **Real-time RPM and speed** — not accessible via diagnostics
+- **DID 0x0009 on BMS** has unclear semantics, not used
 
-### Как подключиться к проекту
+### Contributing
 
-1. Форк репозитория
-2. Установите Flutter 3.27.4 и зависимости из `pubspec.yaml`
-3. Подключите свой ELM327 BLE-адаптер
-4. `flutter run` на Android-устройстве (эмулятор не подойдёт, нужен реальный BLE)
+1. Fork the repo
+2. Install Flutter 3.27.4 and dependencies from `pubspec.yaml`
+3. Plug in your ELM327 BLE adapter
+4. `flutter run` on a real Android device (emulators won't work — real BLE required)
 
-Сборка APK через GitHub Actions — workflow в `.github/workflows/`.
+APK builds run via GitHub Actions — see `.github/workflows/`.
 
-### Калибровка
+### Calibration
 
-Все физические константы в `lib/services/connection.dart` в классе `Bz5Model`. Откалибровано через полную зарядную сессию 48% → 100% и сравнение с показаниями приборки. Точность ±5%.
+All physical constants live in `lib/services/connection.dart` inside the `Bz5Model` class. Calibrated against a full charge session (48% → 100%) and dashboard readings. Accuracy ±5%.
 
 </details>
