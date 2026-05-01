@@ -72,14 +72,16 @@ class _Connected extends StatelessWidget {
     final rangeKm = svc.rangeEstimateKm;
     final tripEnergy = svc.tripEnergyKwh;
     final cycles = svc.cycleCount;
-    final lifetimeKwh = svc.lifetimeChargedKwh;
+    final packV = svc.packVoltageV;
+    final parkingEngaged = svc.parkingPawlEngaged;
+    final chargedSession = svc.chargedThisSessionKwh;
 
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
         _SocCard(soc: soc, rangeKm: rangeKm),
         const SizedBox(height: 12),
-        if (isCharging) _ChargingBanner(svc: svc),
+        if (isCharging) _ChargingBanner(svc: svc, chargedSession: chargedSession),
         if (isCharging) const SizedBox(height: 12),
         _GridCards(
           children: [
@@ -93,9 +95,15 @@ class _Connected extends StatelessWidget {
               icon: Icons.thermostat,
               color: Colors.orange,
               label: 'Battery',
-              // v4: decoder в ecu_registry уже применяет offset −40,
-              // поэтому здесь больше НЕ вычитаем 40.
+              // Decoder применяет offset −40, не вычитаем повторно.
               value: tempRaw != null ? '${tempRaw.toInt()}°C' : '—',
+            ),
+            // v5: Pack Voltage card (RT через DID 0x0015)
+            _MetricCard(
+              icon: Icons.bolt,
+              color: Colors.yellowAccent,
+              label: 'Pack V',
+              value: packV != null ? '${packV.toStringAsFixed(1)} V' : '—',
             ),
             _MetricCard(
               icon: Icons.speed,
@@ -103,8 +111,6 @@ class _Connected extends StatelessWidget {
               label: 'Odometer',
               value: odo != null ? '${odo.toStringAsFixed(1)} km' : '—',
             ),
-            // v4: Range card убран — он дублировал значение в _SocCard.
-            // Вместо него — Cycle count из BMS DID 0B02.
             _MetricCard(
               icon: Icons.refresh,
               color: Colors.purpleAccent,
@@ -112,42 +118,85 @@ class _Connected extends StatelessWidget {
               value: cycles != null ? '$cycles' : '—',
             ),
             _MetricCard(
-              icon: Icons.electric_bolt,
-              color: Colors.cyanAccent,
-              // v4: лейбл с "≈" — калибровка приближённая
-              label: '≈ Lifetime in',
-              value: lifetimeKwh != null
-                  ? '${lifetimeKwh.toStringAsFixed(0)} kWh'
-                  : '—',
-            ),
-            _MetricCard(
               icon: Icons.directions_car,
-              color: Colors.lightBlueAccent,
+              color: _gearColor(gear, parkingEngaged, isCharging),
               label: 'Gear',
-              // v4: на зарядке всегда показываем P (mapping для D/N/R/P
-              // ещё не верифицирован для всех положений рычага)
-              value: _gearStr(gear, isCharging),
+              // v5: правильный mapping 1=P, 2=R, 3=N, 4=D
+              value: _gearStr(gear),
             ),
           ],
         ),
         const SizedBox(height: 12),
+        // v5: Parking pawl indicator (мини-строка под grid)
+        if (parkingEngaged != null)
+          _ParkingPawlRow(engaged: parkingEngaged),
+        if (parkingEngaged != null) const SizedBox(height: 12),
         if (svc.currentTripId != null && tripEnergy != null)
           _TripCard(svc: svc),
         const SizedBox(height: 12),
-        _CellsSummaryCard(cells: cells, cellMin: cellMin, cellMax: cellMax),
+        _CellsSummaryCard(
+          cells: cells,
+          cellMin: cellMin,
+          cellMax: cellMax,
+          soc: soc,
+          smoothedSpread: svc.smoothedCellSpread,
+        ),
         const SizedBox(height: 16),
-        _PhysicsModelCard(svc: svc),
+        _PhysicsModelCard(),
       ],
     );
   }
 
-  /// v4: gear logic with charging override
-  String _gearStr(double? g, bool isCharging) {
-    if (isCharging) return 'P';
+  /// v5: Корректный mapping проверен на практике 1 мая 2026.
+  String _gearStr(double? g) {
     if (g == null) return '—';
     return switch (g.toInt()) {
-      1 => 'D', 2 => 'N', 3 => 'R', 4 => 'P', _ => '?',
+      1 => 'P', 2 => 'R', 3 => 'N', 4 => 'D', _ => '?',
     };
+  }
+
+  /// v5: Цвет gear-карточки в зависимости от состояния.
+  Color _gearColor(double? g, bool? parkingEngaged, bool isCharging) {
+    if (g == null) return Colors.grey;
+    if (parkingEngaged == true) return Colors.lightBlueAccent;
+    if (isCharging) return Colors.amber;
+    return switch (g.toInt()) {
+      1 => Colors.lightBlueAccent,  // P
+      2 => Colors.redAccent,         // R
+      3 => Colors.orangeAccent,      // N
+      4 => Colors.greenAccent,       // D
+      _ => Colors.grey,
+    };
+  }
+}
+
+/// v5: Parking pawl status — explicit indicator
+class _ParkingPawlRow extends StatelessWidget {
+  final bool engaged;
+  const _ParkingPawlRow({required this.engaged});
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      color: engaged ? Colors.green.shade900 : Colors.grey.shade900,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+        child: Row(
+          children: [
+            Icon(
+              engaged ? Icons.lock : Icons.lock_open,
+              color: engaged ? Colors.greenAccent : Colors.grey,
+              size: 20,
+            ),
+            const SizedBox(width: 12),
+            Text(
+              engaged ? 'Parking pawl engaged' : 'Parking pawl released',
+              style: const TextStyle(fontSize: 13, letterSpacing: 0.3),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 
@@ -220,7 +269,8 @@ class _SocCard extends StatelessWidget {
 
 class _ChargingBanner extends StatelessWidget {
   final ConnectionService svc;
-  const _ChargingBanner({required this.svc});
+  final double? chargedSession;
+  const _ChargingBanner({required this.svc, this.chargedSession});
 
   @override
   Widget build(BuildContext context) {
@@ -262,6 +312,20 @@ class _ChargingBanner extends StatelessWidget {
                   ),
               ],
             ),
+            // v5: Charged this session — заменяет старый "Lifetime in"
+            if (chargedSession != null && chargedSession! > 0.05) ...[
+              const Divider(height: 24, color: Colors.white24),
+              Row(
+                children: [
+                  const Icon(Icons.water_drop, color: Colors.lightBlueAccent, size: 18),
+                  const SizedBox(width: 8),
+                  const Text('This session: ',
+                      style: TextStyle(fontSize: 13, color: Colors.grey)),
+                  Text('${chargedSession!.toStringAsFixed(2)} kWh',
+                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500)),
+                ],
+              ),
+            ],
           ],
         ),
       ),
@@ -310,9 +374,6 @@ class _TripCard extends StatelessWidget {
 }
 
 class _PhysicsModelCard extends StatelessWidget {
-  final ConnectionService svc;
-  const _PhysicsModelCard({required this.svc});
-
   @override
   Widget build(BuildContext context) {
     return Card(
@@ -332,10 +393,12 @@ class _PhysicsModelCard extends StatelessWidget {
             ),
             const SizedBox(height: 8),
             const Text(
-              'Calibrated against real charging sessions.\n'
-              '• Battery: 65.28 kWh (Toyota datasheet)\n'
-              '• Charge counter (BMS 0B00): 1 unit ≈ 45.6 Wh — approximate\n'
-              '• Cycle count: BMS 0B02\n'
+              'Reverse-engineered from BZ5 BMS, VCU, OBC ECUs.\n'
+              '• Battery: 65.28 kWh (Toyota datasheet, ETA-verified)\n'
+              '• Pack voltage: BMS 0x0015 × 0.02 V (realtime)\n'
+              '• Charge counter: BMS 0x0B00, 1 unit ≈ 460 Wh\n'
+              '• Cycle count: BMS 0x0B02\n'
+              '• Gear: VCU 0x0009 (1=P, 2=R, 3=N, 4=D)\n'
               '• Avg consumption: 14.4 kWh/100km',
               style: TextStyle(fontSize: 11, color: Colors.grey, height: 1.5),
             ),
@@ -403,11 +466,39 @@ class _MetricCard extends StatelessWidget {
   }
 }
 
+/// v5: SOC-aware cell balance с smoothed spread
 class _CellsSummaryCard extends StatelessWidget {
   final List<int> cells;
   final double? cellMin;
   final double? cellMax;
-  const _CellsSummaryCard({required this.cells, this.cellMin, this.cellMax});
+  final double? soc;
+  final int? smoothedSpread;
+  const _CellsSummaryCard({
+    required this.cells,
+    this.cellMin,
+    this.cellMax,
+    this.soc,
+    this.smoothedSpread,
+  });
+
+  /// v5: SOC-aware pороги для оценки балансировки.
+  /// LFP имеет очень плоскую кривую SOC-V в среднем диапазоне и резкую
+  /// на верхушке — поэтому пороги должны зависеть от уровня заряда.
+  ({String label, Color color}) _balanceQuality(int spread, double socPct) {
+    int excellent, good, fair;
+    if (socPct >= 90) {
+      // На верхушке spread всегда выше из-за крутого LFP knee
+      excellent = 50; good = 100; fair = 150;
+    } else if (socPct < 30) {
+      excellent = 10; good = 20; fair = 40;
+    } else {
+      excellent = 20; good = 40; fair = 80;
+    }
+    if (spread <= excellent) return (label: 'Excellent', color: Colors.green);
+    if (spread <= good) return (label: 'Good', color: Colors.lightGreen);
+    if (spread <= fair) return (label: 'Fair', color: Colors.orange);
+    return (label: 'Poor', color: Colors.red);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -421,7 +512,9 @@ class _CellsSummaryCard extends StatelessWidget {
     final lo = cells.reduce((a, b) => a < b ? a : b);
     final hi = cells.reduce((a, b) => a > b ? a : b);
     final avg = cells.reduce((a, b) => a + b) / cells.length;
-    final spread = hi - lo;
+    // v5: показываем smoothed spread если есть, иначе instant
+    final spreadDisplay = smoothedSpread ?? (hi - lo);
+    final quality = _balanceQuality(spreadDisplay, soc ?? 50);
 
     return Card(
       child: Padding(
@@ -429,8 +522,15 @@ class _CellsSummaryCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('CELLS BALANCE',
-                style: TextStyle(fontSize: 11, letterSpacing: 1.5, color: Colors.grey)),
+            Row(
+              children: [
+                const Text('CELLS BALANCE',
+                    style: TextStyle(fontSize: 11, letterSpacing: 1.5, color: Colors.grey)),
+                const Spacer(),
+                Text(quality.label,
+                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: quality.color)),
+              ],
+            ),
             const SizedBox(height: 12),
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -438,8 +538,7 @@ class _CellsSummaryCard extends StatelessWidget {
                 _MiniStat('Min', '$lo mV'),
                 _MiniStat('Avg', '${avg.toInt()} mV'),
                 _MiniStat('Max', '$hi mV'),
-                _MiniStat('Δ', '$spread mV',
-                    color: spread > 50 ? Colors.red : (spread > 20 ? Colors.orange : Colors.green)),
+                _MiniStat('Δ', '$spreadDisplay mV', color: quality.color),
               ],
             ),
             const SizedBox(height: 12),
