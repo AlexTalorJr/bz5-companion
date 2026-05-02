@@ -59,6 +59,13 @@ class ConnectionService extends ChangeNotifier {
   DateTime? _lastB00Time;
   double _instantaneousChargingPowerKw = 0.0;
 
+  // v6: tracking when 0x0B00 last incremented — used for isCharging detection.
+  // BMS counter increments ~every 10 min at 2.8 kW (1 unit ≈ 460 Wh).
+  // Если был инкремент в последние 15 минут — считаем что заряжается.
+  // Замена ненадёжного DID 0x0057 (на OBC всегда = 1 на исправной машине).
+  DateTime? _lastB00IncrementTime;
+  static const Duration _chargingDetectionTtl = Duration(minutes: 15);
+
   int? _currentTripId;
   int _samplesInTrip = 0;
   double? _tripStartSoc;
@@ -185,27 +192,49 @@ class ConnectionService extends ChangeNotifier {
     }
   }
 
+  /// v6: Connect with auto-retry. Android BLE error 133 (GATT_ERROR) часто
+  /// случается на первой попытке из-за race condition между scan/connect.
+  /// 3 попытки с возрастающими паузами устраняют это в ~95% случаев.
   Future<bool> connect(BluetoothDevice device, {bool autoStart = true}) async {
     _setStatus(ConnectionStatus.connecting, msg: 'Подключение...');
-    try {
-      _ble = Elm327Ble(device);
-      await _ble!.connect();
-      _client = Elm327Client(_ble!);
-      await _client!.initialize();
-      _adapterAddress = device.remoteId.str;
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('last_adapter', _adapterAddress!);
-      _setStatus(ConnectionStatus.connected, msg: 'Подключено');
-      if (autoStart) {
-        Future.microtask(() => startPolling());
+    Object? lastError;
+
+    for (int attempt = 1; attempt <= 3; attempt++) {
+      try {
+        _ble = Elm327Ble(device);
+        await _ble!.connect();
+        _client = Elm327Client(_ble!);
+        await _client!.initialize();
+        _adapterAddress = device.remoteId.str;
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('last_adapter', _adapterAddress!);
+        _setStatus(ConnectionStatus.connected, msg: 'Подключено');
+        if (autoStart) {
+          Future.microtask(() => startPolling());
+        }
+        return true;
+      } catch (e) {
+        lastError = e;
+        debugPrint('Connect attempt $attempt/3 failed: $e');
+
+        // Cleanup before retry
+        try { await _ble?.disconnect(); } catch (_) {}
+        _client = null;
+        _ble = null;
+
+        if (attempt < 3) {
+          // Exponential-ish backoff: 500ms, 1000ms
+          final delayMs = 500 * attempt;
+          _setStatus(ConnectionStatus.connecting,
+              msg: 'Повтор ${attempt + 1}/3 через ${delayMs}мс...');
+          await Future.delayed(Duration(milliseconds: delayMs));
+        }
       }
-      return true;
-    } catch (e) {
-      _setStatus(ConnectionStatus.error, msg: '$e');
-      _client = null;
-      _ble = null;
-      return false;
     }
+
+    _setStatus(ConnectionStatus.error,
+        msg: 'Не удалось подключиться (3 попытки): $lastError');
+    return false;
   }
 
   Future<void> disconnect() async {
@@ -224,6 +253,11 @@ class ConnectionService extends ChangeNotifier {
     _wantTripCreation = startTrip;
     _pollCyclesSinceStart = 0;
     _cellSpreadHistory.clear();
+    // v6: reset charging detection state
+    _lastB00IncrementTime = null;
+    _lastB00Value = null;
+    _lastB00Time = null;
+    _instantaneousChargingPowerKw = 0.0;
     _pollLoop();
     notifyListeners();
   }
@@ -298,6 +332,10 @@ class ConnectionService extends ChangeNotifier {
           final delta = b00Int - _lastB00Value!;
           _instantaneousChargingPowerKw =
               delta * Bz5Model.chargeCounterWh / dt * 3.6 / 1000.0;
+          // v6: запоминаем когда последний раз счётчик действительно вырос
+          if (delta > 0) {
+            _lastB00IncrementTime = now;
+          }
           _lastB00Value = b00Int;
           _lastB00Time = now;
         }
@@ -389,9 +427,17 @@ class ConnectionService extends ChangeNotifier {
   String? readText(String ecuTx, String did) =>
       _latestValues[ecuTx]?[did]?.text;
 
+  /// v6: Detect charging by 0x0B00 counter dynamics.
+  /// DID 0x0057 на OBC оказался ненадёжным (всегда = 1 пока машина исправна,
+  /// независимо от подключения кабеля). Поэтому единственный надёжный сигнал —
+  /// это инкремент charge counter 0x0B00 на BMS.
+  ///
+  /// Trade-off: при slow AC charging (2-3 кВт) первый инкремент происходит
+  /// через ~10 минут после старта. До этого момента isCharging = false.
+  /// Это норма для домашней зарядки на ночь.
   bool get isCharging {
-    final connState = readNumeric('782', '0057');
-    if (connState != null && connState > 0) return true;
-    return _instantaneousChargingPowerKw > 0.5;
+    if (_lastB00IncrementTime == null) return false;
+    final elapsed = DateTime.now().difference(_lastB00IncrementTime!);
+    return elapsed < _chargingDetectionTtl;
   }
 }
