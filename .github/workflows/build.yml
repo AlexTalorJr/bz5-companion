@@ -12,6 +12,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # need full history for git rev-list count
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -29,6 +31,16 @@ jobs:
       - name: Flutter doctor
         run: flutter doctor -v
 
+      - name: Compute version from git history
+        run: |
+          BASE_VERSION=$(grep '^version:' pubspec.yaml | sed 's/version: *//' | cut -d+ -f1)
+          BUILD_NUMBER=$(git rev-list --count HEAD)
+          VERSION_NAME="${BASE_VERSION}.${BUILD_NUMBER}"
+          echo "BASE_VERSION=$BASE_VERSION" >> $GITHUB_ENV
+          echo "BUILD_NUMBER=$BUILD_NUMBER" >> $GITHUB_ENV
+          echo "VERSION_NAME=$VERSION_NAME" >> $GITHUB_ENV
+          echo "::notice title=Build Version::APK will be built as $VERSION_NAME (versionCode $BUILD_NUMBER)"
+
       - name: Create Android project files (with valid name)
         run: flutter create --platforms=android --org com.bz5companion --project-name bz5_companion .
 
@@ -42,17 +54,20 @@ jobs:
         run: dart run build_runner build --delete-conflicting-outputs
 
       - name: Build APK (release, debug-keystore)
-        run: flutter build apk --release
+        run: |
+          flutter build apk --release \
+            --build-number=${{ env.BUILD_NUMBER }} \
+            --build-name=${{ env.VERSION_NAME }}
 
       - name: Rename APK
         run: |
           mv build/app/outputs/flutter-apk/app-release.apk \
-             build/app/outputs/flutter-apk/bz5-companion-${{ github.sha }}.apk
+             build/app/outputs/flutter-apk/bz5-companion-${{ env.VERSION_NAME }}.apk
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: bz5-companion-apk
+          name: bz5-companion-${{ env.VERSION_NAME }}
           path: build/app/outputs/flutter-apk/*.apk
           retention-days: 30
 

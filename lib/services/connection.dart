@@ -15,6 +15,10 @@ enum PollMode { driving, charging, full }
 ///
 /// Калибровочные константы из реверс-инжиниринга 30 апреля - 1 мая 2026.
 class Bz5Model {
+  /// Версия приложения. Видна в Settings и в calibration footer dashboard.
+  /// Обновляется при каждом значимом релизе.
+  static const String appVersion = 'v6.1';
+
   /// Паспортная ёмкость батареи (кВт·ч).
   /// Подтверждена ETA-калькуляцией приборки (13ч 26м при 2.8 кВт от 46% =
   /// 35.25 кВт·ч до полной → ёмкость 65.3 кВт·ч).
@@ -330,11 +334,17 @@ class ConnectionService extends ChangeNotifier {
         final dt = now.difference(_lastB00Time!).inMilliseconds / 1000.0;
         if (dt > 1.0) {
           final delta = b00Int - _lastB00Value!;
-          _instantaneousChargingPowerKw =
-              delta * Bz5Model.chargeCounterWh / dt * 3.6 / 1000.0;
-          // v6: запоминаем когда последний раз счётчик действительно вырос
+          // v6.1: только реальные положительные инкременты считаем зарядкой.
+          // delta = 0  → нет потока (чаще всего на стоянке)
+          // delta < 0  → BMS вернул stale/glitched read; игнорируем
+          // delta > 0 при огромном dt → это не "медленная зарядка" а возобновление polling;
+          //   принимаем как факт зарядки, но powerKw будет естественно низким
           if (delta > 0) {
+            _instantaneousChargingPowerKw =
+                delta * Bz5Model.chargeCounterWh / dt * 3.6 / 1000.0;
             _lastB00IncrementTime = now;
+          } else {
+            _instantaneousChargingPowerKw = 0.0;
           }
           _lastB00Value = b00Int;
           _lastB00Time = now;
