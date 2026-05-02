@@ -15,10 +15,6 @@ enum PollMode { driving, charging, full }
 ///
 /// Калибровочные константы из реверс-инжиниринга 30 апреля - 1 мая 2026.
 class Bz5Model {
-  /// Версия приложения. Видна в Settings и в calibration footer dashboard.
-  /// Обновляется при каждом значимом релизе.
-  static const String appVersion = 'v6.1';
-
   /// Паспортная ёмкость батареи (кВт·ч).
   /// Подтверждена ETA-калькуляцией приборки (13ч 26м при 2.8 кВт от 46% =
   /// 35.25 кВт·ч до полной → ёмкость 65.3 кВт·ч).
@@ -159,6 +155,50 @@ class ConnectionService extends ChangeNotifier {
     if (_cellSpreadHistory.isEmpty) return null;
     final sorted = List<int>.from(_cellSpreadHistory)..sort();
     return sorted[sorted.length ~/ 2];
+  }
+
+  /// v0.1.2: per-module thermal data.
+  /// Returns 10 entries (one per module). Each entry contains:
+  ///   - cellA, cellB: voltage in mV (or null if not yet read)
+  ///   - temp1, temp2: °C (or null if BMS reports 0xFF — see M6)
+  ///   - temp1Reported, temp2Reported: false if BMS skipped this slot
+  /// UI uses *Reported flags to display "temp not reported" instead of "Invalid".
+  List<ModuleSnapshot> get moduleSnapshots {
+    // Each module has 4 DIDs of interest:
+    //   cell A at 0x016D + (n-1)*8
+    //   cell B at 0x016F + (n-1)*8
+    //   temp 1 at 0x0171 + (n-1)*8
+    //   temp 2 at 0x0173 + (n-1)*8
+    const baseCa = 0x016D;
+    final result = <ModuleSnapshot>[];
+    for (int i = 0; i < 10; i++) {
+      final offset = i * 8;
+      final didCellA = (baseCa + offset).toRadixString(16).toUpperCase().padLeft(4, '0');
+      final didCellB = (baseCa + 2 + offset).toRadixString(16).toUpperCase().padLeft(4, '0');
+      final didTemp1 = (baseCa + 4 + offset).toRadixString(16).toUpperCase().padLeft(4, '0');
+      final didTemp2 = (baseCa + 6 + offset).toRadixString(16).toUpperCase().padLeft(4, '0');
+
+      final ca = readNumeric('790', didCellA);
+      final cb = readNumeric('790', didCellB);
+
+      final t1Decoded = _latestValues['790']?[didTemp1];
+      final t2Decoded = _latestValues['790']?[didTemp2];
+      // Если decoder вернул DecodedValue без numeric (т.е. raw был 0xFF) —
+      // это "not reported", BMS не пишет в этот слот.
+      final t1Reported = t1Decoded != null && t1Decoded.numeric != null;
+      final t2Reported = t2Decoded != null && t2Decoded.numeric != null;
+
+      result.add(ModuleSnapshot(
+        index: i + 1,
+        cellAmV: ca?.toInt(),
+        cellBmV: cb?.toInt(),
+        temp1C: t1Reported ? t1Decoded.numeric : null,
+        temp2C: t2Reported ? t2Decoded.numeric : null,
+        temp1Reported: t1Reported,
+        temp2Reported: t2Reported,
+      ));
+    }
+    return result;
   }
 
   void setPollMode(PollMode m) {
@@ -450,4 +490,42 @@ class ConnectionService extends ChangeNotifier {
     final elapsed = DateTime.now().difference(_lastB00IncrementTime!);
     return elapsed < _chargingDetectionTtl;
   }
+}
+
+/// v0.1.2: Snapshot per battery module. Contains both cell voltages and
+/// both temperature sensors. Sensors that BMS doesn't report (e.g. M6 returns
+/// 0xFF for both temp slots) are signalled via *Reported flags.
+class ModuleSnapshot {
+  final int index;          // 1-based module number
+  final int? cellAmV;
+  final int? cellBmV;
+  final double? temp1C;     // null if not reported
+  final double? temp2C;     // null if not reported
+  final bool temp1Reported;
+  final bool temp2Reported;
+
+  const ModuleSnapshot({
+    required this.index,
+    this.cellAmV,
+    this.cellBmV,
+    this.temp1C,
+    this.temp2C,
+    required this.temp1Reported,
+    required this.temp2Reported,
+  });
+
+  /// Average temperature over both sensors, or single one if only one available.
+  double? get avgTemp {
+    if (temp1C != null && temp2C != null) return (temp1C! + temp2C!) / 2;
+    return temp1C ?? temp2C;
+  }
+
+  /// Cell delta (mV) within this module.
+  int? get cellDelta {
+    if (cellAmV == null || cellBmV == null) return null;
+    return (cellBmV! - cellAmV!).abs();
+  }
+
+  /// True if BMS reports at least one temperature sensor for this module.
+  bool get hasAnyTemp => temp1Reported || temp2Reported;
 }

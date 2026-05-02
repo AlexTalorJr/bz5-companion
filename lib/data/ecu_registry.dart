@@ -1,4 +1,13 @@
-/// v2: добавлены 740 (Pack Voltage), 782 (Charger), 757 (GPS), 702 (Gateway)
+/// v0.1.2: добавлены module temperatures (DID 0x0171/0x0173 ... 0x01B9/0x01BB)
+/// Структура каждого модуля 0x016D-0x01B7: 8 DID-ов
+///   +0 (2 байта): Cell A voltage (mV)
+///   +1: 0x00 placeholder
+///   +2 (2 байта): Cell B voltage (mV)
+///   +3: 0x00 placeholder
+///   +4 (1 байт): Temp sensor 1, offset −40 °C
+///   +5: 0x00 placeholder
+///   +6 (1 байт): Temp sensor 2, offset −40 °C
+///   +7 (1 байт): module flag/state (0..13, semantic unknown)
 
 enum DidCategory {
   identity, battery, cells, packVoltage, charging,
@@ -53,32 +62,58 @@ const bmsEcu = EcuSpec(
     DidSpec(did: '002F', name: 'Battery temp', unit: '°C', offset: -40, category: DidCategory.thermal),
     DidSpec(did: '002B', name: 'Cell V min', unit: 'mV', expectedBytes: 2, category: DidCategory.cells),
     DidSpec(did: '002D', name: 'Cell V max', unit: 'mV', expectedBytes: 2, category: DidCategory.cells),
+    // v0.1.2: pack voltage realtime
+    DidSpec(did: '0015', name: 'Pack voltage', unit: 'V', scale: 0.02, expectedBytes: 2, category: DidCategory.packVoltage),
     DidSpec(did: '0009', name: 'Energy counter', category: DidCategory.counter),
     DidSpec(did: '000A', name: 'Counter A', category: DidCategory.counter),
     DidSpec(did: '0B00', name: 'Total energy 1', category: DidCategory.counter),
     DidSpec(did: '0B01', name: 'Total energy 2', category: DidCategory.counter),
+    DidSpec(did: '0B02', name: 'Cycle count', category: DidCategory.counter),
     DidSpec(did: '0006', name: 'Power rated', unit: '×0.1 kW', scale: 0.1, category: DidCategory.battery),
     DidSpec(did: '0008', name: 'Current limit', unit: '×0.1 A', scale: 0.1, category: DidCategory.battery),
-    DidSpec(did: '016D', name: 'Module 1 cell min', unit: 'mV', category: DidCategory.cells),
-    DidSpec(did: '016F', name: 'Module 1 cell max', unit: 'mV', category: DidCategory.cells),
-    DidSpec(did: '0175', name: 'Module 2 cell min', unit: 'mV', category: DidCategory.cells),
-    DidSpec(did: '0177', name: 'Module 2 cell max', unit: 'mV', category: DidCategory.cells),
-    DidSpec(did: '017D', name: 'Module 3 cell min', unit: 'mV', category: DidCategory.cells),
-    DidSpec(did: '017F', name: 'Module 3 cell max', unit: 'mV', category: DidCategory.cells),
-    DidSpec(did: '0185', name: 'Module 4 cell min', unit: 'mV', category: DidCategory.cells),
-    DidSpec(did: '0187', name: 'Module 4 cell max', unit: 'mV', category: DidCategory.cells),
-    DidSpec(did: '018D', name: 'Module 5 cell min', unit: 'mV', category: DidCategory.cells),
-    DidSpec(did: '018F', name: 'Module 5 cell max', unit: 'mV', category: DidCategory.cells),
-    DidSpec(did: '0195', name: 'Module 6 cell min', unit: 'mV', category: DidCategory.cells),
-    DidSpec(did: '0197', name: 'Module 6 cell max', unit: 'mV', category: DidCategory.cells),
-    DidSpec(did: '019D', name: 'Module 7 cell min', unit: 'mV', category: DidCategory.cells),
-    DidSpec(did: '019F', name: 'Module 7 cell max', unit: 'mV', category: DidCategory.cells),
-    DidSpec(did: '01A5', name: 'Module 8 cell min', unit: 'mV', category: DidCategory.cells),
-    DidSpec(did: '01A7', name: 'Module 8 cell max', unit: 'mV', category: DidCategory.cells),
-    DidSpec(did: '01AD', name: 'Module 9 cell min', unit: 'mV', category: DidCategory.cells),
-    DidSpec(did: '01AF', name: 'Module 9 cell max', unit: 'mV', category: DidCategory.cells),
-    DidSpec(did: '01B5', name: 'Module 10 cell min', unit: 'mV', category: DidCategory.cells),
-    DidSpec(did: '01B7', name: 'Module 10 cell max', unit: 'mV', category: DidCategory.cells),
+    // 20 cell voltages (10 modules × 2 cells)
+    DidSpec(did: '016D', name: 'Module 1 cell A', unit: 'mV', category: DidCategory.cells),
+    DidSpec(did: '016F', name: 'Module 1 cell B', unit: 'mV', category: DidCategory.cells),
+    DidSpec(did: '0175', name: 'Module 2 cell A', unit: 'mV', category: DidCategory.cells),
+    DidSpec(did: '0177', name: 'Module 2 cell B', unit: 'mV', category: DidCategory.cells),
+    DidSpec(did: '017D', name: 'Module 3 cell A', unit: 'mV', category: DidCategory.cells),
+    DidSpec(did: '017F', name: 'Module 3 cell B', unit: 'mV', category: DidCategory.cells),
+    DidSpec(did: '0185', name: 'Module 4 cell A', unit: 'mV', category: DidCategory.cells),
+    DidSpec(did: '0187', name: 'Module 4 cell B', unit: 'mV', category: DidCategory.cells),
+    DidSpec(did: '018D', name: 'Module 5 cell A', unit: 'mV', category: DidCategory.cells),
+    DidSpec(did: '018F', name: 'Module 5 cell B', unit: 'mV', category: DidCategory.cells),
+    DidSpec(did: '0195', name: 'Module 6 cell A', unit: 'mV', category: DidCategory.cells),
+    DidSpec(did: '0197', name: 'Module 6 cell B', unit: 'mV', category: DidCategory.cells),
+    DidSpec(did: '019D', name: 'Module 7 cell A', unit: 'mV', category: DidCategory.cells),
+    DidSpec(did: '019F', name: 'Module 7 cell B', unit: 'mV', category: DidCategory.cells),
+    DidSpec(did: '01A5', name: 'Module 8 cell A', unit: 'mV', category: DidCategory.cells),
+    DidSpec(did: '01A7', name: 'Module 8 cell B', unit: 'mV', category: DidCategory.cells),
+    DidSpec(did: '01AD', name: 'Module 9 cell A', unit: 'mV', category: DidCategory.cells),
+    DidSpec(did: '01AF', name: 'Module 9 cell B', unit: 'mV', category: DidCategory.cells),
+    DidSpec(did: '01B5', name: 'Module 10 cell A', unit: 'mV', category: DidCategory.cells),
+    DidSpec(did: '01B7', name: 'Module 10 cell B', unit: 'mV', category: DidCategory.cells),
+    // v0.1.2: 20 module temperatures (10 modules × 2 sensors), offset -40
+    // M6 (0x0199, 0x019B) returns 0xFF — BMS не заполняет этот слот
+    DidSpec(did: '0171', name: 'Module 1 temp 1', unit: '°C', offset: -40, category: DidCategory.thermal),
+    DidSpec(did: '0173', name: 'Module 1 temp 2', unit: '°C', offset: -40, category: DidCategory.thermal),
+    DidSpec(did: '0179', name: 'Module 2 temp 1', unit: '°C', offset: -40, category: DidCategory.thermal),
+    DidSpec(did: '017B', name: 'Module 2 temp 2', unit: '°C', offset: -40, category: DidCategory.thermal),
+    DidSpec(did: '0181', name: 'Module 3 temp 1', unit: '°C', offset: -40, category: DidCategory.thermal),
+    DidSpec(did: '0183', name: 'Module 3 temp 2', unit: '°C', offset: -40, category: DidCategory.thermal),
+    DidSpec(did: '0189', name: 'Module 4 temp 1', unit: '°C', offset: -40, category: DidCategory.thermal),
+    DidSpec(did: '018B', name: 'Module 4 temp 2', unit: '°C', offset: -40, category: DidCategory.thermal),
+    DidSpec(did: '0191', name: 'Module 5 temp 1', unit: '°C', offset: -40, category: DidCategory.thermal),
+    DidSpec(did: '0193', name: 'Module 5 temp 2', unit: '°C', offset: -40, category: DidCategory.thermal),
+    DidSpec(did: '0199', name: 'Module 6 temp 1', unit: '°C', offset: -40, category: DidCategory.thermal, notes: 'BMS returns 0xFF — temp not reported'),
+    DidSpec(did: '019B', name: 'Module 6 temp 2', unit: '°C', offset: -40, category: DidCategory.thermal, notes: 'BMS returns 0xFF — temp not reported'),
+    DidSpec(did: '01A1', name: 'Module 7 temp 1', unit: '°C', offset: -40, category: DidCategory.thermal),
+    DidSpec(did: '01A3', name: 'Module 7 temp 2', unit: '°C', offset: -40, category: DidCategory.thermal),
+    DidSpec(did: '01A9', name: 'Module 8 temp 1', unit: '°C', offset: -40, category: DidCategory.thermal),
+    DidSpec(did: '01AB', name: 'Module 8 temp 2', unit: '°C', offset: -40, category: DidCategory.thermal),
+    DidSpec(did: '01B1', name: 'Module 9 temp 1', unit: '°C', offset: -40, category: DidCategory.thermal),
+    DidSpec(did: '01B3', name: 'Module 9 temp 2', unit: '°C', offset: -40, category: DidCategory.thermal),
+    DidSpec(did: '01B9', name: 'Module 10 temp 1', unit: '°C', offset: -40, category: DidCategory.thermal),
+    DidSpec(did: '01BB', name: 'Module 10 temp 2', unit: '°C', offset: -40, category: DidCategory.thermal),
   ],
 );
 
@@ -92,6 +127,7 @@ const vcuEcu = EcuSpec(
     DidSpec(did: '0038', name: 'Power-A', unit: '×0.1 kW', scale: 0.1, category: DidCategory.drive),
     DidSpec(did: '0039', name: 'Power-B', scale: 0.1, category: DidCategory.drive),
     DidSpec(did: '0104', name: 'RPM-like', category: DidCategory.drive),
+    DidSpec(did: '0007', name: 'Parking pawl', category: DidCategory.status),
     DidSpec(did: '0009', name: 'Gear', category: DidCategory.status),
     DidSpec(did: '0016', name: 'Mode', category: DidCategory.status),
     DidSpec(did: '004A', name: 'BigCounter A', expectedBytes: 4, category: DidCategory.counter),
@@ -232,6 +268,13 @@ DecodedValue? decodeDid(DidSpec spec, List<int>? payload) {
     }
   }
 
+  // v0.1.2: thermal "no data" sentinel — BMS пишет 0xFF когда не отдаёт значение
+  // (например M6 temperatures). Возвращаем DecodedValue без numeric — UI сам решает
+  // что делать (показать "not reported").
+  if (spec.category == DidCategory.thermal && payload.length == 1 && payload[0] == 0xFF) {
+    return DecodedValue(rawBytes: payload);
+  }
+
   int? raw;
   if (payload.length == 1) raw = payload[0];
   else if (payload.length == 2) raw = (payload[0] << 8) | payload[1];
@@ -239,6 +282,12 @@ DecodedValue? decodeDid(DidSpec spec, List<int>? payload) {
   else if (payload.length >= 2) raw = (payload[0] << 8) | payload[1];
 
   if (raw == null) return DecodedValue(rawBytes: payload);
+
+  // v0.1.2: 0xFFFF sentinel для 2-byte значений (pack voltage realtime)
+  if (spec.category == DidCategory.packVoltage && spec.did == '0015' && raw == 0xFFFF) {
+    return DecodedValue(rawBytes: payload);
+  }
+
   final phys = raw * spec.scale + spec.offset;
   return DecodedValue(numeric: phys, unit: spec.unit, rawBytes: payload);
 }
