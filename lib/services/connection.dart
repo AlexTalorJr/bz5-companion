@@ -151,14 +151,28 @@ class ConnectionService extends ChangeNotifier {
     return v?.toInt();
   }
 
-  /// v5: Pack voltage realtime. DID 0x0015 на BMS, scale × 0.02 V.
+  /// Pack voltage realtime. DID 0x0015 на BMS.
+  ///
+  /// Scale × 0.02 V применяется в decoder (см. ecu_registry.dart),
+  /// поэтому readNumeric уже возвращает значение в вольтах.
+  /// Sentinel 0xFFFF тоже отфильтрован decoder'ом → readNumeric == null.
+  ///
+  /// ⚠ NB! v6.1: данные неоднозначны:
+  ///  - Замер 2026-05-02 (50% SOC, машина выкл): ~334 V — правдоподобный
+  ///    resting voltage LFP-pack'а.
+  ///  - Замер 2026-05-03 (82% SOC, Ready+AC): ~272 V — физически невозможно
+  ///    для LFP при таком SOC.
+  /// Видимо DID 0x0015 отдаёт разную семантику в разных режимах
+  /// (resting OCV vs какой-то deratied/instantaneous estimate). До
+  /// расследования показываем значение "как есть" для контроля.
+  /// TODO: после внедрения in-app diagnostic собрать дамп этого DID
+  /// в разных режимах и понять что он действительно означает.
   double? get packVoltageV {
-    final raw = readNumeric('790', '0015');
-    if (raw == null) return null;
-    final intRaw = raw.toInt();
-    if (intRaw == Bz5Model.packVoltageInvalidRaw) return null;
-    if (intRaw < 10000 || intRaw > 25000) return null;
-    return intRaw * Bz5Model.packVoltageScale;
+    final v = readNumeric('790', '0015');
+    if (v == null) return null;
+    // Sanity range: 100-500 V покрывает любой реалистичный output.
+    if (v < 100 || v > 500) return null;
+    return v;
   }
 
   /// v5: Parking pawl engaged. DID 0x0007 на VCU.
@@ -198,28 +212,42 @@ class ConnectionService extends ChangeNotifier {
     return sorted[sorted.length ~/ 2];
   }
 
+  /// v0.1.2: per-module thermal data.
+  /// Returns 10 entries (one per module). Each entry contains:
+  ///   - cellA, cellB: voltage in mV (read from _liveCells, populated by _pollCells)
+  ///   - temp1, temp2: °C (or null if BMS reports 0xFF — see M6)
+  ///   - temp1Reported, temp2Reported: false if BMS skipped this slot
+  /// UI uses *Reported flags to display "temp not reported" instead of "Invalid".
+  ///
+  /// v6.1 fix: cellA/cellB читаются из _liveCells (плоский список 20 значений
+  /// cell voltages, заполняется в _pollCells). До v6.1 читались через
+  /// readNumeric из _latestValues, где cells DID-ы никогда не появляются —
+  /// из-за этого VOLT mV колонка всегда показывала прочерки.
   List<ModuleSnapshot> get moduleSnapshots {
     const baseCa = 0x016D;
     final result = <ModuleSnapshot>[];
     for (int i = 0; i < 10; i++) {
       final offset = i * 8;
-      final didCellA = (baseCa + offset).toRadixString(16).toUpperCase().padLeft(4, '0');
-      final didCellB = (baseCa + 2 + offset).toRadixString(16).toUpperCase().padLeft(4, '0');
       final didTemp1 = (baseCa + 4 + offset).toRadixString(16).toUpperCase().padLeft(4, '0');
       final didTemp2 = (baseCa + 6 + offset).toRadixString(16).toUpperCase().padLeft(4, '0');
 
-      final ca = readNumeric('790', didCellA);
-      final cb = readNumeric('790', didCellB);
+      // Cell voltages: _liveCells = [M1.A, M1.B, M2.A, M2.B, ..., M10.A, M10.B]
+      final cellAIdx = i * 2;
+      final cellBIdx = i * 2 + 1;
+      final cellA = (_liveCells.length > cellAIdx) ? _liveCells[cellAIdx] : null;
+      final cellB = (_liveCells.length > cellBIdx) ? _liveCells[cellBIdx] : null;
 
       final t1Decoded = _latestValues['790']?[didTemp1];
       final t2Decoded = _latestValues['790']?[didTemp2];
+      // Если decoder вернул DecodedValue без numeric (т.е. raw был 0xFF) —
+      // это "not reported", BMS не пишет в этот слот.
       final t1Reported = t1Decoded != null && t1Decoded.numeric != null;
       final t2Reported = t2Decoded != null && t2Decoded.numeric != null;
 
       result.add(ModuleSnapshot(
         index: i + 1,
-        cellAmV: ca?.toInt(),
-        cellBmV: cb?.toInt(),
+        cellAmV: cellA,
+        cellBmV: cellB,
         temp1C: t1Reported ? t1Decoded.numeric : null,
         temp2C: t2Reported ? t2Decoded.numeric : null,
         temp1Reported: t1Reported,
