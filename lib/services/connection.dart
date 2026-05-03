@@ -132,6 +132,24 @@ class ConnectionService extends ChangeNotifier {
 
   List<int> _liveCells = [];
 
+  // === v0.1.3: Extra DIDs not in registry ===
+  //
+  // Эти DID-ы поллятся напрямую через _pollExtraDids() — они не входят в
+  // EcuSpec реестр и не имеют формальных decoder'ов. Раскладка:
+  //  - 740/0x0022 = filtered pack voltage (×0.025 V) — основной источник pack V
+  //  - 740/0x0014 = instant pack voltage (×0.025 V) — для будущей diag-карточки
+  //  - 790/0x002C = global min cell index (0..135) — какая ячейка самая низкая
+  //  - 790/0x002E = global max cell index (0..135)
+  //  - 790/0x0B03 = pack cell count (0x88 = 136) — читается один раз
+  //  - 790/0x0A07 = pack module count (0x0A = 10) — читается один раз
+  // Найдено в реверсе 2026-05-03 (см. README/findings).
+  double? _packVoltageFilteredV;     // 740/0x0022
+  double? _packVoltageInstantV;      // 740/0x0014
+  int? _globalMinCellIndex;          // 790/0x002C
+  int? _globalMaxCellIndex;          // 790/0x002E
+  int? _packCellCount;               // 790/0x0B03
+  int? _packModuleCount;             // 790/0x0A07
+
   ConnectionService(this.db);
 
   ConnectionStatus get status => _status;
@@ -151,29 +169,64 @@ class ConnectionService extends ChangeNotifier {
     return v?.toInt();
   }
 
-  /// Pack voltage realtime. DID 0x0015 на BMS.
+  /// Pack voltage realtime. v0.1.3: источник переключён с 790/0x0015 на 740/0x0022.
   ///
-  /// Scale × 0.02 V применяется в decoder (см. ecu_registry.dart),
-  /// поэтому readNumeric уже возвращает значение в вольтах.
-  /// Sentinel 0xFFFF тоже отфильтрован decoder'ом → readNumeric == null.
+  /// Старый источник (790/0x0015 × 0.02) физически некорректный — выдавал
+  /// 272-291 В на 81-82% SOC, что для 136-ячеечного LFP пакета невозможно
+  /// (теор. 136 × 3.326 mV ≈ 452 V). См. логи sweep 2026-05-03 23:34
+  /// и расчёты в conversation history.
   ///
-  /// ⚠ NB! v6.1: данные неоднозначны:
-  ///  - Замер 2026-05-02 (50% SOC, машина выкл): ~334 V — правдоподобный
-  ///    resting voltage LFP-pack'а.
-  ///  - Замер 2026-05-03 (82% SOC, Ready+AC): ~272 V — физически невозможно
-  ///    для LFP при таком SOC.
-  /// Видимо DID 0x0015 отдаёт разную семантику в разных режимах
-  /// (resting OCV vs какой-то deratied/instantaneous estimate). До
-  /// расследования показываем значение "как есть" для контроля.
-  /// TODO: после внедрения in-app diagnostic собрать дамп этого DID
-  /// в разных режимах и понять что он действительно означает.
+  /// Новый источник (740/0x0022 × 0.025) проверен sweep'ом Pack Monitor:
+  /// 18000 raw → 450.0 V — точно соответствует теории. Это filtered pack V
+  /// (среднее за период). Дополнительно есть instant 740/0x0014 — может
+  /// понадобиться для будущей диагностической карточки.
+  ///
+  /// Sanity range 350..550 V покрывает любой режим: charging-end ~470,
+  /// resting LFP 80% ~452, deep discharge 10% ~410.
   double? get packVoltageV {
+    final v = _packVoltageFilteredV;
+    if (v == null) return null;
+    if (v < 350 || v > 550) return null;
+    return v;
+  }
+
+  /// Instant pack voltage (740/0x0014). Может отличаться от filtered под
+  /// нагрузкой/во время regen. Не показывается на главном экране — для
+  /// будущей diag-карточки.
+  double? get packVoltageInstantV {
+    final v = _packVoltageInstantV;
+    if (v == null) return null;
+    if (v < 350 || v > 550) return null;
+    return v;
+  }
+
+  /// Secondary bus voltage (790/0x0015 × 0.02). Что ИМЕННО это — пока
+  /// неизвестно: на 81% SOC выдаёт 281-291 В, на 50% SOC — 334 В.
+  /// Возможно: precharge sense / DC link / OBC side. Не используется
+  /// в основном UI; оставлен на случай если позже расшифруем.
+  /// TODO: monitor этого DID при precharge / contactor close / Ready / charging.
+  double? get secondaryBusV {
     final v = readNumeric('790', '0015');
     if (v == null) return null;
-    // Sanity range: 100-500 V покрывает любой реалистичный output.
     if (v < 100 || v > 500) return null;
     return v;
   }
+
+  /// v0.1.3: индекс ячейки с минимальным напряжением в пакете (0..135).
+  /// Меняется в реальном времени по мере того как BMS пересортировывает
+  /// слабую ячейку. Замеры 2026-05-03: 21:17 идекс=34, 23:58 индекс=30.
+  int? get globalMinCellIndex => _globalMinCellIndex;
+
+  /// v0.1.3: индекс ячейки с максимальным напряжением в пакете (0..135).
+  int? get globalMaxCellIndex => _globalMaxCellIndex;
+
+  /// v0.1.3: общее количество ячеек в пакете (BMS reports 136).
+  /// Читается один раз при подключении из 790/0x0B03.
+  int? get packCellCount => _packCellCount;
+
+  /// v0.1.3: количество модулей в пакете (BMS reports 10).
+  /// Читается один раз при подключении из 790/0x0A07.
+  int? get packModuleCount => _packModuleCount;
 
   /// v5: Parking pawl engaged. DID 0x0007 на VCU.
   bool? get parkingPawlEngaged {
@@ -212,12 +265,16 @@ class ConnectionService extends ChangeNotifier {
     return sorted[sorted.length ~/ 2];
   }
 
-  /// v0.1.2: per-module thermal data.
+  /// v0.1.2 (interpretation revised in v0.1.3): per-module data.
   /// Returns 10 entries (one per module). Each entry contains:
-  ///   - cellA, cellB: voltage in mV (read from _liveCells, populated by _pollCells)
-  ///   - temp1, temp2: °C (or null if BMS reports 0xFF — see M6)
-  ///   - temp1Reported, temp2Reported: false if BMS skipped this slot
-  /// UI uses *Reported flags to display "temp not reported" instead of "Invalid".
+  ///   - cellA (= module MIN cell V), cellB (= module MAX cell V) in mV.
+  ///     По данным реверса 2026-05-03 это НЕ две конкретные ячейки, а min
+  ///     и max ячейки модуля из всех ~14 ячеек этого модуля. Используйте
+  ///     cellMinmV/cellMaxmV для семантически верного доступа.
+  ///   - temp1, temp2: °C (или null если BMS reports 0xFF — см. M6,
+  ///     у которого нет температурных сенсоров by-design)
+  ///   - temp1Reported, temp2Reported: false если BMS skipped this slot
+  /// UI uses *Reported flags to display "no sensors" instead of "Invalid".
   ///
   /// v6.1 fix: cellA/cellB читаются из _liveCells (плоский список 20 значений
   /// cell voltages, заполняется в _pollCells). До v6.1 читались через
@@ -351,6 +408,13 @@ class ConnectionService extends ChangeNotifier {
     // v6.1: reset rolling-window charging detection state
     _b00History.clear();
     _instantaneousChargingPowerKw = 0.0;
+    // v0.1.3.1: reset volatile pack-V и cell-index state.
+    // _packCellCount / _packModuleCount НЕ сбрасываем — это константы
+    // конкретной машины, не зависят от polling-сессии.
+    _packVoltageFilteredV = null;
+    _packVoltageInstantV = null;
+    _globalMinCellIndex = null;
+    _globalMaxCellIndex = null;
     _pollLoop();
     notifyListeners();
   }
@@ -384,6 +448,10 @@ class ConnectionService extends ChangeNotifier {
           await _pollEcu(ecu);
         }
         if (cycle % 2 == 0) await _pollCells();
+        // v0.1.3: extra DIDs (pack V from 740, cell indices, pack config).
+        // Каждый второй цикл — частоты обновления pack V раз в ~500 мс
+        // достаточно, не надо мучить шину.
+        if (cycle % 2 == 1) await _pollExtraDids();
         _updatePowerCalculations();
         await _maybeStartTrip();
       } catch (e) {
@@ -534,6 +602,92 @@ class ConnectionService extends ChangeNotifier {
     }
   }
 
+  /// v0.1.3: poll DID-ов которые не входят в EcuSpec реестр.
+  ///
+  /// Эти DID-ы найдены реверсом 2026-05-03 и пока не оформлены в registry —
+  /// читаем напрямую тут. Позже стоит вынести в registry, но пока проще
+  /// держать в одном месте чтобы не терять при пересборке проекта.
+  ///
+  /// Стратегия:
+  ///  - 740/0x0022 и 740/0x0014 (pack voltage) — поллим каждый цикл,
+  ///    нужны для realtime отображения.
+  ///  - 790/0x002C и 790/0x002E (cell min/max indices) — каждый цикл,
+  ///    используются на Cells screen.
+  ///  - 790/0x0B03 и 790/0x0A07 (cell count, module count) — статичны,
+  ///    поллим один раз при первом успехе и больше не повторяем.
+  Future<void> _pollExtraDids() async {
+    if (_client == null) return;
+
+    // Pack voltage filtered (740/0x0022, ×0.025 V, sanity 350-550)
+    try {
+      final r = await _client!.readDid('0022', tx: '740', rx: '748')
+          .timeout(const Duration(milliseconds: 1000));
+      final p = r?.payloadAfterUdsRead;
+      if (p != null && p.length >= 2) {
+        final raw = (p[0] << 8) | p[1];
+        _packVoltageFilteredV = raw * 0.025;
+      }
+    } catch (_) {}
+
+    // Pack voltage instant (740/0x0014)
+    try {
+      final r = await _client!.readDid('0014', tx: '740', rx: '748')
+          .timeout(const Duration(milliseconds: 1000));
+      final p = r?.payloadAfterUdsRead;
+      if (p != null && p.length >= 2) {
+        final raw = (p[0] << 8) | p[1];
+        _packVoltageInstantV = raw * 0.025;
+      }
+    } catch (_) {}
+
+    // Global min cell index (790/0x002C). Sanity 0..253 — 0xFF reserved as
+    // "no data" by BMS firmware convention. valid pack indices are 0..135
+    // (we have 136 cells), но запас на случай если позже найдём что
+    // BMS считает где-то с 1.
+    try {
+      final r = await _client!.readDid('002C', tx: '790', rx: '798')
+          .timeout(const Duration(milliseconds: 1000));
+      final p = r?.payloadAfterUdsRead;
+      if (p != null && p.isNotEmpty && p[0] < 0xFE) {
+        _globalMinCellIndex = p[0];
+      }
+    } catch (_) {}
+
+    // Global max cell index (790/0x002E). Same sanity as above.
+    try {
+      final r = await _client!.readDid('002E', tx: '790', rx: '798')
+          .timeout(const Duration(milliseconds: 1000));
+      final p = r?.payloadAfterUdsRead;
+      if (p != null && p.isNotEmpty && p[0] < 0xFE) {
+        _globalMaxCellIndex = p[0];
+      }
+    } catch (_) {}
+
+    // Pack config — читаем один раз
+    if (_packCellCount == null) {
+      try {
+        final r = await _client!.readDid('0B03', tx: '790', rx: '798')
+            .timeout(const Duration(milliseconds: 1000));
+        final p = r?.payloadAfterUdsRead;
+        if (p != null && p.isNotEmpty && p[0] != 0xFF && p[0] != 0) {
+          _packCellCount = p[0];
+        }
+      } catch (_) {}
+    }
+    if (_packModuleCount == null) {
+      try {
+        final r = await _client!.readDid('0A07', tx: '790', rx: '798')
+            .timeout(const Duration(milliseconds: 1000));
+        final p = r?.payloadAfterUdsRead;
+        if (p != null && p.isNotEmpty && p[0] != 0xFF && p[0] != 0) {
+          _packModuleCount = p[0];
+        }
+      } catch (_) {}
+    }
+
+    notifyListeners();
+  }
+
   double? readNumeric(String ecuTx, String did) =>
       _latestValues[ecuTx]?[did]?.numeric;
 
@@ -597,6 +751,12 @@ class ConnectionService extends ChangeNotifier {
 /// v0.1.2: Snapshot per battery module. Contains both cell voltages and
 /// both temperature sensors. Sensors that BMS doesn't report (e.g. M6 returns
 /// 0xFF for both temp slots) are signalled via *Reported flags.
+///
+/// v0.1.3 NOTE: cellAmV/cellBmV — это НЕ две отдельные ячейки, как
+/// предполагалось ранее. По данным реверса 2026-05-03 это **min и max
+/// напряжения внутри модуля**, рассчитываемые BMS из ~14 ячеек модуля
+/// (136 ячеек / 10 модулей = 13.6 ячеек/модуль). Используйте `cellMinmV`
+/// и `cellMaxmV` геттеры для семантически верного доступа.
 class ModuleSnapshot {
   final int index;
   final int? cellAmV;
@@ -615,6 +775,22 @@ class ModuleSnapshot {
     required this.temp1Reported,
     required this.temp2Reported,
   });
+
+  /// v0.1.3: семантический алиас — это min напряжение в модуле.
+  int? get cellMinmV {
+    if (cellAmV == null && cellBmV == null) return null;
+    if (cellAmV == null) return cellBmV;
+    if (cellBmV == null) return cellAmV;
+    return cellAmV! < cellBmV! ? cellAmV : cellBmV;
+  }
+
+  /// v0.1.3: семантический алиас — это max напряжение в модуле.
+  int? get cellMaxmV {
+    if (cellAmV == null && cellBmV == null) return null;
+    if (cellAmV == null) return cellBmV;
+    if (cellBmV == null) return cellAmV;
+    return cellAmV! > cellBmV! ? cellAmV : cellBmV;
+  }
 
   double? get avgTemp {
     if (temp1C != null && temp2C != null) return (temp1C! + temp2C!) / 2;

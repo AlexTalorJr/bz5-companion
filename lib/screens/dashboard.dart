@@ -376,35 +376,58 @@ class _TripCard extends StatelessWidget {
 class _PhysicsModelCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
-    return Card(
-      color: Colors.grey.shade900,
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: const [
-                Icon(Icons.science_outlined, size: 14, color: Colors.grey),
-                SizedBox(width: 4),
-                Text('CALIBRATION',
-                    style: TextStyle(fontSize: 11, letterSpacing: 1.0, color: Colors.grey)),
+    return Consumer<ConnectionService>(
+      builder: (context, svc, _) {
+        final cellCount = svc.packCellCount;
+        final moduleCount = svc.packModuleCount;
+        final minIdx = svc.globalMinCellIndex;
+        final maxIdx = svc.globalMaxCellIndex;
+
+        // Footer line — показываем реальные значения если получили,
+        // иначе fallback к жёстко заданным (нашли в реверсе 2026-05-03).
+        final cellsText = cellCount != null ? '$cellCount cells' : '136 cells';
+        final modText = moduleCount != null
+            ? '$moduleCount modules' : '10 modules';
+
+        return Card(
+          color: Colors.grey.shade900,
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: const [
+                    Icon(Icons.science_outlined, size: 14, color: Colors.grey),
+                    SizedBox(width: 4),
+                    Text('CALIBRATION',
+                        style: TextStyle(fontSize: 11, letterSpacing: 1.0, color: Colors.grey)),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  '65.28 kWh · $cellsText in $modText (LFP blade)\n'
+                  '• Pack V: 740/0x0022 × 0.025 V (filtered)\n'
+                  '• SOC: BMS 0x0005 · SOH: BMS 0x0029\n'
+                  '• Charge counter: BMS 0x0B00, ≈460 Wh/unit\n'
+                  '• Cycle count: BMS 0x0B02\n'
+                  '• Gear: VCU 0x0009 (1=P, 2=R, 3=N, 4=D)\n'
+                  '• Avg consumption: 14.4 kWh/100km',
+                  style: const TextStyle(fontSize: 11, color: Colors.grey, height: 1.5),
+                ),
+                if (minIdx != null && maxIdx != null) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    '• Live extremes: cell #$minIdx = lowest, '
+                    'cell #$maxIdx = highest (of $cellsText)',
+                    style: const TextStyle(fontSize: 11, color: Colors.grey, height: 1.4),
+                  ),
+                ],
               ],
             ),
-            const SizedBox(height: 8),
-            const Text(
-              'Reverse-engineered from BZ5 BMS, VCU, OBC ECUs.\n'
-              '• Battery: 65.28 kWh (Toyota datasheet, ETA-verified)\n'
-              '• Pack voltage: BMS 0x0015 × 0.02 V (realtime)\n'
-              '• Charge counter: BMS 0x0B00, 1 unit ≈ 460 Wh\n'
-              '• Cycle count: BMS 0x0B02\n'
-              '• Gear: VCU 0x0009 (1=P, 2=R, 3=N, 4=D)\n'
-              '• Avg consumption: 14.4 kWh/100km',
-              style: TextStyle(fontSize: 11, color: Colors.grey, height: 1.5),
-            ),
-          ],
-        ),
-      ),
+          ),
+        );
+      },
     );
   }
 }

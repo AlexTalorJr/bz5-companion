@@ -223,6 +223,14 @@ class _ThermalView extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        // v0.1.3: Pack-wide extremes card.
+        // BMS отдаёт глобальные min/max по ВСЕМ ~136 ячейкам:
+        //   790/0x002B = global min mV, 790/0x002C = global min cell index
+        //   790/0x002D = global max mV, 790/0x002E = global max cell index
+        // Per-module table ниже показывает только min/max в каждом модуле,
+        // что не отражает абсолютные крайности — отсюда нужна эта карточка.
+        _PackExtremesCard(svc: svc),
+        const SizedBox(height: 12),
         // Сводка
         Row(
           children: [
@@ -252,11 +260,16 @@ class _ThermalView extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Row(
-                  children: const [
-                    Text('10 MODULES (20 measurement points)',
-                        style: TextStyle(fontSize: 10, letterSpacing: 0.5, color: Colors.grey)),
-                    Spacer(),
-                    Text('VOLT mV · TEMP °C',
+                  children: [
+                    Text(
+                      // v0.1.3: уточнили формулировку. У нас 136 ячеек в
+                      // 10 модулях, но BMS отдаёт через UDS только min/max
+                      // ячейки на модуль (не каждую из 14 ячеек модуля).
+                      '${svc.packModuleCount ?? 10} MODULES · ${svc.packCellCount ?? 136} CELLS TOTAL',
+                      style: const TextStyle(fontSize: 10, letterSpacing: 0.5, color: Colors.grey),
+                    ),
+                    const Spacer(),
+                    const Text('MIN..MAX mV · TEMP °C',
                         style: TextStyle(fontSize: 9, letterSpacing: 0.3, color: Colors.grey)),
                   ],
                 ),
@@ -395,7 +408,11 @@ class _ModuleRow extends StatelessWidget {
                                 fontWeight: FontWeight.w500,
                               ))
                           : Text(
-                              'temp not reported',
+                              // v0.1.3: уточнили — это не "temp not reported"
+                              // (как будто связь дропнулась), а структурное:
+                              // на BZ5 у M6 by-design нет temp-сенсоров.
+                              // Cell voltages M6 при этом читаются нормально.
+                              'no sensors',
                               style: TextStyle(
                                 fontSize: 10,
                                 color: Colors.grey.shade500,
@@ -438,6 +455,182 @@ class _ModuleRow extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// v0.1.3: Pack-wide extremes card. Shows the absolute min and max cell
+/// voltages across all ~136 cells in the pack, with their cell indices
+/// (which BMS continuously updates as cells fluctuate).
+///
+/// Sources:
+///   790/0x002B → cellMin (mV) — DecodedValue via registry
+///   790/0x002D → cellMax (mV) — DecodedValue via registry
+///   790/0x002C → cellMinIndex (0..135) — read by _pollExtraDids
+///   790/0x002E → cellMaxIndex (0..135) — read by _pollExtraDids
+///
+/// Per-module list below shows only per-module min/max; this card shows
+/// the absolute pack-wide values, which is the more useful health metric
+/// (a single bad cell anywhere will show up here even if the per-module
+/// max for the affected module is still relatively normal).
+class _PackExtremesCard extends StatelessWidget {
+  final ConnectionService svc;
+  const _PackExtremesCard({required this.svc});
+
+  @override
+  Widget build(BuildContext context) {
+    final minV = svc.readNumeric('790', '002B');
+    final maxV = svc.readNumeric('790', '002D');
+    final minIdx = svc.globalMinCellIndex;
+    final maxIdx = svc.globalMaxCellIndex;
+    final cellCount = svc.packCellCount ?? 136;
+
+    if (minV == null || maxV == null) {
+      return Card(
+        color: Colors.grey.shade900,
+        child: const Padding(
+          padding: EdgeInsets.all(14),
+          child: Row(
+            children: [
+              Icon(Icons.battery_unknown, color: Colors.grey, size: 18),
+              SizedBox(width: 10),
+              Text('Pack extremes: loading…',
+                  style: TextStyle(color: Colors.grey, fontSize: 13)),
+            ],
+          ),
+        ),
+      );
+    }
+
+    final spread = (maxV - minV).round();
+    // v0.1.3.1: используем те же SOC-aware пороги что и в Dashboard
+    // _CellsSummaryCard._balanceQuality — иначе пользователь видит
+    // "excellent" на одном экране и "good" на другом за один и тот же spread.
+    // На LFP knee при SOC>90% spread всегда выше из-за крутой кривой → пороги мягче.
+    final socPct = svc.readNumeric('790', '0005') ?? 50;
+    final ({String label, Color color}) quality;
+    int excellent, good, fair;
+    if (socPct >= 90) {
+      excellent = 50; good = 100; fair = 150;
+    } else if (socPct < 30) {
+      excellent = 10; good = 20; fair = 40;
+    } else {
+      excellent = 20; good = 40; fair = 80;
+    }
+    if (spread <= excellent) {
+      quality = (label: 'excellent', color: Colors.green);
+    } else if (spread <= good) {
+      quality = (label: 'good', color: Colors.lightGreen);
+    } else if (spread <= fair) {
+      quality = (label: 'fair', color: Colors.orange);
+    } else {
+      quality = (label: 'check', color: Colors.red);
+    }
+
+    return Card(
+      color: Colors.grey.shade900,
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.battery_full, color: Colors.lightBlueAccent, size: 16),
+                const SizedBox(width: 6),
+                Text('PACK EXTREMES (across $cellCount cells)',
+                    style: const TextStyle(
+                      fontSize: 10, letterSpacing: 0.8, color: Colors.grey,
+                    )),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: _ExtremesStat(
+                    label: 'MIN',
+                    valueMv: minV.toInt(),
+                    cellIndex: minIdx,
+                  ),
+                ),
+                Expanded(
+                  child: _ExtremesStat(
+                    label: 'MAX',
+                    valueMv: maxV.toInt(),
+                    cellIndex: maxIdx,
+                  ),
+                ),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('Δ', style: TextStyle(fontSize: 10, color: Colors.grey)),
+                      const SizedBox(height: 2),
+                      RichText(
+                        text: TextSpan(
+                          style: const TextStyle(
+                            fontSize: 17, fontWeight: FontWeight.w500,
+                            fontFeatures: [FontFeature.tabularFigures()],
+                          ),
+                          children: [
+                            TextSpan(text: '$spread', style: TextStyle(color: quality.color)),
+                            const TextSpan(text: ' mV',
+                                style: TextStyle(fontSize: 11, color: Colors.grey)),
+                          ],
+                        ),
+                      ),
+                      Text(quality.label,
+                          style: TextStyle(
+                            fontSize: 10, color: quality.color, letterSpacing: 0.3,
+                          )),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ExtremesStat extends StatelessWidget {
+  final String label;
+  final int valueMv;
+  final int? cellIndex;
+  const _ExtremesStat({
+    required this.label,
+    required this.valueMv,
+    required this.cellIndex,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label, style: const TextStyle(fontSize: 10, color: Colors.grey)),
+        const SizedBox(height: 2),
+        RichText(
+          text: TextSpan(
+            style: const TextStyle(
+              fontSize: 17, fontWeight: FontWeight.w500, color: Colors.white,
+              fontFeatures: [FontFeature.tabularFigures()],
+            ),
+            children: [
+              TextSpan(text: '$valueMv'),
+              const TextSpan(text: ' mV',
+                  style: TextStyle(fontSize: 11, color: Colors.grey)),
+            ],
+          ),
+        ),
+        Text(
+          cellIndex != null ? 'cell #$cellIndex' : 'cell #—',
+          style: const TextStyle(fontSize: 10, color: Colors.grey, letterSpacing: 0.3),
+        ),
+      ],
     );
   }
 }
