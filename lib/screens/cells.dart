@@ -314,16 +314,17 @@ class _ModuleRow extends StatelessWidget {
         ? Colors.grey
         : (delta > 15 ? Colors.red : (delta > 5 ? Colors.orange : Colors.green));
 
-    // Цвет температурной полосы — относительно глобального диапазона
-    Color tempBarColor = Colors.blue.shade300;
-    double tempBarWidth = 0.5;
+    // Цвет температурной полосы — относительно глобального диапазона.
+    // v6.1: bar всегда полной ширины; разница температуры передаётся только
+    // цветом. Раньше bar нормализовался по ширине (0.3..1.0), что давало
+    // визуально ложное "M10 наполовину пустой" когда у него было всего
+    // на 0.5°C ниже остальных модулей.
+    Color tempBarColor = const Color(0xFF7AB9D4);
     if (temp != null && tempRange != null && tempRange!.isNotEmpty) {
       final tmin = tempRange!.reduce((a, b) => a < b ? a : b);
       final tmax = tempRange!.reduce((a, b) => a > b ? a : b);
-      // если все равны — полоса средняя; если разница есть — нормализуем к полному ширине
       if (tmax - tmin > 0.5) {
         final ratio = ((temp - tmin) / (tmax - tmin)).clamp(0.0, 1.0);
-        tempBarWidth = 0.3 + 0.7 * ratio;
         // hot = orange, cool = blue
         tempBarColor = Color.lerp(
           const Color(0xFF7AB9D4),
@@ -331,9 +332,23 @@ class _ModuleRow extends StatelessWidget {
           ratio,
         )!;
       } else {
-        tempBarWidth = 0.7;
-        tempBarColor = const Color(0xFF7AB9D4);
+        // Все модули в пределах 0.5°C — единый нейтральный цвет.
+        tempBarColor = const Color(0xFFA8A496);
       }
+    }
+
+    // Текст температуры: с десятичным знаком если есть spread, иначе целое.
+    // Это передаёт пользователю что M10 действительно холоднее на 0.5°C,
+    // а не одинаков с остальными.
+    String? tempText;
+    if (temp != null) {
+      final hasSpread = tempRange != null
+          && tempRange!.isNotEmpty
+          && (tempRange!.reduce((a, b) => a > b ? a : b)
+              - tempRange!.reduce((a, b) => a < b ? a : b)) > 0.5;
+      tempText = hasSpread
+          ? '+${temp.toStringAsFixed(1)}°C'
+          : '+${temp.toStringAsFixed(0)}°C';
     }
 
     return Padding(
@@ -360,21 +375,18 @@ class _ModuleRow extends StatelessWidget {
               child: Stack(
                 children: [
                   if (module.hasAnyTemp)
-                    FractionallySizedBox(
-                      widthFactor: tempBarWidth,
-                      child: Container(
-                        decoration: BoxDecoration(
-                          color: tempBarColor,
-                          borderRadius: BorderRadius.circular(8),
-                        ),
+                    Container(
+                      decoration: BoxDecoration(
+                        color: tempBarColor,
+                        borderRadius: BorderRadius.circular(8),
                       ),
                     ),
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 8),
                     child: Align(
                       alignment: Alignment.centerLeft,
-                      child: temp != null
-                          ? Text('+${temp.toStringAsFixed(0)}°C',
+                      child: tempText != null
+                          ? Text(tempText,
                               style: TextStyle(
                                 fontSize: 11,
                                 color: tempBarColor.computeLuminance() > 0.4
@@ -396,9 +408,9 @@ class _ModuleRow extends StatelessWidget {
               ),
             ),
           ),
-          // Cell range
+          // Cell range: voltages of A and B in this module (mV)
           SizedBox(
-            width: 76,
+            width: 96,
             child: Text(
               (module.cellAmV != null && module.cellBmV != null)
                   ? '${module.cellAmV}–${module.cellBmV}'
