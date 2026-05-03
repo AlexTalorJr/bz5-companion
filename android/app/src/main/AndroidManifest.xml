@@ -14,7 +14,21 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" android:maxSdkVersion="30" />
 
-    <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
+    <!-- v0.1.2: keep BLE/CPU alive during long polling sessions in-car.
+         Required for stable monitoring on head units that aggressively
+         throttle background apps. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- v0.1.2: required="false" to allow install on devices that may not
+         report BLE feature (e.g. some car head units with custom BT stacks).
+         App will check BLE availability at runtime in connect screen. -->
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
+
+    <!-- v0.1.2: explicit touchscreen=false allows install on head units
+         with non-standard input drivers (faketouch, rotary, hard-key).
+         App is touch-driven but does not strictly require it for install. -->
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+    <uses-feature android:name="android.hardware.faketouch" android:required="false" />
 
     <application
         android:label="BZ5 Companion"
@@ -28,7 +42,8 @@
             android:theme="@style/LaunchTheme"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
             android:hardwareAccelerated="true"
-            android:windowSoftInputMode="adjustResize">
+            android:windowSoftInputMode="adjustResize"
+            android:resizeableActivity="true">
             <meta-data
               android:name="io.flutter.embedding.android.NormalTheme"
               android:resource="@style/NormalTheme"
