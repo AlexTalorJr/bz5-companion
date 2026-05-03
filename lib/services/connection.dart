@@ -25,19 +25,39 @@ class Bz5Model {
   /// ΔSOC × ёмкость = 33.95 кВт·ч, Δ0x0B00 = +79 единиц
   /// 33950 / 79 ≈ 430 Wh/unit (DC-side), с учётом OBC efficiency ~88% AC-side ≈ 489 Wh/unit
   /// Усреднённое значение 460 Wh/unit ±10%.
+  ///
+  /// ⚠ NB! v6.1: idle sweeps на стоянке (2026-05-02) и в Ready+AC (2026-05-03)
+  /// показали что counter НЕ ведёт себя как чистый cumulative energy counter:
+  /// на стоянке убывает ~1 unit/95s (соответствовало бы фейковой нагрузке 17 кВт),
+  /// в Ready колеблется в пределах ±1 unit без чёткого тренда.
+  /// Калибровка 460 Wh/unit подтверждена только на зарядной сессии и сейчас
+  /// используется только для дисплея энергии в trip-сессии. См. TODO ниже.
   static const double chargeCounterWh = 460.0;
 
   /// Pack voltage scale: DID 0x0015, raw × 0.02 V.
-  /// Подтверждено двумя способами: на 100% SOC raw=18077 → 361.5 V (норма LFP),
-  /// в поездке raw=17445-18077 → 348.9-361.5 V (физически реалистичный диапазон).
+  /// Подтверждено на стоянке: на 100% SOC raw=18077 → 361.5 V (норма LFP),
+  /// в поездке raw=17445-18077 → 348.9-361.5 V.
+  ///
+  /// ⚠ NB! v6.1: замер 2026-05-03 в Ready+AC при 82% SOC показал raw≈13600 → 272 V,
+  /// что физически несовместимо с замером при 50% SOC ≈ 334 V. Гипотеза: 0x0015
+  /// возвращает разную семантику в разных режимах (resting OCV vs derated estimate).
+  /// Использовать pack voltage как charging-detection signal пока нельзя.
+  /// TODO: расследовать после внедрения in-app diagnostic.
   static const double packVoltageScale = 0.02;
 
-  /// Pack voltage "no data" sentinel. BMS возвращает 0xFFFF если значение
-  /// не успело обновиться или есть внутренняя ошибка. Игнорируем.
+  /// Pack voltage "no data" sentinel.
   static const int packVoltageInvalidRaw = 0xFFFF;
 
   /// Средний расход BZ5 по приборке = 14.4 кВт·ч / 100 км = 144 Wh/km
   static const double avgConsumptionWhKm = 144.0;
+}
+
+/// Snapshot одного чтения charge counter 0x0B00.
+/// Используется для rolling-window charging detection в [ConnectionService].
+class _B00Sample {
+  final DateTime time;
+  final int value;
+  const _B00Sample(this.time, this.value);
 }
 
 class ConnectionService extends ChangeNotifier {
@@ -54,17 +74,47 @@ class ConnectionService extends ChangeNotifier {
 
   final Map<String, Map<String, DecodedValue>> _latestValues = {};
 
-  // Tracking для charging power calculation
-  int? _lastB00Value;
-  DateTime? _lastB00Time;
-  double _instantaneousChargingPowerKw = 0.0;
+  // === v6.1: Rolling-window charging detection ===
+  //
+  // История значений 0x0B00 за последние ~20 минут. Используется для надёжной
+  // детекции зарядки через монотонный рост в окне (не одиночные delta).
+  //
+  // Корни проблемы (verified эмпирически 2026-05-02..03):
+  //  • На выключенной машине counter монотонно убывает ~1 unit/95s.
+  //  • В Ready+AC counter колеблется ±1 unit без выраженного тренда:
+  //    33-минутный sweep дал 12 положительных delta, 10 отрицательных,
+  //    суммарный диапазон всего 3 значения.
+  //  • Старая логика "delta > 0 → charging" ловила любой одиночный glitch
+  //    и зажигала banner на 15 минут. Banner мог висеть сутками
+  //    (постоянно перезажигаясь от очередного шумового +1).
+  //
+  // Новая логика — окно `_chargingDetectionWindow`:
+  //   isCharging =
+  //     value(now) - value(now - window) ≥ _chargingDetectionMinNetDelta
+  //     AND все промежуточные delta в окне неотрицательные
+  //
+  // На зарядке (любой мощности) counter растёт строго монотонно; глитчей
+  // вниз не наблюдается. На стоянке и в Ready всегда есть отрицательные
+  // delta в любом окне ≥10 минут — фильтр "no negatives" их режет.
+  //
+  // Trade-off: при slow AC charging 2.8 кВт первое срабатывание через
+  // ~15-20 мин после plug-in (counter инкрементится ~раз в 10 мин при этой
+  // мощности; нужно 2 инкремента в окне). На AC 7+ кВт и DC — почти сразу.
+  final List<_B00Sample> _b00History = [];
+  static const Duration _b00HistoryMaxAge = Duration(minutes: 20);
+  static const Duration _chargingDetectionWindow = Duration(minutes: 15);
+  static const int _chargingDetectionMinNetDelta = 2;
 
-  // v6: tracking when 0x0B00 last incremented — used for isCharging detection.
-  // BMS counter increments ~every 10 min at 2.8 kW (1 unit ≈ 460 Wh).
-  // Если был инкремент в последние 15 минут — считаем что заряжается.
-  // Замена ненадёжного DID 0x0057 (на OBC всегда = 1 на исправной машине).
-  DateTime? _lastB00IncrementTime;
-  static const Duration _chargingDetectionTtl = Duration(minutes: 15);
+  /// Минимальный интервал между записями в _b00History если значение не
+  /// поменялось. При flat counter добавляем snapshot раз в 10 секунд —
+  /// этого достаточно для интерполяции значения в произвольный момент окна,
+  /// но не раздувает историю в RAM (~120 entries за 20 мин).
+  static const Duration _b00FlatSampleInterval = Duration(seconds: 10);
+
+  /// Мгновенная мощность зарядки в кВт.
+  /// Считается по последнему положительному инкременту 0x0B00.
+  /// На дисплее отображается только когда [isCharging] true (UI gating).
+  double _instantaneousChargingPowerKw = 0.0;
 
   int? _currentTripId;
   int _samplesInTrip = 0;
@@ -102,25 +152,22 @@ class ConnectionService extends ChangeNotifier {
   }
 
   /// v5: Pack voltage realtime. DID 0x0015 на BMS, scale × 0.02 V.
-  /// Возвращает null если raw = 0xFFFF (BMS no-data sentinel).
   double? get packVoltageV {
     final raw = readNumeric('790', '0015');
     if (raw == null) return null;
     final intRaw = raw.toInt();
     if (intRaw == Bz5Model.packVoltageInvalidRaw) return null;
-    if (intRaw < 10000 || intRaw > 25000) return null; // sanity check
+    if (intRaw < 10000 || intRaw > 25000) return null;
     return intRaw * Bz5Model.packVoltageScale;
   }
 
   /// v5: Parking pawl engaged. DID 0x0007 на VCU.
-  /// Verified в gear-mapping тесте: 1 = engaged (P), 0 = released (R/N/D).
   bool? get parkingPawlEngaged {
     final raw = readNumeric('791', '0007');
     if (raw == null) return null;
     return raw.toInt() == 1;
   }
 
-  /// Range estimate в км
   double? get rangeEstimateKm {
     final soc = readNumeric('790', '0005');
     if (soc == null) return null;
@@ -128,9 +175,6 @@ class ConnectionService extends ChangeNotifier {
     return remainingKwh * 1000 / Bz5Model.avgConsumptionWhKm;
   }
 
-  /// v5: Charged this session (kWh) — Δ от старта polling.
-  /// Заменяет старый "Lifetime in" который был ненадёжный из-за неизвестной
-  /// начальной точки счётчика 0x0B00.
   double? get chargedThisSessionKwh {
     if (_tripStartB00 == null) return null;
     final cur = readNumeric('790', '0B00');
@@ -140,7 +184,6 @@ class ConnectionService extends ChangeNotifier {
     return delta * Bz5Model.chargeCounterWh / 1000.0;
   }
 
-  /// Trip energy used (kWh) - based on B00 delta
   double? get tripEnergyKwh {
     if (_tripStartB00 == null) return null;
     final cur = readNumeric('790', '0B00');
@@ -149,26 +192,13 @@ class ConnectionService extends ChangeNotifier {
     return delta * Bz5Model.chargeCounterWh / 1000.0;
   }
 
-  /// v5: Smoothed cell spread (median of last 10 readings).
-  /// Avoids flicker from instantaneous load spikes during driving.
   int? get smoothedCellSpread {
     if (_cellSpreadHistory.isEmpty) return null;
     final sorted = List<int>.from(_cellSpreadHistory)..sort();
     return sorted[sorted.length ~/ 2];
   }
 
-  /// v0.1.2: per-module thermal data.
-  /// Returns 10 entries (one per module). Each entry contains:
-  ///   - cellA, cellB: voltage in mV (or null if not yet read)
-  ///   - temp1, temp2: °C (or null if BMS reports 0xFF — see M6)
-  ///   - temp1Reported, temp2Reported: false if BMS skipped this slot
-  /// UI uses *Reported flags to display "temp not reported" instead of "Invalid".
   List<ModuleSnapshot> get moduleSnapshots {
-    // Each module has 4 DIDs of interest:
-    //   cell A at 0x016D + (n-1)*8
-    //   cell B at 0x016F + (n-1)*8
-    //   temp 1 at 0x0171 + (n-1)*8
-    //   temp 2 at 0x0173 + (n-1)*8
     const baseCa = 0x016D;
     final result = <ModuleSnapshot>[];
     for (int i = 0; i < 10; i++) {
@@ -183,8 +213,6 @@ class ConnectionService extends ChangeNotifier {
 
       final t1Decoded = _latestValues['790']?[didTemp1];
       final t2Decoded = _latestValues['790']?[didTemp2];
-      // Если decoder вернул DecodedValue без numeric (т.е. raw был 0xFF) —
-      // это "not reported", BMS не пишет в этот слот.
       final t1Reported = t1Decoded != null && t1Decoded.numeric != null;
       final t2Reported = t2Decoded != null && t2Decoded.numeric != null;
 
@@ -236,9 +264,6 @@ class ConnectionService extends ChangeNotifier {
     }
   }
 
-  /// v6: Connect with auto-retry. Android BLE error 133 (GATT_ERROR) часто
-  /// случается на первой попытке из-за race condition между scan/connect.
-  /// 3 попытки с возрастающими паузами устраняют это в ~95% случаев.
   Future<bool> connect(BluetoothDevice device, {bool autoStart = true}) async {
     _setStatus(ConnectionStatus.connecting, msg: 'Подключение...');
     Object? lastError;
@@ -261,13 +286,11 @@ class ConnectionService extends ChangeNotifier {
         lastError = e;
         debugPrint('Connect attempt $attempt/3 failed: $e');
 
-        // Cleanup before retry
         try { await _ble?.disconnect(); } catch (_) {}
         _client = null;
         _ble = null;
 
         if (attempt < 3) {
-          // Exponential-ish backoff: 500ms, 1000ms
           final delayMs = 500 * attempt;
           _setStatus(ConnectionStatus.connecting,
               msg: 'Повтор ${attempt + 1}/3 через ${delayMs}мс...');
@@ -297,10 +320,8 @@ class ConnectionService extends ChangeNotifier {
     _wantTripCreation = startTrip;
     _pollCyclesSinceStart = 0;
     _cellSpreadHistory.clear();
-    // v6: reset charging detection state
-    _lastB00IncrementTime = null;
-    _lastB00Value = null;
-    _lastB00Time = null;
+    // v6.1: reset rolling-window charging detection state
+    _b00History.clear();
     _instantaneousChargingPowerKw = 0.0;
     _pollLoop();
     notifyListeners();
@@ -365,35 +386,50 @@ class ConnectionService extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// v6.1: обновление истории 0x0B00 + расчёт мгновенной мощности зарядки.
+  ///
+  /// Старая версия v6 использовала единственное значение `_lastB00Value` и
+  /// мгновенный delta; любой stale-read давал false-positive (бесконечный
+  /// banner "Charging Connected" на стоянке). Новая версия:
+  ///  - ведёт rolling history последних 20 минут
+  ///  - дописывает snapshot при изменении значения ИЛИ раз в 10 секунд
+  ///  - мгновенная мощность считается из последнего положительного delta
+  ///  - сама детекция зарядки делегирована getter'у [isCharging]
   void _updatePowerCalculations() {
     final now = DateTime.now();
     final b00 = readNumeric('790', '0B00');
-    if (b00 != null) {
-      final b00Int = b00.toInt();
-      if (_lastB00Value != null && _lastB00Time != null) {
-        final dt = now.difference(_lastB00Time!).inMilliseconds / 1000.0;
-        if (dt > 1.0) {
-          final delta = b00Int - _lastB00Value!;
-          // v6.1: только реальные положительные инкременты считаем зарядкой.
-          // delta = 0  → нет потока (чаще всего на стоянке)
-          // delta < 0  → BMS вернул stale/glitched read; игнорируем
-          // delta > 0 при огромном dt → это не "медленная зарядка" а возобновление polling;
-          //   принимаем как факт зарядки, но powerKw будет естественно низким
-          if (delta > 0) {
-            _instantaneousChargingPowerKw =
-                delta * Bz5Model.chargeCounterWh / dt * 3.6 / 1000.0;
-            _lastB00IncrementTime = now;
-          } else {
-            _instantaneousChargingPowerKw = 0.0;
-          }
-          _lastB00Value = b00Int;
-          _lastB00Time = now;
-        }
+    if (b00 == null) return;
+    final b00Int = b00.toInt();
+
+    // Trip start anchor
+    _tripStartB00 ??= b00Int;
+
+    // Append to history if value changed OR enough time passed since last snapshot.
+    final shouldAppend = _b00History.isEmpty
+        || _b00History.last.value != b00Int
+        || now.difference(_b00History.last.time) >= _b00FlatSampleInterval;
+    if (shouldAppend) {
+      _b00History.add(_B00Sample(now, b00Int));
+    }
+
+    // Trim entries older than maxAge (keep at least 1 to anchor the window).
+    final cutoff = now.subtract(_b00HistoryMaxAge);
+    while (_b00History.length > 1 && _b00History.first.time.isBefore(cutoff)) {
+      _b00History.removeAt(0);
+    }
+
+    // Instantaneous charging power: based on last positive transition only.
+    if (_b00History.length >= 2) {
+      final cur = _b00History[_b00History.length - 1];
+      final prev = _b00History[_b00History.length - 2];
+      final delta = cur.value - prev.value;
+      final dt = cur.time.difference(prev.time).inMilliseconds / 1000.0;
+      if (delta > 0 && dt > 1.0) {
+        _instantaneousChargingPowerKw =
+            delta * Bz5Model.chargeCounterWh / dt * 3.6 / 1000.0;
       } else {
-        _lastB00Value = b00Int;
-        _lastB00Time = now;
+        _instantaneousChargingPowerKw = 0.0;
       }
-      _tripStartB00 ??= b00Int;
     }
   }
 
@@ -460,7 +496,6 @@ class ConnectionService extends ChangeNotifier {
     }
     if (cells.isNotEmpty) {
       _liveCells = cells;
-      // v5: track rolling spread for SOC-aware threshold display
       final spread = cells.reduce((a, b) => a > b ? a : b)
                    - cells.reduce((a, b) => a < b ? a : b);
       _cellSpreadHistory.add(spread);
@@ -477,18 +512,57 @@ class ConnectionService extends ChangeNotifier {
   String? readText(String ecuTx, String did) =>
       _latestValues[ecuTx]?[did]?.text;
 
-  /// v6: Detect charging by 0x0B00 counter dynamics.
-  /// DID 0x0057 на OBC оказался ненадёжным (всегда = 1 пока машина исправна,
-  /// независимо от подключения кабеля). Поэтому единственный надёжный сигнал —
-  /// это инкремент charge counter 0x0B00 на BMS.
+  /// v6.1: Детекция зарядки через rolling-window анализ 0x0B00.
   ///
-  /// Trade-off: при slow AC charging (2-3 кВт) первый инкремент происходит
-  /// через ~10 минут после старта. До этого момента isCharging = false.
-  /// Это норма для домашней зарядки на ночь.
+  /// Условие: за последние [_chargingDetectionWindow] минут счётчик вырос
+  /// строго монотонно (без отрицательных delta) на ≥ [_chargingDetectionMinNetDelta].
+  ///
+  /// Калибровка на реальных idle-данных (см. описание _b00History):
+  ///  - Машина выключена, парковка: counter монотонно убывает; даже если
+  ///    бы не убывал, отсутствие положительных delta даст false.
+  ///  - Машина в Ready+AC: counter колеблется ±1 around point; в любом
+  ///    окне ≥10 мин найдутся отрицательные delta → false.
+  ///  - На зарядке любой мощности: counter растёт строго монотонно →
+  ///    окно содержит только положительные/нулевые delta, net growth ≥ 2
+  ///    достигается за 10-20 мин (slow AC) или быстрее.
+  ///
+  /// Latency на slow AC ~2.8 кВт: первое срабатывание через ~15-20 минут
+  /// после plug-in. Это приемлемо для ночной домашней зарядки и сильно
+  /// лучше чем "banner висит сутками на стоящей машине".
   bool get isCharging {
-    if (_lastB00IncrementTime == null) return false;
-    final elapsed = DateTime.now().difference(_lastB00IncrementTime!);
-    return elapsed < _chargingDetectionTtl;
+    if (_b00History.length < 2) return false;
+
+    final now = DateTime.now();
+    final windowStart = now.subtract(_chargingDetectionWindow);
+
+    // Need history covering the entire window. If oldest sample is younger
+    // than windowStart, we just started polling — wait.
+    if (_b00History.first.time.isAfter(windowStart)) return false;
+
+    // Find anchor value: last sample at or before windowStart.
+    int? anchorValue;
+    for (int i = _b00History.length - 1; i >= 0; i--) {
+      if (!_b00History[i].time.isAfter(windowStart)) {
+        anchorValue = _b00History[i].value;
+        break;
+      }
+    }
+    if (anchorValue == null) return false;
+
+    final currentValue = _b00History.last.value;
+    final netGrowth = currentValue - anchorValue;
+    if (netGrowth < _chargingDetectionMinNetDelta) return false;
+
+    // Verify monotone: no negative transitions inside the window.
+    // (Glitches tend to be paired +1/-1, so any -1 means not real charging.)
+    for (int i = 1; i < _b00History.length; i++) {
+      final ev = _b00History[i];
+      if (ev.time.isBefore(windowStart)) continue;
+      final prev = _b00History[i - 1];
+      if (ev.value < prev.value) return false;
+    }
+
+    return true;
   }
 }
 
@@ -496,11 +570,11 @@ class ConnectionService extends ChangeNotifier {
 /// both temperature sensors. Sensors that BMS doesn't report (e.g. M6 returns
 /// 0xFF for both temp slots) are signalled via *Reported flags.
 class ModuleSnapshot {
-  final int index;          // 1-based module number
+  final int index;
   final int? cellAmV;
   final int? cellBmV;
-  final double? temp1C;     // null if not reported
-  final double? temp2C;     // null if not reported
+  final double? temp1C;
+  final double? temp2C;
   final bool temp1Reported;
   final bool temp2Reported;
 
@@ -514,18 +588,15 @@ class ModuleSnapshot {
     required this.temp2Reported,
   });
 
-  /// Average temperature over both sensors, or single one if only one available.
   double? get avgTemp {
     if (temp1C != null && temp2C != null) return (temp1C! + temp2C!) / 2;
     return temp1C ?? temp2C;
   }
 
-  /// Cell delta (mV) within this module.
   int? get cellDelta {
     if (cellAmV == null || cellBmV == null) return null;
     return (cellBmV! - cellAmV!).abs();
   }
 
-  /// True if BMS reports at least one temperature sensor for this module.
   bool get hasAnyTemp => temp1Reported || temp2Reported;
 }
