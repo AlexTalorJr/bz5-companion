@@ -408,11 +408,13 @@ class _ModuleRow extends StatelessWidget {
                                 fontWeight: FontWeight.w500,
                               ))
                           : Text(
-                              // v0.1.3: уточнили — это не "temp not reported"
-                              // (как будто связь дропнулась), а структурное:
-                              // на BZ5 у M6 by-design нет temp-сенсоров.
-                              // Cell voltages M6 при этом читаются нормально.
-                              'no sensors',
+                              // v0.1.3: structural, not a comm dropout — M6
+                              // has no temperature sensors by design on BZ5.
+                              // Cell voltages M6 read normally.
+                              // v0.1.6: 'no temp sensor' clearer than 'no
+                              // sensors' (the latter sounds like the whole
+                              // module is offline)
+                              'no temp sensor',
                               style: TextStyle(
                                 fontSize: 10,
                                 color: Colors.grey.shade500,
@@ -479,8 +481,12 @@ class _PackExtremesCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final minV = svc.readNumeric('790', '002B');
-    final maxV = svc.readNumeric('790', '002D');
+    // v0.1.6: prefer new getters over readNumeric — see connection.dart
+    // _pollExtraDids docstring for why these DIDs need direct polling.
+    final minV = svc.globalMinCellMv?.toDouble()
+        ?? svc.readNumeric('790', '002B');
+    final maxV = svc.globalMaxCellMv?.toDouble()
+        ?? svc.readNumeric('790', '002D');
     final minIdx = svc.globalMinCellIndex;
     final maxIdx = svc.globalMaxCellIndex;
     final cellCount = svc.packCellCount ?? 136;
