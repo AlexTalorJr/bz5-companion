@@ -142,11 +142,21 @@ class ConnectionService extends ChangeNotifier {
   //  - 790/0x002E = global max cell index (0..135)
   //  - 790/0x0B03 = pack cell count (0x88 = 136) — читается один раз
   //  - 790/0x0A07 = pack module count (0x0A = 10) — читается один раз
+  //
+  // v0.1.6: добавлены 790/0x002B и 790/0x002D (cell V min/max in mV).
+  // Эти DID-ы есть в registry с category=DidCategory.cells, но _pollEcu
+  // пропускает все cell-категории (строка ~536), а _pollCells читает только
+  // массив 0x016D-0x01B7. В результате 0x002B/0x002D никогда не читаются —
+  // Pack Extremes UI висит в "loading…" вечно. Чтобы не править registry/
+  // poll архитектуру (рискованно), читаем напрямую тут.
+  //
   // Найдено в реверсе 2026-05-03 (см. README/findings).
   double? _packVoltageFilteredV;     // 740/0x0022
   double? _packVoltageInstantV;      // 740/0x0014
   int? _globalMinCellIndex;          // 790/0x002C
   int? _globalMaxCellIndex;          // 790/0x002E
+  int? _globalMinCellMv;             // 790/0x002B (v0.1.6)
+  int? _globalMaxCellMv;             // 790/0x002D (v0.1.6)
   int? _packCellCount;               // 790/0x0B03
   int? _packModuleCount;             // 790/0x0A07
 
@@ -220,6 +230,18 @@ class ConnectionService extends ChangeNotifier {
   /// v0.1.3: индекс ячейки с максимальным напряжением в пакете (0..135).
   int? get globalMaxCellIndex => _globalMaxCellIndex;
 
+  /// v0.1.6: глобальный минимум напряжения по всем ~136 ячейкам, в mV.
+  /// Источник 790/0x0x002B (2 байта big-endian). До v0.1.6 этот DID был в
+  /// реестре с category=cells, но фильтр в _pollEcu его отбрасывал, а
+  /// _pollCells работал только с per-module массивом 0x016D-0x01B7. Теперь
+  /// читаем напрямую через _pollExtraDids — Pack Extremes UI наконец
+  /// отображает данные вместо вечного loading.
+  int? get globalMinCellMv => _globalMinCellMv;
+
+  /// v0.1.6: глобальный максимум напряжения по всем ~136 ячейкам, в mV.
+  /// Источник 790/0x002D.
+  int? get globalMaxCellMv => _globalMaxCellMv;
+
   /// v0.1.3: общее количество ячеек в пакете (BMS reports 136).
   /// Читается один раз при подключении из 790/0x0B03.
   int? get packCellCount => _packCellCount;
@@ -228,8 +250,29 @@ class ConnectionService extends ChangeNotifier {
   /// Читается один раз при подключении из 790/0x0A07.
   int? get packModuleCount => _packModuleCount;
 
-  /// v5: Parking pawl engaged. DID 0x0007 на VCU.
+  /// Parking pawl engaged.
+  ///
+  /// v5: Direct DID 0x0007 на VCU.
+  /// v0.1.6 fix: добавлен override "gear=P → engaged".
+  ///
+  /// Исходный DID 0x0007 имеет странное поведение: после перехода P→R он
+  /// корректно выдаёт 0 (released), но при возврате R→P НЕ возвращается
+  /// в 1 (engaged) до какого-то VCU-внутреннего события (вероятно
+  /// требуется нажатие тормоза при повторном включении P, или порог
+  /// скорости 0). Это создаёт ложную картину "pawl released" на стоянке.
+  ///
+  /// Compromise: если gear=1 (P, считывается из VCU/0x0009), то парковочная
+  /// собачка ФИЗИЧЕСКИ зацеплена — это механика трансмиссии. Возвращаем
+  /// engaged=true для gear=P независимо от 0x0007.
+  /// Для gear≠P (R/N/D) полагаемся на 0x0007 как обычно — там значение
+  /// корректно отражает реальность (released).
   bool? get parkingPawlEngaged {
+    // Override: gear=P always means pawl engaged (transmission mechanics)
+    final gear = readNumeric('791', '0009');
+    if (gear != null && gear.toInt() == 1) {
+      return true;
+    }
+    // Fallback to direct DID for non-P gears
     final raw = readNumeric('791', '0007');
     if (raw == null) return null;
     return raw.toInt() == 1;
@@ -415,6 +458,9 @@ class ConnectionService extends ChangeNotifier {
     _packVoltageInstantV = null;
     _globalMinCellIndex = null;
     _globalMaxCellIndex = null;
+    // v0.1.6:
+    _globalMinCellMv = null;
+    _globalMaxCellMv = null;
     _pollLoop();
     notifyListeners();
   }
@@ -660,6 +706,32 @@ class ConnectionService extends ChangeNotifier {
       final p = r?.payloadAfterUdsRead;
       if (p != null && p.isNotEmpty && p[0] < 0xFE) {
         _globalMaxCellIndex = p[0];
+      }
+    } catch (_) {}
+
+    // v0.1.6: Global min cell voltage (790/0x002B, 2 bytes big-endian, mV).
+    // Despite being in the registry, this DID falls through cracks of the
+    // poll loop — registry _pollEcu skips category=cells, _pollCells reads
+    // only the per-module array. Read directly here so Pack Extremes works.
+    try {
+      final r = await _client!.readDid('002B', tx: '790', rx: '798')
+          .timeout(const Duration(milliseconds: 1000));
+      final p = r?.payloadAfterUdsRead;
+      if (p != null && p.length >= 2) {
+        final mv = (p[0] << 8) | p[1];
+        // Sanity: realistic LFP cell range 2000..3700 mV
+        if (mv >= 2000 && mv <= 3700) _globalMinCellMv = mv;
+      }
+    } catch (_) {}
+
+    // v0.1.6: Global max cell voltage (790/0x002D).
+    try {
+      final r = await _client!.readDid('002D', tx: '790', rx: '798')
+          .timeout(const Duration(milliseconds: 1000));
+      final p = r?.payloadAfterUdsRead;
+      if (p != null && p.length >= 2) {
+        final mv = (p[0] << 8) | p[1];
+        if (mv >= 2000 && mv <= 3700) _globalMaxCellMv = mv;
       }
     } catch (_) {}
 

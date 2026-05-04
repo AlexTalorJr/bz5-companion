@@ -655,8 +655,13 @@ class _RightColumn extends StatelessWidget {
     final modules = svc.moduleSnapshots;
     final cellCount = svc.packCellCount;
     final moduleCount = svc.packModuleCount;
-    final minV = svc.readNumeric('790', '002B');
-    final maxV = svc.readNumeric('790', '002D');
+    // v0.1.6: prefer new getters (read via _pollExtraDids) over readNumeric
+    // (which fails because cells category is filtered out of _pollEcu).
+    // Fallback to readNumeric in case future versions add proper polling.
+    final minV = svc.globalMinCellMv?.toDouble()
+        ?? svc.readNumeric('790', '002B');
+    final maxV = svc.globalMaxCellMv?.toDouble()
+        ?? svc.readNumeric('790', '002D');
     final minIdx = svc.globalMinCellIndex;
     final maxIdx = svc.globalMaxCellIndex;
     final soc = svc.readNumeric('790', '0005') ?? 50;
@@ -973,7 +978,10 @@ class _ModuleRow extends StatelessWidget {
                           (tempMax! - tempMin!) > 0.5)
                       ? '${temp >= 0 ? '+' : ''}${temp.toStringAsFixed(1)}°'
                       : '${temp >= 0 ? '+' : ''}${temp.toStringAsFixed(0)}°')
-                  : 'no s.',
+                  // v0.1.6: 'no temp' clearer than 'no s.' — emphasises that
+                  // only the temperature reading is missing for this module
+                  // (cell voltages still readout normally — see column to left)
+                  : 'no temp',
               style: TextStyle(
                   fontSize: 12,
                   color: hasTemp ? Colors.white70 : Colors.grey,
