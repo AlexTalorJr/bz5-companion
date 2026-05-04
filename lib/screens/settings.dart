@@ -3,6 +3,7 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:provider/provider.dart';
 
 import '../services/connection.dart';
+import 'about.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -47,6 +48,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
               onTap: () => svc.disconnect(),
             ),
           ],
+          const Divider(),
+          ListTile(
+            leading: const Icon(Icons.info_outline,
+                color: Colors.lightBlueAccent),
+            title: const Text('About / Pack specification'),
+            subtitle: const Text(
+                'BZ5 battery pack details, DID sources, experiments'),
+            trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => const AboutScreen(),
+              ),
+            ),
+          ),
         ],
       ),
     );
