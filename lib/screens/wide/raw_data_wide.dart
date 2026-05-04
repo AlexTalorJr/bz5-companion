@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../data/ecu_registry.dart';
 import '../../services/connection.dart';
 
 /// v0.1.4: Raw Data screen for head unit.
