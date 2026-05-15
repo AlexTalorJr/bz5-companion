@@ -16,10 +16,19 @@ class Elm327Ble {
   BluetoothCharacteristic? _writeChar;
   BluetoothCharacteristic? _notifyChar;
   StreamSubscription<List<int>>? _notifySub;
+  StreamSubscription<BluetoothConnectionState>? _stateSub;
 
   final List<int> _rxBuffer = [];
   final _promptCompleter = StreamController<bool>.broadcast();
   bool _hasPrompt = false;
+
+  /// v0.1.7.1: tracks whether the underlying BLE link has dropped.
+  /// Set asynchronously by _stateSub when device.connectionState becomes
+  /// disconnected. sendRaw checks this before each write so we fail fast
+  /// instead of throwing the cryptic "set notify value, device is
+  /// disconnected" PlatformException.
+  bool _disconnected = false;
+  bool get isConnected => !_disconnected && _writeChar != null;
 
   static const _prompt = 0x3E; // '>'
   static const _chunkSize = 20;
@@ -46,6 +55,19 @@ class Elm327Ble {
   // ---------------- Connect / detect layout ----------------
   Future<void> connect() async {
     await device.connect(timeout: const Duration(seconds: 15), autoConnect: false);
+
+    // v0.1.7.1: subscribe to connection-state changes so we know
+    // immediately if the BLE link drops (e.g., adapter went into deep sleep
+    // after a long UDS responsePending). Without this, writes to a dead
+    // characteristic throw cryptic "set notify value, device is disconnected"
+    // and the whole client object becomes a zombie that fails reconnects.
+    _disconnected = false;
+    _stateSub?.cancel();
+    _stateSub = device.connectionState.listen((state) {
+      if (state == BluetoothConnectionState.disconnected) {
+        _disconnected = true;
+      }
+    });
 
     // Запрашиваем больший MTU для скорости
     try {
@@ -101,6 +123,11 @@ class Elm327Ble {
   }
 
   Future<void> disconnect() async {
+    _disconnected = true;
+    try {
+      await _stateSub?.cancel();
+      _stateSub = null;
+    } catch (_) {}
     try {
       await _notifySub?.cancel();
       await _notifyChar?.setNotifyValue(false);
@@ -108,6 +135,8 @@ class Elm327Ble {
     try {
       await device.disconnect();
     } catch (_) {}
+    _writeChar = null;
+    _notifyChar = null;
   }
 
   // ---------------- I/O ----------------
@@ -120,6 +149,10 @@ class Elm327Ble {
   }
 
   Future<String> sendRaw(String payload, {Duration timeout = const Duration(seconds: 4)}) async {
+    // v0.1.7.1: fail fast if BLE link is gone — otherwise the write throws
+    // a confusing "set notify value, device is disconnected" platform
+    // exception and leaves stale state behind.
+    if (_disconnected) throw Exception('BLE link disconnected');
     if (_writeChar == null) throw Exception('Not connected');
 
     _rxBuffer.clear();

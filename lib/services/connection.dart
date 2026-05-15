@@ -887,14 +887,40 @@ class ConnectionService extends ChangeNotifier {
         final (tx, rx, name) = _dtcEcus[i];
         onProgress?.call(i, _dtcEcus.length, '$tx $name');
 
+        // v0.1.7.1: abort early if BLE link died during scan.
+        // Without this, subsequent .query() calls throw obscure
+        // "set notify value, device is disconnected" exceptions and
+        // leave stale BLE state behind that prevents reconnection.
+        if (_ble != null && !_ble!.isConnected) {
+          results.add(DtcScanEcuResult(
+            tx: tx,
+            rx: rx,
+            name: name,
+            sessionOk: false,
+            dtcs: const [],
+            errors: const ['BLE link lost — scan aborted'],
+          ));
+          // Mark all remaining ECUs as not-scanned too, for clarity.
+          for (int j = i + 1; j < _dtcEcus.length; j++) {
+            final (jtx, jrx, jname) = _dtcEcus[j];
+            results.add(DtcScanEcuResult(
+              tx: jtx,
+              rx: jrx,
+              name: jname,
+              sessionOk: false,
+              dtcs: const [],
+              errors: const ['skipped (link lost earlier)'],
+            ));
+          }
+          break;
+        }
+
         bool sessionOk = false;
         final dtcs = <DtcRecord>[];
         final errors = <String>[];
 
         try {
           // Enter extended diagnostic session (1003).
-          // Some ECUs (e.g. GPS Asensing) may not support it — that's OK,
-          // we still try DTC read after.
           final sess = await _client!
               .query('1003', txId: tx, rxId: rx)
               .timeout(const Duration(seconds: 2));
@@ -903,8 +929,17 @@ class ConnectionService extends ChangeNotifier {
           errors.add('session: $e');
         }
 
+        // v0.1.7.1: small pause between session control and DTC read.
+        // Some ECUs need a moment to transition into extended mode before
+        // accepting further service requests (especially after NRC=78).
+        await Future.delayed(const Duration(milliseconds: 80));
+
         // Try two status masks. Aggregate decoded DTCs without dups.
         for (final mask in const ['09', 'FF']) {
+          if (_ble != null && !_ble!.isConnected) {
+            errors.add('1902$mask: link lost during probe');
+            break;
+          }
           try {
             final resps = await _client!
                 .query('1902$mask', txId: tx, rxId: rx)
@@ -919,6 +954,10 @@ class ConnectionService extends ChangeNotifier {
             final raw = r.rawHex;
             if (r.error != null && r.error!.contains('NEG')) {
               errors.add('1902$mask: ${r.error}');
+              // Brief pause after NRC — 0x78 (responsePending) and others
+              // sometimes leave the adapter in a sensitive state. Give it
+              // 100ms to settle before the next request.
+              await Future.delayed(const Duration(milliseconds: 100));
               continue;
             }
             if (!raw.toUpperCase().startsWith('5902')) {
@@ -926,7 +965,6 @@ class ConnectionService extends ChangeNotifier {
             }
             final decoded = _decodeDtcs(raw);
             for (final d in decoded) {
-              // Dedupe by full code+status
               if (!dtcs.any((existing) =>
                   existing.code == d.code && existing.status == d.status)) {
                 dtcs.add(d);
@@ -934,7 +972,13 @@ class ConnectionService extends ChangeNotifier {
             }
           } catch (e) {
             errors.add('1902$mask: $e');
+            // If the link is reported dead, abort early to prevent further
+            // calls from piling up exception-on-disconnected-device errors.
+            if (_ble != null && !_ble!.isConnected) break;
           }
+
+          // Small pause between consecutive UDS reads on the same ECU.
+          await Future.delayed(const Duration(milliseconds: 60));
         }
 
         results.add(DtcScanEcuResult(
@@ -945,11 +989,40 @@ class ConnectionService extends ChangeNotifier {
           dtcs: List.unmodifiable(dtcs),
           errors: List.unmodifiable(errors),
         ));
+
+        // v0.1.7.1: pause between ECUs gives the adapter time to switch
+        // contexts (ATSH header change + filter reset). Without this the
+        // BLE buffer can overflow on the cheap clones.
+        await Future.delayed(const Duration(milliseconds: 150));
       }
       onProgress?.call(_dtcEcus.length, _dtcEcus.length, 'done');
+    } catch (e) {
+      // Any unexpected exception — log into a synthetic result row and let
+      // the UI display it. Don't let one bad scan blow up the whole service.
+      results.add(DtcScanEcuResult(
+        tx: '—',
+        rx: '—',
+        name: 'scan error',
+        sessionOk: false,
+        dtcs: const [],
+        errors: ['unhandled: $e'],
+      ));
     } finally {
       _dtcScanRunning = false;
-      if (wasPolling) {
+
+      // v0.1.7.1: if BLE died during the scan, mark service as disconnected
+      // so the UI's "Adapter status" reflects reality and a reconnect can
+      // be initiated by the user via Settings.
+      if (_ble != null && !_ble!.isConnected) {
+        _setStatus(ConnectionStatus.disconnected,
+            msg: 'Адаптер отключился во время DTC скана');
+        try {
+          await _ble?.disconnect();
+        } catch (_) {}
+        _ble = null;
+        _client = null;
+        _polling = false;
+      } else if (wasPolling) {
         _polling = true;
         _pollLoop();
       }
