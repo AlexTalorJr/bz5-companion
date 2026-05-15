@@ -818,6 +818,268 @@ class ConnectionService extends ChangeNotifier {
 
     return true;
   }
+
+  // ──────────────────────────── DTC scanning ─────────────────────────────
+  //
+  // v0.1.7: in-app DTC reader.
+  // Walks 9 known ECUs (790, 791, 740, 744, 745, 752, 753, 782, 757),
+  // enters extended diag session 1003, sends UDS service 0x19 sub 0x02
+  // with two status masks (0x09 = active+confirmed, 0xFF = all DTCs).
+  // Decodes 4-byte (3-byte code + 1-byte status) DTC records per SAE J2012.
+  //
+  // No write/clear operations — read-only by design (v0.1.7 scope).
+  // Returns immutable snapshot for UI to display.
+
+  static const _dtcEcus = [
+    ('790', '798', 'BMS Master'),
+    ('791', '799', 'VCU'),
+    ('740', '748', 'Pack Monitor'),
+    ('744', '74C', 'Pack Monitor 2'),
+    ('745', '74D', 'Pack Monitor 3'),
+    ('752', '75A', 'BMS Slave 1'),
+    ('753', '75B', 'BMS Slave 2'),
+    ('782', '78A', 'OBC'),
+    ('757', '75F', 'GPS Asensing'),
+  ];
+
+  bool _dtcScanRunning = false;
+  bool get dtcScanRunning => _dtcScanRunning;
+
+  /// Run a one-shot DTC scan across all known ECUs.
+  ///
+  /// Pauses normal polling for the duration of the scan to avoid BLE
+  /// bus contention. Resumes polling afterwards if it was active.
+  ///
+  /// Calls [onProgress] before each ECU is scanned (for UI progress bar).
+  /// Returns one [DtcScanEcuResult] per ECU.
+  Future<List<DtcScanEcuResult>> runDtcScan({
+    void Function(int done, int total, String currentEcu)? onProgress,
+  }) async {
+    if (_client == null) {
+      return _dtcEcus
+          .map((e) => DtcScanEcuResult(
+                tx: e.$1,
+                rx: e.$2,
+                name: e.$3,
+                sessionOk: false,
+                dtcs: const [],
+                errors: const ['client not connected'],
+              ))
+          .toList();
+    }
+    if (_dtcScanRunning) {
+      return [];
+    }
+    _dtcScanRunning = true;
+    notifyListeners();
+
+    final wasPolling = _polling;
+    if (wasPolling) {
+      _polling = false;
+      // Give any in-flight poll a moment to finish before we hammer the bus.
+      await Future.delayed(const Duration(milliseconds: 400));
+    }
+
+    final results = <DtcScanEcuResult>[];
+
+    try {
+      for (int i = 0; i < _dtcEcus.length; i++) {
+        final (tx, rx, name) = _dtcEcus[i];
+        onProgress?.call(i, _dtcEcus.length, '$tx $name');
+
+        bool sessionOk = false;
+        final dtcs = <DtcRecord>[];
+        final errors = <String>[];
+
+        try {
+          // Enter extended diagnostic session (1003).
+          // Some ECUs (e.g. GPS Asensing) may not support it — that's OK,
+          // we still try DTC read after.
+          final sess = await _client!
+              .query('1003', txId: tx, rxId: rx)
+              .timeout(const Duration(seconds: 2));
+          sessionOk = sess.any((r) => r.rawHex.startsWith('5003'));
+        } catch (e) {
+          errors.add('session: $e');
+        }
+
+        // Try two status masks. Aggregate decoded DTCs without dups.
+        for (final mask in const ['09', 'FF']) {
+          try {
+            final resps = await _client!
+                .query('1902$mask', txId: tx, rxId: rx)
+                .timeout(const Duration(milliseconds: 2500));
+            if (resps.isEmpty) {
+              continue;
+            }
+            final r = resps.firstWhere(
+              (x) => x.rxId == rx,
+              orElse: () => resps.first,
+            );
+            final raw = r.rawHex;
+            if (r.error != null && r.error!.contains('NEG')) {
+              errors.add('1902$mask: ${r.error}');
+              continue;
+            }
+            if (!raw.toUpperCase().startsWith('5902')) {
+              continue;
+            }
+            final decoded = _decodeDtcs(raw);
+            for (final d in decoded) {
+              // Dedupe by full code+status
+              if (!dtcs.any((existing) =>
+                  existing.code == d.code && existing.status == d.status)) {
+                dtcs.add(d);
+              }
+            }
+          } catch (e) {
+            errors.add('1902$mask: $e');
+          }
+        }
+
+        results.add(DtcScanEcuResult(
+          tx: tx,
+          rx: rx,
+          name: name,
+          sessionOk: sessionOk,
+          dtcs: List.unmodifiable(dtcs),
+          errors: List.unmodifiable(errors),
+        ));
+      }
+      onProgress?.call(_dtcEcus.length, _dtcEcus.length, 'done');
+    } finally {
+      _dtcScanRunning = false;
+      if (wasPolling) {
+        _polling = true;
+        _pollLoop();
+      }
+      notifyListeners();
+    }
+
+    return results;
+  }
+
+  /// Decode UDS 19/02 positive response payload into DTC records.
+  ///
+  /// Format per ISO 14229:
+  ///   59 02 <statusAvailMask> {<b1><b2><b3><status>}*
+  /// Each DTC is 4 bytes: 3 bytes code + 1 byte status.
+  ///
+  /// Code letter encoding (top 2 bits of b1):
+  ///   00 → P (powertrain)
+  ///   01 → C (chassis)
+  ///   10 → B (body)
+  ///   11 → U (network)
+  static List<DtcRecord> _decodeDtcs(String rawHex) {
+    final upper = rawHex.toUpperCase();
+    if (upper.length < 6 || !upper.startsWith('5902')) return const [];
+    final payload = upper.substring(6); // skip "5902XX"
+    final result = <DtcRecord>[];
+    for (int i = 0; i + 8 <= payload.length; i += 8) {
+      final chunk = payload.substring(i, i + 8);
+      final b1 = int.parse(chunk.substring(0, 2), radix: 16);
+      final b2 = int.parse(chunk.substring(2, 4), radix: 16);
+      final b3 = int.parse(chunk.substring(4, 6), radix: 16);
+      final status = int.parse(chunk.substring(6, 8), radix: 16);
+      // Skip all-zero padding entries
+      if (b1 == 0 && b2 == 0 && b3 == 0 && status == 0) continue;
+
+      final letterIdx = (b1 >> 6) & 0x03;
+      final letter = 'PCBU'[letterIdx];
+      final digitHigh = (b1 >> 4) & 0x03;
+      final digitRest = b1 & 0x0F;
+      final code =
+          '$letter$digitHigh${digitRest.toRadixString(16).toUpperCase()}'
+          '${b2.toRadixString(16).padLeft(2, '0').toUpperCase()}';
+      final codeFull =
+          '$code-${b3.toRadixString(16).padLeft(2, '0').toUpperCase()}';
+
+      result.add(DtcRecord(
+        code: code,
+        codeFull: codeFull,
+        rawHex: chunk,
+        status: status,
+      ));
+    }
+    return result;
+  }
+}
+
+/// v0.1.7: Single DTC record decoded from UDS 19/02 response.
+class DtcRecord {
+  /// Standard 5-char code, e.g. "C1880", "U1018", "P0420".
+  final String code;
+
+  /// Same as [code] but with extension byte appended, e.g. "C1880-16".
+  /// The extension byte is sometimes a "failure type" or sub-code per
+  /// manufacturer convention. Kept for completeness.
+  final String codeFull;
+
+  /// The 8-hex-character raw chunk this DTC was decoded from.
+  final String rawHex;
+
+  /// 1-byte status mask per ISO 14229.
+  ///   bit 0: testFailed (active failure RIGHT NOW)
+  ///   bit 1: testFailedThisOperationCycle
+  ///   bit 2: pendingDTC
+  ///   bit 3: confirmedDTC (occurred at least once and confirmed)
+  ///   bit 4: testNotCompletedSinceLastClear
+  ///   bit 5: testFailedSinceLastClear
+  ///   bit 6: testNotCompletedThisOperationCycle
+  ///   bit 7: warningIndicatorRequested
+  final int status;
+
+  const DtcRecord({
+    required this.code,
+    required this.codeFull,
+    required this.rawHex,
+    required this.status,
+  });
+
+  /// True if any of the "real fault" status bits are set
+  /// (testFailed OR confirmedDTC OR pendingDTC).
+  /// False means the entry exists in firmware but isn't currently a fault
+  /// (e.g. "test not yet completed since last clear" — bit 4 only).
+  bool get isActiveFault =>
+      (status & 0x01) != 0 || (status & 0x08) != 0 || (status & 0x04) != 0;
+
+  /// Human-readable summary of the status byte.
+  String get statusSummary {
+    final parts = <String>[];
+    if (status & 0x01 != 0) parts.add('testFailed');
+    if (status & 0x02 != 0) parts.add('failedThisCycle');
+    if (status & 0x04 != 0) parts.add('pending');
+    if (status & 0x08 != 0) parts.add('confirmed');
+    if (status & 0x10 != 0) parts.add('notCompleteSinceClear');
+    if (status & 0x20 != 0) parts.add('failedSinceClear');
+    if (status & 0x40 != 0) parts.add('notCompleteThisCycle');
+    if (status & 0x80 != 0) parts.add('warningRequested');
+    if (parts.isEmpty) return 'inactive';
+    return parts.join(', ');
+  }
+}
+
+/// v0.1.7: Result of DTC scan for one ECU.
+class DtcScanEcuResult {
+  final String tx;
+  final String rx;
+  final String name;
+  final bool sessionOk;
+  final List<DtcRecord> dtcs;
+  final List<String> errors;
+
+  const DtcScanEcuResult({
+    required this.tx,
+    required this.rx,
+    required this.name,
+    required this.sessionOk,
+    required this.dtcs,
+    required this.errors,
+  });
+
+  int get activeFaultCount => dtcs.where((d) => d.isActiveFault).length;
+  int get totalDtcCount => dtcs.length;
+  bool get isClean => dtcs.isEmpty && errors.isEmpty;
 }
 
 /// v0.1.2: Snapshot per battery module. Contains both cell voltages and
