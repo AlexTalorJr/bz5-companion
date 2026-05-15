@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- Background: dark charcoal (matches app's #0e1414 / Colors.grey.shade900) -->
+  <rect x="0" y="0" width="1024" height="1024" rx="224" fill="#0e1414"/>
+
+  <!-- Battery cap (small rectangle at top) -->
+  <rect x="330" y="180" width="364" height="74" rx="26" fill="#1d2a26"/>
+
+  <!-- Battery body (outer frame) -->
+  <rect x="224" y="234" width="576" height="640" rx="74" fill="#1d2a26"/>
+
+  <!-- Battery interior (black hollow) -->
+  <rect x="298" y="308" width="428" height="492" rx="32" fill="#0e1414"/>
+
+  <!-- Charge fill — 80% level (220 of 492 dp from top is empty, rest is filled) -->
+  <!-- Empty top: 308 to 412 (104 dp = 20%)
+       Full fill: 412 to 800 (388 dp = 80%) -->
+  <rect x="298" y="412" width="428" height="388" rx="0" fill="#6dd47a"/>
+
+  <!-- Charge fill bottom corners — rounded only at bottom of interior -->
+  <!-- The interior rect has 32 radius; we hide top corners by overlaying full rect,
+       but bottom corners need to follow. Using path with rounded-bottom: -->
+  <!-- Simpler: re-clip filled area to match interior shape on bottom only.
+       Achieve this by drawing the interior outline ON TOP of the fill,
+       which would erase nothing. Instead, draw a rounded-bottom rect: -->
+
+  <!-- Outline around interior to refresh visual edge -->
+  <rect x="298" y="308" width="428" height="492" rx="32" fill="none" stroke="#6dd47a" stroke-width="10"/>
+
+  <!-- "BZ" monogram cut out from green fill -->
+  <!-- Use SVG text for the punch-out. We're putting it within the GREEN area.
+       The text color is the dark interior so it appears as cut-out. -->
+  <text
+    x="512" y="700"
+    text-anchor="middle"
+    font-family="Inter, 'SF Pro Display', 'Helvetica Neue', sans-serif"
+    font-weight="900"
+    font-size="280"
+    letter-spacing="-12"
+    fill="#0e1414">BZ</text>
+</svg>
