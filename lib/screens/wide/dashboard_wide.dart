@@ -112,6 +112,7 @@ class _LeftColumn extends StatelessWidget {
     final rangeKm = svc.rangeEstimateKm;
     final packV = svc.packVoltageV;
     final packVInst = svc.packVoltageInstantV;
+    final hvBus = svc.hvBusV;
     final isCharging = svc.isCharging;
     final chargingPower = svc.chargingPowerKw;
 
@@ -125,6 +126,7 @@ class _LeftColumn extends StatelessWidget {
           child: _PackVoltageHero(
             filteredV: packV,
             instantV: packVInst,
+            hvBusV: hvBus,
           ),
         ),
         const SizedBox(height: 12),
@@ -224,7 +226,8 @@ class _SocHero extends StatelessWidget {
 class _PackVoltageHero extends StatelessWidget {
   final double? filteredV;
   final double? instantV;
-  const _PackVoltageHero({this.filteredV, this.instantV});
+  final double? hvBusV;
+  const _PackVoltageHero({this.filteredV, this.instantV, this.hvBusV});
 
   @override
   Widget build(BuildContext context) {
@@ -260,22 +263,35 @@ class _PackVoltageHero extends StatelessWidget {
                       height: 1.0),
                 ),
                 const Spacer(),
-                if (instantV != null)
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    if (instantV != null) ...[
                       const Text('INSTANT',
                           style: TextStyle(
                               fontSize: 11, color: Colors.grey)),
                       Text('${instantV!.toStringAsFixed(1)} V',
                           style: const TextStyle(
-                              fontSize: 18, fontWeight: FontWeight.w300)),
+                              fontSize: 16, fontWeight: FontWeight.w300)),
+                      const SizedBox(height: 6),
                     ],
-                  ),
+                    if (hvBusV != null) ...[
+                      const Text('HV BUS',
+                          style: TextStyle(
+                              fontSize: 11, color: Colors.lightBlueAccent)),
+                      Text('${hvBusV!.toStringAsFixed(1)} V',
+                          style: const TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w300,
+                              color: Colors.lightBlueAccent)),
+                    ],
+                  ],
+                ),
               ],
             ),
             const Spacer(),
-            const Text('filtered · 740/0x0022 × 0.025',
+            const Text(
+                'filtered · 740/0x0022 × 0.025  ·  HV bus · 790/0x0015 × 0.025',
                 style: TextStyle(fontSize: 11, color: Colors.grey)),
           ],
         ),

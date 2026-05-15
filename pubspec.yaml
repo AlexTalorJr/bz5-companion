@@ -1,7 +1,7 @@
 name: bz5_companion
 description: Toyota BZ5 telemetry & monitoring app
 publish_to: 'none'
-version: 0.1.2+1
+version: 0.1.8+1
 
 environment:
   sdk: '>=3.3.0 <4.0.0'
@@ -30,3 +30,11 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+
+# v0.1.8: app icon assets.
+# Icons are pre-generated PNGs placed directly in android/app/src/main/res/.
+# Source SVG is checked in under assets/icon/icon_source.svg for reference.
+# To regenerate icons after design change:
+#   1. Edit assets/icon/icon_source.svg
+#   2. Regenerate all mipmap-*/ic_launcher*.png using your preferred tool
+#      (or pull the icon zip from a v0.1.8+ release in Actions artifacts).

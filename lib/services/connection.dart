@@ -150,6 +150,17 @@ class ConnectionService extends ChangeNotifier {
   // Pack Extremes UI висит в "loading…" вечно. Чтобы не править registry/
   // poll архитектуру (рискованно), читаем напрямую тут.
   //
+  // v0.1.8: добавлен 790/0x0015 (HV bus voltage). Registry на старте имел
+  // scale=0.02 — это была неверная интерпретация (думали что это pack V).
+  // Реверс 2026-05-15 в Ready показал что правильный scale = 0.025
+  // (× 0.025 → 429 V в Ready, что совпадает с ожидаемым ~448 V pack V
+  // минус ~20 V на main contactor + фильтры).
+  //
+  // v0.1.8 cleanup: scale в registry поправлен на 0.025 + name → 'HV bus'.
+  // Поэтому 0x0015 теперь читается ТОЛЬКО через registry (_pollEcu),
+  // hvBusV getter использует readNumeric('790', '0015'). Дублирование
+  // через _pollExtraDids убрано.
+  //
   // Найдено в реверсе 2026-05-03 (см. README/findings).
   double? _packVoltageFilteredV;     // 740/0x0022
   double? _packVoltageInstantV;      // 740/0x0014
@@ -210,17 +221,42 @@ class ConnectionService extends ChangeNotifier {
     return v;
   }
 
-  /// Secondary bus voltage (790/0x0015 × 0.02). Что ИМЕННО это — пока
-  /// неизвестно: на 81% SOC выдаёт 281-291 В, на 50% SOC — 334 В.
-  /// Возможно: precharge sense / DC link / OBC side. Не используется
-  /// в основном UI; оставлен на случай если позже расшифруем.
-  /// TODO: monitor этого DID при precharge / contactor close / Ready / charging.
-  double? get secondaryBusV {
+  /// HV bus voltage (downstream of main contactor).
+  ///
+  /// Source: 790/0x0015 × 0.025 V (read via registry — scale already
+  /// applied by the decoder, see ecu_registry.dart for the DidSpec).
+  ///
+  /// v0.1.8 finding: scale was reverse-engineered as 0.025 (NOT 0.02 as
+  /// originally assumed). Verification 2026-05-15 in Ready state at 77% SOC:
+  ///   0x0015 = 0x42FE (17150) × 0.025 = 428.75 V
+  /// Pack voltage at this SOC (from 740/0x0022) was ~448 V — difference of
+  /// ~20 V matches the expected drop across main contactor + HV filter
+  /// circuit, confirming this is HV bus measured DOWNSTREAM of contactors,
+  /// not raw pack voltage.
+  ///
+  /// State-dependent behavior:
+  ///   - Ignition OFF: residual capacitor charge slowly bleeding (~280-350V).
+  ///   - Ignition ON, not Ready: precharge resistor active, bus ~95% of pack.
+  ///   - Ready: main contactor closed, bus ≈ pack V − ~20V.
+  ///   - Driving: drops under acceleration, rises during regen.
+  ///
+  /// Useful as a diagnostic indicator (precharge sequence, regen events)
+  /// but NOT a substitute for pack V (use [packVoltageV] for that).
+  double? get hvBusV {
     final v = readNumeric('790', '0015');
     if (v == null) return null;
-    if (v < 100 || v > 500) return null;
+    // Sanity: HV bus normally 200..500 V (lower at standby, max at full pack).
+    if (v < 100 || v > 550) return null;
     return v;
   }
+
+  /// @deprecated v0.1.8 — kept for backward compat. Use [hvBusV] instead.
+  /// In v0.1.8 scale in the registry was corrected from 0.02 to 0.025, so
+  /// this getter now returns the same value as [hvBusV]. Kept around in case
+  /// any external code references it; new code should use [hvBusV] for the
+  /// clearer name.
+  @Deprecated('Use hvBusV — same value, clearer name')
+  double? get secondaryBusV => hvBusV;
 
   /// v0.1.3: индекс ячейки с минимальным напряжением в пакете (0..135).
   /// Меняется в реальном времени по мере того как BMS пересортировывает
@@ -734,6 +770,11 @@ class ConnectionService extends ChangeNotifier {
         if (mv >= 2000 && mv <= 3700) _globalMaxCellMv = mv;
       }
     } catch (_) {}
+
+    // Note (v0.1.8): 790/0x0015 (HV bus voltage) is now read through the
+    // normal _pollEcu loop — registry scale corrected to 0.025 in this
+    // release. UI accesses it via the hvBusV getter which uses readNumeric.
+    // No direct read here anymore.
 
     // Pack config — читаем один раз
     if (_packCellCount == null) {

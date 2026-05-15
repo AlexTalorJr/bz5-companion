@@ -62,8 +62,13 @@ const bmsEcu = EcuSpec(
     DidSpec(did: '002F', name: 'Battery temp', unit: '°C', offset: -40, category: DidCategory.thermal),
     DidSpec(did: '002B', name: 'Cell V min', unit: 'mV', expectedBytes: 2, category: DidCategory.cells),
     DidSpec(did: '002D', name: 'Cell V max', unit: 'mV', expectedBytes: 2, category: DidCategory.cells),
-    // v0.1.2: pack voltage realtime
-    DidSpec(did: '0015', name: 'Pack voltage', unit: 'V', scale: 0.02, expectedBytes: 2, category: DidCategory.packVoltage),
+    // v0.1.2: pack voltage realtime — DEPRECATED INTERPRETATION
+    // v0.1.8 update: this DID is actually HV bus voltage (downstream of
+    // main contactor), NOT pack voltage. Pack V comes from 740/0x0022.
+    // Scale corrected 0.02 → 0.025 based on Ready-state measurement
+    // 2026-05-15 (raw 0x42FE × 0.025 = 428.75V matches predicted bus V).
+    // Category 'packVoltage' kept for backward compat with poll filter logic.
+    DidSpec(did: '0015', name: 'HV bus voltage', unit: 'V', scale: 0.025, expectedBytes: 2, category: DidCategory.packVoltage),
     DidSpec(did: '0009', name: 'Energy counter', category: DidCategory.counter),
     DidSpec(did: '000A', name: 'Counter A', category: DidCategory.counter),
     DidSpec(did: '0B00', name: 'Total energy 1', category: DidCategory.counter),

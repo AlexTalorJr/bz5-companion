@@ -242,12 +242,14 @@ class _DidSourcesCard extends StatelessWidget {
             const _CompactDidRow('0x002B / 0x002D', 'global min / max cell mV'),
             const _CompactDidRow('0x002C / 0x002E', 'min / max cell index (0..135)'),
             const _CompactDidRow('0x002F', 'battery temp (offset −40)'),
+            const _CompactDidRow('0x0015',
+                'HV bus voltage (× 0.025, downstream of contactor) ★'),
             const _CompactDidRow('0x016D – 0x01BB',
-                'per-module data (8 DIDs × 10 modules)'),
-            const _CompactDidRow('0x0B00', 'charge counter'),
+                'per-module data (8 DIDs × 10 modules — structural)'),
+            const _CompactDidRow('0x0B00', 'charge counter (calibration TBD)'),
             const _CompactDidRow('0x0B02', 'cycle count'),
-            const _CompactDidRow('0x0B03', 'total cells (= 136)'),
-            const _CompactDidRow('0x0A07', 'module count (= 10)'),
+            const _CompactDidRow('0x0B03',
+                'total cells (= 136, stable across sessions)'),
             const SizedBox(height: 8),
             const Text(
               'Pack Monitor 740:',
@@ -312,7 +314,10 @@ class _ExperimentsCard extends StatelessWidget {
               text:
                   'Scale 0.025 V/LSB inferred from theoretical match at '
                   '81% SOC. Verify at low (10-20%) and high (95%+) SOC where '
-                  'expected voltage range is well-known.',
+                  'expected voltage range is well-known.\n'
+                  'UPDATE 2026-05-15: confirmed scale 0.025 for DID 0x0015 '
+                  'too (HV bus voltage) — reading 428.75 V in Ready matches '
+                  'predicted pack-minus-contactor-drop almost exactly.',
             ),
             _ExperimentItem(
               title: 'M6 temperature sensor status',
@@ -320,7 +325,10 @@ class _ExperimentsCard extends StatelessWidget {
                   'M6 returns 0xFF on all 4 temperature DIDs. Likely by-design '
                   '(the only module without sensors) but could be a real fault. '
                   'Read DTCs (UDS service 0x19) to verify — if there is a code '
-                  'related to M6 temp sensor, the sensor is broken.',
+                  'related to M6 temp sensor, the sensor is broken.\n'
+                  'UPDATE 2026-05-15: DTC scan complete — no faults related '
+                  'to M6 temperature on any ECU. "By design" hypothesis '
+                  'supported (confidence 70% → 85%).',
             ),
             _ExperimentItem(
               title: 'Per-module cell semantics',
