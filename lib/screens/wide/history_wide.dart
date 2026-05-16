@@ -305,7 +305,7 @@ class _SelectedTripDetail extends StatelessWidget {
                   did: '0022',
                   color: Colors.yellowAccent,
                   unit: 'V',
-                  valueTransform: (v) => v * 0.025,
+                  // No valueTransform — registry decoder already applies scale.
                   svc: svc,
                 ),
               ),
