@@ -117,10 +117,31 @@ class ConnectionService extends ChangeNotifier {
   double _instantaneousChargingPowerKw = 0.0;
 
   int? _currentTripId;
+  DateTime? _tripStartedAt;          // v0.1.9 in-memory for duration getter
   int _samplesInTrip = 0;
   double? _tripStartSoc;
   double? _tripStartOdo;
   int? _tripStartB00;
+
+  // v0.1.9: rolling trip aggregates (computed during polling, written at endTrip).
+  // All min/max trackers update on each cycle's relevant DID read.
+  double? _tripMinTempC;
+  double? _tripMaxTempC;
+  double? _tripMaxCellSpreadMv;
+  double? _tripMinSoc;
+  double? _tripMaxSoc;
+  double? _tripPeakSpeedKmh;     // will populate once speed DID identified
+  double? _tripPeakPowerKw;      // 791/0x0038 magnitude
+  double? _tripPeakRegenKw;      // most-negative power (regen)
+  double? _tripRegenEnergyKwh;   // integrated regen power over time (estimate)
+
+  // v0.1.9: snapshot writer state.
+  // Снимок пишется в БД раз в 2 мин во время поездки, раз в 10 мин вне поездки.
+  // Это позволяет строить долговременные графики (24h/7d/30d/year) без
+  // утопания в гигабайтных таблицах Samples.
+  DateTime? _lastSnapshotAt;
+  static const Duration _snapshotIntervalInTrip = Duration(minutes: 2);
+  static const Duration _snapshotIntervalIdle = Duration(minutes: 10);
 
   // v4: deferred trip creation
   bool _wantTripCreation = false;
@@ -497,6 +518,18 @@ class ConnectionService extends ChangeNotifier {
     // v0.1.6:
     _globalMinCellMv = null;
     _globalMaxCellMv = null;
+    // v0.1.9: reset trip aggregates and snapshot timer.
+    _tripMinTempC = null;
+    _tripMaxTempC = null;
+    _tripMaxCellSpreadMv = null;
+    _tripMinSoc = null;
+    _tripMaxSoc = null;
+    _tripPeakSpeedKmh = null;
+    _tripPeakPowerKw = null;
+    _tripPeakRegenKw = null;
+    _tripRegenEnergyKwh = null;
+    _lastSnapshotAt = null;
+    _tripStartedAt = null;
     _pollLoop();
     notifyListeners();
   }
@@ -506,12 +539,86 @@ class ConnectionService extends ChangeNotifier {
     if (_currentTripId != null) {
       final endSoc = _latestValues['790']?['0005']?.numeric;
       final endOdo = _latestValues['791']?['0026']?.numeric;
-      await db.endTrip(_currentTripId!,
-          endSoc: endSoc, endOdo: endOdo, sampleCount: _samplesInTrip);
+
+      // v0.1.9: compute final derived metrics from rolling state.
+      double? distanceKm;
+      if (_tripStartOdo != null && endOdo != null && endOdo > _tripStartOdo!) {
+        distanceKm = endOdo - _tripStartOdo!;
+      }
+      double? energyUsedKwh;
+      if (_tripStartSoc != null && endSoc != null && _tripStartSoc! > endSoc) {
+        energyUsedKwh = (_tripStartSoc! - endSoc) * Bz5Model.batteryCapacityKwh / 100.0;
+      }
+      double? avgConsumption;
+      if (distanceKm != null && energyUsedKwh != null && distanceKm > 0.1) {
+        avgConsumption = (energyUsedKwh / distanceKm) * 100.0;
+      }
+
+      await db.endTrip(
+        _currentTripId!,
+        endSoc: endSoc,
+        endOdo: endOdo,
+        sampleCount: _samplesInTrip,
+        distanceKm: distanceKm,
+        energyUsedKwh: energyUsedKwh,
+        avgConsumptionKwh100km: avgConsumption,
+        minBatteryTempC: _tripMinTempC,
+        maxBatteryTempC: _tripMaxTempC,
+        maxCellSpreadMv: _tripMaxCellSpreadMv,
+        minSoc: _tripMinSoc,
+        maxSoc: _tripMaxSoc,
+        peakSpeedKmh: _tripPeakSpeedKmh,
+        peakPowerKw: _tripPeakPowerKw,
+        peakRegenKw: _tripPeakRegenKw,
+        regenEnergyKwh: _tripRegenEnergyKwh,
+      );
       _currentTripId = null;
+      _tripStartedAt = null;
     }
     _wantTripCreation = false;
     notifyListeners();
+  }
+
+  /// v0.1.9: active trip aggregate getters (for Active Trip live view).
+  /// Each returns the rolling value updated each poll cycle, or null if
+  /// not yet observed in this trip.
+  double? get tripMinTempC => _tripMinTempC;
+  double? get tripMaxTempC => _tripMaxTempC;
+  double? get tripMaxCellSpreadMv => _tripMaxCellSpreadMv;
+  double? get tripMinSoc => _tripMinSoc;
+  double? get tripMaxSoc => _tripMaxSoc;
+  double? get tripPeakPowerKw => _tripPeakPowerKw;
+  double? get tripPeakRegenKw => _tripPeakRegenKw;
+  double? get tripPeakSpeedKmh => _tripPeakSpeedKmh;
+
+  /// Trip distance so far (current odo − start odo). Null if not yet measurable.
+  double? get tripDistanceKm {
+    if (_tripStartOdo == null || _currentTripId == null) return null;
+    final curOdo = readNumeric('791', '0026');
+    if (curOdo == null || curOdo <= _tripStartOdo!) return null;
+    return curOdo - _tripStartOdo!;
+  }
+
+  /// Trip energy used so far (from delta SOC × pack capacity). Null if no SOC drop.
+  double? get tripEnergyUsedKwh {
+    if (_tripStartSoc == null || _currentTripId == null) return null;
+    final curSoc = readNumeric('790', '0005');
+    if (curSoc == null || curSoc >= _tripStartSoc!) return null;
+    return (_tripStartSoc! - curSoc) * Bz5Model.batteryCapacityKwh / 100.0;
+  }
+
+  /// Trip average consumption so far (kWh/100km). Null if distance < 100m.
+  double? get tripAvgConsumptionKwh100km {
+    final dist = tripDistanceKm;
+    final energy = tripEnergyUsedKwh;
+    if (dist == null || energy == null || dist < 0.1) return null;
+    return (energy / dist) * 100.0;
+  }
+
+  /// Trip duration so far. Null if no trip.
+  Duration? get tripDuration {
+    if (_currentTripId == null || _tripStartedAt == null) return null;
+    return DateTime.now().difference(_tripStartedAt!);
   }
 
   List<EcuSpec> get _ecusToPoll {
@@ -536,6 +643,9 @@ class ConnectionService extends ChangeNotifier {
         if (cycle % 2 == 1) await _pollExtraDids();
         _updatePowerCalculations();
         await _maybeStartTrip();
+        // v0.1.9: rolling trip aggregates + periodic snapshot to DB.
+        _updateTripAggregates();
+        await _maybeWriteSnapshot();
       } catch (e) {
         debugPrint('Poll error: $e');
       }
@@ -558,10 +668,117 @@ class ConnectionService extends ChangeNotifier {
       debugPrint('Polling started during charging — no Trip created.');
     } else {
       _currentTripId = await db.startTrip();
+      _tripStartedAt = DateTime.now();
       _wantTripCreation = false;
       debugPrint('Trip #$_currentTripId created.');
     }
     notifyListeners();
+  }
+
+  /// v0.1.9: rolling aggregates updated each poll cycle.
+  ///
+  /// Only computes when a trip is active. Each metric is min/max-tracked
+  /// across the trip duration. At endTrip, these values are written to the
+  /// Trip row in DB (no need to re-scan Samples).
+  ///
+  /// Peak power / regen / speed metrics depend on DIDs not yet identified
+  /// for BZ5 (TODO: incorporate after VCU 791 deep-sweep finishes).
+  void _updateTripAggregates() {
+    if (_currentTripId == null) return;
+
+    final soc = readNumeric('790', '0005');
+    if (soc != null) {
+      _tripMinSoc = _tripMinSoc == null ? soc : (soc < _tripMinSoc! ? soc : _tripMinSoc);
+      _tripMaxSoc = _tripMaxSoc == null ? soc : (soc > _tripMaxSoc! ? soc : _tripMaxSoc);
+    }
+
+    final temp = readNumeric('790', '002F');
+    if (temp != null) {
+      // 0x002F is offset −40
+      final tempC = temp - 40;
+      _tripMinTempC = _tripMinTempC == null ? tempC : (tempC < _tripMinTempC! ? tempC : _tripMinTempC);
+      _tripMaxTempC = _tripMaxTempC == null ? tempC : (tempC > _tripMaxTempC! ? tempC : _tripMaxTempC);
+    }
+
+    final minMv = globalMinCellMv;
+    final maxMv = globalMaxCellMv;
+    if (minMv != null && maxMv != null) {
+      final spread = (maxMv - minMv).toDouble();
+      _tripMaxCellSpreadMv = _tripMaxCellSpreadMv == null
+          ? spread
+          : (spread > _tripMaxCellSpreadMv! ? spread : _tripMaxCellSpreadMv);
+    }
+
+    // Power-A from VCU 791/0x0038 — best-guess instantaneous power.
+    // We don't yet know the exact semantics (whether it's bidirectional,
+    // signed, or unsigned), so we treat it as magnitude. If/when we find
+    // a signed regen value, peakRegenKw will be populated separately.
+    final pwr = readNumeric('791', '0038');
+    if (pwr != null) {
+      final kw = pwr.abs(); // assume already in kW after scale=0.1
+      _tripPeakPowerKw = _tripPeakPowerKw == null ? kw : (kw > _tripPeakPowerKw! ? kw : _tripPeakPowerKw);
+    }
+
+    // TODO: peakSpeedKmh once speed DID identified
+    // TODO: peakRegenKw + regenEnergyKwh once regen DID identified
+  }
+
+  /// v0.1.9: write a snapshot of current state to DB if enough time has passed.
+  ///
+  /// Cadence:
+  ///   - 2 minutes when a trip is active (denser to capture trip shape)
+  ///   - 10 minutes when not in a trip (light coverage for "weekly trends")
+  ///
+  /// All snapshot fields are nullable — if a DID isn't readable right now,
+  /// it's saved as null and the chart will just have a gap. Better than
+  /// inserting garbage.
+  Future<void> _maybeWriteSnapshot() async {
+    final now = DateTime.now();
+    final interval = _currentTripId != null
+        ? _snapshotIntervalInTrip
+        : _snapshotIntervalIdle;
+    if (_lastSnapshotAt != null && now.difference(_lastSnapshotAt!) < interval) {
+      return;
+    }
+    _lastSnapshotAt = now;
+
+    final soc = readNumeric('790', '0005');
+    final soh = readNumeric('790', '0029');
+    final tempRaw = readNumeric('790', '002F');
+    final tempC = tempRaw != null ? tempRaw - 40 : null;
+    final cellMin = globalMinCellMv?.toDouble();
+    final cellMax = globalMaxCellMv?.toDouble();
+    final spread = (cellMin != null && cellMax != null) ? (cellMax - cellMin) : null;
+    final odo = readNumeric('791', '0026');
+    final packV = packVoltageV;
+    final hvBus = hvBusV;
+    final gearRaw = readNumeric('791', '0009');
+    final gear = gearRaw?.toInt();
+    final pawl = parkingPawlEngaged;
+    final cycles = readNumeric('790', '0B02')?.toInt();
+
+    try {
+      await db.insertSnapshot(SnapshotsCompanion(
+        capturedAt: Value(now),
+        soc: Value(soc),
+        soh: Value(soh),
+        batteryTempC: Value(tempC),
+        cellVoltageMin: Value(cellMin),
+        cellVoltageMax: Value(cellMax),
+        cellSpread: Value(spread),
+        odometer: Value(odo),
+        tripId: Value(_currentTripId),
+        packVoltageV: Value(packV),
+        hvBusV: Value(hvBus),
+        gear: Value(gear),
+        pawlEngaged: Value(pawl),
+        isCharging: Value(isCharging),
+        chargingPowerKw: Value(chargingPowerKw),
+        cycleCount: Value(cycles),
+      ));
+    } catch (e) {
+      debugPrint('Snapshot write failed: $e');
+    }
   }
 
   /// v6.1: обновление истории 0x0B00 + расчёт мгновенной мощности зарядки.
