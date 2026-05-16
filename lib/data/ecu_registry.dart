@@ -148,9 +148,16 @@ const packMonitorEcu = EcuSpec(
     DidSpec(did: '0105', name: 'Part number', category: DidCategory.identity),
     DidSpec(did: '0008', name: 'Sub-pack V #1', unit: 'V', scale: 0.1, expectedBytes: 2, category: DidCategory.packVoltage, notes: '~97V'),
     DidSpec(did: '0009', name: 'Sub-pack V #2', unit: 'V', scale: 0.1, expectedBytes: 2, category: DidCategory.packVoltage, notes: '~99V'),
-    DidSpec(did: '0014', name: 'Pack half V #1', unit: 'V', scale: 0.01, expectedBytes: 2, category: DidCategory.packVoltage, notes: '~180V'),
-    DidSpec(did: '0016', name: 'Pack half V #2', unit: 'V', scale: 0.01, expectedBytes: 2, category: DidCategory.packVoltage),
-    DidSpec(did: '0022', name: 'Pack V (alt)', unit: 'V', scale: 0.01, expectedBytes: 2, category: DidCategory.packVoltage),
+    // Pack voltage instant. Scale 0.025 V/LSB (corrected 2026-05-17 — note
+    // saying '~180V' was wrong artifact of initial 0.01 scale guess).
+    DidSpec(did: '0014', name: 'Pack V (instant)', unit: 'V', scale: 0.025, expectedBytes: 2, category: DidCategory.packVoltage),
+    // Pack voltage average. Scale corrected 0.01 → 0.025 (2026-05-17).
+    DidSpec(did: '0016', name: 'Pack V (avg)', unit: 'V', scale: 0.025, expectedBytes: 2, category: DidCategory.packVoltage),
+    // Pack voltage filtered (740 Pack Monitor). Reverse 2026-05-03: scale 0.025
+    // (NOT 0.01 as initially assumed) — 18000 × 0.025 = 450V matches measured.
+    // This was wrong in earlier versions causing Trip Detail charts to show
+    // ~4.5V when graphs applied an additional ×0.025 transform.
+    DidSpec(did: '0022', name: 'Pack V (alt)', unit: 'V', scale: 0.025, expectedBytes: 2, category: DidCategory.packVoltage),
     DidSpec(did: '0023', name: 'Pack V (alt)2', unit: 'V', scale: 0.01, expectedBytes: 2, category: DidCategory.packVoltage),
     DidSpec(did: '0007', name: 'Status', category: DidCategory.status),
     DidSpec(did: '0010', name: 'Contactor 1', category: DidCategory.status),

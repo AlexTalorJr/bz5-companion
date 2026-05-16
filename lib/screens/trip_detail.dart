@@ -77,7 +77,9 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                 did: '0022',
                 color: Colors.yellowAccent,
                 unit: 'V',
-                valueTransform: (v) => v * 0.025,
+                // No valueTransform — registry decoder already applies scale 0.025
+                // (per v0.1.9 hotfix 2026-05-17). Values in Sample.numericValue
+                // are already in volts.
                 svc: svc,
               ),
               const SizedBox(height: 12),
