@@ -667,7 +667,7 @@ class _ChartCard extends StatelessWidget {
               reservedSize: 40,
               getTitlesWidget: (v, _) => Text(
                 v.toStringAsFixed(v.abs() < 10 ? 1 : 0),
-                style: const TextStyle(
+                style: TextStyle(
                     fontSize: big ? 12 : 10, color: Colors.grey),
               ),
             ),
