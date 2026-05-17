@@ -6,6 +6,7 @@ import '../services/connection.dart';
 import 'about.dart';
 import 'data_management.dart';
 import 'diagnostics.dart';
+import 'sweep.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -61,6 +62,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
             onTap: () => Navigator.of(context).push(
               MaterialPageRoute(
                 builder: (_) => const DiagnosticsScreen(),
+              ),
+            ),
+          ),
+          ListTile(
+            leading: const Icon(Icons.search,
+                color: Colors.lightBlueAccent),
+            title: const Text('DID Sweep'),
+            subtitle: const Text(
+                'In-car ECU probe — presets и custom диапазоны'),
+            trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => const SweepScreen(),
               ),
             ),
           ),
