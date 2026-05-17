@@ -44,6 +44,70 @@ jobs:
       - name: Create Android project files (with valid name)
         run: flutter create --platforms=android --org com.bz5companion --project-name bz5_companion .
 
+      - name: Decode release keystore
+        # Secrets must be set in GitHub repo Settings → Secrets and variables → Actions:
+        #   ANDROID_KEYSTORE_BASE64   — base64 of bz5-release.keystore
+        #   ANDROID_KEYSTORE_PASSWORD — store password
+        #   ANDROID_KEY_ALIAS         — bz5-release
+        #   ANDROID_KEY_PASSWORD      — key password (usually same as store)
+        # If keystore secret is missing this step skips signing and falls
+        # back to Flutter's default debug keystore — APK will still build
+        # but won't upgrade in-place over signed builds.
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "::warning::ANDROID_KEYSTORE_BASE64 secret not set — skipping release signing"
+            echo "HAS_KEYSTORE=false" >> $GITHUB_ENV
+            exit 0
+          fi
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > android/app/bz5-release.keystore
+          echo "Keystore decoded: $(stat -c%s android/app/bz5-release.keystore) bytes"
+          echo "HAS_KEYSTORE=true" >> $GITHUB_ENV
+
+      - name: Configure release signing in build.gradle
+        if: env.HAS_KEYSTORE == 'true'
+        env:
+          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          # Inject release signingConfig into the Flutter-generated build.gradle.
+          # The template ships with 'signingConfig signingConfigs.debug' in the
+          # release buildType — we add a signingConfigs.release block and rewire.
+          python3 - <<'PYEOF'
+          import re, sys
+          path = 'android/app/build.gradle'
+          src = open(path).read()
+          inject = (
+              '\n    signingConfigs {\n'
+              '        release {\n'
+              '            keyAlias System.getenv("KEY_ALIAS")\n'
+              '            keyPassword System.getenv("KEY_PASSWORD")\n'
+              '            storeFile file("bz5-release.keystore")\n'
+              '            storePassword System.getenv("STORE_PASSWORD")\n'
+              '        }\n'
+              '    }\n\n'
+          )
+          # Place signingConfigs block just before buildTypes
+          src2 = re.sub(
+              r'(\n\s*)(buildTypes\s*\{)',
+              inject + r'\1\2',
+              src,
+              count=1,
+          )
+          # Replace debug signingConfig reference in release block
+          src3 = src2.replace(
+              'signingConfig signingConfigs.debug',
+              'signingConfig signingConfigs.release',
+          )
+          if src3 == src:
+              print('::warning::could not patch build.gradle — release will use debug key')
+              sys.exit(0)
+          open(path, 'w').write(src3)
+          print('build.gradle patched for release signing')
+          PYEOF
+
       - name: Install dependencies
         run: flutter pub get
 
@@ -53,7 +117,11 @@ jobs:
       - name: Generate Drift code
         run: dart run build_runner build --delete-conflicting-outputs
 
-      - name: Build APK (release, debug-keystore)
+      - name: Build APK
+        env:
+          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           flutter build apk --release \
             --build-number=${{ env.BUILD_NUMBER }} \
