@@ -12,12 +12,25 @@ import 'settings_wide.dart';
 /// 4 destinations on a left NavigationRail:
 ///   - Dashboard — single-page realtime view, all critical stats visible
 ///   - Raw Data — ECU explorer with live DID table + diagnostics sweep
-///   - History — trip log (placeholder for now)
+///   - History — trip log
 ///   - Settings — adapter / connection management
 ///
 /// IndexedStack preserves screen state across switches (so a sweep
 /// running on Raw Data doesn't get cancelled if the user briefly
 /// switches to Dashboard).
+///
+/// v0.1.13: top inset handling changed from hardcoded Padding(top: 48) to
+/// SafeArea. Earlier we observed Toyota BZ5 launcher overlay covering
+/// app content at the top — but after a Toyota system update the overlay
+/// behaviour changed (status icons now render onto the app's own canvas
+/// rather than on a translucent strip above it). The fixed 48dp padding
+/// then became visible empty grey space.
+///
+/// SafeArea reads MediaQuery.padding.top, which the Android system fills
+/// with the real status-bar inset. When the launcher doesn't overlay
+/// anything (the new behaviour) the inset is small (~24dp) and our content
+/// touches the top edge cleanly. When the overlay returns, the inset
+/// auto-expands.
 class HeadUnitScaffold extends StatefulWidget {
   const HeadUnitScaffold({super.key});
 
@@ -39,21 +52,18 @@ class _HeadUnitScaffoldState extends State<HeadUnitScaffold> {
   Widget build(BuildContext context) {
     final svc = context.watch<ConnectionService>();
     return Scaffold(
-      body: Padding(
-        // v0.1.10: Toyota BZ5 launcher renders a system overlay bar at the
-        // top of the screen (status icons, outside temperature, etc.) that
-        // sits on top of our app content. Without a top padding, controls
-        // near the very top of the screen are partially un-tappable — taps
-        // get intercepted by the overlay. ~48dp clears it comfortably while
-        // not wasting too much vertical space.
-        padding: const EdgeInsets.only(top: 48),
+      body: SafeArea(
+        // SafeArea reads MediaQuery.padding from the system (Toyota launcher
+        // reports its own top inset on the head unit). The `minimum` ensures
+        // a small breathing room even when the system reports zero — useful
+        // for phones in landscape and edge cases where the launcher under-
+        // reports the status bar height.
+        minimum: const EdgeInsets.only(top: 8),
         child: Row(
           children: [
             NavigationRail(
               selectedIndex: _index,
               onDestinationSelected: (i) => setState(() => _index = i),
-              // labelType.all показывает текст под иконкой постоянно — на 15"
-              // экране места достаточно, текст помогает водителю не вглядываться.
               labelType: NavigationRailLabelType.all,
               minWidth: 80,
               useIndicator: true,

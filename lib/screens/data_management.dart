@@ -8,13 +8,16 @@ import '../services/export_service.dart';
 /// v0.1.11: Data management screen — export all data to share sheet,
 /// or clear specific tables when storage starts filling up.
 ///
-/// Two sections:
-///   1. EXPORT — toggle includes (trips/snapshots/samples/sweeps) and tap
-///      "Export". Builds a zip and hands off to system share — user picks
-///      destination (USB drive via "Files", Google Drive, Telegram, etc.).
-///   2. CLEAR — four destructive actions with confirmation dialogs:
-///      "Clear raw samples", "Clear snapshots", "Clear trips",
-///      "Clear sweep results". Trips wipe cascades samples in same trip.
+/// v0.1.13: added "Save to Downloads" path for Toyota head unit where the
+/// system share sheet has no registered handlers (no Telegram/Drive/etc.
+/// available). Direct write to /storage/emulated/0/Download/ works there.
+///
+/// Sections:
+///   STORAGE — live counts of trips / snapshots / samples / sweep_runs
+///   EXPORT  — toggles + two buttons:
+///             "Поделиться" → system share sheet (phone-friendly)
+///             "Сохранить в Downloads" → straight to public Downloads folder
+///   CLEANUP — four destructive actions with confirmation dialogs
 class DataManagementScreen extends StatefulWidget {
   const DataManagementScreen({super.key});
 
@@ -161,7 +164,7 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
             dense: true,
           ),
           Padding(
-            padding: const EdgeInsets.all(16),
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
             child: ElevatedButton.icon(
               icon: _exporting
                   ? const SizedBox(
@@ -171,11 +174,34 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
                   : const Icon(Icons.ios_share),
               label: Text(_exporting
                   ? 'Экспорт: $_stage...'
-                  : 'Export & share'),
+                  : 'Поделиться (Share)'),
               style: ElevatedButton.styleFrom(
                 minimumSize: const Size.fromHeight(48),
               ),
-              onPressed: _exporting ? null : () => _doExport(svc),
+              onPressed: _exporting ? null : () => _doExport(svc, toDownloads: false),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+            child: OutlinedButton.icon(
+              icon: const Icon(Icons.download),
+              label: Text(_exporting
+                  ? 'Экспорт: $_stage...'
+                  : 'Сохранить в Downloads'),
+              style: OutlinedButton.styleFrom(
+                minimumSize: const Size.fromHeight(48),
+              ),
+              onPressed: _exporting ? null : () => _doExport(svc, toDownloads: true),
+            ),
+          ),
+          const Padding(
+            padding: EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Text(
+              'На головном устройстве выбирайте «Сохранить в Downloads» — '
+              'файл появится в системной папке Downloads, откуда его можно '
+              'открыть через «Проводник» и скопировать на флешку. На телефоне '
+              'удобнее «Поделиться».',
+              style: TextStyle(fontSize: 11, color: Colors.grey),
             ),
           ),
           if (_lastResult != null)
@@ -272,7 +298,7 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
                 fontWeight: FontWeight.w500)),
       );
 
-  Future<void> _doExport(ConnectionService svc) async {
+  Future<void> _doExport(ConnectionService svc, {required bool toDownloads}) async {
     setState(() {
       _exporting = true;
       _stage = 'init';
@@ -281,24 +307,39 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
 
     try {
       final exporter = ExportService(svc.db);
-      final result = await exporter.exportAll(
-        includeTrips: _includeTrips,
-        includeSnapshots: _includeSnapshots,
-        includeSamples: _includeSamples,
-        includeSweeps: _includeSweeps,
-        onProgress: (stage) {
-          if (mounted) setState(() => _stage = stage);
-        },
-      );
+      final result = toDownloads
+          ? await exporter.exportToDownloads(
+              includeTrips: _includeTrips,
+              includeSnapshots: _includeSnapshots,
+              includeSamples: _includeSamples,
+              includeSweeps: _includeSweeps,
+              onProgress: (stage) {
+                if (mounted) setState(() => _stage = stage);
+              },
+            )
+          : await exporter.exportAll(
+              includeTrips: _includeTrips,
+              includeSnapshots: _includeSnapshots,
+              includeSamples: _includeSamples,
+              includeSweeps: _includeSweeps,
+              onProgress: (stage) {
+                if (mounted) setState(() => _stage = stage);
+              },
+            );
       if (!mounted) return;
       final summary = result.counts.entries
           .where((e) => e.value > 0)
           .map((e) => '${e.key}=${e.value}')
           .join(', ');
       setState(() {
-        _lastResult = result.sharedSuccessfully
-            ? 'Готово (${result.humanSize}): $summary'
-            : 'Архив создан (${result.humanSize}): $summary. Поделиться отменено.';
+        if (result.destinationKind == ExportDestinationKind.downloads) {
+          _lastResult = 'Сохранено (${result.humanSize}): $summary\n'
+              'Путь: ${result.zipPath}';
+        } else {
+          _lastResult = result.sharedSuccessfully
+              ? 'Поделено (${result.humanSize}): $summary'
+              : 'Архив создан (${result.humanSize}): $summary. Поделиться отменено.';
+        }
       });
     } catch (e) {
       if (!mounted) return;
