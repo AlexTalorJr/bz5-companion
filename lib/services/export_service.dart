@@ -39,7 +39,7 @@ class ExportService {
     bool includeSweeps = true,
     bool includeSnapshots = true,
     bool includeTrips = true,
-    bool Function(String stage)? onProgress,
+    void Function(String stage)? onProgress,
   }) async {
     final tmpDir = await getTemporaryDirectory();
     final ts = DateFormat('yyyyMMdd-HHmmss').format(DateTime.now());
