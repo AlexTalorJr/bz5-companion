@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 
 import '../services/connection.dart';
 import 'about.dart';
+import 'data_management.dart';
 import 'diagnostics.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -60,6 +61,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
             onTap: () => Navigator.of(context).push(
               MaterialPageRoute(
                 builder: (_) => const DiagnosticsScreen(),
+              ),
+            ),
+          ),
+          ListTile(
+            leading: const Icon(Icons.archive_outlined,
+                color: Colors.lightBlueAccent),
+            title: const Text('Data & Export'),
+            subtitle: const Text(
+                'Экспорт trips/snapshots/samples на флешку или в облако, очистка'),
+            trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => const DataManagementScreen(),
               ),
             ),
           ),
