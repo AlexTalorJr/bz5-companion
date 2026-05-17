@@ -114,39 +114,126 @@ jobs:
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           # Inject release signingConfig into the Flutter-generated build.gradle.
-          # The template ships with 'signingConfig signingConfigs.debug' in the
-          # release buildType — we add a signingConfigs.release block and rewire.
+          #
+          # IMPORTANT: substitute credentials INLINE (not via System.getenv at
+          # gradle runtime). Flutter's gradle invocation may not propagate env
+          # vars deterministically across platform versions/AGP versions.
+          # Inline strings always work.
+          #
+          # Two patches both required for release signing to take effect:
+          #   1. Insert signingConfigs.release { keyAlias..., storeFile..., ... }
+          #      block before buildTypes
+          #   2. Rewire release buildType: signingConfig signingConfigs.release
+          #      (was: signingConfigs.debug, the default Flutter template uses)
+          #
+          # If either fails, we ABORT THE BUILD with exit 1 rather than silently
+          # producing an APK signed with debug key — silent failure caused us
+          # to ship v0.1.14.34 with a debug-key APK that couldn't upgrade
+          # previous signed installs.
           python3 - <<'PYEOF'
-          import re, sys
+          import os, re, sys
           path = 'android/app/build.gradle'
-          src = open(path).read()
+          if not os.path.exists(path):
+              # Maybe Kotlin DSL? AGP can write build.gradle.kts under newer templates.
+              alt = 'android/app/build.gradle.kts'
+              if os.path.exists(alt):
+                  print(f'::error::Found {alt} (Kotlin DSL) instead of build.gradle')
+                  print('::error::Workflow patch supports Groovy only. Need to update.')
+                  sys.exit(1)
+              print(f'::error::{path} not found and no Kotlin DSL variant either')
+              sys.exit(1)
+
+          src_original = open(path).read()
+          print('--- Original build.gradle (first 80 lines) ---')
+          for i, line in enumerate(src_original.split('\n')[:80], 1):
+              print(f'{i:3d}: {line}')
+          print('--- End of original ---')
+
+          # Read secrets from env so they're substituted INLINE into the
+          # gradle file (not looked up at gradle runtime).
+          store_pwd = os.environ.get('STORE_PASSWORD', '')
+          key_alias = os.environ.get('KEY_ALIAS', '')
+          key_pwd = os.environ.get('KEY_PASSWORD', '')
+
+          if not store_pwd or not key_alias or not key_pwd:
+              print('::error::One or more keystore secrets are empty:')
+              print(f'  STORE_PASSWORD: {"set" if store_pwd else "EMPTY"}')
+              print(f'  KEY_ALIAS: {"set" if key_alias else "EMPTY"}')
+              print(f'  KEY_PASSWORD: {"set" if key_pwd else "EMPTY"}')
+              sys.exit(1)
+
+          # Escape any special chars for Groovy single-quoted strings.
+          def escape_groovy(s):
+              return s.replace('\\', '\\\\').replace("'", "\\'")
+
           inject = (
               '\n    signingConfigs {\n'
               '        release {\n'
-              '            keyAlias System.getenv("KEY_ALIAS")\n'
-              '            keyPassword System.getenv("KEY_PASSWORD")\n'
+              f"            keyAlias '{escape_groovy(key_alias)}'\n"
+              f"            keyPassword '{escape_groovy(key_pwd)}'\n"
               '            storeFile file("bz5-release.keystore")\n'
-              '            storePassword System.getenv("STORE_PASSWORD")\n'
+              f"            storePassword '{escape_groovy(store_pwd)}'\n"
               '        }\n'
               '    }\n\n'
           )
-          # Place signingConfigs block just before buildTypes
-          src2 = re.sub(
+
+          # Patch 1: insert signingConfigs block before buildTypes
+          src_v1, n1 = re.subn(
               r'(\n\s*)(buildTypes\s*\{)',
               inject + r'\1\2',
-              src,
+              src_original,
               count=1,
           )
-          # Replace debug signingConfig reference in release block
-          src3 = src2.replace(
-              'signingConfig signingConfigs.debug',
-              'signingConfig signingConfigs.release',
-          )
-          if src3 == src:
-              print('::warning::could not patch build.gradle — release will use debug key')
-              sys.exit(0)
-          open(path, 'w').write(src3)
+          if n1 != 1:
+              print(f'::error::Patch 1 failed: could not find "buildTypes {{" '
+                    f'pattern in build.gradle (matches: {n1})')
+              sys.exit(1)
+          print(f'Patch 1: inserted signingConfigs.release block ({n1} replacement)')
+
+          # Patch 2: rewire release buildType signingConfig from debug → release.
+          # Try multiple known shapes of the line Flutter templates generate.
+          patterns = [
+              ('signingConfig signingConfigs.debug',
+               'signingConfig signingConfigs.release'),
+              ('signingConfig = signingConfigs.debug',
+               'signingConfig = signingConfigs.release'),
+              ('signingConfig signingConfigs["debug"]',
+               'signingConfig signingConfigs["release"]'),
+              ("signingConfig signingConfigs['debug']",
+               "signingConfig signingConfigs['release']"),
+          ]
+          src_v2 = src_v1
+          patch2_applied = False
+          for old, new in patterns:
+              if old in src_v2:
+                  src_v2 = src_v2.replace(old, new, 1)
+                  patch2_applied = True
+                  print(f'Patch 2: rewired release buildType using pattern: {old!r}')
+                  break
+
+          if not patch2_applied:
+              # Show what's in the buildTypes block so we can diagnose
+              m = re.search(r'buildTypes\s*\{[^}]*\}', src_v2, re.DOTALL)
+              print('::error::Patch 2 failed: no known signingConfig pattern found')
+              if m:
+                  print('--- buildTypes block contents ---')
+                  print(m.group(0))
+                  print('--- end ---')
+              sys.exit(1)
+
+          open(path, 'w').write(src_v2)
           print('build.gradle patched for release signing')
+
+          # Sanity verification: read it back and confirm both elements present
+          final = open(path).read()
+          if 'signingConfigs.release' not in final or 'storeFile file("bz5-release.keystore")' not in final:
+              print('::error::Patched file does not contain expected markers')
+              sys.exit(1)
+          if 'signingConfig signingConfigs.debug' in final or 'signingConfig = signingConfigs.debug' in final:
+              print('::error::Patched file STILL contains a debug signingConfig — '
+                    'rewire patch did not stick')
+              sys.exit(1)
+          print('Verification: build.gradle release signing configured correctly')
           PYEOF
 
       - name: Install dependencies
