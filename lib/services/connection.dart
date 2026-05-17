@@ -695,8 +695,10 @@ class ConnectionService extends ChangeNotifier {
 
     final temp = readNumeric('790', '002F');
     if (temp != null) {
-      // 0x002F is offset −40
-      final tempC = temp - 40;
+      // v0.1.10 hotfix: registry decoder for 0x002F already applies offset -40.
+      // Don't subtract again here — that caused live temp range to show
+      // ~-22°C when real pack temp was ~18°C (40-degree shift).
+      final tempC = temp;
       _tripMinTempC = _tripMinTempC == null ? tempC : (tempC < _tripMinTempC! ? tempC : _tripMinTempC);
       _tripMaxTempC = _tripMaxTempC == null ? tempC : (tempC > _tripMaxTempC! ? tempC : _tripMaxTempC);
     }
@@ -745,8 +747,8 @@ class ConnectionService extends ChangeNotifier {
 
     final soc = readNumeric('790', '0005');
     final soh = readNumeric('790', '0029');
-    final tempRaw = readNumeric('790', '002F');
-    final tempC = tempRaw != null ? tempRaw - 40 : null;
+    // v0.1.10 hotfix: registry already applies offset -40 — don't subtract again.
+    final tempC = readNumeric('790', '002F');
     final cellMin = globalMinCellMv?.toDouble();
     final cellMax = globalMaxCellMv?.toDouble();
     final spread = (cellMin != null && cellMax != null) ? (cellMax - cellMin) : null;

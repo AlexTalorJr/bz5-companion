@@ -39,51 +39,60 @@ class _HeadUnitScaffoldState extends State<HeadUnitScaffold> {
   Widget build(BuildContext context) {
     final svc = context.watch<ConnectionService>();
     return Scaffold(
-      body: Row(
-        children: [
-          NavigationRail(
-            selectedIndex: _index,
-            onDestinationSelected: (i) => setState(() => _index = i),
-            // labelType.all показывает текст под иконкой постоянно — на 15"
-            // экране места достаточно, текст помогает водителю не вглядываться.
-            labelType: NavigationRailLabelType.all,
-            minWidth: 80,
-            useIndicator: true,
-            destinations: [
-              const NavigationRailDestination(
-                icon: Icon(Icons.dashboard_outlined),
-                selectedIcon: Icon(Icons.dashboard),
-                label: Text('Dashboard'),
-              ),
-              const NavigationRailDestination(
-                icon: Icon(Icons.table_rows_outlined),
-                selectedIcon: Icon(Icons.table_rows),
-                label: Text('Raw Data'),
-              ),
-              const NavigationRailDestination(
-                icon: Icon(Icons.timeline_outlined),
-                selectedIcon: Icon(Icons.timeline),
-                label: Text('History'),
-              ),
-              NavigationRailDestination(
-                icon: Badge(
-                  isLabelVisible: svc.status != ConnectionStatus.connected,
-                  backgroundColor: Colors.red,
-                  child: const Icon(Icons.settings_outlined),
+      body: Padding(
+        // v0.1.10: Toyota BZ5 launcher renders a system overlay bar at the
+        // top of the screen (status icons, outside temperature, etc.) that
+        // sits on top of our app content. Without a top padding, controls
+        // near the very top of the screen are partially un-tappable — taps
+        // get intercepted by the overlay. ~48dp clears it comfortably while
+        // not wasting too much vertical space.
+        padding: const EdgeInsets.only(top: 48),
+        child: Row(
+          children: [
+            NavigationRail(
+              selectedIndex: _index,
+              onDestinationSelected: (i) => setState(() => _index = i),
+              // labelType.all показывает текст под иконкой постоянно — на 15"
+              // экране места достаточно, текст помогает водителю не вглядываться.
+              labelType: NavigationRailLabelType.all,
+              minWidth: 80,
+              useIndicator: true,
+              destinations: [
+                const NavigationRailDestination(
+                  icon: Icon(Icons.dashboard_outlined),
+                  selectedIcon: Icon(Icons.dashboard),
+                  label: Text('Dashboard'),
                 ),
-                selectedIcon: const Icon(Icons.settings),
-                label: const Text('Settings'),
-              ),
-            ],
-          ),
-          const VerticalDivider(thickness: 1, width: 1),
-          Expanded(
-            child: IndexedStack(
-              index: _index,
-              children: _screens,
+                const NavigationRailDestination(
+                  icon: Icon(Icons.table_rows_outlined),
+                  selectedIcon: Icon(Icons.table_rows),
+                  label: Text('Raw Data'),
+                ),
+                const NavigationRailDestination(
+                  icon: Icon(Icons.timeline_outlined),
+                  selectedIcon: Icon(Icons.timeline),
+                  label: Text('History'),
+                ),
+                NavigationRailDestination(
+                  icon: Badge(
+                    isLabelVisible: svc.status != ConnectionStatus.connected,
+                    backgroundColor: Colors.red,
+                    child: const Icon(Icons.settings_outlined),
+                  ),
+                  selectedIcon: const Icon(Icons.settings),
+                  label: const Text('Settings'),
+                ),
+              ],
             ),
-          ),
-        ],
+            const VerticalDivider(thickness: 1, width: 1),
+            Expanded(
+              child: IndexedStack(
+                index: _index,
+                children: _screens,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

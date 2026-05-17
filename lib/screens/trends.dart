@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 
 import '../data/database.dart';
 import '../services/connection.dart';
+import '../widgets/responsive.dart';
 
 /// v0.1.9: Trends screen — long-term charts of key metrics over selectable time windows.
 ///
@@ -108,63 +109,76 @@ class _TrendsScreenState extends State<TrendsScreen> {
                   ),
                 );
               }
-              return ListView(
+              // v0.1.10: 2-column grid on head unit (landscape ≥840dp wide),
+              // 1-column ListView on phone. Each chart has a fixed aspect
+              // ratio so it doesn't stretch absurdly wide on large displays.
+              final charts = <Widget>[
+                _TrendChart(
+                  title: 'State of charge',
+                  snapshots: snapshots,
+                  valuePicker: (s) => s.soc,
+                  color: Colors.greenAccent,
+                  unit: '%',
+                  windowLabel: _windowLabel(),
+                ),
+                _TrendChart(
+                  title: 'Battery temperature',
+                  snapshots: snapshots,
+                  valuePicker: (s) => s.batteryTempC,
+                  color: Colors.orangeAccent,
+                  unit: '°C',
+                  windowLabel: _windowLabel(),
+                ),
+                _TrendChart(
+                  title: 'State of health',
+                  snapshots: snapshots,
+                  valuePicker: (s) => s.soh,
+                  color: Colors.lightGreenAccent,
+                  unit: '%',
+                  windowLabel: _windowLabel(),
+                ),
+                _TrendChart(
+                  title: 'Cell spread',
+                  snapshots: snapshots,
+                  valuePicker: (s) => s.cellSpread,
+                  color: Colors.cyanAccent,
+                  unit: 'mV',
+                  windowLabel: _windowLabel(),
+                ),
+                _TrendChart(
+                  title: 'Cycle count',
+                  snapshots: snapshots,
+                  valuePicker: (s) => s.cycleCount?.toDouble(),
+                  color: Colors.pinkAccent,
+                  unit: '',
+                  windowLabel: _windowLabel(),
+                ),
+                _TrendChart(
+                  title: 'Odometer',
+                  snapshots: snapshots,
+                  valuePicker: (s) => s.odometer,
+                  color: Colors.lightBlueAccent,
+                  unit: 'km',
+                  windowLabel: _windowLabel(),
+                ),
+              ];
+
+              final isWide = LayoutBreakpoints.useHeadUnitLayout(context);
+              if (isWide) {
+                return GridView.count(
+                  crossAxisCount: 2,
+                  padding: const EdgeInsets.all(8),
+                  childAspectRatio: 2.4,    // wide-ish charts so values readable
+                  mainAxisSpacing: 8,
+                  crossAxisSpacing: 8,
+                  children: charts,
+                );
+              }
+              return ListView.separated(
                 padding: const EdgeInsets.all(8),
-                children: [
-                  _TrendChart(
-                    title: 'State of charge',
-                    snapshots: snapshots,
-                    valuePicker: (s) => s.soc,
-                    color: Colors.greenAccent,
-                    unit: '%',
-                    windowLabel: _windowLabel(),
-                  ),
-                  const SizedBox(height: 8),
-                  _TrendChart(
-                    title: 'Battery temperature',
-                    snapshots: snapshots,
-                    valuePicker: (s) => s.batteryTempC,
-                    color: Colors.orangeAccent,
-                    unit: '°C',
-                    windowLabel: _windowLabel(),
-                  ),
-                  const SizedBox(height: 8),
-                  _TrendChart(
-                    title: 'State of health',
-                    snapshots: snapshots,
-                    valuePicker: (s) => s.soh,
-                    color: Colors.lightGreenAccent,
-                    unit: '%',
-                    windowLabel: _windowLabel(),
-                  ),
-                  const SizedBox(height: 8),
-                  _TrendChart(
-                    title: 'Cell spread',
-                    snapshots: snapshots,
-                    valuePicker: (s) => s.cellSpread,
-                    color: Colors.cyanAccent,
-                    unit: 'mV',
-                    windowLabel: _windowLabel(),
-                  ),
-                  const SizedBox(height: 8),
-                  _TrendChart(
-                    title: 'Cycle count',
-                    snapshots: snapshots,
-                    valuePicker: (s) => s.cycleCount?.toDouble(),
-                    color: Colors.pinkAccent,
-                    unit: '',
-                    windowLabel: _windowLabel(),
-                  ),
-                  const SizedBox(height: 8),
-                  _TrendChart(
-                    title: 'Odometer',
-                    snapshots: snapshots,
-                    valuePicker: (s) => s.odometer,
-                    color: Colors.lightBlueAccent,
-                    unit: 'km',
-                    windowLabel: _windowLabel(),
-                  ),
-                ],
+                itemCount: charts.length,
+                separatorBuilder: (_, __) => const SizedBox(height: 8),
+                itemBuilder: (_, i) => charts[i],
               );
             },
           ),
@@ -205,7 +219,16 @@ class _TrendChart extends StatelessWidget {
       if (v > maxY) maxY = v;
     }
 
-    return Card(
+    // v0.1.10: in a GridView the cell already has fixed dimensions (via
+    // childAspectRatio), so the chart fills it via Expanded. In a phone
+    // ListView each chart needs its own height — 180dp is comfortable.
+    // We detect grid context: a chart inside GridView gets bounded constraints
+    // top-down. The simplest robust solution is wrap with SizedBox in the
+    // ListView builder, but here we just give Card a max height when not
+    // bounded.
+    final isWide = LayoutBreakpoints.useHeadUnitLayout(context);
+
+    final card = Card(
       child: Padding(
         padding: const EdgeInsets.all(12),
         child: Column(
@@ -231,8 +254,7 @@ class _TrendChart extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 8),
-            SizedBox(
-              height: 130,
+            Expanded(
               child: points.length < 2
                   ? Center(
                       child: Text(
@@ -293,5 +315,14 @@ class _TrendChart extends StatelessWidget {
         ),
       ),
     );
+
+    // Phone in a ListView: ListView gives unbounded height to children, so
+    // the Expanded inside Card would crash. Constrain to a fixed height.
+    // Head unit in a GridView: the cell is already bounded by childAspectRatio,
+    // so Card lays out fine without a wrapper.
+    if (!isWide) {
+      return SizedBox(height: 180, child: card);
+    }
+    return card;
   }
 }
