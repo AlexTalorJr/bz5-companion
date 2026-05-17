@@ -44,6 +44,47 @@ jobs:
       - name: Create Android project files (with valid name)
         run: flutter create --platforms=android --org com.bz5companion --project-name bz5_companion .
 
+      - name: Bump Kotlin version in settings.gradle
+        # Flutter 3.27.4's `flutter create` writes Kotlin 1.8.x into the
+        # generated android/settings.gradle (pluginManagement -> plugins block,
+        # id 'org.jetbrains.kotlin.android' version '1.8.x').
+        #
+        # Modern Flutter plugins (wakelock_plus 1.4+, package_info_plus 9+, etc.)
+        # are compiled with Kotlin 2.x metadata. Kotlin compiler 1.8 can only
+        # read up to metadata 1.9 — anything newer fails with "Incompatible
+        # classes were found in dependencies".
+        #
+        # Bumping the Kotlin plugin to 2.1.0 makes the build compatible with
+        # current versions of all our deps without pinning individual ones.
+        # Java 17 (already configured above) supports Kotlin 2.x.
+        run: |
+          SETTINGS=android/settings.gradle
+          if [ ! -f "$SETTINGS" ]; then
+            echo "::error::$SETTINGS not found after flutter create"
+            exit 1
+          fi
+          # Replace the version of the 'org.jetbrains.kotlin.android' plugin.
+          # Use Python for predictable regex behaviour across sed flavours.
+          python3 - <<'PYEOF'
+          import re, sys
+          path = 'android/settings.gradle'
+          src = open(path).read()
+          before = src
+          # Match: id "org.jetbrains.kotlin.android" version "X.Y.Z"  (with " or ')
+          src = re.sub(
+              r'(id\s+["\']org\.jetbrains\.kotlin\.android["\']\s+version\s+["\'])([^"\']+)(["\'])',
+              r'\g<1>2.1.0\g<3>',
+              src,
+          )
+          if src == before:
+              print('::warning::could not find Kotlin plugin line — Kotlin not bumped')
+              sys.exit(0)
+          open(path, 'w').write(src)
+          print('Kotlin bumped to 2.1.0 in settings.gradle')
+          PYEOF
+          # Show the result for build log visibility
+          grep -A1 "kotlin.android" android/settings.gradle || true
+
       - name: Decode release keystore
         # Secrets must be set in GitHub repo Settings → Secrets and variables → Actions:
         #   ANDROID_KEYSTORE_BASE64   — base64 of bz5-release.keystore
