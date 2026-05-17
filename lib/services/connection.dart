@@ -1106,6 +1106,184 @@ class ConnectionService extends ChangeNotifier {
   bool _dtcScanRunning = false;
   bool get dtcScanRunning => _dtcScanRunning;
 
+  // ─────────────────────── v0.1.14: in-car DID sweep ─────────────────────
+  //
+  // Probes a range of DIDs on a given ECU and records each (DID, raw response)
+  // tuple into SweepRuns + SweepResults DB tables. Pauses normal polling
+  // for the duration. Cancellable mid-flight.
+  //
+  // Architecture mirrors runDtcScan:
+  //   - one sweep at a time (gated by _sweepRunning)
+  //   - cancellation via flag (_sweepCancelled) checked in the loop
+  //   - progress callback fired on each probe for UI bar
+  //   - results streamed to DB as we go (so cancel still keeps partial data)
+  //
+  // Per spec, sweep works in any car state (gear/Ready/etc.) — caller is
+  // responsible for handing the device to a passenger if running in motion.
+
+  bool _sweepRunning = false;
+  bool _sweepCancelled = false;
+  int? _currentSweepRunId;
+  int _sweepDone = 0;
+  int _sweepTotal = 0;
+  String _sweepCurrentDid = '';
+
+  bool get sweepRunning => _sweepRunning;
+  int? get currentSweepRunId => _currentSweepRunId;
+  int get sweepDone => _sweepDone;
+  int get sweepTotal => _sweepTotal;
+  String get sweepCurrentDid => _sweepCurrentDid;
+  double get sweepProgress =>
+      _sweepTotal > 0 ? _sweepDone / _sweepTotal : 0.0;
+
+  /// Cancel an in-progress sweep. Safe to call even if no sweep is running.
+  /// The sweep loop checks this flag between DIDs, so cancellation takes
+  /// effect within ~one probe period (default 250ms).
+  void cancelSweep() {
+    if (_sweepRunning) {
+      _sweepCancelled = true;
+    }
+  }
+
+  /// Run a DID sweep over [startDid] .. [endDid] (inclusive, hex strings
+  /// like "0000".."1FFF") on the given ECU. Returns the SweepRun id created
+  /// in DB so the caller can navigate to results.
+  ///
+  /// Results stream to SweepResults table as we go — useful if cancelled
+  /// midway. SweepRun.endedAt is set on completion or cancellation.
+  ///
+  /// Pauses normal polling for the entire sweep duration.
+  Future<int?> runSweep({
+    required String txEcu,
+    required String rxEcu,
+    required String startDidHex,
+    required String endDidHex,
+    int periodMs = 250,
+    String? carState,
+    String? notes,
+    void Function(int done, int total, String currentDid)? onProgress,
+  }) async {
+    if (_client == null) return null;
+    if (_sweepRunning) return null;
+
+    final start = int.tryParse(startDidHex, radix: 16);
+    final end = int.tryParse(endDidHex, radix: 16);
+    if (start == null || end == null || end < start) return null;
+    if (end > 0xFFFF) return null;
+    final total = end - start + 1;
+
+    _sweepRunning = true;
+    _sweepCancelled = false;
+    _sweepDone = 0;
+    _sweepTotal = total;
+    _sweepCurrentDid = startDidHex.toUpperCase();
+
+    // Pause normal polling
+    final wasPolling = _polling;
+    if (wasPolling) {
+      _polling = false;
+      await Future.delayed(const Duration(milliseconds: 400));
+    }
+
+    // Create SweepRun row
+    final runId = await db.insertSweepRun(SweepRunsCompanion(
+      startedAt: Value(DateTime.now()),
+      txEcu: Value(txEcu),
+      rxEcu: Value(rxEcu),
+      startDid: Value(startDidHex.toUpperCase()),
+      endDid: Value(endDidHex.toUpperCase()),
+      periodMs: Value(periodMs),
+      carState: Value(carState),
+      notes: Value(notes),
+      totalProbes: Value(total),
+    ));
+    _currentSweepRunId = runId;
+    notifyListeners();
+
+    int validCount = 0;
+    int sequence = 0;
+
+    try {
+      for (int didInt = start; didInt <= end; didInt++) {
+        if (_sweepCancelled) break;
+        // BLE link check — abort if disconnected mid-sweep.
+        if (_ble != null && !_ble!.isConnected) break;
+
+        final didHex = didInt.toRadixString(16).toUpperCase().padLeft(4, '0');
+        _sweepCurrentDid = didHex;
+
+        String? rawHex;
+        String? errorCode;
+
+        try {
+          // Timeout: max(1000ms, periodMs*2). Existing readDid calls in this
+          // file use 1000-1500ms; using less would falsely flag slow-but-
+          // responsive DIDs as TIMEOUT.
+          final timeoutMs = periodMs * 2 > 1000 ? periodMs * 2 : 1000;
+          final r = await _client!
+              .readDid(didHex, tx: txEcu, rx: rxEcu)
+              .timeout(Duration(milliseconds: timeoutMs));
+          if (r != null) {
+            // Positive responses start with 62XXXX, where XXXX is the DID.
+            // Negative responses start with 7F (NRC).
+            final raw = r.rawHex;
+            if (raw.toUpperCase().startsWith('7F')) {
+              errorCode = raw;
+            } else {
+              rawHex = raw;
+              validCount++;
+            }
+          }
+        } catch (e) {
+          errorCode = 'TIMEOUT';
+        }
+
+        await db.insertSweepResult(SweepResultsCompanion(
+          sweepRunId: Value(runId),
+          did: Value(didHex),
+          rawHex: Value(rawHex),
+          errorCode: Value(errorCode),
+          sequence: Value(sequence++),
+        ));
+
+        _sweepDone++;
+        onProgress?.call(_sweepDone, _sweepTotal, didHex);
+
+        // Notify UI every 8 probes to avoid hammering the rebuild loop —
+        // 8 * 250ms = 2s smooth-enough updates without thrash.
+        if (_sweepDone % 8 == 0 || _sweepDone == _sweepTotal) {
+          notifyListeners();
+        }
+
+        // Spacing between probes (period) — short delay to let BLE breathe.
+        // We don't add the full periodMs as a separate delay because readDid
+        // itself takes a bit of time and we already throttled with timeout.
+        await Future.delayed(const Duration(milliseconds: 30));
+      }
+    } finally {
+      // Close out the SweepRun
+      await (db.update(db.sweepRuns)..where((s) => s.id.equals(runId))).write(
+        SweepRunsCompanion(
+          endedAt: Value(DateTime.now()),
+          validResponses: Value(validCount),
+        ),
+      );
+
+      _sweepRunning = false;
+      _sweepCancelled = false;
+      // Don't clear _currentSweepRunId — UI may want to navigate to results.
+      if (wasPolling) {
+        _polling = true;
+        _pollLoop();
+      }
+      notifyListeners();
+    }
+
+    return runId;
+  }
+
+
+
   /// Run a one-shot DTC scan across all known ECUs.
   ///
   /// Pauses normal polling for the duration of the scan to avoid BLE
