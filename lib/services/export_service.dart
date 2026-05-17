@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:intl/intl.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../data/database.dart';
@@ -15,6 +16,13 @@ import '../data/database.dart';
 /// to the system share sheet for the user to save (e.g. to a USB flash via
 /// the head unit's "Files" app, or to Google Drive / Telegram / email).
 ///
+/// v0.1.13: added [exportToDownloads] path. Toyota BZ5 head unit launcher
+/// does NOT register a share-sheet handler (system reports "no application
+/// can perform this action" when share is invoked). For that platform we
+/// instead write the zip straight to /storage/emulated/0/Download/, where
+/// the user can find it via Toyota's built-in "Проводник" / file manager
+/// and copy to USB flash from there.
+///
 /// Format inside the zip:
 ///   metadata.json     — schema version, export timestamp, table counts
 ///   trips.csv         — one row per trip with all aggregates
@@ -22,18 +30,14 @@ import '../data/database.dart';
 ///   samples.sqlite    — raw drift DB copy (compact, opens in DB Browser)
 ///   sweep_runs.csv    — sweep run headers
 ///   sweep_results.csv — sweep probe results
-///
-/// Mixed format chosen so:
-///  - trips / snapshots can be opened directly in Excel / Numbers
-///  - samples (millions of rows) stay compact as binary SQLite
-///  - everything is in one zip → one tap to share
 class ExportService {
   final AppDatabase db;
   ExportService(this.db);
 
-  /// Build the zip and trigger share. Optionally [includeSamples] can be
-  /// disabled when the user just wants trips/snapshots (the samples DB
-  /// dump is the heaviest part).
+  /// Public method: build zip + open system share sheet.
+  /// Works on phones (Telegram, Drive, Email etc.).
+  /// On Toyota head unit the share sheet may be empty — use
+  /// [exportToDownloads] instead.
   Future<ExportResult> exportAll({
     bool includeSamples = true,
     bool includeSweeps = true,
@@ -41,13 +45,88 @@ class ExportService {
     bool includeTrips = true,
     void Function(String stage)? onProgress,
   }) async {
-    final tmpDir = await getTemporaryDirectory();
+    final built = await _buildZip(
+      includeSamples: includeSamples,
+      includeSweeps: includeSweeps,
+      includeSnapshots: includeSnapshots,
+      includeTrips: includeTrips,
+      onProgress: onProgress,
+      destDir: await getTemporaryDirectory(),
+    );
+
+    onProgress?.call('sharing');
+    // ignore: deprecated_member_use
+    final shareResult = await Share.shareXFiles(
+      [
+        XFile(
+          built.zipPath,
+          mimeType: 'application/zip',
+          name: p.basename(built.zipPath),
+        ),
+      ],
+      subject: 'BZ5 Companion export — ${built.timestamp}',
+      text: 'Battery & trip data export from BZ5 Companion.',
+    );
+
+    return ExportResult(
+      zipPath: built.zipPath,
+      sizeBytes: built.sizeBytes,
+      counts: built.counts,
+      destinationKind: ExportDestinationKind.share,
+      sharedSuccessfully: shareResult.status == ShareResultStatus.success,
+    );
+  }
+
+  /// Public method: build zip and write it directly to the public Downloads
+  /// folder (/storage/emulated/0/Download/). User can then access it via any
+  /// file manager including Toyota's built-in "Проводник".
+  ///
+  /// Falls back to app's external files dir if Downloads is not writable
+  /// (some Android storage policies restrict legacy paths even with
+  /// MANAGE_EXTERNAL_STORAGE off).
+  Future<ExportResult> exportToDownloads({
+    bool includeSamples = true,
+    bool includeSweeps = true,
+    bool includeSnapshots = true,
+    bool includeTrips = true,
+    void Function(String stage)? onProgress,
+  }) async {
+    // Try public Downloads first. If we can't write there (Android 11+
+    // scoped storage restrictions), fall back to app's external Downloads.
+    final destDir = await _resolveDownloadsDir();
+
+    final built = await _buildZip(
+      includeSamples: includeSamples,
+      includeSweeps: includeSweeps,
+      includeSnapshots: includeSnapshots,
+      includeTrips: includeTrips,
+      onProgress: onProgress,
+      destDir: destDir,
+    );
+
+    return ExportResult(
+      zipPath: built.zipPath,
+      sizeBytes: built.sizeBytes,
+      counts: built.counts,
+      destinationKind: ExportDestinationKind.downloads,
+      sharedSuccessfully: false,
+    );
+  }
+
+  /// Internal: build zip in [destDir]. Returns a _BuildResult so callers
+  /// know the final path / size / counts.
+  Future<_BuildResult> _buildZip({
+    required bool includeSamples,
+    required bool includeSweeps,
+    required bool includeSnapshots,
+    required bool includeTrips,
+    required Directory destDir,
+    void Function(String stage)? onProgress,
+  }) async {
     final ts = DateFormat('yyyyMMdd-HHmmss').format(DateTime.now());
-    final zipPath = p.join(tmpDir.path, 'bz5_export_$ts.zip');
+    final zipPath = p.join(destDir.path, 'bz5_export_$ts.zip');
 
-    // Counts collected for metadata + UI feedback
     final counts = <String, int>{};
-
     final archive = Archive();
 
     if (includeTrips) {
@@ -77,7 +156,6 @@ class ExportService {
         0,
         utf8.encode(_sweepRunsToCsv(runs)),
       ));
-      // Sweep results — concatenated, one row per (run_id, did)
       final allResults = <SweepResult>[];
       for (final r in runs) {
         allResults.addAll(await db.getSweepResults(r.id));
@@ -93,15 +171,11 @@ class ExportService {
     if (includeSamples) {
       onProgress?.call('samples');
       counts['samples'] = await db.countAllSamples();
-      // Copy raw SQLite file directly — much smaller than CSV-encoding millions
-      // of rows. The file is at the app's drift_flutter standard location.
       final dbFile = await _findDatabaseFile();
       if (dbFile != null && await dbFile.exists()) {
         final bytes = await dbFile.readAsBytes();
         archive.addFile(ArchiveFile('samples.sqlite', bytes.length, bytes));
       } else {
-        // Couldn't find db file — fall back to CSV of samples (slow & huge but
-        // at least the user gets something).
         debugPrint('ExportService: db file not found, falling back to CSV');
         final samples = await db.getAllSamples();
         archive.addFile(ArchiveFile(
@@ -112,7 +186,6 @@ class ExportService {
       }
     }
 
-    // Metadata last so we know all counts
     onProgress?.call('metadata');
     final metadata = {
       'app': 'BZ5 Companion',
@@ -126,10 +199,10 @@ class ExportService {
         'samples': includeSamples,
       },
     };
-    final metaBytes = utf8.encode(const JsonEncoder.withIndent('  ').convert(metadata));
+    final metaBytes =
+        utf8.encode(const JsonEncoder.withIndent('  ').convert(metadata));
     archive.addFile(ArchiveFile('metadata.json', metaBytes.length, metaBytes));
 
-    // Write the zip
     onProgress?.call('compressing');
     final encoder = ZipEncoder();
     final zipBytes = encoder.encode(archive);
@@ -137,33 +210,75 @@ class ExportService {
       throw Exception('zip encoding returned null');
     }
     final zipFile = File(zipPath);
+    await zipFile.create(recursive: true);
     await zipFile.writeAsBytes(zipBytes, flush: true);
 
-    onProgress?.call('sharing');
-    // ignore: deprecated_member_use
-    final shareResult = await Share.shareXFiles(
-      [XFile(zipPath, mimeType: 'application/zip', name: 'bz5_export_$ts.zip')],
-      subject: 'BZ5 Companion export — $ts',
-      text: 'Battery & trip data export from BZ5 Companion.',
-    );
-
-    return ExportResult(
+    return _BuildResult(
       zipPath: zipPath,
       sizeBytes: zipBytes.length,
       counts: counts,
-      sharedSuccessfully: shareResult.status == ShareResultStatus.success,
+      timestamp: ts,
     );
   }
 
+  /// Resolve the best directory for "save to Downloads" — public Downloads
+  /// if writable, else app's external Downloads dir as fallback.
+  Future<Directory> _resolveDownloadsDir() async {
+    // On Android < 11, public Downloads requires WRITE_EXTERNAL_STORAGE
+    // permission. On Android 11+ the permission is gone (scoped storage),
+    // but Flutter's File API can still write to public Downloads if the
+    // manifest has android:requestLegacyExternalStorage="true". Many Toyota
+    // head units run Android 9-10 where the permission path works.
+    try {
+      if (Platform.isAndroid) {
+        final status = await Permission.storage.request();
+        if (!status.isGranted) {
+          debugPrint('Storage permission denied, falling back to app-private dir');
+        }
+      }
+    } catch (e) {
+      debugPrint('Permission request error: $e (continuing anyway)');
+    }
+
+    // Public Downloads — works without permission on Android < 11, and on
+    // Android 11+ if app has legacy storage opt-in.
+    final publicDownloads = Directory('/storage/emulated/0/Download');
+    try {
+      if (await publicDownloads.exists()) {
+        // Probe write access by creating + deleting a tiny test file.
+        final probe = File(p.join(publicDownloads.path,
+            '.bz5_write_probe_${DateTime.now().millisecondsSinceEpoch}'));
+        try {
+          await probe.create();
+          await probe.delete();
+          return publicDownloads;
+        } catch (_) {
+          // Not writable — fall through to app-private.
+        }
+      }
+    } catch (_) {}
+
+    // App-private external Downloads — always writable, visible to user
+    // through some file managers under "Android/data/com.bz5companion/files".
+    try {
+      final ext = await getExternalStorageDirectory();
+      if (ext != null) {
+        final dlDir = Directory(p.join(ext.path, 'Downloads'));
+        await dlDir.create(recursive: true);
+        return dlDir;
+      }
+    } catch (_) {}
+
+    // Last resort — app docs dir (private).
+    return getApplicationDocumentsDirectory();
+  }
+
   Future<File?> _findDatabaseFile() async {
-    // drift_flutter uses getApplicationSupportDirectory by default; the file
-    // name is 'bz5_data.sqlite' (matching the name we passed to driftDatabase).
     try {
       final dir = await getApplicationSupportDirectory();
       final f = File(p.join(dir.path, 'bz5_data.sqlite'));
       if (await f.exists()) return f;
     } catch (_) {}
-    // Fallback paths to try in case Android layout differs
     try {
       final docs = await getApplicationDocumentsDirectory();
       final f = File(p.join(docs.path, 'bz5_data.sqlite'));
@@ -306,8 +421,6 @@ class ExportService {
     return buf.toString();
   }
 
-  /// Wrap value in quotes if it contains commas, quotes, or newlines.
-  /// Returns the value as-is otherwise.
   String _csvEscape(String s) {
     if (s.isEmpty) return '';
     if (s.contains(',') || s.contains('"') || s.contains('\n')) {
@@ -318,21 +431,40 @@ class ExportService {
   }
 }
 
+enum ExportDestinationKind { share, downloads }
+
+class _BuildResult {
+  final String zipPath;
+  final int sizeBytes;
+  final Map<String, int> counts;
+  final String timestamp;
+  _BuildResult({
+    required this.zipPath,
+    required this.sizeBytes,
+    required this.counts,
+    required this.timestamp,
+  });
+}
+
 class ExportResult {
   final String zipPath;
   final int sizeBytes;
   final Map<String, int> counts;
+  final ExportDestinationKind destinationKind;
   final bool sharedSuccessfully;
   ExportResult({
     required this.zipPath,
     required this.sizeBytes,
     required this.counts,
+    required this.destinationKind,
     required this.sharedSuccessfully,
   });
 
   String get humanSize {
     if (sizeBytes < 1024) return '${sizeBytes}B';
-    if (sizeBytes < 1024 * 1024) return '${(sizeBytes / 1024).toStringAsFixed(1)} KB';
+    if (sizeBytes < 1024 * 1024) {
+      return '${(sizeBytes / 1024).toStringAsFixed(1)} KB';
+    }
     return '${(sizeBytes / 1024 / 1024).toStringAsFixed(1)} MB';
   }
 }

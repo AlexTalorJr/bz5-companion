@@ -1,39 +1,54 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
-
     <!-- Bluetooth permissions for Android 12+ -->
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
         android:usesPermissionFlags="neverForLocation"
         tools:targetApi="31" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
-
     <!-- Legacy Bluetooth for Android < 12 -->
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" android:maxSdkVersion="30" />
-
     <!-- v0.1.2: keep BLE/CPU alive during long polling sessions in-car.
          Required for stable monitoring on head units that aggressively
          throttle background apps. -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-
+    <!-- v0.1.13: storage write for export-to-Downloads feature.
+         WRITE_EXTERNAL_STORAGE is required on Android < 11 to write into
+         the public /storage/emulated/0/Download/ folder so the file is
+         visible to Toyota launcher's built-in 'Проводник' / file manager.
+         android:maxSdkVersion="29" limits the permission to API 29 (Android 10)
+         and below — on Android 11+ (scoped storage) the permission is gone
+         and we rely on legacy storage opt-in below. -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="29" />
+    <!-- v0.1.13: read permission for re-importing exports later (and on some
+         OEM ROMs read is required to enumerate the Downloads folder).
+         Same maxSdkVersion logic. -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="29" />
     <!-- v0.1.2: required="false" to allow install on devices that may not
          report BLE feature (e.g. some car head units with custom BT stacks).
          App will check BLE availability at runtime in connect screen. -->
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
-
     <!-- v0.1.2: explicit touchscreen=false allows install on head units
          with non-standard input drivers (faketouch, rotary, hard-key).
          App is touch-driven but does not strictly require it for install. -->
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
     <uses-feature android:name="android.hardware.faketouch" android:required="false" />
-
     <application
         android:label="BZ5 Companion"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:requestLegacyExternalStorage="true">
+        <!-- v0.1.13: requestLegacyExternalStorage="true" makes File API work
+             against /storage/emulated/0/Download/ on Android 10 (API 29).
+             This flag is ignored on Android 11+ (scoped storage is enforced)
+             and on Android <10 (legacy was default). On Android 11+ the
+             public Downloads write may fail and ExportService falls back to
+             app-private external dir (Android/data/com.bz5companion/files/). -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
