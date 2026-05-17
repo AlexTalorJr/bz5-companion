@@ -20,11 +20,21 @@ dependencies:
   provider: ^6.1.2
   intl: ^0.19.0
   shared_preferences: ^2.2.3
-  # v0.1.11: data export
+  # v0.1.11: data export.
   archive: ^3.6.1           # zip encoding for export bundle
-  share_plus: ^10.0.0       # system share sheet (USB / cloud / messaging)
-  # v0.1.14: in-car DID sweep
-  wakelock_plus: ^1.2.8     # keep screen awake during long sweeps (~30 min)
+  # share_plus 10.0.0 transitively requires package_info_plus 9.0.1, which
+  # is compiled with Kotlin 2.x metadata — incompatible with Flutter 3.27.4's
+  # Kotlin 1.8 compiler (can read up to 1.9). Pinning to 9.0.0 keeps us on
+  # package_info_plus 8.x line which compiles fine with Kotlin 1.9.
+  share_plus: 9.0.0
+  # v0.1.14: in-car DID sweep.
+  wakelock_plus: ^1.2.8     # keep screen awake during long sweeps (~55 min)
+
+# Defensive overrides for Kotlin metadata compatibility on Flutter 3.27.4.
+# Even if some other dep wants package_info_plus ^9, we force 8.x. Remove
+# when we upgrade Flutter SDK to a version shipping Kotlin 2.x.
+dependency_overrides:
+  package_info_plus: ^8.0.0
 
 dev_dependencies:
   flutter_test:
