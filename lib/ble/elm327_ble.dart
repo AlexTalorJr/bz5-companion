@@ -30,6 +30,12 @@ class Elm327Ble {
   bool _disconnected = false;
   bool get isConnected => !_disconnected && _writeChar != null;
 
+  /// v0.1.16: invoked when the BLE link drops (adapter out of range, car
+  /// turned off, etc). ConnectionService subscribes to update its public
+  /// status from "connected" → "disconnected" so the UI doesn't lie.
+  /// Called at most once per connect() call.
+  void Function()? onDisconnected;
+
   static const _prompt = 0x3E; // '>'
   static const _chunkSize = 20;
 
@@ -65,7 +71,14 @@ class Elm327Ble {
     _stateSub?.cancel();
     _stateSub = device.connectionState.listen((state) {
       if (state == BluetoothConnectionState.disconnected) {
+        final wasConnected = !_disconnected;
         _disconnected = true;
+        // v0.1.16: notify listeners (e.g. ConnectionService) so UI status
+        // can be updated. Guarded by wasConnected so manual disconnect()
+        // doesn't double-fire (it sets _disconnected=true first).
+        if (wasConnected) {
+          try { onDisconnected?.call(); } catch (_) {}
+        }
       }
     });
 
