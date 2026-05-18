@@ -1165,6 +1165,12 @@ class ConnectionService extends ChangeNotifier {
   }) async {
     if (_client == null) return null;
     if (_sweepRunning) return null;
+    // v0.1.15: mutual exclusion with Live Log — both use the single BLE
+    // channel via _client.readDid, concurrent invocations would interleave
+    // requests/responses and corrupt both data streams.
+    if (_liveLogRunning) return null;
+    // Also exclude DTC scan for the same reason.
+    if (_dtcScanRunning) return null;
 
     final start = int.tryParse(startDidHex, radix: 16);
     final end = int.tryParse(endDidHex, radix: 16);
@@ -1226,12 +1232,22 @@ class ConnectionService extends ChangeNotifier {
           if (r != null) {
             // Positive responses start with 62XXXX, where XXXX is the DID.
             // Negative responses start with 7F (NRC).
+            // v0.1.15 bug fix: previously an empty/garbage rawHex (e.g. when
+            // BLE link silently degraded) would slip past the 7F check and
+            // be counted as valid. Sweep #4 of v0.1.14 reported 4083 valid
+            // responses despite all 4095 rows in DB being empty.
+            // Now requires rawHex to be non-empty and start with '62'.
             final raw = r.rawHex;
-            if (raw.toUpperCase().startsWith('7F')) {
+            final rawUp = raw.toUpperCase();
+            if (rawUp.startsWith('7F')) {
               errorCode = raw;
-            } else {
+            } else if (rawUp.startsWith('62') && raw.length >= 6) {
               rawHex = raw;
               validCount++;
+            } else {
+              // Unexpected response shape — log it as error so we can debug,
+              // don't count as valid.
+              errorCode = raw.isEmpty ? 'EMPTY' : 'MALFORMED:$raw';
             }
           }
         } catch (e) {
@@ -1282,6 +1298,166 @@ class ConnectionService extends ChangeNotifier {
     return runId;
   }
 
+  // ─────────────────────── v0.1.15: Live Log ─────────────────────────
+  //
+  // Time-series polling of up to 7 user-selected DIDs over a fixed duration
+  // (or until cancelled). Same pause-polling/wake-lock pattern as sweep.
+  // Writes one LiveLogEntry per DID per cycle to the DB.
+  //
+  // Difference from sweep:
+  //   - sweep:    each DID probed ONCE, range can be huge (8192)
+  //   - liveLog:  small fixed set of DIDs probed repeatedly in cycles
+  //
+  // Cycle = one round of all selected DIDs. Period 250ms each probe, so
+  // 5 DIDs → ~1.25s cycle (~0.8 Hz). 7 DIDs → ~1.75s cycle (~0.57 Hz).
+
+  bool _liveLogRunning = false;
+  bool _liveLogCancelled = false;
+  int? _currentLiveLogSessionId;
+  int _liveLogCycle = 0;
+  /// Last value seen for each DID, keyed by "ecuTx/didHex" (e.g. "791/0038").
+  /// Useful for the UI to show the most-recent reading per DID.
+  final Map<String, String?> _liveLogLastRaw = {};
+
+  bool get liveLogRunning => _liveLogRunning;
+  int? get currentLiveLogSessionId => _currentLiveLogSessionId;
+  int get liveLogCycle => _liveLogCycle;
+  Map<String, String?> get liveLogLastRaw => Map.unmodifiable(_liveLogLastRaw);
+
+  /// Cancel an active live log. Loop exits at the end of the current cycle
+  /// (worst case ~2s wait for 7 DIDs).
+  void cancelLiveLog() {
+    if (_liveLogRunning) {
+      _liveLogCancelled = true;
+    }
+  }
+
+  /// Run a live-log session. [didSpecs] is a list of (txEcu, rxEcu, didHex)
+  /// triples, max 7. Returns the LiveLogSession id created in DB.
+  ///
+  /// Polling loops until [cancelLiveLog] is called, [maxDurationMs] elapses,
+  /// or BLE disconnects. Each DID probed once per cycle; cycles repeat with
+  /// minimal spacing.
+  Future<int?> runLiveLog({
+    required List<(String, String, String)> didSpecs,
+    int? maxDurationMs,
+    String? carState,
+    String? notes,
+    void Function(int cycle)? onCycle,
+  }) async {
+    if (_client == null) return null;
+    if (_liveLogRunning) return null;
+    // v0.1.15: mutual exclusion with sweep — see runSweep for rationale.
+    if (_sweepRunning) return null;
+    if (_dtcScanRunning) return null;
+    if (didSpecs.isEmpty || didSpecs.length > 7) return null;
+
+    _liveLogRunning = true;
+    _liveLogCancelled = false;
+    _liveLogCycle = 0;
+    _liveLogLastRaw.clear();
+
+    // Pause normal polling
+    final wasPolling = _polling;
+    if (wasPolling) {
+      _polling = false;
+      await Future.delayed(const Duration(milliseconds: 400));
+    }
+
+    // Create LiveLogSession row
+    final didListStr =
+        didSpecs.map((s) => '${s.$1}/${s.$3.toUpperCase()}').join(',');
+    final sessionId = await db.insertLiveLogSession(LiveLogSessionsCompanion(
+      startedAt: Value(DateTime.now()),
+      didList: Value(didListStr),
+      carState: Value(carState),
+      notes: Value(notes),
+    ));
+    _currentLiveLogSessionId = sessionId;
+    notifyListeners();
+
+    int entryCount = 0;
+    final startTime = DateTime.now();
+
+    try {
+      while (!_liveLogCancelled) {
+        // BLE link check
+        if (_ble != null && !_ble!.isConnected) break;
+
+        // Optional max duration cap
+        if (maxDurationMs != null &&
+            DateTime.now().difference(startTime).inMilliseconds >= maxDurationMs) {
+          break;
+        }
+
+        _liveLogCycle++;
+        for (final spec in didSpecs) {
+          if (_liveLogCancelled) break;
+          final txEcu = spec.$1;
+          final rxEcu = spec.$2;
+          final did = spec.$3.toUpperCase();
+
+          String? rawHex;
+          String? errorCode;
+
+          try {
+            final r = await _client!
+                .readDid(did, tx: txEcu, rx: rxEcu)
+                .timeout(const Duration(milliseconds: 1000));
+            if (r != null) {
+              final raw = r.rawHex;
+              final rawUp = raw.toUpperCase();
+              if (rawUp.startsWith('7F')) {
+                errorCode = raw;
+              } else if (rawUp.startsWith('62') && raw.length >= 6) {
+                rawHex = raw;
+              } else {
+                errorCode = raw.isEmpty ? 'EMPTY' : 'MALFORMED:$raw';
+              }
+            }
+          } catch (e) {
+            errorCode = 'TIMEOUT';
+          }
+
+          _liveLogLastRaw['$txEcu/$did'] = rawHex ?? errorCode;
+
+          await db.insertLiveLogEntry(LiveLogEntriesCompanion(
+            sessionId: Value(sessionId),
+            timestamp: Value(DateTime.now()),
+            ecuTx: Value(txEcu),
+            did: Value(did),
+            rawHex: Value(rawHex),
+            errorCode: Value(errorCode),
+            cycle: Value(_liveLogCycle),
+          ));
+          entryCount++;
+        }
+
+        onCycle?.call(_liveLogCycle);
+        notifyListeners();
+
+        // Small spacing between cycles so we don't hammer the bus.
+        await Future.delayed(const Duration(milliseconds: 50));
+      }
+    } finally {
+      await (db.update(db.liveLogSessions)..where((s) => s.id.equals(sessionId)))
+          .write(LiveLogSessionsCompanion(
+        endedAt: Value(DateTime.now()),
+        cycleCount: Value(_liveLogCycle),
+        entryCount: Value(entryCount),
+      ));
+
+      _liveLogRunning = false;
+      _liveLogCancelled = false;
+      if (wasPolling) {
+        _polling = true;
+        _pollLoop();
+      }
+      notifyListeners();
+    }
+
+    return sessionId;
+  }
 
 
   /// Run a one-shot DTC scan across all known ECUs.
@@ -1307,6 +1483,12 @@ class ConnectionService extends ChangeNotifier {
           .toList();
     }
     if (_dtcScanRunning) {
+      return [];
+    }
+    // v0.1.15: DTC scan also uses single BLE channel — refuse if sweep
+    // or liveLog active. Returns empty list rather than null because
+    // method signature is non-nullable.
+    if (_sweepRunning || _liveLogRunning) {
       return [];
     }
     _dtcScanRunning = true;

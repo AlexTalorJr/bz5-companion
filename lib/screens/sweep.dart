@@ -69,6 +69,15 @@ class _SweepScreenState extends State<SweepScreen> {
       endDid: '1FFF',
     ),
     _SweepPreset(
+      name: 'BMS Master mid',
+      description: '790 — BMS Master, 0x0000..0x0FFF (4096 DIDs, ~27 min) — '
+          'driving sweep range, matches VCU mid for comparison',
+      txEcu: '790',
+      rxEcu: '798',
+      startDid: '0000',
+      endDid: '0FFF',
+    ),
+    _SweepPreset(
       name: 'BMS Master narrow',
       description: '790 — BMS Master, 0x0000..0x01FF (~3.5 min)',
       txEcu: '790',
@@ -278,9 +287,29 @@ class _SweepScreenState extends State<SweepScreen> {
       );
     }
 
+    // v0.1.15: BLE channel mutex — refuse if Live Log or DTC scan running.
+    final busyReason = svc.liveLogRunning
+        ? 'Live Log is currently running'
+        : svc.dtcScanRunning
+            ? 'DTC scan is currently running'
+            : null;
+
     return ListView(
       padding: const EdgeInsets.all(8),
       children: [
+        if (busyReason != null) ...[
+          Card(
+            color: Colors.orange.shade900.withValues(alpha: 0.3),
+            child: ListTile(
+              leading:
+                  const Icon(Icons.lock_outline, color: Colors.orangeAccent),
+              title: Text(busyReason),
+              subtitle: const Text(
+                  'Sweep will be available when the other operation finishes.'),
+            ),
+          ),
+          const SizedBox(height: 8),
+        ],
         if (_justFinishedRunId != null) ...[
           Card(
             color: Colors.green.shade900.withValues(alpha: 0.3),
@@ -305,7 +334,9 @@ class _SweepScreenState extends State<SweepScreen> {
         _section('Presets'),
         ..._presets.map((p) => _PresetTile(
               preset: p,
-              onTap: () => _confirmAndStart(svc, p),
+              onTap: busyReason == null
+                  ? () => _confirmAndStart(svc, p)
+                  : null,
             )),
         const Divider(),
         _section('Custom'),
@@ -411,7 +442,7 @@ class _SweepScreenState extends State<SweepScreen> {
                   style: ElevatedButton.styleFrom(
                     minimumSize: const Size.fromHeight(48),
                   ),
-                  onPressed: () => _startCustom(svc),
+                  onPressed: busyReason == null ? () => _startCustom(svc) : null,
                 ),
               ],
             ),
@@ -556,19 +587,25 @@ class _SweepScreenState extends State<SweepScreen> {
 
 class _PresetTile extends StatelessWidget {
   final _SweepPreset preset;
-  final VoidCallback onTap;
-  const _PresetTile({required this.preset, required this.onTap});
+  final VoidCallback? onTap;
+  const _PresetTile({required this.preset, this.onTap});
 
   @override
   Widget build(BuildContext context) {
+    final enabled = onTap != null;
     return Card(
       child: ListTile(
-        leading: const Icon(Icons.flash_on, color: Colors.lightBlueAccent),
-        title: Text(preset.name),
+        leading: Icon(Icons.flash_on,
+            color: enabled ? Colors.lightBlueAccent : Colors.grey),
+        title: Text(preset.name,
+            style: TextStyle(color: enabled ? null : Colors.grey)),
         subtitle: Text(preset.description,
-            style: const TextStyle(fontSize: 12)),
+            style: TextStyle(
+                fontSize: 12,
+                color: enabled ? null : Colors.grey.shade700)),
         trailing: const Icon(Icons.chevron_right, color: Colors.grey),
         onTap: onTap,
+        enabled: enabled,
       ),
     );
   }

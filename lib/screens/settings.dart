@@ -6,6 +6,7 @@ import '../services/connection.dart';
 import 'about.dart';
 import 'data_management.dart';
 import 'diagnostics.dart';
+import 'live_log.dart';
 import 'sweep.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -75,6 +76,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
             onTap: () => Navigator.of(context).push(
               MaterialPageRoute(
                 builder: (_) => const SweepScreen(),
+              ),
+            ),
+          ),
+          ListTile(
+            leading: const Icon(Icons.timeline,
+                color: Colors.lightBlueAccent),
+            title: const Text('Live Log'),
+            subtitle: const Text(
+                'Time-series polling до 7 DIDs одновременно (для reverse engineering)'),
+            trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => const LiveLogScreen(),
               ),
             ),
           ),

@@ -133,7 +133,11 @@ const vcuEcu = EcuSpec(
     DidSpec(did: '0039', name: 'Power-B', scale: 0.1, category: DidCategory.drive),
     DidSpec(did: '0104', name: 'RPM-like', category: DidCategory.drive),
     DidSpec(did: '0007', name: 'Parking pawl', category: DidCategory.status),
-    DidSpec(did: '0009', name: 'Gear', category: DidCategory.status),
+    // v0.1.15 fix: 0x0009 Gear is 2 bytes, not 1.
+    // Sweep evidence: raw="6200090003" payload="0003"=3 (N).
+    // Sample log evidence: raw="6200090001" payload="0001"=1 (P).
+    // Encoding: 0001=P, 0002=R, 0003=N, 0004=D.
+    DidSpec(did: '0009', name: 'Gear', expectedBytes: 2, category: DidCategory.status),
     DidSpec(did: '0016', name: 'Mode', category: DidCategory.status),
     DidSpec(did: '004A', name: 'BigCounter A', expectedBytes: 4, category: DidCategory.counter),
     DidSpec(did: '004B', name: 'BigCounter B', expectedBytes: 4, category: DidCategory.counter),
