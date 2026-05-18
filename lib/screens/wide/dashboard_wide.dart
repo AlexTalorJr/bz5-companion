@@ -124,8 +124,8 @@ class _LeftColumn extends StatelessWidget {
         Expanded(
           flex: 3,
           child: _PackVoltageHero(
-            filteredV: packV,
-            instantV: packVInst,
+            nominalV: packV,
+            nominalInstV: packVInst,
             hvBusV: hvBus,
           ),
         ),
@@ -224,10 +224,14 @@ class _SocHero extends StatelessWidget {
 }
 
 class _PackVoltageHero extends StatelessWidget {
-  final double? filteredV;
-  final double? instantV;
-  final double? hvBusV;
-  const _PackVoltageHero({this.filteredV, this.instantV, this.hvBusV});
+  /// v0.1.20: primary big number = HV bus (790/0x0015), the only live
+  /// pack voltage source. Previously this slot displayed 740/0x0022
+  /// "filtered V" which we now know is a platform constant ~450V.
+  /// Nominal still shown as small sidebar for reference / debugging.
+  final double? nominalV;   // was filteredV (740/0x0022) — kept for diag display
+  final double? nominalInstV; // was instantV (740/0x0014) — kept for diag display
+  final double? hvBusV;     // primary live source
+  const _PackVoltageHero({this.nominalV, this.nominalInstV, this.hvBusV});
 
   @override
   Widget build(BuildContext context) {
@@ -241,7 +245,7 @@ class _PackVoltageHero extends StatelessWidget {
               children: [
                 Icon(Icons.bolt, color: Colors.yellowAccent, size: 22),
                 SizedBox(width: 6),
-                Text('PACK VOLTAGE',
+                Text('PACK VOLTAGE (LIVE)',
                     style: TextStyle(
                         fontSize: 12,
                         letterSpacing: 1.5,
@@ -253,8 +257,8 @@ class _PackVoltageHero extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
                 Text(
-                  filteredV != null
-                      ? '${filteredV!.toStringAsFixed(1)} V'
+                  hvBusV != null
+                      ? '${hvBusV!.toStringAsFixed(1)} V'
                       : '—',
                   style: const TextStyle(
                       fontSize: 48,
@@ -266,24 +270,24 @@ class _PackVoltageHero extends StatelessWidget {
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.end,
                   children: [
-                    if (instantV != null) ...[
-                      const Text('INSTANT',
+                    if (nominalV != null) ...[
+                      const Text('NOMINAL',
                           style: TextStyle(
                               fontSize: 11, color: Colors.grey)),
-                      Text('${instantV!.toStringAsFixed(1)} V',
+                      Text('${nominalV!.toStringAsFixed(1)} V',
                           style: const TextStyle(
                               fontSize: 16, fontWeight: FontWeight.w300)),
                       const SizedBox(height: 6),
                     ],
-                    if (hvBusV != null) ...[
-                      const Text('HV BUS',
+                    if (nominalInstV != null) ...[
+                      const Text('NOM ALT',
                           style: TextStyle(
-                              fontSize: 11, color: Colors.lightBlueAccent)),
-                      Text('${hvBusV!.toStringAsFixed(1)} V',
+                              fontSize: 11, color: Colors.grey)),
+                      Text('${nominalInstV!.toStringAsFixed(1)} V',
                           style: const TextStyle(
                               fontSize: 16,
                               fontWeight: FontWeight.w300,
-                              color: Colors.lightBlueAccent)),
+                              color: Colors.white54)),
                     ],
                   ],
                 ),
@@ -291,7 +295,7 @@ class _PackVoltageHero extends StatelessWidget {
             ),
             const Spacer(),
             const Text(
-                'filtered · 740/0x0022 × 0.025  ·  HV bus · 790/0x0015 × 0.025',
+                'live · 790/0x0015 × 0.025  ·  nominal const · 740/0x0022 (platform 450V)',
                 style: TextStyle(fontSize: 11, color: Colors.grey)),
           ],
         ),

@@ -72,7 +72,8 @@ class _Connected extends StatelessWidget {
     final rangeKm = svc.rangeEstimateKm;
     final tripEnergy = svc.tripEnergyKwh;
     final cycles = svc.cycleCount;
-    final packV = svc.packVoltageV;
+    final packV = svc.packVoltageV;       // platform constant ~450V (kept for snapshot DB)
+    final hvBus = svc.hvBusV;              // live HV bus voltage
     final parkingEngaged = svc.parkingPawlEngaged;
     final chargedSession = svc.chargedThisSessionKwh;
 
@@ -98,12 +99,19 @@ class _Connected extends StatelessWidget {
               // Decoder применяет offset −40, не вычитаем повторно.
               value: tempRaw != null ? '${tempRaw.toInt()}°C' : '—',
             ),
-            // v5: Pack Voltage card (RT через DID 0x0015)
+            // v0.1.20: primary V source = HV bus 790/0x0015 (the only
+            // genuinely live pack voltage we have). 740/0x0022 was nominal
+            // platform constant (~450V) and didn't reflect actual load.
+            // Fallback chain: hvBus first → packV nominal → '—'.
             _MetricCard(
               icon: Icons.bolt,
               color: Colors.yellowAccent,
               label: 'Pack V',
-              value: packV != null ? '${packV.toStringAsFixed(1)} V' : '—',
+              value: hvBus != null
+                  ? '${hvBus.toStringAsFixed(1)} V'
+                  : packV != null
+                      ? '${packV.toStringAsFixed(1)} V*'
+                      : '—',
             ),
             _MetricCard(
               icon: Icons.speed,

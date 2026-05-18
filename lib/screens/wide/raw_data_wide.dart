@@ -28,7 +28,7 @@ class _RawDataWideScreenState extends State<RawDataWideScreen> {
   static const _knownEcus = [
     _EcuInfo(tx: '790', rx: '798', name: 'BMS Master', subtitle: 'cells, SOC, pack stats'),
     _EcuInfo(tx: '791', rx: '799', name: 'VCU', subtitle: 'gear, odometer, parking'),
-    _EcuInfo(tx: '740', rx: '748', name: 'Pack Monitor', subtitle: 'pack voltage'),
+    _EcuInfo(tx: '740', rx: '748', name: 'PDU/HV Junction', subtitle: 'pack nominal const + PDU temps'),
     _EcuInfo(tx: '782', rx: '78A', name: 'OBC', subtitle: 'on-board charger'),
     _EcuInfo(tx: '752', rx: '75A', name: 'BMS Slave 1', subtitle: 'sub-pack'),
     _EcuInfo(tx: '753', rx: '75B', name: 'BMS Slave 2', subtitle: 'sub-pack'),

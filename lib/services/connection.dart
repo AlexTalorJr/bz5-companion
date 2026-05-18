@@ -193,6 +193,13 @@ class ConnectionService extends ChangeNotifier {
   int? _packCellCount;               // 790/0x0B03
   int? _packModuleCount;             // 790/0x0A07
 
+  // v0.1.20: counter for cell min/max sanity-guard drops. Each driving
+  // session typically sees ~3.6% of frames with max<min or spread>100mV
+  // due to ELM stream misalignment that v0.1.16 frame-alignment doesn't
+  // catch. UI may expose this in Diagnostics for transparency.
+  int _cellPairDropCount = 0;
+  int get cellPairDropCount => _cellPairDropCount;
+
   ConnectionService(this.db) {
     // v0.1.16: fire auto-connect attempt asynchronously so the constructor
     // returns immediately (Provider construction stays synchronous).
@@ -224,20 +231,28 @@ class ConnectionService extends ChangeNotifier {
     return v?.toInt();
   }
 
-  /// Pack voltage realtime. v0.1.3: источник переключён с 790/0x0015 на 740/0x0022.
+  /// Pack voltage NOMINAL (platform constant ~450V on BZ5).
   ///
-  /// Старый источник (790/0x0015 × 0.02) физически некорректный — выдавал
-  /// 272-291 В на 81-82% SOC, что для 136-ячеечного LFP пакета невозможно
-  /// (теор. 136 × 3.326 mV ≈ 452 V). См. логи sweep 2026-05-03 23:34
-  /// и расчёты в conversation history.
+  /// **v0.1.20 finding:** 740/0x0022 is NOT live pack voltage. It is a
+  /// hard-coded platform constant near 450V. Evidence (2026-05-18):
+  ///   - 5-trip day, SOC 64→55%, HV bus swung 393→413V under load,
+  ///     cells dropped 35 mV at peak draw: this value stayed at 450.0 ± 0.3
+  ///   - Two parking sweeps 2 hours apart with driving in between:
+  ///     byte-identical reads (4650 → 4650)
+  ///   - On BZ3 (different pack topology, ~280V actual): same DID returns
+  ///     ~450V → confirms platform constant, not pack measurement
   ///
-  /// Новый источник (740/0x0022 × 0.025) проверен sweep'ом Pack Monitor:
-  /// 18000 raw → 450.0 V — точно соответствует теории. Это filtered pack V
-  /// (среднее за период). Дополнительно есть instant 740/0x0014 — может
-  /// понадобиться для будущей диагностической карточки.
+  /// For live pack voltage use [hvBusV] (790/0x0015 × 0.025) which has a
+  /// 46V swing during driving and is the only genuinely live V source.
   ///
-  /// Sanity range 350..550 V покрывает любой режим: charging-end ~470,
-  /// resting LFP 80% ~452, deep discharge 10% ~410.
+  /// This getter is kept for backward compatibility:
+  ///   - snapshot DB column `packVoltageV` (historical data preservation)
+  ///   - "Nominal" badge in wide-dashboard hero panel
+  ///   - Future "Vehicle Profile" abstraction (Phase 2) will use this
+  ///     value as the platform-class identifier
+  ///
+  /// Sanity range 350..550 V kept — filters out garbled reads only,
+  /// not load variations (because the value doesn't vary with load).
   double? get packVoltageV {
     final v = _packVoltageFilteredV;
     if (v == null) return null;
@@ -596,6 +611,8 @@ class ConnectionService extends ChangeNotifier {
     // v0.1.6:
     _globalMinCellMv = null;
     _globalMaxCellMv = null;
+    // v0.1.20: reset cell-pair sanity drop counter for new session
+    _cellPairDropCount = 0;
     // v0.1.9: reset trip aggregates and snapshot timer.
     _tripMinTempC = null;
     _tripMaxTempC = null;
@@ -1069,6 +1086,15 @@ class ConnectionService extends ChangeNotifier {
     // Despite being in the registry, this DID falls through cracks of the
     // poll loop — registry _pollEcu skips category=cells, _pollCells reads
     // only the per-module array. Read directly here so Pack Extremes works.
+    //
+    // v0.1.20: read min/max into locals and commit AS A PAIR only if pair
+    // passes cross-validation. Without this guard ~3.6% of driving samples
+    // get a max<min or |spread|>100mV due to ELM stream misalignment that
+    // the v0.1.16 frame check doesn't fully catch. Previously this leaked
+    // into snapshots (visible: 2026-05-18 snapshot id=26 spread=-2 mV).
+    int? candidateMin;
+    int? candidateMax;
+
     try {
       final r = await _client!.readDid('002B', tx: '790', rx: '798')
           .timeout(const Duration(milliseconds: 1000));
@@ -1076,7 +1102,7 @@ class ConnectionService extends ChangeNotifier {
       if (p != null && p.length >= 2) {
         final mv = (p[0] << 8) | p[1];
         // Sanity: realistic LFP cell range 2000..3700 mV
-        if (mv >= 2000 && mv <= 3700) _globalMinCellMv = mv;
+        if (mv >= 2000 && mv <= 3700) candidateMin = mv;
       }
     } catch (_) {}
 
@@ -1087,9 +1113,35 @@ class ConnectionService extends ChangeNotifier {
       final p = r?.payloadAfterUdsRead;
       if (p != null && p.length >= 2) {
         final mv = (p[0] << 8) | p[1];
-        if (mv >= 2000 && mv <= 3700) _globalMaxCellMv = mv;
+        if (mv >= 2000 && mv <= 3700) candidateMax = mv;
       }
     } catch (_) {}
+
+    // v0.1.20: pair-level sanity guard. Commit only if both came back and
+    // the pair makes physical sense. Otherwise drop both, keep previous
+    // values so UI shows last-known-good instead of a momentary glitch.
+    //
+    // Drop conditions:
+    //   - max < min (impossible by definition)
+    //   - |spread| > 100 mV (LFP packs at any health typically <50 mV
+    //     spread; >100 mV indicates a parsing artifact, not real data)
+    //
+    // If only one of the two reads succeeded, commit it solo — half a
+    // sample is better than no sample, and the next cycle will get the
+    // other half. This keeps the guard from masking a genuine BLE flake.
+    if (candidateMin != null && candidateMax != null) {
+      final spread = candidateMax - candidateMin;
+      if (spread < 0 || spread.abs() > 100) {
+        _cellPairDropCount++;
+        // Don't overwrite known-good values
+      } else {
+        _globalMinCellMv = candidateMin;
+        _globalMaxCellMv = candidateMax;
+      }
+    } else {
+      if (candidateMin != null) _globalMinCellMv = candidateMin;
+      if (candidateMax != null) _globalMaxCellMv = candidateMax;
+    }
 
     // Note (v0.1.8): 790/0x0015 (HV bus voltage) is now read through the
     // normal _pollEcu loop — registry scale corrected to 0.025 in this
@@ -1194,9 +1246,9 @@ class ConnectionService extends ChangeNotifier {
   static const _dtcEcus = [
     ('790', '798', 'BMS Master'),
     ('791', '799', 'VCU'),
-    ('740', '748', 'Pack Monitor'),
-    ('744', '74C', 'Pack Monitor 2'),
-    ('745', '74D', 'Pack Monitor 3'),
+    ('740', '748', 'PDU/HV Junction'),
+    ('744', '74C', 'PDU 2'),
+    ('745', '74D', 'PDU 3'),
     ('752', '75A', 'BMS Slave 1'),
     ('753', '75B', 'BMS Slave 2'),
     ('782', '78A', 'OBC'),

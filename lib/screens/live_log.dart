@@ -39,6 +39,27 @@ class _DidEntry {
   String get label => '$txEcu/$did';
 }
 
+/// v0.1.20: standard UDS request→response ECU address mapping.
+///
+/// All known BZ5 ECUs follow the convention RX = TX + 8 (i.e. 790→798,
+/// 791→799, 740→748). The form previously required the user to update
+/// RX manually after changing TX, which was a regular source of mistakes
+/// (e.g. leaving rx=799 after changing tx from 791 to 790, producing
+/// silent timeouts that looked like missing DIDs).
+///
+/// Returns null if [tx] is too short or doesn't parse as hex — caller
+/// should leave the existing RX value untouched in that case.
+String? _autoRxForTx(String tx) {
+  if (tx.length < 3) return null;
+  final clean = tx.toUpperCase();
+  final n = int.tryParse(clean, radix: 16);
+  if (n == null) return null;
+  final rx = n + 8;
+  // Match TX width: 3-char TX → 3-char RX, 4-char → 4-char.
+  final width = clean.length;
+  return rx.toRadixString(16).toUpperCase().padLeft(width, '0');
+}
+
 class _LiveLogScreenState extends State<LiveLogScreen> {
   // v0.1.17: default DIDs picked for driving observability. VCU 791 closes
   // 0x0038/0039/0101/0104 in motion (observed in livelog #2 — NRC 7F2231
@@ -410,7 +431,17 @@ class _DidEntryRowState extends State<_DidEntryRow> {
                 textCapitalization: TextCapitalization.characters,
                 inputFormatters: [hexFilter, LengthLimitingTextInputFormatter(4)],
                 onChanged: (v) {
-                  widget.entry.txEcu = v.toUpperCase();
+                  final upper = v.toUpperCase();
+                  widget.entry.txEcu = upper;
+                  // v0.1.20: auto-derive RX = TX + 8 (standard UDS convention)
+                  // so user doesn't have to update both. They can still
+                  // override RX manually after if needed — we only fire this
+                  // on TX change, not on every keystroke in the RX field.
+                  final autoRx = _autoRxForTx(upper);
+                  if (autoRx != null && autoRx != _rxCtrl.text) {
+                    _rxCtrl.text = autoRx;
+                    widget.entry.rxEcu = autoRx;
+                  }
                   widget.onChanged();
                 },
               ),
