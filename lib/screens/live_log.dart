@@ -40,11 +40,19 @@ class _DidEntry {
 }
 
 class _LiveLogScreenState extends State<LiveLogScreen> {
+  // v0.1.17: default DIDs picked for driving observability. VCU 791 closes
+  // 0x0038/0039/0101/0104 in motion (observed in livelog #2 — NRC 7F2231
+  // for ~99% of cycles), so we default to BMS 790 + one VCU status flag:
+  //   - 790/0x0005 SOC%
+  //   - 790/0x0015 HV bus voltage (drops on acceleration, rises on regen)
+  //   - 790/0x002B / 0x002D cell V min/max (compare under load)
+  //   - 791/0x0020 stays accessible in motion (status byte: P=00 D=0C)
+  // User can replace any of these via the form.
   final List<_DidEntry> _entries = [
-    _DidEntry(txEcu: '791', rxEcu: '799', did: '0101'),
-    _DidEntry(txEcu: '791', rxEcu: '799', did: '0038'),
-    _DidEntry(txEcu: '791', rxEcu: '799', did: '0039'),
-    _DidEntry(txEcu: '791', rxEcu: '799', did: '0104'),
+    _DidEntry(txEcu: '790', rxEcu: '798', did: '0005'),
+    _DidEntry(txEcu: '790', rxEcu: '798', did: '0015'),
+    _DidEntry(txEcu: '790', rxEcu: '798', did: '002B'),
+    _DidEntry(txEcu: '790', rxEcu: '798', did: '002D'),
     _DidEntry(txEcu: '791', rxEcu: '799', did: '0020'),
   ];
 
