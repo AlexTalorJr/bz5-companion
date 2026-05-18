@@ -24,12 +24,14 @@ import '../data/database.dart';
 /// and copy to USB flash from there.
 ///
 /// Format inside the zip:
-///   metadata.json     — schema version, export timestamp, table counts
-///   trips.csv         — one row per trip with all aggregates
-///   snapshots.csv     — long-term snapshots for trends
-///   samples.sqlite    — raw drift DB copy (compact, opens in DB Browser)
-///   sweep_runs.csv    — sweep run headers
-///   sweep_results.csv — sweep probe results
+///   metadata.json            — schema version, export timestamp, table counts
+///   trips.csv                — one row per trip with all aggregates
+///   snapshots.csv            — long-term snapshots for trends
+///   samples.sqlite           — raw drift DB copy (compact, opens in DB Browser)
+///   sweep_runs.csv           — sweep run headers
+///   sweep_results.csv        — sweep probe results
+///   live_log_sessions.csv    — live-log session headers (v0.1.15+)
+///   live_log_entries.csv     — live-log time-series entries (v0.1.15+)
 class ExportService {
   final AppDatabase db;
   ExportService(this.db);
@@ -43,6 +45,7 @@ class ExportService {
     bool includeSweeps = true,
     bool includeSnapshots = true,
     bool includeTrips = true,
+    bool includeLiveLogs = true,
     void Function(String stage)? onProgress,
   }) async {
     final built = await _buildZip(
@@ -50,6 +53,7 @@ class ExportService {
       includeSweeps: includeSweeps,
       includeSnapshots: includeSnapshots,
       includeTrips: includeTrips,
+      includeLiveLogs: includeLiveLogs,
       onProgress: onProgress,
       destDir: await getTemporaryDirectory(),
     );
@@ -89,6 +93,7 @@ class ExportService {
     bool includeSweeps = true,
     bool includeSnapshots = true,
     bool includeTrips = true,
+    bool includeLiveLogs = true,
     void Function(String stage)? onProgress,
   }) async {
     // Try public Downloads first. If we can't write there (Android 11+
@@ -100,6 +105,7 @@ class ExportService {
       includeSweeps: includeSweeps,
       includeSnapshots: includeSnapshots,
       includeTrips: includeTrips,
+      includeLiveLogs: includeLiveLogs,
       onProgress: onProgress,
       destDir: destDir,
     );
@@ -120,6 +126,7 @@ class ExportService {
     required bool includeSweeps,
     required bool includeSnapshots,
     required bool includeTrips,
+    required bool includeLiveLogs,
     required Directory destDir,
     void Function(String stage)? onProgress,
   }) async {
@@ -168,6 +175,27 @@ class ExportService {
       ));
     }
 
+    if (includeLiveLogs) {
+      onProgress?.call('live_logs');
+      final sessions = await db.getAllLiveLogSessions();
+      counts['live_log_sessions'] = sessions.length;
+      archive.addFile(ArchiveFile(
+        'live_log_sessions.csv',
+        0,
+        utf8.encode(_liveLogSessionsToCsv(sessions)),
+      ));
+      final allEntries = <LiveLogEntry>[];
+      for (final s in sessions) {
+        allEntries.addAll(await db.getLiveLogEntries(s.id));
+      }
+      counts['live_log_entries'] = allEntries.length;
+      archive.addFile(ArchiveFile(
+        'live_log_entries.csv',
+        0,
+        utf8.encode(_liveLogEntriesToCsv(allEntries)),
+      ));
+    }
+
     if (includeSamples) {
       onProgress?.call('samples');
       counts['samples'] = await db.countAllSamples();
@@ -196,6 +224,7 @@ class ExportService {
         'trips': includeTrips,
         'snapshots': includeSnapshots,
         'sweeps': includeSweeps,
+        'live_logs': includeLiveLogs,
         'samples': includeSamples,
       },
     };
@@ -416,6 +445,46 @@ class ExportService {
         r.did,
         r.rawHex ?? '',
         r.errorCode ?? '',
+      ].join(','));
+    }
+    return buf.toString();
+  }
+
+  String _liveLogSessionsToCsv(List<LiveLogSession> sessions) {
+    final buf = StringBuffer();
+    buf.writeln(
+      'id,started_at,ended_at,duration_seconds,did_list,cycle_count,'
+      'entry_count,car_state,notes',
+    );
+    for (final s in sessions) {
+      buf.writeln([
+        s.id,
+        s.startedAt.toIso8601String(),
+        s.endedAt?.toIso8601String() ?? '',
+        s.endedAt?.difference(s.startedAt).inSeconds ?? '',
+        _csvEscape(s.didList),
+        s.cycleCount,
+        s.entryCount,
+        _csvEscape(s.carState ?? ''),
+        _csvEscape(s.notes ?? ''),
+      ].join(','));
+    }
+    return buf.toString();
+  }
+
+  String _liveLogEntriesToCsv(List<LiveLogEntry> entries) {
+    final buf = StringBuffer();
+    buf.writeln('id,session_id,cycle,timestamp,ecu_tx,did,raw_hex,error_code');
+    for (final e in entries) {
+      buf.writeln([
+        e.id,
+        e.sessionId,
+        e.cycle,
+        e.timestamp.toIso8601String(),
+        e.ecuTx,
+        e.did,
+        e.rawHex ?? '',
+        e.errorCode ?? '',
       ].join(','));
     }
     return buf.toString();

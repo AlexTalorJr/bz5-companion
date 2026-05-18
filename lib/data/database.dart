@@ -10,6 +10,9 @@ part 'database.g.dart';
 ///   v3 (v0.1.11):    + SweepRuns, SweepResults tables for in-car sweeps
 ///                    (tables created empty in v0.1.11; populated in v0.1.12
 ///                    when in-car sweep UI ships)
+///   v4 (v0.1.15):    + LiveLogSessions, LiveLogEntries tables for time-series
+///                    polling of up to 7 DIDs simultaneously. Built on top of
+///                    sweep infra; reuses pause-polling pattern.
 
 /// Записывает каждое отдельное измерение значения DID.
 @DataClassName('Sample')
@@ -106,12 +109,53 @@ class SweepResults extends Table {
   IntColumn get sequence => integer()();
 }
 
-@DriftDatabase(tables: [Samples, Trips, Snapshots, SweepRuns, SweepResults])
+/// v0.1.15: header for a Live Log session.
+/// Time-series polling of a small fixed set of DIDs (max 7) during driving.
+/// Used to identify dynamic parameters (speed/power/current) by correlating
+/// their values with vehicle behaviour over time, which a one-shot sweep
+/// cannot do.
+@DataClassName('LiveLogSession')
+class LiveLogSessions extends Table {
+  IntColumn get id => integer().autoIncrement()();
+  DateTimeColumn get startedAt => dateTime()();
+  DateTimeColumn get endedAt => dateTime().nullable()();
+  /// Comma-separated list of "ecuTx/didHex" pairs, e.g. "791/0038,791/0101".
+  /// Persists the exact set of DIDs polled in this session.
+  TextColumn get didList => text()();
+  TextColumn get carState => text().nullable()();
+  TextColumn get notes => text().nullable()();
+  /// Number of full poll cycles completed (1 cycle = one round of all DIDs).
+  IntColumn get cycleCount => integer().withDefault(const Constant(0))();
+  /// Total entries written (= cycleCount × didCount in the ideal case).
+  IntColumn get entryCount => integer().withDefault(const Constant(0))();
+}
+
+/// v0.1.15: one row per (DID, poll cycle) within a Live Log session.
+/// Indexed by sessionId+timestamp for time-series queries.
+@DataClassName('LiveLogEntry')
+class LiveLogEntries extends Table {
+  IntColumn get id => integer().autoIncrement()();
+  IntColumn get sessionId => integer().references(LiveLogSessions, #id)();
+  DateTimeColumn get timestamp => dateTime()();
+  TextColumn get ecuTx => text()();
+  TextColumn get did => text()();
+  TextColumn get rawHex => text().nullable()();
+  TextColumn get errorCode => text().nullable()();
+  /// Sequence within the session — same number for all DIDs polled in one
+  /// cycle. Allows reconstructing rows: cycle 1: DID A, DID B; cycle 2: A, B.
+  IntColumn get cycle => integer()();
+}
+
+@DriftDatabase(tables: [
+  Samples, Trips, Snapshots,
+  SweepRuns, SweepResults,
+  LiveLogSessions, LiveLogEntries,
+])
 class AppDatabase extends _$AppDatabase {
   AppDatabase() : super(_openConnection());
 
   @override
-  int get schemaVersion => 3;
+  int get schemaVersion => 4;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -146,6 +190,11 @@ class AppDatabase extends _$AppDatabase {
           if (from < 3) {
             await m.createTable(sweepRuns);
             await m.createTable(sweepResults);
+          }
+          // v3 → v4 (v0.1.15): live-log tables.
+          if (from < 4) {
+            await m.createTable(liveLogSessions);
+            await m.createTable(liveLogEntries);
           }
         },
       );
@@ -343,6 +392,39 @@ class AppDatabase extends _$AppDatabase {
     return row.read(cnt) ?? 0;
   }
 
+  // ────────────────────────── LiveLog (v0.1.15) ──────────────────
+
+  Future<int> insertLiveLogSession(LiveLogSessionsCompanion data) =>
+      into(liveLogSessions).insert(data);
+
+  Future<int> insertLiveLogEntry(LiveLogEntriesCompanion data) =>
+      into(liveLogEntries).insert(data);
+
+  Future<List<LiveLogSession>> getAllLiveLogSessions() {
+    return (select(liveLogSessions)
+          ..orderBy(
+              [(s) => OrderingTerm(expression: s.startedAt, mode: OrderingMode.desc)]))
+        .get();
+  }
+
+  Future<LiveLogSession?> getLiveLogSession(int id) {
+    return (select(liveLogSessions)..where((s) => s.id.equals(id)))
+        .getSingleOrNull();
+  }
+
+  Future<List<LiveLogEntry>> getLiveLogEntries(int sessionId) {
+    return (select(liveLogEntries)
+          ..where((e) => e.sessionId.equals(sessionId))
+          ..orderBy([(e) => OrderingTerm(expression: e.cycle), (e) => OrderingTerm(expression: e.did)]))
+        .get();
+  }
+
+  Future<int> countAllLiveLogSessions() async {
+    final cnt = countAll();
+    final row = await (selectOnly(liveLogSessions)..addColumns([cnt])).getSingle();
+    return row.read(cnt) ?? 0;
+  }
+
   // ────────────────────────── Cleanup ─────────────────────────────
 
   /// v0.1.11: delete samples older than [cutoff]. Returns rows deleted.
@@ -373,6 +455,13 @@ class AppDatabase extends _$AppDatabase {
     final resultsDeleted = await delete(sweepResults).go();
     final runsDeleted = await delete(sweepRuns).go();
     return (runsDeleted, resultsDeleted);
+  }
+
+  /// v0.1.15: delete ALL live-log sessions and entries.
+  Future<(int, int)> clearAllLiveLogs() async {
+    final entriesDeleted = await delete(liveLogEntries).go();
+    final sessionsDeleted = await delete(liveLogSessions).go();
+    return (sessionsDeleted, entriesDeleted);
   }
 }
 

@@ -13,7 +13,7 @@ import '../services/export_service.dart';
 /// available). Direct write to /storage/emulated/0/Download/ works there.
 ///
 /// Sections:
-///   STORAGE — live counts of trips / snapshots / samples / sweep_runs
+///   STORAGE — live counts of trips / snapshots / samples / sweep_runs / live_log_sessions
 ///   EXPORT  — toggles + two buttons:
 ///             "Поделиться" → system share sheet (phone-friendly)
 ///             "Сохранить в Downloads" → straight to public Downloads folder
@@ -30,6 +30,7 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
   bool _includeSnapshots = true;
   bool _includeSamples = true;
   bool _includeSweeps = true;
+  bool _includeLiveLogs = true;
 
   bool _exporting = false;
   String _stage = '';
@@ -53,6 +54,7 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
       'snapshots': await db.countAllSnapshots(),
       'samples': await db.countAllSamples(),
       'sweep_runs': await db.countAllSweepRuns(),
+      'live_log_sessions': await db.countAllLiveLogSessions(),
     };
     if (!mounted) return;
     setState(() {
@@ -111,6 +113,14 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
                   style: const TextStyle(
                       fontFeatures: [FontFeature.tabularFigures()])),
             ),
+            ListTile(
+              dense: true,
+              leading: const Icon(Icons.timeline, size: 20),
+              title: const Text('Live Log sessions'),
+              trailing: Text('${_counts!['live_log_sessions']}',
+                  style: const TextStyle(
+                      fontFeatures: [FontFeature.tabularFigures()])),
+            ),
           ],
 
           const Divider(),
@@ -161,6 +171,15 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
             secondary: const Icon(Icons.search),
             title: const Text('Sweep results'),
             subtitle: const Text('sweep_runs.csv + sweep_results.csv'),
+            dense: true,
+          ),
+          SwitchListTile(
+            value: _includeLiveLogs,
+            onChanged: _exporting ? null : (v) => setState(() => _includeLiveLogs = v),
+            secondary: const Icon(Icons.timeline),
+            title: const Text('Live Log sessions'),
+            subtitle: const Text(
+                'live_log_sessions.csv + live_log_entries.csv (time-series)'),
             dense: true,
           ),
           Padding(
@@ -283,6 +302,21 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
               },
             ),
           ),
+          ListTile(
+            leading: const Icon(Icons.delete_outline, color: Colors.orangeAccent),
+            title: const Text('Очистить Live Log sessions'),
+            subtitle: const Text('Удалит все time-series записи'),
+            onTap: () => _confirmAndClear(
+              title: 'Удалить все Live Log sessions?',
+              description:
+                  'История time-series polling будет утеряна. Перед очисткой '
+                  'рекомендуем экспортировать данные.',
+              action: () async {
+                final (sessions, entries) = await svc.db.clearAllLiveLogs();
+                return '$sessions sessions и $entries entries удалено';
+              },
+            ),
+          ),
         ],
       ),
     );
@@ -313,6 +347,7 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
               includeSnapshots: _includeSnapshots,
               includeSamples: _includeSamples,
               includeSweeps: _includeSweeps,
+              includeLiveLogs: _includeLiveLogs,
               onProgress: (stage) {
                 if (mounted) setState(() => _stage = stage);
               },
@@ -322,6 +357,7 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
               includeSnapshots: _includeSnapshots,
               includeSamples: _includeSamples,
               includeSweeps: _includeSweeps,
+              includeLiveLogs: _includeLiveLogs,
               onProgress: (stage) {
                 if (mounted) setState(() => _stage = stage);
               },
