@@ -1242,8 +1242,14 @@ class ConnectionService extends ChangeNotifier {
             if (rawUp.startsWith('7F')) {
               errorCode = raw;
             } else if (rawUp.startsWith('62') && raw.length >= 6) {
-              rawHex = raw;
-              validCount++;
+              // v0.1.16: validate echoed DID (see runLiveLog for rationale).
+              final echoedDid = rawUp.substring(2, 6);
+              if (echoedDid == didHex.toUpperCase()) {
+                rawHex = raw;
+                validCount++;
+              } else {
+                errorCode = 'MISALIGNED:$echoedDid≠$didHex';
+              }
             } else {
               // Unexpected response shape — log it as error so we can debug,
               // don't count as valid.
@@ -1410,7 +1416,17 @@ class ConnectionService extends ChangeNotifier {
               if (rawUp.startsWith('7F')) {
                 errorCode = raw;
               } else if (rawUp.startsWith('62') && raw.length >= 6) {
-                rawHex = raw;
+                // v0.1.16: validate the DID echo. ELM327 BLE adapter can
+                // mix up frames under load — return a previous request's
+                // response. If the echoed DID (chars 2..6) doesn't match
+                // the requested DID, we'd attribute someone else's data
+                // to this DID and silently corrupt the analysis.
+                final echoedDid = rawUp.substring(2, 6);
+                if (echoedDid == did.toUpperCase()) {
+                  rawHex = raw;
+                } else {
+                  errorCode = 'MISALIGNED:$echoedDid≠$did';
+                }
               } else {
                 errorCode = raw.isEmpty ? 'EMPTY' : 'MALFORMED:$raw';
               }
