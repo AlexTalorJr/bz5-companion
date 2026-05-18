@@ -1509,13 +1509,22 @@ class ConnectionService extends ChangeNotifier {
         }
 
         _liveLogCycle++;
-        // v0.1.18: track the previous DID's ECU so we can apply a larger
-        // gap when consecutive requests target the same ECU. Empirically
-        // (from livelog #5/#6/#7 analysis) the ELM327 BLE adapter stalls
-        // on the 4th-5th consecutive request to the same ECU even with
-        // 80ms gaps — the last DID always returns EMPTY. 200ms between
-        // same-ECU requests lets the adapter's buffer drain enough.
+        // v0.1.19: progressive same-ECU gap. Even with 200ms between
+        // same-ECU requests, the 5th request consistently returns EMPTY
+        // (reproduced in livelog 9/10 — 100% failure rate on position 5
+        // when all 5 DIDs are on the same ECU). The ELM327 BLE adapter
+        // appears to accumulate state across requests; each consecutive
+        // request needs slightly more breathing room than the last.
+        //
+        // Schedule:
+        //   different ECU → 80ms gap, counter resets
+        //   1st repeat same ECU → 200ms
+        //   2nd repeat same ECU → 350ms
+        //   3rd repeat same ECU → 550ms (this is the problematic 5th DID
+        //                                if started with all-same ECU)
+        //   4th+ repeat → 800ms cap
         String? prevEcu;
+        int sameEcuRun = 0;
         for (final spec in didSpecs) {
           if (_liveLogCancelled) break;
           final txEcu = spec.$1;
@@ -1524,7 +1533,18 @@ class ConnectionService extends ChangeNotifier {
 
           // Pre-request adaptive gap.
           if (prevEcu != null) {
-            final gapMs = (prevEcu == txEcu) ? 200 : 80;
+            int gapMs;
+            if (prevEcu != txEcu) {
+              gapMs = 80;
+              sameEcuRun = 0;
+            } else {
+              sameEcuRun++;
+              // Schedule: 200, 350, 550, 800
+              const schedule = [200, 350, 550, 800];
+              gapMs = schedule[sameEcuRun - 1 < schedule.length
+                  ? sameEcuRun - 1
+                  : schedule.length - 1];
+            }
             await Future.delayed(Duration(milliseconds: gapMs));
           }
           prevEcu = txEcu;
