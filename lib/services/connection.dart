@@ -1509,11 +1509,25 @@ class ConnectionService extends ChangeNotifier {
         }
 
         _liveLogCycle++;
+        // v0.1.18: track the previous DID's ECU so we can apply a larger
+        // gap when consecutive requests target the same ECU. Empirically
+        // (from livelog #5/#6/#7 analysis) the ELM327 BLE adapter stalls
+        // on the 4th-5th consecutive request to the same ECU even with
+        // 80ms gaps — the last DID always returns EMPTY. 200ms between
+        // same-ECU requests lets the adapter's buffer drain enough.
+        String? prevEcu;
         for (final spec in didSpecs) {
           if (_liveLogCancelled) break;
           final txEcu = spec.$1;
           final rxEcu = spec.$2;
           final did = spec.$3.toUpperCase();
+
+          // Pre-request adaptive gap.
+          if (prevEcu != null) {
+            final gapMs = (prevEcu == txEcu) ? 200 : 80;
+            await Future.delayed(Duration(milliseconds: gapMs));
+          }
+          prevEcu = txEcu;
 
           String? rawHex;
           String? errorCode;
@@ -1586,20 +1600,15 @@ class ConnectionService extends ChangeNotifier {
             cycle: Value(_liveLogCycle),
           ));
           entryCount++;
-
-          // v0.1.17: 80ms gap between DIDs lets the ELM327 finalize the
-          // previous response handshake before we send the next request.
-          // Without this, 5+ rapid back-to-back requests on the same ECU
-          // overflow the BLE characteristic queue and we see EMPTY
-          // responses for nearly all probes (observed in livelog #4).
-          await Future.delayed(const Duration(milliseconds: 80));
         }
 
         onCycle?.call(_liveLogCycle);
         notifyListeners();
 
-        // v0.1.17: 200ms (was 50ms) inter-cycle gap — additional breather
-        // before the next round of 5-7 DIDs hits the bus.
+        // v0.1.17: 200ms inter-cycle gap — additional breather before
+        // the next round of DIDs hits the bus. NOTE: the per-DID gap
+        // moved to the TOP of each iteration in v0.1.18 (adaptive on
+        // same-ECU vs different-ECU), so no post-DID gap needed here.
         await Future.delayed(const Duration(milliseconds: 200));
       }
     } finally {
