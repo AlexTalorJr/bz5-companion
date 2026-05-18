@@ -707,9 +707,16 @@ class ConnectionService extends ChangeNotifier {
     }
   }
 
+  /// v0.1.17: true while a poll cycle is mid-execution. Sweep/LiveLog/DTC
+  /// use this to wait for the in-flight cycle to complete before issuing
+  /// their own requests — without this, both can hit readDid concurrently
+  /// and corrupt the BLE channel.
+  bool _pollLoopActive = false;
+
   Future<void> _pollLoop() async {
     int cycle = 0;
     while (_polling && _client != null) {
+      _pollLoopActive = true;
       try {
         for (final ecu in _ecusToPoll) {
           await _pollEcu(ecu);
@@ -727,9 +734,25 @@ class ConnectionService extends ChangeNotifier {
       } catch (e) {
         debugPrint('Poll error: $e');
       }
+      _pollLoopActive = false;
       cycle++;
       _pollCyclesSinceStart++;
       await Future.delayed(const Duration(milliseconds: 250));
+    }
+    _pollLoopActive = false;
+  }
+
+  /// v0.1.17: wait until any in-flight poll cycle finishes. Used by
+  /// sweep/liveLog/DTC handlers before issuing their first request, so we
+  /// don't accidentally interleave with the polling loop's readDid calls
+  /// on the single BLE channel.
+  ///
+  /// Waits up to [maxMs] (default 8000) for the flag to clear. Returns
+  /// after the wait regardless — sweep/liveLog still try to proceed.
+  Future<void> _waitForPollIdle({int maxMs = 8000}) async {
+    final deadline = DateTime.now().add(Duration(milliseconds: maxMs));
+    while (_pollLoopActive && DateTime.now().isBefore(deadline)) {
+      await Future.delayed(const Duration(milliseconds: 100));
     }
   }
 
@@ -1265,7 +1288,13 @@ class ConnectionService extends ChangeNotifier {
     final wasPolling = _polling;
     if (wasPolling) {
       _polling = false;
-      await Future.delayed(const Duration(milliseconds: 400));
+      // v0.1.17: wait until the in-flight poll cycle actually finishes.
+      // Previously a hardcoded 400ms wait was used — fine for cycle gaps,
+      // but a full polling cycle now takes 5-8s (30+ DIDs), so 400ms left
+      // _pollEcu in the middle of its readDid chain. Result: live-log
+      // readDid calls interleaved with polling readDid → both got EMPTY
+      // responses because the BLE channel was effectively shared.
+      await _waitForPollIdle();
     }
 
     // Create SweepRun row
@@ -1299,10 +1328,10 @@ class ConnectionService extends ChangeNotifier {
         String? errorCode;
 
         try {
-          // Timeout: max(1000ms, periodMs*2). Existing readDid calls in this
-          // file use 1000-1500ms; using less would falsely flag slow-but-
-          // responsive DIDs as TIMEOUT.
-          final timeoutMs = periodMs * 2 > 1000 ? periodMs * 2 : 1000;
+          // v0.1.17: timeout: max(1500ms, periodMs*2). Matches _pollEcu's
+          // empirical production value. Previous 1000ms floor was below
+          // some ECUs' worst-case response latency on a loaded bus.
+          final timeoutMs = periodMs * 2 > 1500 ? periodMs * 2 : 1500;
           final r = await _client!
               .readDid(didHex, tx: txEcu, rx: rxEcu)
               .timeout(Duration(milliseconds: timeoutMs));
@@ -1444,7 +1473,13 @@ class ConnectionService extends ChangeNotifier {
     final wasPolling = _polling;
     if (wasPolling) {
       _polling = false;
-      await Future.delayed(const Duration(milliseconds: 400));
+      // v0.1.17: wait until the in-flight poll cycle actually finishes.
+      // Previously a hardcoded 400ms wait was used — fine for cycle gaps,
+      // but a full polling cycle now takes 5-8s (30+ DIDs), so 400ms left
+      // _pollEcu in the middle of its readDid chain. Result: live-log
+      // readDid calls interleaved with polling readDid → both got EMPTY
+      // responses because the BLE channel was effectively shared.
+      await _waitForPollIdle();
     }
 
     // Create LiveLogSession row
@@ -1483,33 +1518,60 @@ class ConnectionService extends ChangeNotifier {
           String? rawHex;
           String? errorCode;
 
-          try {
-            final r = await _client!
-                .readDid(did, tx: txEcu, rx: rxEcu)
-                .timeout(const Duration(milliseconds: 1000));
-            if (r != null) {
-              final raw = r.rawHex;
-              final rawUp = raw.toUpperCase();
-              if (rawUp.startsWith('7F')) {
-                errorCode = raw;
-              } else if (rawUp.startsWith('62') && raw.length >= 6) {
-                // v0.1.16: validate the DID echo. ELM327 BLE adapter can
-                // mix up frames under load — return a previous request's
-                // response. If the echoed DID (chars 2..6) doesn't match
-                // the requested DID, we'd attribute someone else's data
-                // to this DID and silently corrupt the analysis.
-                final echoedDid = rawUp.substring(2, 6);
-                if (echoedDid == did.toUpperCase()) {
-                  rawHex = raw;
+          // v0.1.17: retry up to twice on EMPTY response. ELM327 BLE
+          // adapter under load (multi-DID polling) sometimes returns
+          // empty frames — the request reaches the bus but the response
+          // gets lost in the BLE characteristic queue. A short retry
+          // after a 150ms breather recovers ~50% of these cases without
+          // significantly impacting cycle time.
+          //
+          // Timeout 1500ms (was 1000ms) — matches _pollEcu's empirical
+          // value which has proven reliable in production polling.
+          for (int attempt = 0; attempt < 2; attempt++) {
+            try {
+              final r = await _client!
+                  .readDid(did, tx: txEcu, rx: rxEcu)
+                  .timeout(const Duration(milliseconds: 1500));
+              if (r != null) {
+                final raw = r.rawHex;
+                final rawUp = raw.toUpperCase();
+                if (rawUp.startsWith('7F')) {
+                  errorCode = raw;
+                  rawHex = null;
+                  break;
+                } else if (rawUp.startsWith('62') && raw.length >= 6) {
+                  // v0.1.16: validate the DID echo. ELM327 BLE adapter
+                  // can mix up frames under load — return a previous
+                  // request's response. If the echoed DID doesn't match,
+                  // we'd attribute someone else's data to this DID and
+                  // silently corrupt the analysis.
+                  final echoedDid = rawUp.substring(2, 6);
+                  if (echoedDid == did.toUpperCase()) {
+                    rawHex = raw;
+                    errorCode = null;
+                    break;
+                  } else {
+                    errorCode = 'MISALIGNED:$echoedDid≠$did';
+                    // mis-aligned frames are NOT retried — they indicate
+                    // pipeline contamination that a retry won't fix.
+                    break;
+                  }
+                } else if (raw.isEmpty) {
+                  errorCode = 'EMPTY';
+                  // Retry once after a short pause.
+                  if (attempt == 0) {
+                    await Future.delayed(const Duration(milliseconds: 150));
+                    continue;
+                  }
                 } else {
-                  errorCode = 'MISALIGNED:$echoedDid≠$did';
+                  errorCode = 'MALFORMED:$raw';
+                  break;
                 }
-              } else {
-                errorCode = raw.isEmpty ? 'EMPTY' : 'MALFORMED:$raw';
               }
+            } catch (e) {
+              errorCode = 'TIMEOUT';
+              break;
             }
-          } catch (e) {
-            errorCode = 'TIMEOUT';
           }
 
           _liveLogLastRaw['$txEcu/$did'] = rawHex ?? errorCode;
@@ -1524,13 +1586,21 @@ class ConnectionService extends ChangeNotifier {
             cycle: Value(_liveLogCycle),
           ));
           entryCount++;
+
+          // v0.1.17: 80ms gap between DIDs lets the ELM327 finalize the
+          // previous response handshake before we send the next request.
+          // Without this, 5+ rapid back-to-back requests on the same ECU
+          // overflow the BLE characteristic queue and we see EMPTY
+          // responses for nearly all probes (observed in livelog #4).
+          await Future.delayed(const Duration(milliseconds: 80));
         }
 
         onCycle?.call(_liveLogCycle);
         notifyListeners();
 
-        // Small spacing between cycles so we don't hammer the bus.
-        await Future.delayed(const Duration(milliseconds: 50));
+        // v0.1.17: 200ms (was 50ms) inter-cycle gap — additional breather
+        // before the next round of 5-7 DIDs hits the bus.
+        await Future.delayed(const Duration(milliseconds: 200));
       }
     } finally {
       await (db.update(db.liveLogSessions)..where((s) => s.id.equals(sessionId)))
@@ -1590,8 +1660,13 @@ class ConnectionService extends ChangeNotifier {
     final wasPolling = _polling;
     if (wasPolling) {
       _polling = false;
-      // Give any in-flight poll a moment to finish before we hammer the bus.
-      await Future.delayed(const Duration(milliseconds: 400));
+      // v0.1.17: wait until the in-flight poll cycle actually finishes.
+      // Previously a hardcoded 400ms wait was used — fine for cycle gaps,
+      // but a full polling cycle now takes 5-8s (30+ DIDs), so 400ms left
+      // _pollEcu in the middle of its readDid chain. Result: live-log
+      // readDid calls interleaved with polling readDid → both got EMPTY
+      // responses because the BLE channel was effectively shared.
+      await _waitForPollIdle();
     }
 
     final results = <DtcScanEcuResult>[];
