@@ -193,7 +193,19 @@ class ConnectionService extends ChangeNotifier {
   int? _packCellCount;               // 790/0x0B03
   int? _packModuleCount;             // 790/0x0A07
 
-  ConnectionService(this.db);
+  ConnectionService(this.db) {
+    // v0.1.16: fire auto-connect attempt asynchronously so the constructor
+    // returns immediately (Provider construction stays synchronous).
+    // tryAutoConnect is a no-op if the user hasn't opted in via Settings
+    // or if no last_adapter is saved.
+    //
+    // Slight delay lets the splash/main widget tree settle before BLE scan
+    // starts, otherwise the status banner flickers between connecting and
+    // an unrelated initial state.
+    Future.delayed(const Duration(milliseconds: 800), () {
+      tryAutoConnect();
+    });
+  }
 
   ConnectionStatus get status => _status;
   String? get statusMessage => _statusMessage;
@@ -457,6 +469,10 @@ class ConnectionService extends ChangeNotifier {
     for (int attempt = 1; attempt <= 3; attempt++) {
       try {
         _ble = Elm327Ble(device);
+        // v0.1.16: hook BLE disconnect → status update.
+        // Without this, the UI lies about being "connected" forever after
+        // the adapter goes out of range or the car is powered off.
+        _ble!.onDisconnected = _handleBleDisconnect;
         await _ble!.connect();
         _client = Elm327Client(_ble!);
         await _client!.initialize();
@@ -496,6 +512,67 @@ class ConnectionService extends ChangeNotifier {
     _client = null;
     _ble = null;
     _setStatus(ConnectionStatus.disconnected, msg: 'Отключено');
+  }
+
+  /// v0.1.16: invoked by Elm327Ble.onDisconnected when the physical BLE
+  /// link drops unexpectedly (out of range, car off, etc). Cleans up the
+  /// stale client/ble references and updates public status so the UI no
+  /// longer claims to be "connected".
+  ///
+  /// Manual user-initiated disconnect() doesn't go through this path —
+  /// Elm327Ble.onDisconnected is guarded by wasConnected to avoid
+  /// double-firing.
+  void _handleBleDisconnect() {
+    // stopPolling internally — but DON'T await, this fires from a stream
+    // listener. Cancel polling flag, let loop exit naturally.
+    _polling = false;
+    _client = null;
+    _ble = null;
+    _setStatus(ConnectionStatus.disconnected,
+        msg: 'BLE отключился (вне зоны / адаптер выключен)');
+  }
+
+  /// v0.1.16: auto-connect at app startup if user opted in and we have a
+  /// remembered adapter ID. Returns true if connection succeeded.
+  ///
+  /// Tries scanning first (to ensure device is in range), then matches
+  /// remote ID and connects. Silently no-ops if:
+  ///   - feature disabled in prefs
+  ///   - no remembered adapter
+  ///   - device not found in scan
+  /// Errors during connect are surfaced via _setStatus.
+  Future<bool> tryAutoConnect({Duration scanTimeout = const Duration(seconds: 6)}) async {
+    final prefs = await SharedPreferences.getInstance();
+    final enabled = prefs.getBool('auto_connect_enabled') ?? false;
+    if (!enabled) return false;
+    final savedId = prefs.getString('last_adapter');
+    if (savedId == null || savedId.isEmpty) return false;
+    if (_status == ConnectionStatus.connected ||
+        _status == ConnectionStatus.connecting) {
+      return false;
+    }
+
+    _setStatus(ConnectionStatus.scanning,
+        msg: 'Авто-подключение к $savedId...');
+    try {
+      final results = await Elm327Ble.scan(timeout: scanTimeout);
+      BluetoothDevice? match;
+      for (final r in results) {
+        if (r.device.remoteId.str == savedId) {
+          match = r.device;
+          break;
+        }
+      }
+      if (match == null) {
+        _setStatus(ConnectionStatus.disconnected,
+            msg: 'Сохранённый адаптер не найден (вне зоны?)');
+        return false;
+      }
+      return await connect(match);
+    } catch (e) {
+      _setStatus(ConnectionStatus.error, msg: 'Авто-подключение: $e');
+      return false;
+    }
   }
 
   Future<void> startPolling({bool startTrip = true}) async {

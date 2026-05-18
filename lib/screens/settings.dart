@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../services/connection.dart';
 import 'about.dart';
@@ -19,6 +20,28 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   List<ScanResult> _devices = [];
   bool _scanning = false;
+  bool _autoConnect = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadAutoConnect();
+  }
+
+  Future<void> _loadAutoConnect() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
+    setState(() {
+      _autoConnect = prefs.getBool('auto_connect_enabled') ?? false;
+    });
+  }
+
+  Future<void> _setAutoConnect(bool v) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('auto_connect_enabled', v);
+    if (!mounted) return;
+    setState(() => _autoConnect = v);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -33,9 +56,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
             title: const Text('ELM327 BLE adapter'),
             subtitle: Text(svc.adapterAddress ?? 'Не подключен'),
           ),
+          SwitchListTile(
+            secondary: Icon(Icons.bluetooth_connected,
+                color: _autoConnect ? Colors.lightBlueAccent : Colors.grey),
+            title: const Text('Auto-connect at startup'),
+            subtitle: const Text(
+                'Подключаться к запомненному адаптеру при запуске приложения'),
+            value: _autoConnect,
+            onChanged: _setAutoConnect,
+          ),
           if (svc.status != ConnectionStatus.connected) ...[
             Padding(
-              padding: const EdgeInsets.all(16),
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
               child: ElevatedButton.icon(
                 icon: _scanning
                     ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
@@ -44,6 +76,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 onPressed: _scanning ? null : () => _scan(svc),
               ),
             ),
+            // Manual reconnect to last adapter — useful when auto-connect
+            // failed at startup (adapter was sleeping etc) and user wants
+            // to retry without scanning the whole BLE neighbourhood.
+            if (svc.adapterAddress != null)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                child: OutlinedButton.icon(
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('Подключиться к последнему адаптеру'),
+                  onPressed: _scanning
+                      ? null
+                      : () async {
+                          setState(() => _scanning = true);
+                          await svc.tryAutoConnect();
+                          if (!mounted) return;
+                          setState(() => _scanning = false);
+                        },
+                ),
+              ),
             ..._devices.map((d) => _DeviceTile(result: d, onTap: () => _connect(svc, d))),
           ] else ...[
             ListTile(
