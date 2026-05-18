@@ -86,8 +86,9 @@ class _SweepScreenState extends State<SweepScreen> {
       endDid: '01FF',
     ),
     _SweepPreset(
-      name: 'Pack Monitor',
-      description: '740, 0x0000..0x00FF (256 DIDs, ~2 min)',
+      name: 'PDU / HV Junction',
+      description: '740, 0x0000..0x00FF (256 DIDs, ~2 min) — '
+          'pack nominal constants + PDU temps',
       txEcu: '740',
       rxEcu: '748',
       startDid: '0000',

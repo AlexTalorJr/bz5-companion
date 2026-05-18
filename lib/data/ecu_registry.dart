@@ -145,43 +145,74 @@ const vcuEcu = EcuSpec(
   ],
 );
 
+// v0.1.20 reverse-engineering update (cross-validation with BZ3 + multi-day
+// stability tests on BZ5):
+//
+//   0x0014, 0x0016, 0x0022, 0x0023 are NOT live pack voltage. They are
+//   platform-nominal CONSTANTS (~450V class on BZ5). Evidence:
+//   - 5 trips on 2026-05-18 with SOC 64→55%, HV bus 393→413V swing,
+//     cells -35mV under load: pack_v (740/0x0022) glued at 450.0 ± 0.3 V
+//   - Same byte values across two sweeps 2 hours apart, including driving
+//     in between: 0x0014=4671, 0x0022=4650, 0x0023=C64F, 0x0024 80-byte
+//     struct all byte-identical → static configuration
+//   - On BZ3 the same DIDs return ~450V despite that pack physically being
+//     ~85S/280V → confirms platform constant, not pack measurement
+//
+//   For live pack voltage under load use 790/0x0015 (HV bus, ×0.025) which
+//   has a 46V swing during driving and is the only genuinely live V source.
+//
+//   0x0010 and 0x0011 ARE LIVE (component temps): values dropped 19/18 raw
+//   units between yesterday-after-driving and today-after-cooldown sweeps.
+//   Interpretation: PDU/junction heatsink temps, offset -40 °C.
 const packMonitorEcu = EcuSpec(
-  txId: '740', rxId: '748', name: 'Pack Monitor',
-  description: 'Battery contactor + pack voltage',
+  txId: '740', rxId: '748', name: 'PDU/HV Junction',
+  description: 'HV junction box: pack config constants + PDU temps',
   dids: [
     DidSpec(did: '0105', name: 'Part number', category: DidCategory.identity),
-    DidSpec(did: '0008', name: 'Sub-pack V #1', unit: 'V', scale: 0.1, expectedBytes: 2, category: DidCategory.packVoltage, notes: '~97V'),
-    DidSpec(did: '0009', name: 'Sub-pack V #2', unit: 'V', scale: 0.1, expectedBytes: 2, category: DidCategory.packVoltage, notes: '~99V'),
-    // Pack voltage instant. Scale 0.025 V/LSB (corrected 2026-05-17 — note
-    // saying '~180V' was wrong artifact of initial 0.01 scale guess).
-    DidSpec(did: '0014', name: 'Pack V (instant)', unit: 'V', scale: 0.025, expectedBytes: 2, category: DidCategory.packVoltage),
-    // Pack voltage average. Scale corrected 0.01 → 0.025 (2026-05-17).
-    DidSpec(did: '0016', name: 'Pack V (avg)', unit: 'V', scale: 0.025, expectedBytes: 2, category: DidCategory.packVoltage),
-    // Pack voltage filtered (740 Pack Monitor). Reverse 2026-05-03: scale 0.025
-    // (NOT 0.01 as initially assumed) — 18000 × 0.025 = 450V matches measured.
-    // This was wrong in earlier versions causing Trip Detail charts to show
-    // ~4.5V when graphs applied an additional ×0.025 transform.
-    DidSpec(did: '0022', name: 'Pack V (alt)', unit: 'V', scale: 0.025, expectedBytes: 2, category: DidCategory.packVoltage),
-    DidSpec(did: '0023', name: 'Pack V (alt)2', unit: 'V', scale: 0.01, expectedBytes: 2, category: DidCategory.packVoltage),
+    DidSpec(did: '0008', name: 'Sub-pack V #1', unit: 'V', scale: 0.1, expectedBytes: 2, category: DidCategory.packVoltage, notes: '~97V — to verify in driving'),
+    DidSpec(did: '0009', name: 'Sub-pack V #2', unit: 'V', scale: 0.1, expectedBytes: 2, category: DidCategory.packVoltage, notes: '~99V — to verify in driving'),
+    // v0.1.20: now flagged as platform constant. Scale kept ×0.025 so the
+    // value displayed in raw-data views remains numerically meaningful
+    // (~450V) for users who want to see what the firmware reports, but
+    // it's no longer treated as live pack telemetry.
+    DidSpec(did: '0014', name: 'Pack V nominal (const)', unit: 'V', scale: 0.025, expectedBytes: 2, category: DidCategory.unknown, notes: 'Platform constant ~450V — not live; use HV bus (790/0x0015) for live V'),
+    DidSpec(did: '0016', name: 'Pack V nominal alt (const)', unit: 'V', scale: 0.025, expectedBytes: 2, category: DidCategory.unknown, notes: 'Platform constant — not live'),
+    DidSpec(did: '0022', name: 'Pack V nominal filtered (const)', unit: 'V', scale: 0.025, expectedBytes: 2, category: DidCategory.unknown, notes: 'Platform constant ~450V — not live; was primary pack V source up to v0.1.19, replaced by HV bus in v0.1.20'),
+    DidSpec(did: '0023', name: 'V flag/duplicate (const)', expectedBytes: 2, category: DidCategory.unknown, notes: 'Always 0x0022 OR 0x8000 — not current/live'),
     DidSpec(did: '0007', name: 'Status', category: DidCategory.status),
-    DidSpec(did: '0010', name: 'Contactor 1', category: DidCategory.status),
-    DidSpec(did: '0011', name: 'Contactor 2', category: DidCategory.status),
+    // v0.1.20: 0x0010 and 0x0011 ARE LIVE component temperatures, not
+    // contactor flags. Offset -40 °C. Yesterday after driving: 58°C/50°C.
+    // Today after cooldown: 39°C/32°C. Likely PDU/junction heatsink sensors.
+    DidSpec(did: '0010', name: 'PDU temp 1', unit: '°C', offset: -40, category: DidCategory.thermal),
+    DidSpec(did: '0011', name: 'PDU temp 2', unit: '°C', offset: -40, category: DidCategory.thermal),
   ],
 );
 
+// v0.1.20: 782 OBC re-mapped after parking sweep + BZ3 cross-validation:
+//   - 0x0006, 0x000B = 500 on both BZ3 and BZ5 → charge V target (500V max)
+//   - 0x000C = 1000 on both → charge I max ×0.1 = 100.0 A
+//   - 0x0009 = ~447-451 → charger-side V (semantics TBD: scale ×1.0 gives ~V,
+//     but on BZ3 actual HV is ~283V while DID shows 451 — may be target ref,
+//     verify in driving log)
+//   - 0x000A = 14999-15000 → slow counter, +1 unit between BZ3 and our pack
+//     → OBC operating hours candidate
+//   - 0x000F, 0x0010 = LIVE temps with offset -40 (BZ5=29°C cool, BZ3=39°C
+//     after activity)
+//   - 0x0057 = state flag, BZ5-only
+//   - 0x0053-0x0056 = zero placeholders, BZ5-only (future features)
 const chargerEcu = EcuSpec(
   txId: '782', rxId: '78A', name: 'OBC',
   description: 'On-Board Charger',
   dids: [
     DidSpec(did: '0105', name: 'Part number', category: DidCategory.identity),
-    DidSpec(did: '0006', name: 'Current limit', unit: '×0.1 A', scale: 0.1, expectedBytes: 2, category: DidCategory.charging),
-    DidSpec(did: '0009', name: 'Charging status', expectedBytes: 2, category: DidCategory.charging),
-    DidSpec(did: '000A', name: 'Power rating', unit: 'W', expectedBytes: 2, category: DidCategory.charging),
-    DidSpec(did: '000B', name: 'Voltage limit?', expectedBytes: 2, category: DidCategory.charging),
-    DidSpec(did: '000C', name: 'Max current', expectedBytes: 2, category: DidCategory.charging),
-    DidSpec(did: '000F', name: 'Status A', category: DidCategory.charging),
-    DidSpec(did: '0010', name: 'Status B', category: DidCategory.charging),
-    DidSpec(did: '0057', name: 'Connection state', category: DidCategory.charging),
+    DidSpec(did: '0006', name: 'Charge V target', unit: 'V', scale: 1.0, expectedBytes: 2, category: DidCategory.charging, notes: '500V on BZ5/BZ3'),
+    DidSpec(did: '0009', name: 'Charger V reading', unit: 'V', scale: 1.0, expectedBytes: 2, category: DidCategory.charging, notes: 'Semantics TBD — verify in driving/charging'),
+    DidSpec(did: '000A', name: 'OBC hours', expectedBytes: 2, category: DidCategory.counter, notes: 'BZ3 14999, BZ5 15000 → operating-hours candidate'),
+    DidSpec(did: '000B', name: 'Charge V target (alt)', unit: 'V', scale: 1.0, expectedBytes: 2, category: DidCategory.charging),
+    DidSpec(did: '000C', name: 'Charge I max', unit: 'A', scale: 0.1, expectedBytes: 2, category: DidCategory.charging, notes: '×0.1 → 100.0 A'),
+    DidSpec(did: '000F', name: 'OBC temp 1', unit: '°C', offset: -40, category: DidCategory.thermal),
+    DidSpec(did: '0010', name: 'OBC temp 2', unit: '°C', offset: -40, category: DidCategory.thermal),
+    DidSpec(did: '0057', name: 'OBC state flag', category: DidCategory.charging, notes: 'BZ5-only, value 0x01 at rest'),
   ],
 );
 
@@ -236,10 +267,10 @@ const allBz5Ecus = <EcuRegistryEntry>[
   EcuRegistryEntry(txId: '722', rxId: '72A', label: 'Inverter/DC-DC 2'),
   EcuRegistryEntry(txId: '724', rxId: '72C', label: 'Inverter/DC-DC 3'),
   EcuRegistryEntry(txId: '732', rxId: '73A', label: 'Aux #1'),
-  EcuRegistryEntry(txId: '740', rxId: '748', label: 'Pack Monitor', detailed: packMonitorEcu),
-  EcuRegistryEntry(txId: '744', rxId: '74C', label: 'Pack Monitor 2'),
-  EcuRegistryEntry(txId: '745', rxId: '74D', label: 'Pack Monitor 3'),
-  EcuRegistryEntry(txId: '746', rxId: '74E', label: 'Pack Monitor 4'),
+  EcuRegistryEntry(txId: '740', rxId: '748', label: 'PDU/HV Junction', detailed: packMonitorEcu),
+  EcuRegistryEntry(txId: '744', rxId: '74C', label: 'PDU 2'),
+  EcuRegistryEntry(txId: '745', rxId: '74D', label: 'PDU 3'),
+  EcuRegistryEntry(txId: '746', rxId: '74E', label: 'PDU 4'),
   EcuRegistryEntry(txId: '750', rxId: '758', label: 'BMS slave 1'),
   EcuRegistryEntry(txId: '751', rxId: '759', label: 'BMS slave 2'),
   EcuRegistryEntry(txId: '752', rxId: '75A', label: 'BMS slave 3'),
