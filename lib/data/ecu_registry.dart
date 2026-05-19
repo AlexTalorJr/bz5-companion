@@ -246,20 +246,12 @@ const packMonitorEcu = EcuSpec(
     // Sanity range: 0..3000 raw covers 0..213 km/h. Real-world BZ5 top
     // speed is ~160 km/h. 3000 leaves headroom for false-high outliers
     // before they corrupt trip-averages.
-    DidSpec(did: '0008', name: 'Vehicle speed', unit: 'km/h', scale: 0.07097, expectedBytes: 2, category: DidCategory.dynamic, sanityRawMin: 0, sanityRawMax: 3000, notes: 'raw / 14.09 = km/h. Live during driving, =0 at stop.'),
-    // 740/0x0009 — semantics TBD. Has independent dynamics during
-    // driving but doesn't track speed directly. Baseline raw ~982 at
-    // rest, swings 784-1170 under transient load. Candidates: motor
-    // RPM scaled, inverter signal, torque-request indicator.
-    DidSpec(did: '0009', name: 'Motor signal (TBD)', expectedBytes: 2, category: DidCategory.dynamic, notes: 'Baseline ~982; ±200 swings during accel/brake. Semantics not yet decoded.'),
-    // v0.1.20: now flagged as platform constant. Scale kept ×0.025 so the
-    // value displayed in raw-data views remains numerically meaningful
-    // (~450V) for users who want to see what the firmware reports, but
-    // it's no longer treated as live pack telemetry.
+    DidSpec(did: '0008', name: 'Vehicle speed', unit: 'km/h', scale: 0.07097, expectedBytes: 2, category: DidCategory.dynamic, sanityRawMin: 0, sanityRawMax: 3000, notes: 'raw / 14.09 = km/h. CONFIRMED 2026-05-19 livelog 16: scale 1/14.09 precise. Reading is TRUE wheel speed (UN R39 — about 5% LOWER than analog speedometer display). At cruise 90 km/h on speedometer, this reads ~85.4 km/h.'),
+    DidSpec(did: '0009', name: 'Transient indicator (noise)', expectedBytes: 2, category: DidCategory.unknown, notes: 'v0.1.24: tested 2026-05-19 (livelog 16, 2028 cycles). Median 982 ± 20 across all driving regimes. NO correlation with speed/accel/regen bins. Spikes to 1100+ briefly during sharp transients (brake or accel), but base value identical at idle, cruise, and load — not torque, not power. Likely raw ADC noise on an unused channel. Kept in registry as documentation; removed from active polling (category = unknown).'),
     DidSpec(did: '0014', name: 'Pack V nominal (const)', unit: 'V', scale: 0.025, expectedBytes: 2, category: DidCategory.unknown, notes: 'Platform constant ~450V — not live; use HV bus (790/0x0015) for live V'),
     DidSpec(did: '0016', name: 'Pack V nominal alt (const)', unit: 'V', scale: 0.025, expectedBytes: 2, category: DidCategory.unknown, notes: 'Platform constant — not live'),
-    DidSpec(did: '0022', name: 'Pack V nominal filtered (const)', unit: 'V', scale: 0.025, expectedBytes: 2, category: DidCategory.unknown, notes: 'Platform constant ~450V — not live; was primary pack V source up to v0.1.19, replaced by HV bus in v0.1.20'),
-    DidSpec(did: '0023', name: 'V flag/duplicate (const)', expectedBytes: 2, category: DidCategory.unknown, notes: 'Always 0x0022 OR 0x8000 — not current/live'),
+    DidSpec(did: '0022', name: 'Pack V reference (slow-drift)', unit: 'V', scale: 0.025, expectedBytes: 2, category: DidCategory.unknown, notes: 'Slowly-drifting V reference ~450V. v0.1.24: confirmed not constant (4650 morning → 4659 evening after driving) but updates much too slowly for live use. Drift mechanism unknown; possibly calibration adjustment vs temperature or aging. Use HV bus (790/0x0015) for live V instead.'),
+    DidSpec(did: '0023', name: 'Status word (dynamic, semantics TBD)', expectedBytes: 2, category: DidCategory.unknown, notes: 'v0.1.24: previously thought to be "0x0022 OR 0x8000" pattern (constant flag). Sweep 17 showed structure changes after driving: 0xC64F → 0x46D5 (no longer 0x8000-bit set). Now believed to be a status/state word that changes on certain events (post-drive snapshot or thermal cycle). Semantics not decoded. Not useful for live UI yet.'),
     DidSpec(did: '0007', name: 'Status', category: DidCategory.status),
     // v0.1.20: 0x0010 and 0x0011 ARE LIVE component temperatures, not
     // contactor flags. Offset -40 °C. Yesterday after driving: 58°C/50°C.

@@ -49,11 +49,16 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
               const SizedBox(height: 12),
               _DerivedMetricsCard(trip: trip),
               const SizedBox(height: 12),
+              // v0.1.24: SOC chart switched from integer 0x0005 (which
+              // steps in 1% chunks and looks jagged on short trips) to
+              // precise 1FFD (high16/100, 0.01% resolution). Registry
+              // decoder for 1FFD already returns the float percentage,
+              // so no valueTransform needed.
               _ChartCard(
                 title: 'SOC vs time',
                 tripId: trip.id,
                 ecuTx: '790',
-                did: '0005',
+                did: '1FFD',
                 color: Colors.greenAccent,
                 unit: '%',
                 svc: svc,

@@ -21,18 +21,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
   List<ScanResult> _devices = [];
   bool _scanning = false;
   bool _autoConnect = false;
+  // v0.1.24: persistent toggle for matching the car's analog/digital
+  // speedometer reading (which by UN R39 reads ~5% higher than true
+  // wheel speed). When enabled, Driver view multiplies 740/0x0008
+  // by 1.05 before display.
+  bool _matchSpeedometer = false;
 
   @override
   void initState() {
     super.initState();
-    _loadAutoConnect();
+    _loadSettings();
   }
 
-  Future<void> _loadAutoConnect() async {
+  Future<void> _loadSettings() async {
     final prefs = await SharedPreferences.getInstance();
     if (!mounted) return;
     setState(() {
       _autoConnect = prefs.getBool('auto_connect_enabled') ?? false;
+      _matchSpeedometer = prefs.getBool('match_speedometer') ?? false;
     });
   }
 
@@ -41,6 +47,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
     await prefs.setBool('auto_connect_enabled', v);
     if (!mounted) return;
     setState(() => _autoConnect = v);
+  }
+
+  Future<void> _setMatchSpeedometer(bool v) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('match_speedometer', v);
+    if (!mounted) return;
+    setState(() => _matchSpeedometer = v);
+    // Tell ConnectionService to refresh — Driver view watches the
+    // service, and the multiplier is applied in the UI rather than
+    // in the service, so a notifyListeners forces the redraw.
+    if (mounted) {
+      // ignore: use_build_context_synchronously
+      Provider.of<ConnectionService>(context, listen: false)
+          .refreshSpeedometerPref();
+    }
   }
 
   @override
@@ -64,6 +85,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 'Подключаться к запомненному адаптеру при запуске приложения'),
             value: _autoConnect,
             onChanged: _setAutoConnect,
+          ),
+          // v0.1.24: match-speedometer toggle. Default OFF (show true
+          // wheel speed). When ON, Driver view multiplies displayed
+          // speed by 1.05 so the number matches what the analog/digital
+          // speedometer reads. Useful for drivers who glance between
+          // both displays and want one consistent reading.
+          SwitchListTile(
+            secondary: Icon(Icons.speed,
+                color: _matchSpeedometer ? Colors.cyanAccent : Colors.grey),
+            title: const Text('Speed match speedometer (+5%)'),
+            subtitle: const Text(
+                'Показывать скорость как на штатной приборке '
+                '(приборка по закону UN R39 завышает на ~5%)'),
+            value: _matchSpeedometer,
+            onChanged: _setMatchSpeedometer,
           ),
           if (svc.status != ConnectionStatus.connected) ...[
             Padding(
