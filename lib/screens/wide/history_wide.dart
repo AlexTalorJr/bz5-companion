@@ -120,19 +120,27 @@ class _TripsBody extends StatelessWidget {
             ),
           );
         }
-        final active = trips.firstWhere((t) => t.endedAt == null,
+        // v0.1.25+3 fix: previously when there was an active trip, the
+        // History page collapsed to show ONLY that trip full-screen,
+        // hiding the list of past trips entirely. Users complained they
+        // could not navigate to any older trip while a trip was active.
+        //
+        // Now the active trip is just the first item in the trips list
+        // (it sorts to the top because trips are returned newest-first,
+        // and the active trip is by definition newest). The split-pane
+        // layout is used unconditionally — left = list of all trips,
+        // right = detail of the selected trip. Active trip is selected
+        // by default if present, else most recent completed.
+        //
+        // The _ActiveTripWideView widget is no longer reached from
+        // History; it's preserved in code for possible future use as
+        // a "follow live trip" mode but isn't currently wired up.
+        final activeIdx = trips.indexWhere((t) => t.endedAt == null);
+        final defaultSelectedId = selectedTripId ??
+            (activeIdx >= 0 ? trips[activeIdx].id : trips.first.id);
+        final selectedTrip = trips.firstWhere(
+            (t) => t.id == defaultSelectedId,
             orElse: () => trips.first);
-        final hasActive = active.endedAt == null;
-
-        // If there's an active trip, dedicated wide layout for it
-        if (hasActive) {
-          return _ActiveTripWideView(trip: active, svc: svc);
-        }
-
-        // Else: split-pane (past trips list + selected detail)
-        final selectedId = selectedTripId ?? trips.first.id;
-        final selectedTrip =
-            trips.firstWhere((t) => t.id == selectedId, orElse: () => trips.first);
 
         return Row(
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -182,6 +190,11 @@ class _TripsListColumn extends StatelessWidget {
               (t.endedAt ?? DateTime.now()).difference(t.startedAt);
           final dateStr = DateFormat('d MMM HH:mm').format(t.startedAt);
           final dist = t.distanceKm;
+          // v0.1.25+3: visually distinguish the active trip in the list
+          // with a green pulse-dot icon and "ACTIVE" subtitle, so the
+          // user can immediately spot the running trip without having
+          // to inspect ended_at by hand.
+          final isActive = t.endedAt == null;
           return Container(
             color: selected
                 ? Colors.lightBlueAccent.withValues(alpha: 0.1)
@@ -189,15 +202,30 @@ class _TripsListColumn extends StatelessWidget {
             child: ListTile(
               dense: true,
               onTap: () => onSelect(t.id),
+              leading: isActive
+                  ? Container(
+                      width: 10,
+                      height: 10,
+                      decoration: const BoxDecoration(
+                        color: Colors.greenAccent,
+                        shape: BoxShape.circle,
+                      ),
+                    )
+                  : null,
               title: Text(dateStr,
                   style: TextStyle(
                       fontWeight:
                           selected ? FontWeight.w600 : FontWeight.normal,
                       fontSize: 13)),
               subtitle: Text(
-                '${_fmtDuration(duration)}'
-                '${dist != null ? ' · ${dist.toStringAsFixed(1)} km' : ''}',
-                style: const TextStyle(fontSize: 11),
+                isActive
+                    ? 'ACTIVE · ${_fmtDuration(duration)}'
+                    : '${_fmtDuration(duration)}'
+                      '${dist != null ? ' · ${dist.toStringAsFixed(1)} km' : ''}',
+                style: TextStyle(
+                  fontSize: 11,
+                  color: isActive ? Colors.greenAccent : null,
+                ),
               ),
               trailing: Text('#${t.id}',
                   style:
