@@ -60,6 +60,20 @@ class _SweepScreenState extends State<SweepScreen> {
       startDid: '0000',
       endDid: '01FF',
     ),
+    // v0.1.25: dedicated VCU upper-half preset. The lower half
+    // (0x0000-0x0FFF) is mostly known by now (gear, odo, status, power
+    // estimates). Upper half 0x1000-0x1FFF has never been swept. Most
+    // likely place to find regen current / torque request DIDs — Tesla
+    // and others use the 0x1000+ range for inverter-side telemetry.
+    _SweepPreset(
+      name: 'VCU upper (regen hunt)',
+      description: '791 — VCU upper half, 0x1000..0x1FFF (4096 DIDs, ~27 min) — '
+          'unexplored zone, likely regen current / motor torque',
+      txEcu: '791',
+      rxEcu: '799',
+      startDid: '1000',
+      endDid: '1FFF',
+    ),
     _SweepPreset(
       name: 'BMS Master full',
       description: '790 — BMS Master, 0x0000..0x1FFF (~55 min)',

@@ -478,7 +478,21 @@ class _TripMetricsPanel extends StatelessWidget {
                             ? 'calculating…'
                             : 'kWh/100km',
                         label: 'consumption',
-                        isCalculating: tripAgeSec < 120),
+                        isCalculating: tripAgeSec < 120,
+                        // v0.1.25: color by efficiency band. Calibrated
+                        // for BZ5 with 65.28 kWh pack:
+                        //   < 13   kWh/100km → excellent (eco trip, easy
+                        //                       cruise downhill / mild)
+                        //   13-17  kWh/100km → typical city + mixed
+                        //   17-22  kWh/100km → spirited or cold weather
+                        //   > 22   kWh/100km → aggressive or heater on
+                        //
+                        // Skipped while "calculating…" (first 2 min) so
+                        // the user doesn't see a flashing red number
+                        // because of early-trip noise.
+                        valueColor: tripAgeSec < 120 || consumption == null
+                            ? null
+                            : _consumptionColor(consumption)),
                   ),
                 ],
               ),
@@ -529,11 +543,16 @@ class _TripCell extends StatelessWidget {
   final String unit;
   final String label;
   final bool isCalculating;
+  /// v0.1.25: optional color override for the main value text.
+  /// When null (default), uses white (or grey if isCalculating).
+  /// Used for consumption efficiency banding — see _consumptionColor.
+  final Color? valueColor;
   const _TripCell({
     required this.value,
     required this.unit,
     required this.label,
     this.isCalculating = false,
+    this.valueColor,
   });
 
   @override
@@ -554,7 +573,7 @@ class _TripCell extends StatelessWidget {
                       fontWeight: FontWeight.w300,
                       color: isCalculating
                           ? Colors.grey
-                          : Colors.white,
+                          : (valueColor ?? Colors.white),
                       fontStyle: isCalculating
                           ? FontStyle.italic
                           : FontStyle.normal)),
@@ -653,4 +672,23 @@ class _Sep extends StatelessWidget {
     return const Text('·',
         style: TextStyle(fontSize: 14, color: Colors.grey));
   }
+}
+
+/// v0.1.25: efficiency-band color for consumption (kWh/100km).
+/// Calibrated against the BZ5's 65.28 kWh LFP pack and typical city +
+/// trasse mix observed in our livelog data:
+///
+///   < 13   → excellent (greenAccent) — pure eco crawl or steep regen
+///   13-17  → typical (white) — most mixed city/highway driving
+///   17-22  → spirited (yellowAccent) — hard accel, cold, or strong wind
+///   > 22   → poor (orangeAccent) — climate-on or aggressive city
+///
+/// The thresholds align with our anchor data point: 16.7 kWh/100km on
+/// the 32 km mixed-city trip on 2026-05-19, which felt normal — so 17
+/// is the lower bound of "spirited".
+Color _consumptionColor(double kwh100km) {
+  if (kwh100km < 13) return Colors.greenAccent;
+  if (kwh100km < 17) return Colors.white;
+  if (kwh100km < 22) return Colors.yellowAccent;
+  return Colors.orangeAccent;
 }
