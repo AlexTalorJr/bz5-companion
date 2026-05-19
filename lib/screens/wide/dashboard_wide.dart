@@ -119,7 +119,7 @@ class _LeftColumn extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Expanded(flex: 5, child: _SocHero(soc: soc, rangeKm: rangeKm)),
+        Expanded(flex: 5, child: _SocHero(soc: soc, socPrecise: svc.socPrecisePct, rangeKm: rangeKm)),
         const SizedBox(height: 12),
         Expanded(
           flex: 3,
@@ -144,13 +144,17 @@ class _LeftColumn extends StatelessWidget {
 }
 
 class _SocHero extends StatelessWidget {
-  final double? soc;
+  final double? soc;          // integer SOC from 790/0x0005 (fallback)
+  final double? socPrecise;   // v0.1.21: precise SOC from 1FFD
   final double? rangeKm;
-  const _SocHero({this.soc, this.rangeKm});
+  const _SocHero({this.soc, this.socPrecise, this.rangeKm});
 
   @override
   Widget build(BuildContext context) {
-    final pct = soc ?? 0;
+    // v0.1.21+3: prefer precise SOC, fall back to integer until 1FFD
+    // has been polled at least once.
+    final displaySoc = socPrecise ?? soc;
+    final pct = displaySoc ?? 0;
     final color = pct < 20
         ? Colors.red
         : pct < 50
@@ -172,13 +176,38 @@ class _SocHero extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
                 Text(
-                  soc != null ? '${soc!.toInt()}' : '—',
+                  // v0.1.21+3: integer part of precise SOC; decimal goes
+                  // to a smaller adjacent Text widget for visual hierarchy.
+                  //
+                  // Floating-point safety: round to nearest tenth first
+                  // (see SocCard comment for details).
+                  displaySoc != null
+                      ? (() {
+                          final r = (displaySoc * 10).round() / 10;
+                          return r.truncate().toString();
+                        })()
+                      : '—',
                   style: TextStyle(
                       fontSize: 96,
                       fontWeight: FontWeight.w300,
                       color: color,
                       height: 1.0),
                 ),
+                if (displaySoc != null)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: Text(
+                      (() {
+                        final r = (displaySoc * 10).round() / 10;
+                        return '.${((r - r.truncate()) * 10).round()}';
+                      })(),
+                      style: TextStyle(
+                          fontSize: 48,
+                          fontWeight: FontWeight.w300,
+                          color: color,
+                          height: 1.0),
+                    ),
+                  ),
                 const SizedBox(width: 6),
                 const Padding(
                   padding: EdgeInsets.only(bottom: 18),
