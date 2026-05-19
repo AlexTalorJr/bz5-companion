@@ -1262,10 +1262,28 @@ class ConnectionService extends ChangeNotifier {
     // We don't yet know the exact semantics (whether it's bidirectional,
     // signed, or unsigned), so we treat it as magnitude. If/when we find
     // a signed regen value, peakRegenKw will be populated separately.
+    //
+    // v0.1.25+3: ignore precharge spike. When you press Start, the
+    // pre-charge resistor connects → contactors close → inverter caps
+    // charge up. That transient draws 60-80 kW for ~500 ms even though
+    // the car isn't moving. Previously this was captured as the trip's
+    // "peak power" and stuck there for the whole drive ("80.5 kW" with
+    // 0 distance). Now we only sample power when:
+    //   (1) trip has been running for at least 5 seconds, AND
+    //   (2) vehicle is actually moving (speed > 0.5 km/h)
+    // This drops the precharge moment and any other Ready-but-parked
+    // electrical events (lights on, AC compressor cycling, etc.).
     final pwr = readNumeric('791', '0038');
-    if (pwr != null) {
-      final kw = pwr.abs(); // assume already in kW after scale=0.1
-      _tripPeakPowerKw = _tripPeakPowerKw == null ? kw : (kw > _tripPeakPowerKw! ? kw : _tripPeakPowerKw);
+    if (pwr != null && _tripStartedAt != null) {
+      final tripAgeSec =
+          DateTime.now().difference(_tripStartedAt!).inSeconds;
+      final curSpeed = readNumeric('740', '0008') ?? 0;
+      if (tripAgeSec >= 5 && curSpeed > 0.5) {
+        final kw = pwr.abs(); // assume already in kW after scale=0.1
+        _tripPeakPowerKw = _tripPeakPowerKw == null
+            ? kw
+            : (kw > _tripPeakPowerKw! ? kw : _tripPeakPowerKw);
+      }
     }
 
     // v0.1.21: speed tracking. 740/0x0008 verified as vehicle speed
