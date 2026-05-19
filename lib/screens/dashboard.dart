@@ -80,7 +80,7 @@ class _Connected extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        _SocCard(soc: soc, rangeKm: rangeKm),
+        _SocCard(soc: soc, socPrecise: svc.socPrecisePct, rangeKm: rangeKm),
         const SizedBox(height: 12),
         if (isCharging) _ChargingBanner(svc: svc, chargedSession: chargedSession),
         if (isCharging) const SizedBox(height: 12),
@@ -209,13 +209,18 @@ class _ParkingPawlRow extends StatelessWidget {
 }
 
 class _SocCard extends StatelessWidget {
-  final double? soc;
+  final double? soc;          // integer SOC from 790/0x0005 (fallback)
+  final double? socPrecise;   // v0.1.21: precise SOC from 790/0x1FFD high16/100
   final double? rangeKm;
-  const _SocCard({this.soc, this.rangeKm});
+  const _SocCard({this.soc, this.socPrecise, this.rangeKm});
 
   @override
   Widget build(BuildContext context) {
-    final pct = soc ?? 0;
+    // v0.1.21+3: display SOC with 0.1% resolution. Prefer the precise
+    // source (1FFD); fall back to integer (0x0005) until 1FFD has been
+    // polled at least once.
+    final displaySoc = socPrecise ?? soc;
+    final pct = displaySoc ?? 0;
     final color = pct < 20 ? Colors.red : pct < 50 ? Colors.orange : Colors.green;
 
     return Card(
@@ -232,9 +237,37 @@ class _SocCard extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
                 Text(
-                  soc != null ? '${soc!.toInt()}' : '—',
+                  // v0.1.21+3: one decimal place. Split integer and
+                  // fractional parts so the big "54" stays prominent and
+                  // ".3" is rendered slightly smaller — keeps the card
+                  // height stable across whole-number and fractional
+                  // values and avoids the giant digit jiggling between
+                  // single and triple-digit width.
+                  //
+                  // Floating-point safety: round to nearest tenth FIRST,
+                  // then split. Naive `truncate()` would render 48.30
+                  // (stored as 48.2999...) as "48.2" instead of "48.3".
+                  // We use round(x*10)/10 to snap to the visible
+                  // resolution, then int-truncate to separate digits.
+                  displaySoc != null
+                      ? (() {
+                          final r = (displaySoc * 10).round() / 10;
+                          return r.truncate().toString();
+                        })()
+                      : '—',
                   style: TextStyle(fontSize: 72, fontWeight: FontWeight.w300, color: color, height: 1.0),
                 ),
+                if (displaySoc != null)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: Text(
+                      (() {
+                        final r = (displaySoc * 10).round() / 10;
+                        return '.${((r - r.truncate()) * 10).round()}';
+                      })(),
+                      style: TextStyle(fontSize: 36, fontWeight: FontWeight.w300, color: color, height: 1.0),
+                    ),
+                  ),
                 const SizedBox(width: 4),
                 const Padding(
                   padding: EdgeInsets.only(bottom: 12),

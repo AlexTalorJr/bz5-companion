@@ -228,6 +228,40 @@ class AppDatabase extends _$AppDatabase {
     ));
   }
 
+  /// v0.1.21.1: find orphaned trips (endedAt IS NULL) from previous app
+  /// runs. Caller should iterate and call [forceCloseTrip] on each.
+  ///
+  /// "Orphaned" here means: trip row exists, started in the past, but was
+  /// never properly closed because the app crashed, BLE dropped without
+  /// the fix path firing, or the user force-killed the app.
+  Future<List<Trip>> getOrphanedTrips() {
+    return (select(trips)
+          ..where((t) => t.endedAt.isNull())
+          ..orderBy([(t) => OrderingTerm.asc(t.startedAt)]))
+        .get();
+  }
+
+  /// v0.1.21.1: close an orphaned trip by setting endedAt to its last
+  /// known sample timestamp (or startedAt + 1s as last resort) and
+  /// leaving all summary fields null. Better than leaving the trip
+  /// open forever — UI can show it as "(closed on recovery)".
+  ///
+  /// Returns the timestamp used.
+  Future<DateTime> forceCloseTrip(int tripId) async {
+    // Find latest sample for this trip
+    final lastSample = await (select(samples)
+          ..where((s) => s.tripId.equals(tripId))
+          ..orderBy([(s) => OrderingTerm.desc(s.timestamp)])
+          ..limit(1))
+        .getSingleOrNull();
+    final trip = await getTrip(tripId);
+    final endTs = lastSample?.timestamp ??
+        (trip != null ? trip.startedAt.add(const Duration(seconds: 1)) : DateTime.now());
+    await (update(trips)..where((t) => t.id.equals(tripId)))
+        .write(TripsCompanion(endedAt: Value(endTs)));
+    return endTs;
+  }
+
   Future endTrip(
     int id, {
     double? endSoc,

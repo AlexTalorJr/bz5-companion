@@ -606,10 +606,110 @@ class ConnectionService extends ChangeNotifier {
     // stopPolling internally — but DON'T await, this fires from a stream
     // listener. Cancel polling flag, let loop exit naturally.
     _polling = false;
+
+    // v0.1.21.1: close any active trip BEFORE clearing client/ble refs.
+    //
+    // Previously this method only stopped the poll flag and dropped
+    // references, leaving the active trip in DB with endedAt=null and
+    // all summary fields null. On next connection startPolling() reset
+    // trip state and created a NEW trip — the old one was orphaned as
+    // "perpetually active" in history, with all metrics showing "—".
+    //
+    // Now we finalize the trip with whatever rolling state we have. The
+    // user lost some samples after the disconnect (BLE was already
+    // dead), but at least startSoc / endSoc / distance / energyUsed are
+    // computed from the last known good readings instead of being null.
+    //
+    // Fire-and-forget — _handleBleDisconnect is called from a stream
+    // listener and can't be made async. The DB write completes on the
+    // event loop. Any failure here is logged via debugPrint, never
+    // propagated, because the BLE event must still update UI status.
+    if (_currentTripId != null) {
+      _finalizeTripFromLastKnown().catchError((e) {
+        debugPrint('Trip finalize on BLE drop failed: $e');
+      });
+    }
+
     _client = null;
     _ble = null;
     _setStatus(ConnectionStatus.disconnected,
         msg: 'BLE отключился (вне зоны / адаптер выключен)');
+  }
+
+  /// v0.1.21.1: close the active trip using the last-known cached values
+  /// from _latestValues (no fresh reads — BLE is already down).
+  ///
+  /// Same field math as the normal stopPolling() trip-end block, just
+  /// reads from cache rather than trying live reads. Used by:
+  ///   - _handleBleDisconnect (unexpected drop)
+  ///   - any future "kill" path that loses BLE before stopPolling fires
+  ///
+  /// Safe to call even if no trip is active (no-op then).
+  Future<void> _finalizeTripFromLastKnown() async {
+    if (_currentTripId == null) return;
+    final tripId = _currentTripId!;
+
+    final endSoc = _latestValues['790']?['0005']?.numeric;
+    final endOdo = _latestValues['791']?['0026']?.numeric;
+
+    double? distanceKm;
+    if (_tripStartOdo != null && endOdo != null && endOdo > _tripStartOdo!) {
+      distanceKm = endOdo - _tripStartOdo!;
+    }
+    double? energyUsedKwh;
+    if (_tripStartSoc != null && endSoc != null && _tripStartSoc! > endSoc) {
+      energyUsedKwh = (_tripStartSoc! - endSoc) * Bz5Model.batteryCapacityKwh / 100.0;
+    }
+    double? avgConsumption;
+    if (distanceKm != null && energyUsedKwh != null && distanceKm > 0.1) {
+      avgConsumption = (energyUsedKwh / distanceKm) * 100.0;
+    }
+
+    double? avgMovingSpeed;
+    if (_tripSpeedSamples > 0) {
+      avgMovingSpeed = _tripSpeedSum / _tripSpeedSamples;
+    }
+
+    double? energyFromSoc;
+    final endSocPrecise = socPrecisePct;
+    if (_tripStartSocPrecise != null &&
+        endSocPrecise != null &&
+        _tripStartSocPrecise! > endSocPrecise) {
+      energyFromSoc = (_tripStartSocPrecise! - endSocPrecise) *
+          Bz5Model.batteryCapacityKwh / 100.0;
+    }
+
+    try {
+      await db.endTrip(
+        tripId,
+        endSoc: endSoc,
+        endOdo: endOdo,
+        sampleCount: _samplesInTrip,
+        distanceKm: distanceKm,
+        energyUsedKwh: energyUsedKwh,
+        avgConsumptionKwh100km: avgConsumption,
+        minBatteryTempC: _tripMinTempC,
+        maxBatteryTempC: _tripMaxTempC,
+        maxCellSpreadMv: _tripMaxCellSpreadMv,
+        minSoc: _tripMinSoc,
+        maxSoc: _tripMaxSoc,
+        peakSpeedKmh: _tripPeakSpeedKmh,
+        peakPowerKw: _tripPeakPowerKw,
+        peakRegenKw: _tripPeakRegenKw,
+        regenEnergyKwh: _tripRegenEnergyKwh,
+        avgMovingSpeedKmh: avgMovingSpeed,
+        movingSeconds: _tripMovingSec > 0 ? _tripMovingSec : null,
+        idleSeconds: _tripIdleSec > 0 ? _tripIdleSec : null,
+        energyFromSocKwh: energyFromSoc,
+      );
+      debugPrint('Trip #$tripId finalized on disconnect '
+          '(distance=$distanceKm km, energy=$energyUsedKwh kWh)');
+    } finally {
+      // Always clear active trip ID even on DB error — otherwise we'd
+      // leave _currentTripId pointing to a half-closed row.
+      _currentTripId = null;
+      _tripStartedAt = null;
+    }
   }
 
   /// v0.1.16: auto-connect at app startup if user opted in and we have a
@@ -658,6 +758,27 @@ class ConnectionService extends ChangeNotifier {
   Future<void> startPolling({bool startTrip = true}) async {
     if (_client == null || _polling) return;
     _polling = true;
+
+    // v0.1.21.1: clean up any orphaned trips from previous app runs
+    // before creating a new one. Orphans accumulate when:
+    //   - app process killed by OS while trip is active
+    //   - BLE drop hit a code path that didn't finalize
+    //   - older app versions (pre-v0.1.21.1) with no disconnect handler
+    //
+    // Force-close them with their last sample's timestamp as endedAt and
+    // null summary fields. Better than leaving "ACTIVE 5h 8m" trips
+    // visible in history.
+    try {
+      final orphans = await db.getOrphanedTrips();
+      for (final t in orphans) {
+        final endTs = await db.forceCloseTrip(t.id);
+        debugPrint('Closed orphaned Trip #${t.id} (started '
+            '${t.startedAt}) → endedAt=$endTs');
+      }
+    } catch (e) {
+      debugPrint('Orphan-trip cleanup failed (non-fatal): $e');
+    }
+
     _samplesInTrip = 0;
     _tripStartB00 = null;
     _wantTripCreation = startTrip;
