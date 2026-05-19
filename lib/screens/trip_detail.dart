@@ -224,10 +224,28 @@ class _DerivedMetricsCard extends StatelessWidget {
           trip.peakRegenKw != null
               ? '${trip.peakRegenKw!.toStringAsFixed(1)} kW'
               : '— (DID not identified)'),
+      // v0.1.22: peak speed now actually populated (740/0x0008 verified).
+      // Remove the "DID not identified" placeholder when value present.
       _MetricRow('Peak speed',
           trip.peakSpeedKmh != null
               ? '${trip.peakSpeedKmh!.toStringAsFixed(0)} km/h'
-              : '— (DID not identified)'),
+              : '—'),
+      // v0.1.22: new trip metrics enabled by speed DID + precise SOC.
+      _MetricRow('Avg moving speed',
+          trip.avgMovingSpeedKmh != null
+              ? '${trip.avgMovingSpeedKmh!.toStringAsFixed(0)} km/h'
+              : '—'),
+      _MetricRow('Time moving / idle',
+          (trip.movingSeconds != null || trip.idleSeconds != null)
+              ? '${_fmtDur(trip.movingSeconds)} / ${_fmtDur(trip.idleSeconds)}'
+              : '—'),
+      // Energy from precise SOC: independent of integer-SOC-based
+      // energyUsedKwh above. When both present, comparing the two gives
+      // an idea of measurement noise (typically ±5%).
+      _MetricRow('Energy (precise SOC)',
+          trip.energyFromSocKwh != null
+              ? '${trip.energyFromSocKwh!.toStringAsFixed(2)} kWh'
+              : '—'),
       _MetricRow('Samples logged', '${trip.sampleCount}'),
     ];
 
@@ -456,4 +474,15 @@ class _ChartCard extends StatelessWidget {
 String _fmtDuration(Duration d) {
   if (d.inHours > 0) return '${d.inHours}h ${d.inMinutes % 60}m';
   return '${d.inMinutes}m ${d.inSeconds % 60}s';
+}
+
+/// v0.1.22: format an integer-seconds duration coming from Trip
+/// columns (movingSeconds, idleSeconds). Returns `—` for null,
+/// short form for sub-minute (avoids "0m 12s" for an idle blip).
+String _fmtDur(int? seconds) {
+  if (seconds == null || seconds <= 0) return '—';
+  final d = Duration(seconds: seconds);
+  if (d.inHours > 0) return '${d.inHours}h ${d.inMinutes % 60}m';
+  if (d.inMinutes > 0) return '${d.inMinutes}m';
+  return '${d.inSeconds}s';
 }
