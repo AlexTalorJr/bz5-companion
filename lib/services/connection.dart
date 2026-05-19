@@ -712,6 +712,12 @@ class ConnectionService extends ChangeNotifier {
     }
   }
 
+  // v0.1.22: throttle auto-connect attempts to avoid spamming BLE scan
+  // when the user repeatedly flips the app foreground/background while
+  // adapter is still out of range. 30s minimum interval between attempts.
+  DateTime? _lastAutoConnectAttempt;
+  static const Duration _autoConnectMinInterval = Duration(seconds: 30);
+
   /// v0.1.16: auto-connect at app startup if user opted in and we have a
   /// remembered adapter ID. Returns true if connection succeeded.
   ///
@@ -720,7 +726,15 @@ class ConnectionService extends ChangeNotifier {
   ///   - feature disabled in prefs
   ///   - no remembered adapter
   ///   - device not found in scan
+  ///   - last attempt was less than 30s ago (v0.1.22 throttle)
+  ///   - already connected or connecting
   /// Errors during connect are surfaced via _setStatus.
+  ///
+  /// v0.1.22: also called by the AppLifecycle observer in main.dart
+  /// whenever the app returns to foreground, so a user who opened the
+  /// app at home (out of BLE range) gets a fresh attempt when they
+  /// later open it again next to the car. Previously only fired once
+  /// at app startup, then silently never retried.
   Future<bool> tryAutoConnect({Duration scanTimeout = const Duration(seconds: 6)}) async {
     final prefs = await SharedPreferences.getInstance();
     final enabled = prefs.getBool('auto_connect_enabled') ?? false;
@@ -728,9 +742,22 @@ class ConnectionService extends ChangeNotifier {
     final savedId = prefs.getString('last_adapter');
     if (savedId == null || savedId.isEmpty) return false;
     if (_status == ConnectionStatus.connected ||
-        _status == ConnectionStatus.connecting) {
+        _status == ConnectionStatus.connecting ||
+        _status == ConnectionStatus.scanning) {
       return false;
     }
+
+    // v0.1.22: throttle. If the user flips app focus rapidly while the
+    // adapter is still out of range, we'd otherwise queue 5+ scans
+    // back-to-back. 30 s between attempts is fast enough to feel
+    // responsive ("oh, I opened the app, it found the car") while not
+    // burning battery on tight repeat scans.
+    final now = DateTime.now();
+    if (_lastAutoConnectAttempt != null &&
+        now.difference(_lastAutoConnectAttempt!) < _autoConnectMinInterval) {
+      return false;
+    }
+    _lastAutoConnectAttempt = now;
 
     _setStatus(ConnectionStatus.scanning,
         msg: 'Авто-подключение к $savedId...');

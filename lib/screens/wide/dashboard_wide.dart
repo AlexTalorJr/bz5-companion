@@ -429,6 +429,10 @@ class _MiddleColumn extends StatelessWidget {
     final gear = svc.readNumeric('791', '0009');
     final parkingEngaged = svc.parkingPawlEngaged;
     final isCharging = svc.isCharging;
+    // v0.1.22: new live signals exposed on wide dashboard.
+    final vehicleSpeed = svc.vehicleSpeedKmh;
+    final pduTemp1 = svc.readNumeric('740', '0010');
+    final pduTemp2 = svc.readNumeric('740', '0011');
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -438,8 +442,13 @@ class _MiddleColumn extends StatelessWidget {
         // inside Expanded leaves vertical empty space when the available height
         // is larger than (width / aspect) * rows. With Expanded+flex on rows,
         // cells grow to fill exactly the available space.
+        //
+        // v0.1.22: extended from 2 rows to 3 rows to accommodate Speed
+        // and PDU temps. Flex bumped 5→7 so each cell stays roughly the
+        // same height as before (cells: ~5/8 of column = 62 % → ~7/10 = 70 %,
+        // ceded from gear hero panel which was previously oversized).
         Expanded(
-          flex: 5,
+          flex: 7,
           child: Column(
             children: [
               Expanded(
@@ -487,6 +496,32 @@ class _MiddleColumn extends StatelessWidget {
                         label: 'CYCLES',
                         value: cycles != null ? '$cycles' : '—',
                       ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+              // v0.1.22: third row — Speed + PDU heatsink temperatures.
+              // Speed gets the cyan accent matching the phone dashboard.
+              // PDU temps share a single card to save width (two values
+              // alongside each other with a divider).
+              Expanded(
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: _SmallMetricCard(
+                        icon: Icons.directions_car_filled,
+                        color: Colors.cyanAccent,
+                        label: 'SPEED',
+                        value: vehicleSpeed != null
+                            ? vehicleSpeed.toStringAsFixed(0)
+                            : '—',
+                        unit: 'km/h',
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: _PduTempsCard(t1: pduTemp1, t2: pduTemp2),
                     ),
                   ],
                 ),
@@ -563,6 +598,99 @@ class _SmallMetricCard extends StatelessWidget {
                               fontSize: 13, color: Colors.grey)),
                     ),
                   ],
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// v0.1.22: dual-temperature card for PDU heatsinks (740/0x0010 + 0x0011).
+/// Layout: two values side-by-side with a thin divider, label "PDU".
+/// Each gets its own color via the same threshold gradient as phone
+/// dashboard's _pduTempColor.
+class _PduTempsCard extends StatelessWidget {
+  final double? t1;
+  final double? t2;
+  const _PduTempsCard({this.t1, this.t2});
+
+  Color _color(double t) {
+    if (t < 35) return Colors.lightBlueAccent;
+    if (t < 45) return Colors.greenAccent;
+    if (t < 55) return Colors.yellowAccent;
+    if (t < 65) return Colors.orangeAccent;
+    return Colors.redAccent;
+  }
+
+  Widget _half(double? t, String label) {
+    return Expanded(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label,
+              style: const TextStyle(
+                  fontSize: 10, color: Colors.grey, letterSpacing: 0.5)),
+          const Spacer(),
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Text(
+                  t != null ? t.toInt().toString() : '—',
+                  style: TextStyle(
+                      fontSize: 28,
+                      fontWeight: FontWeight.w300,
+                      color: t != null ? _color(t) : Colors.grey),
+                ),
+                const SizedBox(width: 2),
+                const Padding(
+                  padding: EdgeInsets.only(bottom: 4),
+                  child: Text('°C',
+                      style: TextStyle(fontSize: 11, color: Colors.grey)),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: const [
+                Icon(Icons.device_thermostat, color: Colors.orangeAccent, size: 20),
+                SizedBox(width: 6),
+                Text('PDU',
+                    style: TextStyle(
+                        fontSize: 11,
+                        letterSpacing: 0.8,
+                        color: Colors.grey)),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Expanded(
+              child: Row(
+                children: [
+                  _half(t1, 'T1'),
+                  Container(
+                    width: 1,
+                    margin: const EdgeInsets.symmetric(horizontal: 4),
+                    color: Colors.grey.shade800,
+                  ),
+                  _half(t2, 'T2'),
                 ],
               ),
             ),

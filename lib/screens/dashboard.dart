@@ -76,6 +76,10 @@ class _Connected extends StatelessWidget {
     final hvBus = svc.hvBusV;              // live HV bus voltage
     final parkingEngaged = svc.parkingPawlEngaged;
     final chargedSession = svc.chargedThisSessionKwh;
+    // v0.1.22: live signals from PDU (740) added to UI.
+    final vehicleSpeed = svc.vehicleSpeedKmh;       // 740/0x0008 / 14.09
+    final pduTemp1 = svc.readNumeric('740', '0010'); // PDU heatsink 1
+    final pduTemp2 = svc.readNumeric('740', '0011'); // PDU heatsink 2
 
     return ListView(
       padding: const EdgeInsets.all(16),
@@ -132,6 +136,34 @@ class _Connected extends StatelessWidget {
               // v5: правильный mapping 1=P, 2=R, 3=N, 4=D
               value: _gearStr(gear),
             ),
+            // v0.1.22: vehicle speed from 740/0x0008 (verified 2026-05-19).
+            // Hidden at standstill — a permanent "0 km/h" is noise. Toyota
+            // speedos read ~4-7 % higher than reality by law; expect this
+            // value to read slightly lower than your speedometer.
+            if (vehicleSpeed != null && vehicleSpeed > 0.5)
+              _MetricCard(
+                icon: Icons.speed,
+                color: Colors.cyanAccent,
+                label: 'Speed',
+                value: '${vehicleSpeed.toStringAsFixed(0)} km/h',
+              ),
+            // v0.1.22: PDU heatsink temps (live, 740/0x0010 + 0x0011).
+            // Yesterday's hottest values were ~58°C after spirited
+            // driving; idle baseline 30-35°C.
+            if (pduTemp1 != null)
+              _MetricCard(
+                icon: Icons.device_thermostat,
+                color: _pduTempColor(pduTemp1),
+                label: 'PDU T1',
+                value: '${pduTemp1.toInt()}°C',
+              ),
+            if (pduTemp2 != null)
+              _MetricCard(
+                icon: Icons.device_thermostat,
+                color: _pduTempColor(pduTemp2),
+                label: 'PDU T2',
+                value: '${pduTemp2.toInt()}°C',
+              ),
           ],
         ),
         const SizedBox(height: 12),
@@ -175,6 +207,25 @@ class _Connected extends StatelessWidget {
       4 => Colors.greenAccent,       // D
       _ => Colors.grey,
     };
+  }
+
+  /// v0.1.22: PDU temperature severity gradient.
+  /// Calibration based on observed range 2026-05-19:
+  ///   - 30 °C  cool / overnight rest        → blue
+  ///   - 40 °C  brief driving                 → green
+  ///   - 50 °C  sustained driving              → yellow
+  ///   - 60 °C  spirited / mountain ascent     → orange
+  ///   - 70 °C+ thermal limit approaching      → red
+  /// Per BYD spec, IGBT junction redlines around 125 °C; heatsink reads
+  /// significantly lower than junction, so 70 °C heatsink ≈ 95-100 °C
+  /// junction. Anything above 70 °C here would deserve a warning toast,
+  /// but we don't have that infrastructure yet — color is the only cue.
+  Color _pduTempColor(double t) {
+    if (t < 35) return Colors.lightBlueAccent;
+    if (t < 45) return Colors.greenAccent;
+    if (t < 55) return Colors.yellowAccent;
+    if (t < 65) return Colors.orangeAccent;
+    return Colors.redAccent;
   }
 }
 
