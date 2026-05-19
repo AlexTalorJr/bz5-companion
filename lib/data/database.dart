@@ -53,6 +53,16 @@ class Trips extends Table {
   RealColumn get peakPowerKw => real().nullable()();
   RealColumn get peakRegenKw => real().nullable()();
   RealColumn get regenEnergyKwh => real().nullable()();
+
+  // v0.1.21 additions (schema v5) — speed-based metrics enabled by the
+  // discovery that 740/0x0008 is vehicle speed:
+  RealColumn get avgMovingSpeedKmh => real().nullable()();
+  IntColumn get movingSeconds => integer().nullable()();
+  IntColumn get idleSeconds => integer().nullable()();
+  // Precise SOC-based energy delta (via 790/0x1FFD high16 / 100). Same
+  // unit as energyUsedKwh but computed from precise SOC rather than
+  // power×time integration. Useful as a sanity check on the integrator.
+  RealColumn get energyFromSocKwh => real().nullable()();
 }
 
 @DataClassName('Snapshot')
@@ -155,7 +165,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase() : super(_openConnection());
 
   @override
-  int get schemaVersion => 4;
+  int get schemaVersion => 5;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -196,6 +206,15 @@ class AppDatabase extends _$AppDatabase {
             await m.createTable(liveLogSessions);
             await m.createTable(liveLogEntries);
           }
+          // v4 → v5 (v0.1.21): speed-based trip metrics + SOC-derived
+          // energy estimate. All additive (addColumn only), zero risk
+          // to existing data.
+          if (from < 5) {
+            await m.addColumn(trips, trips.avgMovingSpeedKmh);
+            await m.addColumn(trips, trips.movingSeconds);
+            await m.addColumn(trips, trips.idleSeconds);
+            await m.addColumn(trips, trips.energyFromSocKwh);
+          }
         },
       );
 
@@ -226,6 +245,11 @@ class AppDatabase extends _$AppDatabase {
     double? peakPowerKw,
     double? peakRegenKw,
     double? regenEnergyKwh,
+    // v0.1.21:
+    double? avgMovingSpeedKmh,
+    int? movingSeconds,
+    int? idleSeconds,
+    double? energyFromSocKwh,
   }) {
     return (update(trips)..where((t) => t.id.equals(id))).write(
       TripsCompanion(
@@ -246,6 +270,11 @@ class AppDatabase extends _$AppDatabase {
         peakPowerKw: Value(peakPowerKw),
         peakRegenKw: Value(peakRegenKw),
         regenEnergyKwh: Value(regenEnergyKwh),
+        // v0.1.21:
+        avgMovingSpeedKmh: Value(avgMovingSpeedKmh),
+        movingSeconds: Value(movingSeconds),
+        idleSeconds: Value(idleSeconds),
+        energyFromSocKwh: Value(energyFromSocKwh),
       ),
     );
   }
@@ -417,6 +446,26 @@ class AppDatabase extends _$AppDatabase {
           ..where((e) => e.sessionId.equals(sessionId))
           ..orderBy([(e) => OrderingTerm(expression: e.cycle), (e) => OrderingTerm(expression: e.did)]))
         .get();
+  }
+
+  /// v0.1.21: fetch only one cycle's worth of entries, used by the
+  /// post-cycle cell-pair sanity guard. Cheap query — usually 6 rows.
+  Future<List<LiveLogEntry>> getLiveLogEntriesForCycle(
+      int sessionId, int cycle) {
+    return (select(liveLogEntries)
+          ..where((e) => e.sessionId.equals(sessionId) & e.cycle.equals(cycle)))
+        .get();
+  }
+
+  /// v0.1.21: post-update one livelog entry's error code without
+  /// touching its rawHex. Used to retroactively flag a row that
+  /// individually passed sanity but failed cross-DID validation.
+  Future<int> markLiveLogEntryError(int entryId, String errorCode) {
+    return (update(liveLogEntries)..where((e) => e.id.equals(entryId)))
+        .write(LiveLogEntriesCompanion(
+      rawHex: const Value(null),
+      errorCode: Value(errorCode),
+    ));
   }
 
   Future<int> countAllLiveLogSessions() async {

@@ -12,6 +12,9 @@
 enum DidCategory {
   identity, battery, cells, packVoltage, charging,
   drive, status, counter, thermal, gps, unknown,
+  // v0.1.21:
+  soc,     // any SOC-bearing DID (raw or precise)
+  dynamic, // changes under driving load (speed, motor signals)
 }
 
 class DidSpec {
@@ -24,6 +27,18 @@ class DidSpec {
   final int? expectedBytes;
   final String? notes;
 
+  /// v0.1.21: optional sanity range for **raw** (pre-scale, pre-offset)
+  /// integer value. If a livelog read returns a value outside this
+  /// range, the entry is recorded with errorCode='SANITY:...' instead
+  /// of as a real reading. Two failure modes this catches:
+  ///   1. BMS returns 0xFFFF (or other all-ones) under heavy load to
+  ///      signal "data not available" — we saw this on 790/0x0015
+  ///      during session 13 heavy regen (7 cycles of 1638.4 V).
+  ///   2. ELM frame misalignment producing a payload from a different
+  ///      DID that happens to parse but is wildly out of range.
+  final int? sanityRawMin;
+  final int? sanityRawMax;
+
   const DidSpec({
     required this.did,
     required this.name,
@@ -33,7 +48,24 @@ class DidSpec {
     this.category = DidCategory.unknown,
     this.expectedBytes,
     this.notes,
+    this.sanityRawMin,
+    this.sanityRawMax,
   });
+
+  /// Returns null if value passes sanity, or a short error tag otherwise.
+  String? checkSanityRaw(int raw) {
+    // Universal: 0xFFFF / 0xFFFFFFFF and friends are UDS "not available"
+    // markers for u16/u32 DIDs.
+    if (expectedBytes == 2 && raw == 0xFFFF) return 'SANITY:NA';
+    if (expectedBytes == 4 && raw == 0xFFFFFFFF) return 'SANITY:NA';
+    if (sanityRawMin != null && raw < sanityRawMin!) {
+      return 'SANITY:LOW:$raw';
+    }
+    if (sanityRawMax != null && raw > sanityRawMax!) {
+      return 'SANITY:HIGH:$raw';
+    }
+    return null;
+  }
 }
 
 class EcuSpec {
@@ -57,23 +89,54 @@ const bmsEcu = EcuSpec(
   description: 'Battery Management System',
   dids: [
     DidSpec(did: '0105', name: 'Part number', category: DidCategory.identity),
-    DidSpec(did: '0005', name: 'SOC', unit: '%', category: DidCategory.battery),
-    DidSpec(did: '0029', name: 'SOH', unit: '%', category: DidCategory.battery),
-    DidSpec(did: '002F', name: 'Battery temp', unit: '°C', offset: -40, category: DidCategory.thermal),
-    DidSpec(did: '002B', name: 'Cell V min', unit: 'mV', expectedBytes: 2, category: DidCategory.cells),
-    DidSpec(did: '002D', name: 'Cell V max', unit: 'mV', expectedBytes: 2, category: DidCategory.cells),
+    DidSpec(did: '0005', name: 'SOC', unit: '%', category: DidCategory.soc, sanityRawMin: 0, sanityRawMax: 100),
+    DidSpec(did: '0029', name: 'SOH', unit: '%', category: DidCategory.battery, sanityRawMin: 0, sanityRawMax: 100),
+    DidSpec(did: '002F', name: 'Battery temp', unit: '°C', offset: -40, category: DidCategory.thermal, sanityRawMin: 0, sanityRawMax: 200),
+    // v0.1.21: sanity ranges added. LFP cell physical envelope 2000-3700 mV.
+    DidSpec(did: '002B', name: 'Cell V min', unit: 'mV', expectedBytes: 2, category: DidCategory.cells, sanityRawMin: 2000, sanityRawMax: 3700),
+    DidSpec(did: '002D', name: 'Cell V max', unit: 'mV', expectedBytes: 2, category: DidCategory.cells, sanityRawMin: 2000, sanityRawMax: 3700),
     // v0.1.2: pack voltage realtime — DEPRECATED INTERPRETATION
     // v0.1.8 update: this DID is actually HV bus voltage (downstream of
     // main contactor), NOT pack voltage. Pack V comes from 740/0x0022.
     // Scale corrected 0.02 → 0.025 based on Ready-state measurement
     // 2026-05-15 (raw 0x42FE × 0.025 = 428.75V matches predicted bus V).
     // Category 'packVoltage' kept for backward compat with poll filter logic.
-    DidSpec(did: '0015', name: 'HV bus voltage', unit: 'V', scale: 0.025, expectedBytes: 2, category: DidCategory.packVoltage),
+    //
+    // v0.1.21: sanity range 8000..24000 raw (200..600V after × 0.025).
+    // Catches the 0xFFFF / 65535 (1638V) "not available" marker that
+    // BMS returns under sustained heavy regen — observed 7 cycles in
+    // livelog session 13 (2026-05-19 10:09:34-09:51).
+    DidSpec(did: '0015', name: 'HV bus voltage', unit: 'V', scale: 0.025, expectedBytes: 2, category: DidCategory.packVoltage, sanityRawMin: 8000, sanityRawMax: 24000),
     DidSpec(did: '0009', name: 'Energy counter', category: DidCategory.counter),
     DidSpec(did: '000A', name: 'Counter A', category: DidCategory.counter),
     DidSpec(did: '0B00', name: 'Total energy 1', category: DidCategory.counter),
     DidSpec(did: '0B01', name: 'Total energy 2', category: DidCategory.counter),
     DidSpec(did: '0B02', name: 'Cycle count', category: DidCategory.counter),
+    // v0.1.21: 4-byte structure decoded after 2026-05-19 cross-check
+    // against snapshot SOC readings:
+    //   1FFD layout = [SOC × 100 : u16 BE][0x3B09 const : u16]
+    //   1FFE layout = [0x0960 platform const : u16][hours? : u16]
+    //
+    // 1FFD high16 verified against 4 paired (sweep, snapshot) points:
+    //   18-May 19:43 sweep=5550 → 55.50%, snapshot SOC=56% ✓
+    //   19-May 10:05 livelog=5540 → 55.40%, snapshot SOC=55% ✓
+    //   19-May 10:13 livelog=5390 → 53.90%, snapshot SOC=54% ✓
+    //   19-May 10:30 sweep=4940 → 49.40%, snapshot SOC=49% ✓
+    //
+    // The lower16 of 1FFD is platform-constant 0x3B09 (15113) — same on
+    // both BZ5 and BZ3 from cross-validation. Not part of the SOC value.
+    //
+    // 1FFE: high16 0x0960 (2400) is identical on BZ5 and BZ3 → platform
+    // constant. Low16 differs by ~85 between cars; semantics TBD (slow
+    // counter, possibly OBC-style operating hours, didn't tick during
+    // 7.5 min livelog so rate ≤ 1 unit / 7.5 min if monotonic).
+    //
+    // Decoder is custom (not the standard scale × raw + offset). Read
+    // path: ConnectionService.socPrecisePct getter parses raw 4-byte
+    // payload and returns high16 / 100.0. Sanity on the full u32 is
+    // not meaningful, so we only catch 0xFFFFFFFF.
+    DidSpec(did: '1FFD', name: 'SOC precise (×0.01)', unit: '%', expectedBytes: 4, category: DidCategory.soc, notes: 'high16 / 100 = SOC%; low16 = platform const 0x3B09'),
+    DidSpec(did: '1FFE', name: 'Platform counter', expectedBytes: 4, category: DidCategory.counter, notes: 'high16 = platform const 0x0960; low16 = slow counter, semantics TBD'),
     DidSpec(did: '0006', name: 'Power rated', unit: '×0.1 kW', scale: 0.1, category: DidCategory.battery),
     DidSpec(did: '0008', name: 'Current limit', unit: '×0.1 A', scale: 0.1, category: DidCategory.battery),
     // 20 cell voltages (10 modules × 2 cells)
@@ -169,8 +232,26 @@ const packMonitorEcu = EcuSpec(
   description: 'HV junction box: pack config constants + PDU temps',
   dids: [
     DidSpec(did: '0105', name: 'Part number', category: DidCategory.identity),
-    DidSpec(did: '0008', name: 'Sub-pack V #1', unit: 'V', scale: 0.1, expectedBytes: 2, category: DidCategory.packVoltage, notes: '~97V — to verify in driving'),
-    DidSpec(did: '0009', name: 'Sub-pack V #2', unit: 'V', scale: 0.1, expectedBytes: 2, category: DidCategory.packVoltage, notes: '~99V — to verify in driving'),
+    // v0.1.21: 740/0x0008 confirmed as VEHICLE SPEED from livelog
+    // session 14 (2026-05-19 10:15-10:20):
+    //   raw=0 at full stop (cycles 1-4)
+    //   raw=1268 (0x04F4) during user-set 90 km/h cruise (cycles 121+)
+    //   → scale = raw / 14.09, expressed below as ×0.07097 (≈ 1/14.09)
+    //
+    // Scale precision: user's 90.0 km/h cruise gave raw 1267-1272, so
+    // raw/14.09 = 89.92-90.28. 14.09 is the empirical divisor; with
+    // odometer integration of ∫speed dt over a known segment we can
+    // refine to 5 decimal places if needed.
+    //
+    // Sanity range: 0..3000 raw covers 0..213 km/h. Real-world BZ5 top
+    // speed is ~160 km/h. 3000 leaves headroom for false-high outliers
+    // before they corrupt trip-averages.
+    DidSpec(did: '0008', name: 'Vehicle speed', unit: 'km/h', scale: 0.07097, expectedBytes: 2, category: DidCategory.dynamic, sanityRawMin: 0, sanityRawMax: 3000, notes: 'raw / 14.09 = km/h. Live during driving, =0 at stop.'),
+    // 740/0x0009 — semantics TBD. Has independent dynamics during
+    // driving but doesn't track speed directly. Baseline raw ~982 at
+    // rest, swings 784-1170 under transient load. Candidates: motor
+    // RPM scaled, inverter signal, torque-request indicator.
+    DidSpec(did: '0009', name: 'Motor signal (TBD)', expectedBytes: 2, category: DidCategory.dynamic, notes: 'Baseline ~982; ±200 swings during accel/brake. Semantics not yet decoded.'),
     // v0.1.20: now flagged as platform constant. Scale kept ×0.025 so the
     // value displayed in raw-data views remains numerically meaningful
     // (~450V) for users who want to see what the firmware reports, but
@@ -183,8 +264,8 @@ const packMonitorEcu = EcuSpec(
     // v0.1.20: 0x0010 and 0x0011 ARE LIVE component temperatures, not
     // contactor flags. Offset -40 °C. Yesterday after driving: 58°C/50°C.
     // Today after cooldown: 39°C/32°C. Likely PDU/junction heatsink sensors.
-    DidSpec(did: '0010', name: 'PDU temp 1', unit: '°C', offset: -40, category: DidCategory.thermal),
-    DidSpec(did: '0011', name: 'PDU temp 2', unit: '°C', offset: -40, category: DidCategory.thermal),
+    DidSpec(did: '0010', name: 'PDU temp 1', unit: '°C', offset: -40, category: DidCategory.thermal, sanityRawMin: 0, sanityRawMax: 200),
+    DidSpec(did: '0011', name: 'PDU temp 2', unit: '°C', offset: -40, category: DidCategory.thermal, sanityRawMin: 0, sanityRawMax: 200),
   ],
 );
 
@@ -332,6 +413,22 @@ DecodedValue? decodeDid(DidSpec spec, List<int>? payload) {
 
   // v0.1.2: 0xFFFF sentinel для 2-byte значений (pack voltage realtime)
   if (spec.category == DidCategory.packVoltage && spec.did == '0015' && raw == 0xFFFF) {
+    return DecodedValue(rawBytes: payload);
+  }
+
+  // v0.1.21: 790/0x1FFD precise SOC — payload is 4 bytes, real value
+  // is high16 / 100 (verified 2026-05-19 against 4 paired snapshot+sweep
+  // samples). Standard scale × raw is wrong here because raw u32 is in
+  // hundreds-of-millions range. Override before applying scale.
+  if (spec.category == DidCategory.soc && spec.did == '1FFD' && payload.length >= 2) {
+    final high16 = (payload[0] << 8) | payload[1];
+    if (high16 >= 0 && high16 <= 10000) {
+      return DecodedValue(
+        numeric: high16 / 100.0,
+        unit: '%',
+        rawBytes: payload,
+      );
+    }
     return DecodedValue(rawBytes: payload);
   }
 
