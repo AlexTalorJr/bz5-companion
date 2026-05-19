@@ -152,6 +152,17 @@ class ConnectionService extends ChangeNotifier {
   DateTime? _lastSpeedSampleAt; // for delta-time accumulation
   double? _tripStartSocPrecise; // first precise SOC captured at trip start
 
+  // v0.1.23: EMA-smoothed instantaneous consumption (kWh/100km) over a
+  // rolling 2-minute window for Range estimation. Raw `current consumption`
+  // (energy used so far / distance) jitters wildly in short trips and
+  // during acceleration bursts — displaying it directly causes Range to
+  // panic-flicker. EMA over 120 s decouples display from instant noise.
+  //
+  // List of (timestamp, consumption_kwh_per_100km) pairs. Pruned to keep
+  // only entries within the window. Mean of current contents = smoothed.
+  final List<(DateTime, double)> _consumptionWindow = [];
+  static const Duration _consumptionWindowDuration = Duration(minutes: 2);
+
   // v0.1.9: snapshot writer state.
   // Снимок пишется в БД раз в 2 мин во время поездки, раз в 10 мин вне поездки.
   // Это позволяет строить долговременные графики (24h/7d/30d/year) без
@@ -428,10 +439,47 @@ class ConnectionService extends ChangeNotifier {
     return raw.toInt() == 1;
   }
 
+  /// v0.1.23: smoothed instantaneous consumption (kWh/100km), EMA over
+  /// 2-minute rolling window. Updated by _updateTripAggregates() each
+  /// poll cycle. Returns null if not enough samples to be meaningful.
+  ///
+  /// Used by [rangeEstimateKm] for trip-aware range. Also exposed for
+  /// future "live consumption" UI element.
+  ///
+  /// Requires at least 5 samples in the window — fewer and the noise
+  /// dominates (a single hard-accel burst would yank average to 30+).
+  double? get smoothedConsumptionKwh100km {
+    if (_consumptionWindow.length < 5) return null;
+    final sum = _consumptionWindow.fold<double>(0, (a, e) => a + e.$2);
+    return sum / _consumptionWindow.length;
+  }
+
+  /// Range estimation in km.
+  ///
+  /// v0.1.23: prefer trip-specific smoothed consumption when active trip
+  /// is older than 5 minutes (gives enough samples for stable EMA). For
+  /// short trips or no-trip idle, falls back to Bz5Model constant
+  /// (14.4 kWh/100km nominal). This means after a stretch of highway
+  /// efficient driving Range will read higher; after hill climbs lower.
   double? get rangeEstimateKm {
     final soc = readNumeric('790', '0005');
     if (soc == null) return null;
     final remainingKwh = Bz5Model.batteryCapacityKwh * soc / 100.0;
+
+    // Trip-specific consumption: only after enough samples accumulated
+    // (smoothedConsumptionKwh100km returns null otherwise). Also enforce
+    // trip duration ≥ 5 min: shorter trips have noisy distance/energy
+    // ratios that the EMA window can't fully smooth out.
+    final tripAgeSec = _tripStartedAt != null
+        ? DateTime.now().difference(_tripStartedAt!).inSeconds
+        : 0;
+    final smoothed = smoothedConsumptionKwh100km;
+    if (smoothed != null && smoothed > 5 && smoothed < 50 && tripAgeSec > 300) {
+      // smoothed is in kWh/100km → convert to range km
+      return remainingKwh / smoothed * 100.0;
+    }
+
+    // Fallback: nominal constant (Bz5Model.avgConsumptionWhKm = 144 Wh/km)
     return remainingKwh * 1000 / Bz5Model.avgConsumptionWhKm;
   }
 
@@ -843,6 +891,8 @@ class ConnectionService extends ChangeNotifier {
     _tripIdleSec = 0;
     _lastSpeedSampleAt = null;
     _tripStartSocPrecise = null;
+    // v0.1.23: clear EMA window for new session
+    _consumptionWindow.clear();
     _lastSnapshotAt = null;
     _tripStartedAt = null;
     _pollLoop();
@@ -959,6 +1009,14 @@ class ConnectionService extends ChangeNotifier {
   Duration? get tripDuration {
     if (_currentTripId == null || _tripStartedAt == null) return null;
     return DateTime.now().difference(_tripStartedAt!);
+  }
+
+  /// v0.1.23: live current-trip avg speed (moving samples only).
+  /// Used by Driver view "avg moving" trip-metric cell. Null until
+  /// the trip has at least one moving sample.
+  double? get tripCurrentAvgMovingKmh {
+    if (_currentTripId == null || _tripSpeedSamples == 0) return null;
+    return _tripSpeedSum / _tripSpeedSamples;
   }
 
   List<EcuSpec> get _ecusToPoll {
@@ -1129,6 +1187,41 @@ class ConnectionService extends ChangeNotifier {
     if (_tripStartSocPrecise == null) {
       final socP = socPrecisePct;
       if (socP != null) _tripStartSocPrecise = socP;
+    }
+
+    // v0.1.23: sample current consumption into rolling 2-minute window.
+    // Used by smoothedConsumptionKwh100km getter and trip-aware Range.
+    //
+    // We compute *trip-to-date* consumption (energy / distance) and feed
+    // each sample into the window. That's noisier than ideal — a true
+    // "instantaneous" consumption would use power × time over a short
+    // recent slice — but we don't have a clean instantaneous power DID
+    // yet. The 2-min window smooths most of the noise out anyway.
+    if (_currentTripId != null &&
+        _tripStartOdo != null &&
+        _tripStartSoc != null) {
+      final curSoc = readNumeric('790', '0005');
+      final curOdo = readNumeric('791', '0026');
+      if (curSoc != null && curOdo != null) {
+        final dist = curOdo - _tripStartOdo!;
+        final socDrop = _tripStartSoc! - curSoc;
+        if (dist > 0.5 && socDrop > 0) {
+          // kWh used so far = socDrop% × capacity / 100
+          final kwhUsed = socDrop * Bz5Model.batteryCapacityKwh / 100.0;
+          // kWh/100km = (kWhUsed / dist) × 100
+          final consumption = (kwhUsed / dist) * 100.0;
+          // Sanity gate: ignore obvious noise. >100 kWh/100km is hard
+          // accel for sustained period (unlikely) and <2 is regen-heavy
+          // descent (also unlikely as overall average).
+          if (consumption > 2 && consumption < 100) {
+            final now = DateTime.now();
+            _consumptionWindow.add((now, consumption));
+            // Prune old samples beyond the window.
+            final cutoff = now.subtract(_consumptionWindowDuration);
+            _consumptionWindow.removeWhere((e) => e.$1.isBefore(cutoff));
+          }
+        }
+      }
     }
 
     // TODO: peakRegenKw + regenEnergyKwh once regen DID identified
