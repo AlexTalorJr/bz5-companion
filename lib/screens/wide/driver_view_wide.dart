@@ -114,7 +114,10 @@ class _SpeedAndStatusStrip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final svc = context.watch<ConnectionService>();
-    final speed = svc.vehicleSpeedKmh ?? 0.0;
+    // v0.1.24: read display speed (which is true wheel speed × 1.05 if
+    // user enabled "match speedometer" toggle in Settings, otherwise
+    // raw true speed). Trip aggregates still use the unscaled value.
+    final speed = svc.displaySpeedKmh ?? 0.0;
     final hvBus = svc.hvBusV;
     final batTemp = svc.readNumeric('790', '002F');
     final pdu1 = svc.readNumeric('740', '0010');
@@ -149,9 +152,14 @@ class _SpeedAndStatusStrip extends StatelessWidget {
                   children: [
                     Text(
                       speed.toStringAsFixed(0),
+                      // v0.1.24: weight bumped from w200 → w400 and size
+                      // 220 → 180 per user feedback that "Tesla-style"
+                      // ultrathin was too hard to glance-read at speed.
+                      // Slightly smaller numbers + medium weight read
+                      // significantly better at 1m driver-seat distance.
                       style: const TextStyle(
-                          fontSize: 220,
-                          fontWeight: FontWeight.w200,
+                          fontSize: 180,
+                          fontWeight: FontWeight.w400,
                           color: Colors.white,
                           height: 0.85),
                     ),
@@ -396,8 +404,13 @@ class _TripMetricsPanel extends StatelessWidget {
 
     // Live trip metrics (rolling, not yet written to DB).
     final dist = svc.tripDistanceKm;
-    final energyUsed = svc.tripEnergyUsedKwh;
-    final consumption = svc.tripAvgConsumptionKwh100km;
+    // v0.1.24: prefer precise-SOC-based energy/consumption (1FFD-derived).
+    // The integer-SOC versions step in 0.65 kWh chunks because 1% × 65.28 =
+    // 0.6528 kWh, which made the Driver view display feel frozen on short
+    // trips (energy stays at "0.65 kWh" until next 1% drop). With precise
+    // SOC, energy and consumption update each poll cycle smoothly.
+    final energyUsed = svc.tripEnergyUsedPreciseKwh;
+    final consumption = svc.tripAvgConsumptionPreciseKwh100km;
     final dur = svc.tripDuration;
     final peakKmh = svc.tripPeakSpeedKmh;
     // Avg moving speed during current trip — computed inline from

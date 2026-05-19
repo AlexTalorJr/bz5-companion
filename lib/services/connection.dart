@@ -152,16 +152,21 @@ class ConnectionService extends ChangeNotifier {
   DateTime? _lastSpeedSampleAt; // for delta-time accumulation
   double? _tripStartSocPrecise; // first precise SOC captured at trip start
 
-  // v0.1.23: EMA-smoothed instantaneous consumption (kWh/100km) over a
-  // rolling 2-minute window for Range estimation. Raw `current consumption`
-  // (energy used so far / distance) jitters wildly in short trips and
-  // during acceleration bursts — displaying it directly causes Range to
-  // panic-flicker. EMA over 120 s decouples display from instant noise.
+  // v0.1.24: EMA window for trip-aware Range. Expanded from 2 min to
+  // 5 min based on real-world feedback that 2-min mean was too jittery
+  // — Range visibly jumped on minor accel/decel.
   //
-  // List of (timestamp, consumption_kwh_per_100km) pairs. Pruned to keep
-  // only entries within the window. Mean of current contents = smoothed.
+  // Also switched from arithmetic mean to **rolling median**: median
+  // is robust to outliers, so brief hard accels (which spike sample
+  // to 30-40 kWh/100km for 2-3 cycles) don't yank the displayed Range.
+  // The median pulls toward the "typical" driving regime of the last
+  // 5 minutes.
+  //
+  // Minimum sample count bumped 5 → 20 so a few early samples can't
+  // dominate the median during the first ~30 s of a trip.
   final List<(DateTime, double)> _consumptionWindow = [];
-  static const Duration _consumptionWindowDuration = Duration(minutes: 2);
+  static const Duration _consumptionWindowDuration = Duration(minutes: 5);
+  static const int _consumptionWindowMinSamples = 20;
 
   // v0.1.9: snapshot writer state.
   // Снимок пишется в БД раз в 2 мин во время поездки, раз в 10 мин вне поездки.
@@ -232,6 +237,42 @@ class ConnectionService extends ChangeNotifier {
   int _cellPairDropCount = 0;
   int get cellPairDropCount => _cellPairDropCount;
 
+  // v0.1.24: user preference — show speed scaled by 1.05 to match the
+  // car's analog/digital speedometer (which by UN R39 reads ~5% higher
+  // than true wheel speed). Loaded from SharedPreferences asynchronously
+  // at startup and refreshed when user toggles in Settings.
+  //
+  // The multiplier is applied at the getter [displaySpeedKmh], which the
+  // Driver view uses. The raw [vehicleSpeedKmh] remains the true value
+  // (used for trip aggregates, livelog, and any future computation).
+  bool _matchSpeedometer = false;
+  bool get matchSpeedometer => _matchSpeedometer;
+
+  /// v0.1.24: re-read the speedometer-match preference from disk and
+  /// notify listeners so the Driver view redraws with new multiplier.
+  /// Called by Settings page when the toggle is flipped.
+  Future<void> refreshSpeedometerPref() async {
+    final prefs = await SharedPreferences.getInstance();
+    final v = prefs.getBool('match_speedometer') ?? false;
+    if (v != _matchSpeedometer) {
+      _matchSpeedometer = v;
+      notifyListeners();
+    }
+  }
+
+  /// v0.1.24: speed value to **display** on the Driver view. Either the
+  /// true wheel speed from [vehicleSpeedKmh] or that value × 1.05 if the
+  /// user enabled the speedometer-match toggle in Settings.
+  ///
+  /// IMPORTANT: do not use this for trip aggregates, livelog, or any
+  /// computation — only for human display. Trip metrics should always
+  /// use the unscaled [vehicleSpeedKmh] so the data layer stays honest.
+  double? get displaySpeedKmh {
+    final v = vehicleSpeedKmh;
+    if (v == null) return null;
+    return _matchSpeedometer ? v * 1.05 : v;
+  }
+
   ConnectionService(this.db) {
     // v0.1.16: fire auto-connect attempt asynchronously so the constructor
     // returns immediately (Provider construction stays synchronous).
@@ -244,6 +285,10 @@ class ConnectionService extends ChangeNotifier {
     Future.delayed(const Duration(milliseconds: 800), () {
       tryAutoConnect();
     });
+    // v0.1.24: load speedometer-match preference at startup so the
+    // Driver view shows the user's preferred mode immediately on first
+    // poll cycle (not just after they open Settings).
+    refreshSpeedometerPref();
   }
 
   ConnectionStatus get status => _status;
@@ -439,19 +484,23 @@ class ConnectionService extends ChangeNotifier {
     return raw.toInt() == 1;
   }
 
-  /// v0.1.23: smoothed instantaneous consumption (kWh/100km), EMA over
-  /// 2-minute rolling window. Updated by _updateTripAggregates() each
-  /// poll cycle. Returns null if not enough samples to be meaningful.
+  /// v0.1.23 / v0.1.24: smoothed consumption (kWh/100km), **rolling
+  /// median** over 5-minute window for Range estimation. Updated by
+  /// _updateTripAggregates() each poll cycle.
   ///
-  /// Used by [rangeEstimateKm] for trip-aware range. Also exposed for
-  /// future "live consumption" UI element.
+  /// Returns null if fewer than 20 samples in the window — protects
+  /// against early-trip noise dominating the displayed Range.
   ///
-  /// Requires at least 5 samples in the window — fewer and the noise
-  /// dominates (a single hard-accel burst would yank average to 30+).
+  /// v0.1.24: switched from arithmetic mean to median because user
+  /// observed Range jumping visibly on minor accel/decel events. Median
+  /// is robust to outliers — a brief 35 kWh/100km accel spike doesn't
+  /// shift the central tendency. Mean was sensitive to any outlier.
   double? get smoothedConsumptionKwh100km {
-    if (_consumptionWindow.length < 5) return null;
-    final sum = _consumptionWindow.fold<double>(0, (a, e) => a + e.$2);
-    return sum / _consumptionWindow.length;
+    if (_consumptionWindow.length < _consumptionWindowMinSamples) return null;
+    final vals = _consumptionWindow.map((e) => e.$2).toList()..sort();
+    final n = vals.length;
+    if (n.isEven) return (vals[n ~/ 2 - 1] + vals[n ~/ 2]) / 2.0;
+    return vals[n ~/ 2];
   }
 
   /// Range estimation in km.
@@ -997,6 +1046,37 @@ class ConnectionService extends ChangeNotifier {
     return (_tripStartSoc! - curSoc) * Bz5Model.batteryCapacityKwh / 100.0;
   }
 
+  /// v0.1.24: trip energy used from precise SOC (1FFD high16/100).
+  ///
+  /// Higher resolution than [tripEnergyUsedKwh] which uses integer SOC
+  /// 0x0005 and only updates in steps of 1% (= 0.65 kWh chunks on
+  /// 65.28 kWh pack). With precise SOC the value updates smoothly
+  /// as small fractions of kWh accumulate over time — much better UX
+  /// on Driver view "energy used" cell.
+  ///
+  /// Falls back to integer-SOC version when 1FFD start was never
+  /// captured (e.g. trip resumed from old data before v0.1.21).
+  double? get tripEnergyUsedPreciseKwh {
+    if (_currentTripId == null) return null;
+    final startSocP = _tripStartSocPrecise;
+    final curSocP = socPrecisePct;
+    if (startSocP != null && curSocP != null && curSocP < startSocP) {
+      return (startSocP - curSocP) * Bz5Model.batteryCapacityKwh / 100.0;
+    }
+    // Fallback to integer-SOC-based.
+    return tripEnergyUsedKwh;
+  }
+
+  /// v0.1.24: trip consumption from precise SOC + distance.
+  /// Smoother than [tripAvgConsumptionKwh100km] because the numerator
+  /// updates continuously instead of stepping by 0.65 kWh chunks.
+  double? get tripAvgConsumptionPreciseKwh100km {
+    final dist = tripDistanceKm;
+    final energy = tripEnergyUsedPreciseKwh;
+    if (dist == null || energy == null || dist < 0.1) return null;
+    return (energy / dist) * 100.0;
+  }
+
   /// Trip average consumption so far (kWh/100km). Null if distance < 100m.
   double? get tripAvgConsumptionKwh100km {
     final dist = tripDistanceKm;
@@ -1038,10 +1118,22 @@ class ConnectionService extends ChangeNotifier {
     while (_polling && _client != null) {
       _pollLoopActive = true;
       try {
+        // v0.1.24: interleave speed sub-poll between each main ECU poll
+        // so the dashboard speed updates 2-3 times per second instead
+        // of once per full cycle (2-3 s). User feedback: "speed feels
+        // laggy compared to native speedometer". Sub-poll is a single
+        // readDid call against 740/0x0008 (~50-150 ms), cheap enough
+        // to slot between heavier ECU polls without slowing the cycle.
+        //
+        // _pollSpeedOnly catches its own exceptions and notifies
+        // listeners after each successful read, so the UI redraws
+        // mid-cycle.
         for (final ecu in _ecusToPoll) {
           await _pollEcu(ecu);
+          await _pollSpeedOnly();
         }
         if (cycle % 2 == 0) await _pollCells();
+        await _pollSpeedOnly();
         // v0.1.3: extra DIDs (pack V from 740, cell indices, pack config).
         // Каждый второй цикл — частоты обновления pack V раз в ~500 мс
         // достаточно, не надо мучить шину.
@@ -1060,6 +1152,40 @@ class ConnectionService extends ChangeNotifier {
       await Future.delayed(const Duration(milliseconds: 250));
     }
     _pollLoopActive = false;
+  }
+
+  /// v0.1.24: read just 740/0x0008 (speed) and update _latestValues.
+  ///
+  /// Slotted between heavier ECU polls in _pollLoop so the dashboard
+  /// speed reading refreshes 2-3× per second instead of waiting for a
+  /// full cycle. Best-effort: any error is swallowed and the next
+  /// invocation will retry. Notifies listeners on success so the UI
+  /// rebuilds mid-cycle.
+  ///
+  /// Should NOT be called during sweep/livelog (which pause polling
+  /// anyway, so this is unreachable then).
+  Future<void> _pollSpeedOnly() async {
+    if (_client == null) return;
+    try {
+      final r = await _client!.readDid('0008', tx: '740', rx: '748')
+          .timeout(const Duration(milliseconds: 800));
+      final p = r?.payloadAfterUdsRead;
+      if (p == null || p.length < 2) return;
+      // Decode locally rather than via registry to avoid round-trip;
+      // 740/0x0008 is u16 big-endian, scale 0.07097.
+      final raw = (p[0] << 8) | p[1];
+      if (raw > 3000) return; // sanity: >213 km/h impossible for BZ5
+      final kmh = raw * 0.07097;
+      // Write into _latestValues so the existing vehicleSpeedKmh getter
+      // and the trip aggregator see the fresh value. We synthesise a
+      // DecodedValue here matching what _pollEcu would produce.
+      _latestValues.putIfAbsent('740', () => {});
+      _latestValues['740']!['0008'] =
+          DecodedValue(numeric: kmh, unit: 'km/h');
+      notifyListeners();
+    } catch (_) {
+      // Ignore — next sub-poll attempt will retry.
+    }
   }
 
   /// v0.1.17: wait until any in-flight poll cycle finishes. Used by
@@ -1143,12 +1269,15 @@ class ConnectionService extends ChangeNotifier {
     }
 
     // v0.1.21: speed tracking. 740/0x0008 verified as vehicle speed
-    // (raw / 14.09 = km/h) on 2026-05-19. Sample frequency depends on
-    // poll cycle length (1.2-8s), so timing is rough — millisecond
-    // accuracy isn't needed for trip averages.
-    final speedRaw = readNumeric('740', '0008');
-    if (speedRaw != null) {
-      final kmh = speedRaw * 0.07097;
+    // on 2026-05-19 (scale 1/14.09 in registry, gives km/h directly).
+    //
+    // v0.1.24 BUGFIX: readNumeric() already applies the registry scale,
+    // so it returns km/h ready to use. The earlier `speedRaw * 0.07097`
+    // was a double-scale that turned 35 km/h into 2.5 km/h, which is why
+    // trip peak/avg speed displayed nonsensical values like "4 km/h" for
+    // a trip that included a 90 km/h cruise.
+    final kmh = readNumeric('740', '0008');
+    if (kmh != null) {
       // 250 km/h ceiling — anything above is parse error / 0xFFFF leak
       if (kmh >= 0 && kmh < 250) {
         _tripPeakSpeedKmh = _tripPeakSpeedKmh == null
