@@ -61,6 +61,53 @@ class _B00Sample {
   const _B00Sample(this.time, this.value);
 }
 
+/// v0.1.26: одна точка истории во время DC/AC зарядки.
+///
+/// Накапливается в [ConnectionService._chargingHistory] раз в ~5 секунд пока
+/// [ConnectionService.isCharging] == true. Используется графиками на
+/// ChargingViewWide (power, cell V, battery temp vs time) и расчётом ETA
+/// до 100% SOC через регрессию по последним N точкам SOC.
+///
+/// Все поля nullable: если конкретный DID не успел прочитаться в момент
+/// записи sample, value будет null и точка просто пропускается на графике
+/// — это лучше чем синтетическая нулевая точка, которая дала бы ложный
+/// провал на chart'е.
+class ChargingSample {
+  final DateTime time;
+  final double? powerKw;
+  final double? socPct;
+  final double? hvBusV;
+  final int? cellMinMv;
+  final int? cellMaxMv;
+  final double? tempC;
+  final int? counter;
+  const ChargingSample({
+    required this.time,
+    this.powerKw,
+    this.socPct,
+    this.hvBusV,
+    this.cellMinMv,
+    this.cellMaxMv,
+    this.tempC,
+    this.counter,
+  });
+
+  int? get spreadMv =>
+      (cellMinMv != null && cellMaxMv != null) ? cellMaxMv! - cellMinMv! : null;
+}
+
+/// v0.1.26: фазы DC-зарядки для индикатора на ChargingViewWide.
+enum ChargingPhase {
+  /// Идёт зарядка но фаза ещё не определена (мало данных).
+  unknown,
+  /// Constant Current — пик мощности, max cell V держится далеко от cutoff.
+  cc,
+  /// Constant Voltage — мощность падает, max cell V подобрался к уставке.
+  cv,
+  /// SOC ≥ 95% или power < 3 кВт — почти готово.
+  almostDone,
+}
+
 class ConnectionService extends ChangeNotifier {
   final AppDatabase db;
   Elm327Ble? _ble;
@@ -76,6 +123,7 @@ class ConnectionService extends ChangeNotifier {
   final Map<String, Map<String, DecodedValue>> _latestValues = {};
 
   // === v6.1: Rolling-window charging detection ===
+  // === v0.1.26+3: добавлен fast-path для DC чтобы детектировать за ~60 сек ===
   //
   // История значений 0x0B00 за последние ~20 минут. Используется для надёжной
   // детекции зарядки через монотонный рост в окне (не одиночные delta).
@@ -89,22 +137,60 @@ class ConnectionService extends ChangeNotifier {
   //    и зажигала banner на 15 минут. Banner мог висеть сутками
   //    (постоянно перезажигаясь от очередного шумового +1).
   //
-  // Новая логика — окно `_chargingDetectionWindow`:
-  //   isCharging =
-  //     value(now) - value(now - window) ≥ _chargingDetectionMinNetDelta
-  //     AND все промежуточные delta в окне неотрицательные
+  // === Two-track detection ===
+  //
+  // Fast path (DC ≥80 кВт case): за последние 60 секунд ≥3 положительных
+  // increment'а без единого отрицательного delta. Это срабатывает только
+  // при rate ≥1 unit / 20 с = ≥83 кВт — никакая AC, никакой шум счётчика
+  // в Ready такого не дают (там rate ~1 delta / 90 с по данным sweep'а).
+  // Дает срабатывание через 30–60 сек после plug-in.
+  //
+  // Slow path (AC 7+ кВт и слабый DC): окно 10 минут, net delta ≥2 +
+  // нет отрицательных delta в окне. Это catches случай когда rate
+  // недостаточен для fast path, но всё равно настоящая зарядка.
+  // Время до срабатывания: ~3–10 мин в зависимости от мощности.
+  //
+  // isCharging = fastPath || slowPath
   //
   // На зарядке (любой мощности) counter растёт строго монотонно; глитчей
   // вниз не наблюдается. На стоянке и в Ready всегда есть отрицательные
   // delta в любом окне ≥10 минут — фильтр "no negatives" их режет.
   //
-  // Trade-off: при slow AC charging 2.8 кВт первое срабатывание через
-  // ~15-20 мин после plug-in (counter инкрементится ~раз в 10 мин при этой
-  // мощности; нужно 2 инкремента в окне). На AC 7+ кВт и DC — почти сразу.
+  // Trade-off:
+  //  • DC ≥80 кВт: 30–60 сек до срабатывания (fast path).
+  //  • DC <80 кВт / AC 7–22 кВт: 3–10 мин (slow path с окном 10 мин).
+  //  • AC 2.8 кВт: ~20 мин (на грани — counter инкрементится раз в ~10 мин,
+  //    нужно 2 в окне). Это был known-edge-case ещё в v6.1.
   final List<_B00Sample> _b00History = [];
   static const Duration _b00HistoryMaxAge = Duration(minutes: 20);
-  static const Duration _chargingDetectionWindow = Duration(minutes: 15);
+  // Slow path: длинное окно для catch'а отрицательных delta в Ready+AC.
+  // Сокращено с 15 → 10 мин в v0.1.26+3 — это снижает время до slow
+  // detection на 33%, при этом за 10 мин в Ready+AC всё равно набегает
+  // 6–7 delta (среднее), и шанс что все они positive — (12/22)^6 ≈ 3%.
+  // Acceptable false-positive rate.
+  static const Duration _chargingDetectionSlowWindow = Duration(minutes: 10);
   static const int _chargingDetectionMinNetDelta = 2;
+  // Fast path: короткое окно + минимум 3 положительных transition'а.
+  // Cutoff 3 inc / 60 sec эквивалентен мощности ≥83 кВт — никакая AC и
+  // никакой шум counter в Ready такого rate не достигают.
+  static const Duration _chargingDetectionFastWindow = Duration(seconds: 60);
+  static const int _chargingDetectionFastMinPositiveTransitions = 3;
+
+  // v0.1.26: rolling-window charging history for ChargingViewWide charts
+  // (power / cell V / temp / SOC vs time) and ETA-to-full extrapolation.
+  //
+  // Captured every _chargingHistoryInterval seconds while [isCharging]==true.
+  // Cleared on charging→idle transition so a fresh session starts blank.
+  // Bounded by _chargingHistoryMaxAge — at 5 s/sample that's ~720 entries,
+  // negligible RAM but plenty of resolution for a 1-2 h charging session.
+  final List<ChargingSample> _chargingHistory = [];
+  static const Duration _chargingHistoryMaxAge = Duration(minutes: 60);
+  static const Duration _chargingHistoryInterval = Duration(seconds: 5);
+  bool _wasCharging = false;
+  DateTime? _lastChargingSampleAt;
+  DateTime? _chargingSessionStartedAt;
+  int? _chargingSessionStartCounter;
+  double? _chargingSessionStartSocPct;
 
   /// Минимальный интервал между записями в _b00History если значение не
   /// поменялось. При flat counter добавляем snapshot раз в 10 секунд —
@@ -911,6 +997,14 @@ class ConnectionService extends ChangeNotifier {
     // v6.1: reset rolling-window charging detection state
     _b00History.clear();
     _instantaneousChargingPowerKw = 0.0;
+    // v0.1.26: reset charging-companion buffer + session anchors so a
+    // fresh polling session doesn't show stale charging chart data.
+    _chargingHistory.clear();
+    _wasCharging = false;
+    _lastChargingSampleAt = null;
+    _chargingSessionStartedAt = null;
+    _chargingSessionStartCounter = null;
+    _chargingSessionStartSocPct = null;
     // v0.1.3.1: reset volatile pack-V и cell-index state.
     // _packCellCount / _packModuleCount НЕ сбрасываем — это константы
     // конкретной машины, не зависят от polling-сессии.
@@ -1465,6 +1559,20 @@ class ConnectionService extends ChangeNotifier {
     }
 
     // Instantaneous charging power: based on last positive transition only.
+    //
+    // Derivation:
+    //   E[kWh] = delta_units × chargeCounterWh[Wh/unit] / 1000
+    //   P[kW] = E[kWh] / t[h] = E[kWh] × 3600 / t[s]
+    //         = delta × chargeCounterWh × 3.6 / dt_sec
+    //
+    // Sanity check: AC 2.8 kW → 1 unit per ~590 s
+    //   P = 1 × 460 × 3.6 / 590 ≈ 2.81 kW ✓
+    //
+    // v0.1.26+2 hotfix: previously had an extra `/ 1000.0` which gave
+    // results 1000× too small (0.003 kW instead of 2.8 kW). That broke
+    // PowerHero ("0.0 kW"), PowerChart (flat zero), and forced
+    // `chargingPhase` to always return `almostDone` (since
+    // `powerKw < 3.0` was vacuously true on 0.003).
     if (_b00History.length >= 2) {
       final cur = _b00History[_b00History.length - 1];
       final prev = _b00History[_b00History.length - 2];
@@ -1472,10 +1580,81 @@ class ConnectionService extends ChangeNotifier {
       final dt = cur.time.difference(prev.time).inMilliseconds / 1000.0;
       if (delta > 0 && dt > 1.0) {
         _instantaneousChargingPowerKw =
-            delta * Bz5Model.chargeCounterWh / dt * 3.6 / 1000.0;
+            delta * Bz5Model.chargeCounterWh * 3.6 / dt;
       } else {
         _instantaneousChargingPowerKw = 0.0;
       }
+    }
+
+    // v0.1.26: maintain rolling-window charging history for the
+    // ChargingViewWide widget. Read isCharging via the getter so this
+    // sees the same monotone-growth verdict as the rest of the app.
+    _maintainChargingHistory(now, b00Int);
+  }
+
+  /// v0.1.26: append/trim _chargingHistory based on the current charging
+  /// state. Called once per [_updatePowerCalculations] cycle.
+  ///
+  /// Behaviour:
+  ///   - charging→idle transition: clear history + session anchors.
+  ///   - idle→charging transition: capture session anchors (start time,
+  ///     start SOC, start counter) for ETA / charged-so-far derivation.
+  ///   - charging continues: append a [ChargingSample] every
+  ///     [_chargingHistoryInterval] seconds; trim entries older than
+  ///     [_chargingHistoryMaxAge].
+  ///
+  /// Note: isCharging is itself a getter that walks _b00History, so we
+  /// call it once and cache. No-op if not charging and never was — the
+  /// common case during driving / parking.
+  void _maintainChargingHistory(DateTime now, int currentCounter) {
+    final charging = isCharging;
+
+    if (!charging) {
+      if (_wasCharging) {
+        // Session just ended — clear so the next session starts fresh.
+        _chargingHistory.clear();
+        _lastChargingSampleAt = null;
+        _chargingSessionStartedAt = null;
+        _chargingSessionStartCounter = null;
+        _chargingSessionStartSocPct = null;
+        _wasCharging = false;
+      }
+      return;
+    }
+
+    if (!_wasCharging) {
+      // Just transitioned into charging — anchor session metadata.
+      _chargingSessionStartedAt = now;
+      _chargingSessionStartCounter = currentCounter;
+      _chargingSessionStartSocPct = socPrecisePct ?? readNumeric('790', '0005');
+      _wasCharging = true;
+    }
+
+    // Throttle samples to _chargingHistoryInterval.
+    if (_lastChargingSampleAt != null &&
+        now.difference(_lastChargingSampleAt!) < _chargingHistoryInterval) {
+      return;
+    }
+    _lastChargingSampleAt = now;
+
+    _chargingHistory.add(ChargingSample(
+      time: now,
+      powerKw: _instantaneousChargingPowerKw > 0
+          ? _instantaneousChargingPowerKw
+          : null,
+      socPct: socPrecisePct ?? readNumeric('790', '0005'),
+      hvBusV: hvBusV,
+      cellMinMv: globalMinCellMv,
+      cellMaxMv: globalMaxCellMv,
+      tempC: readNumeric('790', '002F'),
+      counter: currentCounter,
+    ));
+
+    // Trim by age.
+    final cutoff = now.subtract(_chargingHistoryMaxAge);
+    while (_chargingHistory.isNotEmpty &&
+        _chargingHistory.first.time.isBefore(cutoff)) {
+      _chargingHistory.removeAt(0);
     }
   }
 
@@ -1718,31 +1897,82 @@ class ConnectionService extends ChangeNotifier {
   String? readText(String ecuTx, String did) =>
       _latestValues[ecuTx]?[did]?.text;
 
-  /// v6.1: Детекция зарядки через rolling-window анализ 0x0B00.
+  /// v6.1 / v0.1.26+3: Детекция зарядки через rolling-window анализ 0x0B00.
   ///
-  /// Условие: за последние [_chargingDetectionWindow] минут счётчик вырос
-  /// строго монотонно (без отрицательных delta) на ≥ [_chargingDetectionMinNetDelta].
+  /// Two-track:
+  ///   • fast path — 60-секундное окно с ≥3 положительными increment'ами
+  ///     без единого отрицательного delta. Срабатывает только при
+  ///     rate ≥ 83 кВт (только DC fast-charging).
+  ///   • slow path — 10-минутное окно с net delta ≥2 и без отрицательных
+  ///     delta. Срабатывает на DC <80 кВт и AC 7+ кВт.
+  ///
+  /// isCharging = _isChargingFast() || _isChargingSlow()
   ///
   /// Калибровка на реальных idle-данных (см. описание _b00History):
   ///  - Машина выключена, парковка: counter монотонно убывает; даже если
   ///    бы не убывал, отсутствие положительных delta даст false.
-  ///  - Машина в Ready+AC: counter колеблется ±1 around point; в любом
-  ///    окне ≥10 мин найдутся отрицательные delta → false.
-  ///  - На зарядке любой мощности: counter растёт строго монотонно →
-  ///    окно содержит только положительные/нулевые delta, net growth ≥ 2
-  ///    достигается за 10-20 мин (slow AC) или быстрее.
+  ///  - Машина в Ready+AC: counter колеблется ±1 around point; за 10 мин
+  ///    окна в среднем 6–7 delta, шанс что все положительные ≈ 3%
+  ///    (приемлемый false-positive). Fast path при этом не срабатывает,
+  ///    так как rate шума ~1 delta / 90 sec — нельзя получить 3 inc /
+  ///    60 sec без отрицательных.
+  ///  - На зарядке любой мощности: counter растёт строго монотонно.
+  ///    DC ≥80 кВт ловится fast path'ом за 30–60 сек. AC и слабый DC —
+  ///    slow path'ом за 3–10 мин.
   ///
-  /// Latency на slow AC ~2.8 кВт: первое срабатывание через ~15-20 минут
-  /// после plug-in. Это приемлемо для ночной домашней зарядки и сильно
-  /// лучше чем "banner висит сутками на стоящей машине".
-  bool get isCharging {
+  /// Latency:
+  ///   • DC ≥80 кВт:    30–60 сек
+  ///   • AC 7–22 кВт:   3–10 мин (slow path, 10-мин окно)
+  ///   • AC 2.8 кВт:    ~20 мин (известный edge-case с v6.1)
+  bool get isCharging => _isChargingFast() || _isChargingSlow();
+
+  /// Fast-path detection — DC ≥80 кВт.
+  ///
+  /// Проверяет последние 60 секунд:
+  ///   1. Есть ≥4 samples в окне (даёт ≥3 transitions для подсчёта).
+  ///   2. Все consecutive delta non-negative — любой −1 даёт false.
+  ///   3. Количество положительных transition'ов ≥3.
+  ///
+  /// Math gate: 3 inc / 60 сек = ≥1 unit / 20 сек = ≥83 кВт. Никакая AC
+  /// и никакой шум counter в Ready+AC такого rate не достигают.
+  bool _isChargingFast() {
+    if (_b00History.length < 4) return false;
+
+    final now = DateTime.now();
+    final windowStart = now.subtract(_chargingDetectionFastWindow);
+
+    // Filter samples within fast window. We don't require full window
+    // coverage — fast path is forgiving on cold-start: as long as ≥4
+    // samples landed in last 60s with the right shape, accept.
+    final inWindow = <_B00Sample>[];
+    for (final s in _b00History) {
+      if (!s.time.isBefore(windowStart)) inWindow.add(s);
+    }
+    if (inWindow.length < 4) return false;
+
+    int positiveTransitions = 0;
+    for (int i = 1; i < inWindow.length; i++) {
+      final delta = inWindow[i].value - inWindow[i - 1].value;
+      if (delta < 0) return false; // any negative kills the signal
+      if (delta > 0) positiveTransitions++;
+    }
+    return positiveTransitions >= _chargingDetectionFastMinPositiveTransitions;
+  }
+
+  /// Slow-path detection — AC 7+ кВт и слабый DC.
+  ///
+  /// Требует полное окно истории (10 мин) и проверяет:
+  ///   1. Net growth от анкора (sample at-or-before windowStart) до now
+  ///      ≥ [_chargingDetectionMinNetDelta] (2 units).
+  ///   2. Нет ни одного отрицательного delta в окне.
+  bool _isChargingSlow() {
     if (_b00History.length < 2) return false;
 
     final now = DateTime.now();
-    final windowStart = now.subtract(_chargingDetectionWindow);
+    final windowStart = now.subtract(_chargingDetectionSlowWindow);
 
-    // Need history covering the entire window. If oldest sample is younger
-    // than windowStart, we just started polling — wait.
+    // Need history covering the entire window. If oldest sample is
+    // younger than windowStart, we just started polling — wait.
     if (_b00History.first.time.isAfter(windowStart)) return false;
 
     // Find anchor value: last sample at or before windowStart.
@@ -1769,6 +1999,189 @@ class ConnectionService extends ChangeNotifier {
     }
 
     return true;
+  }
+
+  // ──────────────── v0.1.26: Charging Companion getters ─────────────────
+
+  /// Read-only view of recent charging samples (rolling window, last
+  /// [_chargingHistoryMaxAge]). Empty list when not charging.
+  List<ChargingSample> get chargingHistory =>
+      List<ChargingSample>.unmodifiable(_chargingHistory);
+
+  /// Wall-clock time the current charging session started, or null if
+  /// not currently charging.
+  DateTime? get chargingSessionStartedAt => _chargingSessionStartedAt;
+
+  /// Energy delivered since the start of the current charging session,
+  /// in kWh. Computed from delta of 0x0B00 charge counter × nominal
+  /// [Bz5Model.chargeCounterWh] per unit. Returns null when not charging
+  /// or counter hasn't moved since session start.
+  ///
+  /// Scale is currently a best-estimate (460 Wh/unit, [Bz5Model]) and will
+  /// be calibrated against the DC charger's display readout from the
+  /// session this feature was built for.
+  double? get chargedThisChargingSessionKwh {
+    if (_chargingSessionStartCounter == null) return null;
+    final cur = readNumeric('790', '0B00');
+    if (cur == null) return null;
+    final delta = cur.toInt() - _chargingSessionStartCounter!;
+    if (delta <= 0) return null;
+    return delta * Bz5Model.chargeCounterWh / 1000.0;
+  }
+
+  /// SOC delta since the start of the current charging session, %.
+  /// Uses precise SOC (790/0x1FFD) when available, else integer SOC.
+  double? get socGainedThisChargingSessionPct {
+    if (_chargingSessionStartSocPct == null) return null;
+    final cur = socPrecisePct ?? readNumeric('790', '0005');
+    if (cur == null) return null;
+    final delta = cur - _chargingSessionStartSocPct!;
+    if (delta <= 0) return null;
+    return delta;
+  }
+
+  /// Phase of the active charging session based on max cell V and power.
+  ///
+  /// Heuristic (no manufacturer reference available — pure BYD Blade LFP
+  /// behaviour from public data):
+  ///   - max cell V < 3.40 V → CC phase (constant current, cells still
+  ///     have headroom; power is whatever the station/OBC is delivering)
+  ///   - max cell V ≥ 3.40 V AND power tapering (latest sample less than
+  ///     80% of recent peak) → CV phase
+  ///   - SOC ≥ 95% OR power < 3 kW → almostDone
+  ///   - not enough data yet → unknown
+  ///
+  /// 3.40 V cut-off corresponds to roughly 95% SOC on a flat LFP curve;
+  /// 3.45 V would also work but might miss the transition on a cool pack.
+  ChargingPhase get chargingPhase {
+    if (!isCharging) return ChargingPhase.unknown;
+    if (_chargingHistory.length < 3) return ChargingPhase.unknown;
+
+    final soc = socPrecisePct ?? readNumeric('790', '0005');
+    final powerKw = _instantaneousChargingPowerKw;
+    final maxCellMv = globalMaxCellMv;
+
+    if ((soc != null && soc >= 95) || (powerKw > 0 && powerKw < 3.0)) {
+      return ChargingPhase.almostDone;
+    }
+    if (maxCellMv != null && maxCellMv >= 3400) {
+      // Check tapering — recent power below 80% of peak in history.
+      double peak = 0;
+      for (final s in _chargingHistory) {
+        final p = s.powerKw ?? 0;
+        if (p > peak) peak = p;
+      }
+      if (peak > 0 && powerKw < peak * 0.8) return ChargingPhase.cv;
+    }
+    return ChargingPhase.cc;
+  }
+
+  /// ETA to 100% SOC in seconds, or null if the rate of SOC change can't
+  /// be confidently extrapolated yet (too few samples, or SOC not rising).
+  ///
+  /// Uses simple linear regression on the last ~5 minutes of SOC samples
+  /// in [_chargingHistory]. Falls back to null on degenerate input.
+  ///
+  /// CAVEAT: linear extrapolation overestimates remaining time in the CV
+  /// taper region — real SOC vs time on LFP starts to curve below ~95%
+  /// as current drops. UI labels this ETA as "~minutes" rather than
+  /// pretending to be precise.
+  int? get etaToFullSeconds {
+    if (_chargingHistory.length < 6) return null;
+    final soc = socPrecisePct ?? readNumeric('790', '0005');
+    if (soc == null || soc >= 99.9) return null;
+
+    // Use last 5 minutes of samples.
+    final cutoff = DateTime.now().subtract(const Duration(minutes: 5));
+    final recent =
+        _chargingHistory.where((s) => s.time.isAfter(cutoff) && s.socPct != null).toList();
+    if (recent.length < 4) return null;
+
+    final first = recent.first;
+    final last = recent.last;
+    final socDelta = (last.socPct ?? 0) - (first.socPct ?? 0);
+    final dtSec = last.time.difference(first.time).inSeconds.toDouble();
+    if (dtSec < 30 || socDelta <= 0.05) return null;
+
+    final ratePctPerSec = socDelta / dtSec;
+    final remainingPct = 100.0 - soc;
+    return (remainingPct / ratePctPerSec).round();
+  }
+
+  /// v0.1.26: take a manual point-in-time snapshot of key BMS/VCU values
+  /// into both the DB Snapshots table and a returned map (for clipboard
+  /// JSON paste-into-notes). Bypasses the throttle that
+  /// [_maybeWriteSnapshot] enforces — this is user-triggered, not
+  /// time-based, so always writes.
+  ///
+  /// Returns the captured map even on DB failure, so the UI can still
+  /// copy-to-clipboard. The map's keys are stable identifiers safe to
+  /// grep in saved notes later.
+  Future<Map<String, dynamic>> captureSnapshot() async {
+    final now = DateTime.now();
+    final soc = readNumeric('790', '0005');
+    final socPrecise = socPrecisePct;
+    final soh = readNumeric('790', '0029');
+    final tempC = readNumeric('790', '002F');
+    final cellMin = globalMinCellMv;
+    final cellMax = globalMaxCellMv;
+    final spread = (cellMin != null && cellMax != null)
+        ? (cellMax - cellMin)
+        : null;
+    final odo = readNumeric('791', '0026');
+    final packV = packVoltageV;
+    final hvBus = hvBusV;
+    final gearRaw = readNumeric('791', '0009');
+    final gear = gearRaw?.toInt();
+    final pawl = parkingPawlEngaged;
+    final cycles = readNumeric('790', '0B02')?.toInt();
+    final counter = readNumeric('790', '0B00')?.toInt();
+    final charging = isCharging;
+    final chargingKw = chargingPowerKw;
+
+    final map = <String, dynamic>{
+      'capturedAt': now.toIso8601String(),
+      'soc_pct': soc,
+      'soc_precise_pct': socPrecise,
+      'soh_pct': soh,
+      'battery_temp_c': tempC,
+      'cell_min_mv': cellMin,
+      'cell_max_mv': cellMax,
+      'cell_spread_mv': spread,
+      'pack_v_nominal': packV,
+      'hv_bus_v': hvBus,
+      'charge_counter_raw_0B00': counter,
+      'cycle_count_raw_0B02': cycles,
+      'odometer_km': odo,
+      'gear_raw_0009': gear,
+      'pawl_engaged': pawl,
+      'is_charging': charging,
+      'charging_power_kw': chargingKw,
+    };
+
+    try {
+      await db.insertSnapshot(SnapshotsCompanion(
+        capturedAt: Value(now),
+        soc: Value(soc),
+        soh: Value(soh),
+        batteryTempC: Value(tempC),
+        cellVoltageMin: Value(cellMin?.toDouble()),
+        cellVoltageMax: Value(cellMax?.toDouble()),
+        cellSpread: Value(spread?.toDouble()),
+        odometer: Value(odo),
+        tripId: Value(_currentTripId),
+        packVoltageV: Value(packV),
+        hvBusV: Value(hvBus),
+        gear: Value(gear),
+        pawlEngaged: Value(pawl),
+        isCharging: Value(charging),
+        chargingPowerKw: Value(chargingKw),
+        cycleCount: Value(cycles),
+      ));
+    } catch (e) {
+      debugPrint('Manual snapshot write failed: $e');
+    }
+    return map;
   }
 
   // ──────────────────────────── DTC scanning ─────────────────────────────
