@@ -82,6 +82,19 @@ class _LiveLogScreenState extends State<LiveLogScreen> {
 
   int? _justFinishedId;
 
+  /// v0.1.26: apply a built-in preset to the form (entry list + car state
+  /// + notes). Used by the preset chips above the DID list.
+  void _applyPreset(_LivelogPreset preset) {
+    setState(() {
+      _entries
+        ..clear()
+        ..addAll(preset.entries.map((t) =>
+            _DidEntry(txEcu: t.$1, rxEcu: t.$2, did: t.$3)));
+      _carStateCtrl.text = preset.carState;
+      _notesCtrl.text = preset.notes;
+    });
+  }
+
   @override
   void initState() {
     super.initState();
@@ -188,6 +201,39 @@ class _LiveLogScreenState extends State<LiveLogScreen> {
             '(~0.8 Hz общая частота). Записи в БД stream-ом — отмена не потеряет '
             'данные.',
             style: TextStyle(fontSize: 12, color: Colors.grey),
+          ),
+        ),
+        // v0.1.26: ready-made presets for the recurring R&E scenarios.
+        // Tapping a preset replaces the entire entry list + annotations
+        // and forces a setState to redraw form fields. Active during
+        // launcher view only; disabled while a session is running.
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 0, 12, 4),
+          child: Wrap(
+            spacing: 8,
+            runSpacing: 4,
+            children: [
+              ActionChip(
+                avatar: const Icon(Icons.bolt, size: 16, color: Colors.amberAccent),
+                label: const Text('DC Charging Calibration'),
+                onPressed: () => _applyPreset(_LivelogPreset.dcCharging),
+              ),
+              ActionChip(
+                avatar: const Icon(Icons.power, size: 16, color: Colors.lightGreenAccent),
+                label: const Text('Charge-state hunt'),
+                onPressed: () => _applyPreset(_LivelogPreset.chargeStateHunt),
+              ),
+              ActionChip(
+                avatar: const Icon(Icons.directions_car, size: 16),
+                label: const Text('Default driving'),
+                onPressed: () => _applyPreset(_LivelogPreset.defaultDriving),
+              ),
+              ActionChip(
+                avatar: const Icon(Icons.gps_fixed, size: 16),
+                label: const Text('GPS in motion'),
+                onPressed: () => _applyPreset(_LivelogPreset.gpsInMotion),
+              ),
+            ],
           ),
         ),
         ..._entries.asMap().entries.map((e) {
@@ -492,4 +538,95 @@ class _DidEntryRowState extends State<_DidEntryRow> {
       ),
     );
   }
+}
+
+/// v0.1.26: built-in Live Log preset.
+///
+/// Each preset bundles a fixed DID list + matching car-state hint + notes,
+/// surfaced as a chip above the form so the user can fill the form in one
+/// tap rather than typing 7 hex addresses correctly each time.
+///
+/// Stored as (TX_ECU, RX_ECU, DID) records so the entry list mirrors
+/// _DidEntry's structure exactly.
+enum _LivelogPreset {
+  /// DC fast-charge calibration session — captures all DIDs needed to
+  /// validate the 0x0B00 charge counter scale, watch CC→CV transition,
+  /// and track cell V / pack temp during high-power charging.
+  dcCharging,
+
+  /// v0.1.26+4: hunt for a direct "charge cable connected" DID via
+  /// plug/unplug toggle on home AC charger. Runs 7 candidate DIDs in
+  /// parallel with 0x0B00 counter + 1FFD precise SOC as ground truth.
+  /// User toggles plug 3–5× with ~30s on / 10s off; the DID that flips
+  /// synchronously with their actions is the direct charge-connected
+  /// signal (replaces or augments the counter-rate detection).
+  chargeStateHunt,
+
+  /// Recreates the v0.1.17 driving-defaults entry list (BMS 790 +
+  /// VCU 791 status). Useful for in-motion observability when the user
+  /// has just applied a different preset and wants the default back.
+  defaultDriving,
+
+  /// GPS Asensing 757 + speed cross-check. Goal: see whether the GPS
+  /// module emits live lat/lon once the car is moving + IMU fuses
+  /// dead-reckoning. If 0120/0121/0122 stay null in motion, escalate
+  /// to ECU discovery. See handoff doc → pending sweeps.
+  gpsInMotion,
+}
+
+extension _LivelogPresetX on _LivelogPreset {
+  /// (TX, RX, DID) triples populating the form entry list.
+  List<(String, String, String)> get entries => switch (this) {
+        _LivelogPreset.dcCharging => const [
+            ('790', '798', '1FFD'), // Precise SOC (0.01% resolution)
+            ('790', '798', '0015'), // HV bus
+            ('790', '798', '0B00'), // Charge counter — KEY for scale calibration
+            ('790', '798', '002B'), // Min cell V (mV)
+            ('790', '798', '002D'), // Max cell V (mV)
+            ('790', '798', '002F'), // Battery temp (°C, offset -40)
+            ('782', '78A', '000C'), // Max charge current setpoint — catches CC→CV
+          ],
+        _LivelogPreset.chargeStateHunt => const [
+            // Suspected direct charge-connected DIDs to verify by plug/unplug
+            // toggle. The one(s) that flip synchronously with cable
+            // connect/disconnect events become the new primary detection.
+            ('791', '799', '0099'), // suspected ★★ — 0/1/2 (Off/AC/DC?)
+            ('791', '799', '0016'), // "Mode" — unknown semantics, worth watching
+            ('782', '78A', '0006'), // Charge V target — station dictates on plug-in
+            ('782', '78A', '000C'), // Charge I max — same
+            ('782', '78A', '0008'), // OBC temp — should rise on AC charging
+            ('790', '798', '0B00'), // Counter — ground truth (rises = real charging)
+            ('790', '798', '1FFD'), // Precise SOC — extra ground truth
+          ],
+        _LivelogPreset.defaultDriving => const [
+            ('790', '798', '0005'),
+            ('790', '798', '0015'),
+            ('790', '798', '002B'),
+            ('790', '798', '002D'),
+            ('791', '799', '0020'),
+          ],
+        _LivelogPreset.gpsInMotion => const [
+            ('757', '75F', '0120'), // GPS data slot 1 (null when parked)
+            ('757', '75F', '0121'), // GPS data slot 2
+            ('757', '75F', '0122'), // GPS data slot 3
+            ('740', '748', '0008'), // Vehicle speed (cross-check)
+            ('790', '798', '002F'), // Battery temp (context)
+          ],
+      };
+
+  String get carState => switch (this) {
+        _LivelogPreset.dcCharging => 'DC charging',
+        _LivelogPreset.chargeStateHunt => 'AC plug/unplug toggle',
+        _LivelogPreset.defaultDriving => 'driving',
+        _LivelogPreset.gpsInMotion => 'driving, GPS test',
+      };
+
+  String get notes => switch (this) {
+        _LivelogPreset.dcCharging => 'DC charging — calibration session',
+        _LivelogPreset.chargeStateHunt =>
+            'Hunt for direct charge-connected DID. Toggle plug 3–5× with ~30s on / 10s off. Look for a DID flipping synchronously with cable events.',
+        _LivelogPreset.defaultDriving => '',
+        _LivelogPreset.gpsInMotion =>
+            'Looking for live lat/lon in 757/0120-0122 with motion + IMU fusion',
+      };
 }
