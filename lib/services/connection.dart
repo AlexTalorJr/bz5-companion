@@ -131,10 +131,26 @@ class ConnectionService extends ChangeNotifier {
   double? _tripMaxCellSpreadMv;
   double? _tripMinSoc;
   double? _tripMaxSoc;
-  double? _tripPeakSpeedKmh;     // will populate once speed DID identified
+  double? _tripPeakSpeedKmh;     // v0.1.21: populated from 740/0x0008 speed
   double? _tripPeakPowerKw;      // 791/0x0038 magnitude
   double? _tripPeakRegenKw;      // most-negative power (regen)
   double? _tripRegenEnergyKwh;   // integrated regen power over time (estimate)
+
+  // v0.1.21 trip aggregates — enabled by 740/0x0008 speed discovery
+  // and 790/0x1FFD precise SOC discovery (both verified 2026-05-19).
+  //
+  // Speed is sampled once per poll cycle. Moving = speed > 1.0 km/h
+  // (debounce gate, avoids creep+drift counting as movement). Idle =
+  // everything else with the car still in Ready. Sum-of-speed-samples
+  // / moving-samples gives a sample-weighted average, which is biased
+  // toward periods where cycle time is consistent (poll cycle varies
+  // 1.2–8 s depending on DID count, but speed lives in the fast lane).
+  double _tripSpeedSum = 0;     // for averaging
+  int _tripSpeedSamples = 0;    // count of moving samples (speed > 1.0)
+  int _tripMovingSec = 0;       // accumulated moving time
+  int _tripIdleSec = 0;         // accumulated idle (Ready, not moving)
+  DateTime? _lastSpeedSampleAt; // for delta-time accumulation
+  double? _tripStartSocPrecise; // first precise SOC captured at trip start
 
   // v0.1.9: snapshot writer state.
   // Снимок пишется в БД раз в 2 мин во время поездки, раз в 10 мин вне поездки.
@@ -192,6 +208,11 @@ class ConnectionService extends ChangeNotifier {
   int? _globalMaxCellMv;             // 790/0x002D (v0.1.6)
   int? _packCellCount;               // 790/0x0B03
   int? _packModuleCount;             // 790/0x0A07
+
+  // v0.1.21 NOTE: precise SOC (790/0x1FFD) and vehicle speed (740/0x0008)
+  // do NOT need separate private fields — they flow through the normal
+  // registry polling path into _latestValues and are read by the
+  // [socPrecisePct] / [vehicleSpeedKmh] getters (see definitions below).
 
   // v0.1.20: counter for cell min/max sanity-guard drops. Each driving
   // session typically sees ~3.6% of frames with max<min or spread>100mV
@@ -306,6 +327,50 @@ class ConnectionService extends ChangeNotifier {
   /// clearer name.
   @Deprecated('Use hvBusV — same value, clearer name')
   double? get secondaryBusV => hvBusV;
+
+  /// v0.1.21: SOC with 0.01% resolution from 790/0x1FFD high16 / 100.
+  ///
+  /// Discovered 2026-05-19 by comparing 1FFD high16 to actual snapshot
+  /// SOC across four time points (sweep_11 19:43=55.50% with snapshot
+  /// SOC=56%; session 13 start 10:05=55.40% with snapshot SOC=55%;
+  /// session 13 end 10:13=53.90% with snapshot SOC=54%; sweep_16 10:30
+  /// =49.40% with snapshot SOC=49%). All four within ±0.5% rounding,
+  /// confirming the layout. The integer SOC at 790/0x0005 is just this
+  /// value rounded.
+  ///
+  /// Returns null if 1FFD hasn't been polled yet — UI should fall back
+  /// to integer SOC via legacy readers in that case. Range-guarded to
+  /// 0..100 to drop frame-misalignment artifacts.
+  ///
+  /// The value is decoded by the registry's [decodeDid] function which
+  /// recognizes `category: DidCategory.soc && did == '1FFD'` and applies
+  /// the `high16 / 100` rule rather than the default `raw * scale`.
+  /// We just look up the already-decoded value in [_latestValues].
+  double? get socPrecisePct {
+    final v = _latestValues['790']?['1FFD']?.numeric;
+    if (v == null) return null;
+    if (v < 0 || v > 100) return null;
+    return v;
+  }
+
+  /// v0.1.21: vehicle speed in km/h from 740/0x0008.
+  /// Verified 2026-05-19 at cruise control 90 km/h: raw=1268 → 90.0 km/h.
+  /// Returns 0.0 at standstill (raw=0 yields 0.0 km/h, not null).
+  ///
+  /// Scale comes from the registry (0.07097 ≈ 1/14.09). Range-guarded
+  /// to 0..220 km/h to drop frame-misalignment artifacts (e.g. 0xFFFF
+  /// would otherwise yield 4651 km/h).
+  double? get vehicleSpeedKmh {
+    final v = _latestValues['740']?['0008']?.numeric;
+    if (v == null) return null;
+    if (v < 0 || v > 220) return null;
+    return v;
+  }
+
+  // NOTE: trip speed getters (tripPeakSpeedKmh, etc.) live further down
+  // in this file in the trip-aggregates block. Moving/idle accumulators
+  // are in the _updateTripAggregates() function. Trip avg moving speed is
+  // computed at trip-end time from _tripSpeedSum / _tripSpeedSamples.
 
   /// v0.1.3: индекс ячейки с минимальным напряжением в пакете (0..135).
   /// Меняется в реальном времени по мере того как BMS пересортировывает
@@ -623,6 +688,13 @@ class ConnectionService extends ChangeNotifier {
     _tripPeakPowerKw = null;
     _tripPeakRegenKw = null;
     _tripRegenEnergyKwh = null;
+    // v0.1.21:
+    _tripSpeedSum = 0;
+    _tripSpeedSamples = 0;
+    _tripMovingSec = 0;
+    _tripIdleSec = 0;
+    _lastSpeedSampleAt = null;
+    _tripStartSocPrecise = null;
     _lastSnapshotAt = null;
     _tripStartedAt = null;
     _pollLoop();
@@ -649,6 +721,26 @@ class ConnectionService extends ChangeNotifier {
         avgConsumption = (energyUsedKwh / distanceKm) * 100.0;
       }
 
+      // v0.1.21: speed-based aggregates.
+      double? avgMovingSpeed;
+      if (_tripSpeedSamples > 0) {
+        avgMovingSpeed = _tripSpeedSum / _tripSpeedSamples;
+      }
+
+      // v0.1.21: precise SOC-derived energy (cross-check against
+      // power-integrator energyUsedKwh). Uses high-precision 1FFD
+      // start vs end values to compute Δ%, then ×capacity.
+      double? energyFromSoc;
+      final endSocPrecise = socPrecisePct;
+      if (_tripStartSocPrecise != null &&
+          endSocPrecise != null &&
+          _tripStartSocPrecise! > endSocPrecise) {
+        energyFromSoc =
+            (_tripStartSocPrecise! - endSocPrecise) *
+                Bz5Model.batteryCapacityKwh /
+                100.0;
+      }
+
       await db.endTrip(
         _currentTripId!,
         endSoc: endSoc,
@@ -666,6 +758,11 @@ class ConnectionService extends ChangeNotifier {
         peakPowerKw: _tripPeakPowerKw,
         peakRegenKw: _tripPeakRegenKw,
         regenEnergyKwh: _tripRegenEnergyKwh,
+        // v0.1.21:
+        avgMovingSpeedKmh: avgMovingSpeed,
+        movingSeconds: _tripMovingSec > 0 ? _tripMovingSec : null,
+        idleSeconds: _tripIdleSec > 0 ? _tripIdleSec : null,
+        energyFromSocKwh: energyFromSoc,
       );
       _currentTripId = null;
       _tripStartedAt = null;
@@ -839,7 +936,53 @@ class ConnectionService extends ChangeNotifier {
       _tripPeakPowerKw = _tripPeakPowerKw == null ? kw : (kw > _tripPeakPowerKw! ? kw : _tripPeakPowerKw);
     }
 
-    // TODO: peakSpeedKmh once speed DID identified
+    // v0.1.21: speed tracking. 740/0x0008 verified as vehicle speed
+    // (raw / 14.09 = km/h) on 2026-05-19. Sample frequency depends on
+    // poll cycle length (1.2-8s), so timing is rough — millisecond
+    // accuracy isn't needed for trip averages.
+    final speedRaw = readNumeric('740', '0008');
+    if (speedRaw != null) {
+      final kmh = speedRaw * 0.07097;
+      // 250 km/h ceiling — anything above is parse error / 0xFFFF leak
+      if (kmh >= 0 && kmh < 250) {
+        _tripPeakSpeedKmh = _tripPeakSpeedKmh == null
+            ? kmh
+            : (kmh > _tripPeakSpeedKmh! ? kmh : _tripPeakSpeedKmh);
+
+        // Time accounting: delta from last sample, attributed to moving
+        // or idle based on whether current sample > 1.0 km/h.
+        final now = DateTime.now();
+        if (_lastSpeedSampleAt != null) {
+          final dt = now.difference(_lastSpeedSampleAt!).inMilliseconds;
+          // Cap at 30s to avoid huge gaps (BLE drop) inflating counts.
+          if (dt > 0 && dt < 30000) {
+            final secs = dt ~/ 1000;
+            if (kmh > 1.0) {
+              _tripMovingSec += secs;
+            } else {
+              _tripIdleSec += secs;
+            }
+          }
+        }
+        _lastSpeedSampleAt = now;
+
+        if (kmh > 1.0) {
+          _tripSpeedSum += kmh;
+          _tripSpeedSamples++;
+        }
+      }
+    }
+
+    // v0.1.21: capture precise SOC at trip start, for energy-from-SOC
+    // calculation at trip end. Uses 1FFD high16 / 100. Once captured
+    // the value is sticky for the trip duration (the BMS sometimes
+    // refuses 1FFD requests mid-cycle; we don't want to overwrite the
+    // starting value with a late successful read).
+    if (_tripStartSocPrecise == null) {
+      final socP = socPrecisePct;
+      if (socP != null) _tripStartSocPrecise = socP;
+    }
+
     // TODO: peakRegenKw + regenEnergyKwh once regen DID identified
   }
 
@@ -1169,6 +1312,14 @@ class ConnectionService extends ChangeNotifier {
         }
       } catch (_) {}
     }
+
+    // Note (v0.1.21): 790/0x1FFD (precise SOC) and 740/0x0008 (vehicle
+    // speed) are read through the normal _pollEcu loop because they
+    // were added to the registry with categories `soc` and `dynamic`.
+    // Their decoders (in ecu_registry.dart::decodeDid) handle the
+    // unusual scales (high16/100 for 1FFD, raw/14.09 for speed).
+    // Access via socPrecisePct and vehicleSpeedKmh getters which
+    // look up _latestValues.
 
     notifyListeners();
   }
@@ -1662,6 +1813,35 @@ class ConnectionService extends ChangeNotifier {
 
           _liveLogLastRaw['$txEcu/$did'] = rawHex ?? errorCode;
 
+          // v0.1.21: sanity-check raw value before recording. Two layers:
+          //
+          //   Layer 1 (per-DID): registry-driven sanity range. Catches
+          //   0xFFFF "data not available" from BMS under heavy load
+          //   (observed on 790/0x0015 during regen → 1638 V in graphs),
+          //   ELM frame misalignment producing wildly wrong values, and
+          //   garbled BLE responses that happen to parse as numbers.
+          //
+          //   Layer 2 (cell pair): cross-validation between 790/0x002B
+          //   and 790/0x002D in the SAME cycle. If max < min or
+          //   |spread| > 100 mV, both reads are flagged because we
+          //   can't tell which one was the ELM misalignment victim.
+          //   Without this, ~3.6% of driving samples leak negative
+          //   spreads into the DB (verified in session 13: 27 / 159
+          //   cycles).
+          //
+          // On guard hit we replace rawHex with null and set errorCode
+          // to 'SANITY:*'. The entry is still inserted (so the cycle's
+          // structure is preserved and you can see what was rejected),
+          // but downstream parsing (livelog_wide.csv, trip aggregation)
+          // treats it as missing data.
+          if (rawHex != null && errorCode == null) {
+            final guardError = _livelogSanityCheck(txEcu, did, rawHex);
+            if (guardError != null) {
+              errorCode = guardError;
+              rawHex = null;
+            }
+          }
+
           await db.insertLiveLogEntry(LiveLogEntriesCompanion(
             sessionId: Value(sessionId),
             timestamp: Value(DateTime.now()),
@@ -1673,6 +1853,13 @@ class ConnectionService extends ChangeNotifier {
           ));
           entryCount++;
         }
+
+        // v0.1.21: cell pair cross-validation, performed AFTER the
+        // whole cycle's DIDs have been written. Looks up the entries
+        // we just wrote for 790/0x002B and 790/0x002D this cycle, and
+        // if both passed Layer 1 but together fail the pair test,
+        // post-update them to errorCode='SANITY:PAIR'.
+        await _livelogCellPairGuard(db, sessionId);
 
         onCycle?.call(_liveLogCycle);
         notifyListeners();
@@ -1945,6 +2132,109 @@ class ConnectionService extends ChangeNotifier {
       ));
     }
     return result;
+  }
+
+  // ===========================================================================
+  // v0.1.21: Live-log sanity guards
+  // ===========================================================================
+
+  /// Layer 1: per-DID sanity check using registry-supplied ranges.
+  ///
+  /// Returns null on pass, or 'SANITY:*' tag on rejection.
+  /// Expects [rawHex] in the format Claude/raw response uses:
+  /// '62' + did + payload (e.g. '6200151234' → payload='1234').
+  String? _livelogSanityCheck(String txEcu, String did, String rawHex) {
+    // Find the DidSpec in registry (search across all known ECUs).
+    DidSpec? spec;
+    for (final ecu in allBz5Ecus) {
+      if (ecu.detailed.txId.toUpperCase() != txEcu.toUpperCase()) continue;
+      for (final d in ecu.detailed.dids) {
+        if (d.did.toUpperCase() == did.toUpperCase()) {
+          spec = d;
+          break;
+        }
+      }
+      if (spec != null) break;
+    }
+    // No spec → no sanity rules → pass.
+    if (spec == null) return null;
+    if (spec.sanityRawMin == null &&
+        spec.sanityRawMax == null &&
+        spec.expectedBytes == null) {
+      return null;
+    }
+
+    // Strip '62' + did header to get payload hex.
+    final didLen = did.length;
+    if (rawHex.length < 2 + didLen) return null;
+    final payload = rawHex.substring(2 + didLen);
+
+    // Need at least 1 byte to parse.
+    if (payload.isEmpty) return null;
+
+    int raw;
+    try {
+      raw = int.parse(payload, radix: 16);
+    } catch (_) {
+      return 'SANITY:UNPARSEABLE';
+    }
+
+    return spec.checkSanityRaw(raw);
+  }
+
+  /// Layer 2: cell-pair cross-validation.
+  ///
+  /// After a full livelog cycle is written, looks at the entries this
+  /// cycle wrote for 790/0x002B (cell min) and 790/0x002D (cell max).
+  /// If both passed Layer 1 and parse as numbers, but together fail
+  /// physical sanity (max < min or |spread| > 100 mV), post-updates
+  /// both entries to errorCode='SANITY:PAIR'.
+  ///
+  /// Why two layers: a single ELM frame can swap responses between two
+  /// DIDs polled in the same cycle. A Layer-1 sanity range on each
+  /// individually would still pass (both values are physically possible
+  /// for cells in isolation), but the pair becomes impossible. Catching
+  /// it requires looking at them together.
+  ///
+  /// Drop rate measured on session 13 driving data: 14 / 384 cycles
+  /// (3.6%) — exactly matches the rate observed before any guards.
+  Future<void> _livelogCellPairGuard(
+      AppDatabase db, int sessionId) async {
+    try {
+      final cycle = _liveLogCycle;
+      final entries = await db.getLiveLogEntriesForCycle(sessionId, cycle);
+
+      LiveLogEntry? minEntry;
+      LiveLogEntry? maxEntry;
+      for (final e in entries) {
+        if (e.ecuTx.toUpperCase() == '790' &&
+            e.did.toUpperCase() == '002B' &&
+            e.rawHex != null &&
+            e.errorCode == null) {
+          minEntry = e;
+        }
+        if (e.ecuTx.toUpperCase() == '790' &&
+            e.did.toUpperCase() == '002D' &&
+            e.rawHex != null &&
+            e.errorCode == null) {
+          maxEntry = e;
+        }
+      }
+      if (minEntry == null || maxEntry == null) return;
+
+      // Both raw hexes are like '62002B0CD8' — payload last 4 chars.
+      final minMv = int.tryParse(minEntry.rawHex!.substring(6), radix: 16);
+      final maxMv = int.tryParse(maxEntry.rawHex!.substring(6), radix: 16);
+      if (minMv == null || maxMv == null) return;
+
+      final spread = maxMv - minMv;
+      if (spread < 0 || spread.abs() > 100) {
+        await db.markLiveLogEntryError(minEntry.id, 'SANITY:PAIR:$spread');
+        await db.markLiveLogEntryError(maxEntry.id, 'SANITY:PAIR:$spread');
+      }
+    } catch (_) {
+      // Best-effort: a guard failure must never crash the livelog loop.
+    }
   }
 }
 

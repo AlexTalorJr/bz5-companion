@@ -326,7 +326,10 @@ class ExportService {
       'distance_km,energy_used_kwh,avg_consumption_kwh_100km,'
       'min_battery_temp_c,max_battery_temp_c,max_cell_spread_mv,'
       'min_soc,max_soc,peak_speed_kmh,peak_power_kw,peak_regen_kw,'
-      'regen_energy_kwh,sample_count,notes',
+      'regen_energy_kwh,'
+      // v0.1.21 trip aggregates — speed-based and precise-SOC-derived:
+      'avg_moving_speed_kmh,moving_seconds,idle_seconds,energy_from_soc_kwh,'
+      'sample_count,notes',
     );
     for (final t in trips) {
       final duration = t.endedAt?.difference(t.startedAt).inSeconds;
@@ -351,6 +354,11 @@ class ExportService {
         t.peakPowerKw ?? '',
         t.peakRegenKw ?? '',
         t.regenEnergyKwh ?? '',
+        // v0.1.21:
+        t.avgMovingSpeedKmh ?? '',
+        t.movingSeconds ?? '',
+        t.idleSeconds ?? '',
+        t.energyFromSocKwh ?? '',
         t.sampleCount,
         _csvEscape(t.notes ?? ''),
       ].join(','));
