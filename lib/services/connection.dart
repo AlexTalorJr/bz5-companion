@@ -2145,10 +2145,14 @@ class ConnectionService extends ChangeNotifier {
   /// '62' + did + payload (e.g. '6200151234' → payload='1234').
   String? _livelogSanityCheck(String txEcu, String did, String rawHex) {
     // Find the DidSpec in registry (search across all known ECUs).
+    // Note: EcuRegistryEntry.detailed is nullable — some entries are
+    // bare label-only stubs without DID specs. Skip those.
     DidSpec? spec;
     for (final ecu in allBz5Ecus) {
-      if (ecu.detailed.txId.toUpperCase() != txEcu.toUpperCase()) continue;
-      for (final d in ecu.detailed.dids) {
+      final detailed = ecu.detailed;
+      if (detailed == null) continue;
+      if (detailed.txId.toUpperCase() != txEcu.toUpperCase()) continue;
+      for (final d in detailed.dids) {
         if (d.did.toUpperCase() == did.toUpperCase()) {
           spec = d;
           break;
