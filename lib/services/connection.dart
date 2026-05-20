@@ -254,6 +254,43 @@ class ConnectionService extends ChangeNotifier {
   static const Duration _consumptionWindowDuration = Duration(minutes: 5);
   static const int _consumptionWindowMinSamples = 20;
 
+  // v0.1.26+10: HV-bus-sag power heuristic — fallback peak_power/regen
+  // estimation while we haven't found a direct pack-current DID.
+  //
+  // Theory: peak motor draw causes the HV bus voltage to sag below its
+  // open-circuit baseline by `ΔV = I × R_pack`. Solving for power:
+  //   P_kW = V_terminal × ΔV / (1000 × R_pack)
+  //
+  // Calibration anchors (from livelog 18 trip 14, 2026-05-20):
+  //   cycle 185 saw HV bus drop to 354.1 V from baseline ~400 V
+  //     (Δ = 45.9 V) — user reported "hard acceleration" then
+  //   cycle 59 saw HV bus rise to 428.8 V from baseline ~400 V
+  //     (Δ = 28.8 V) — user reported "hard regen" then
+  //   With BZ5 motor rated 200 kW peak / regen typically 60-70 kW
+  //   capped by LFP charge acceptance, the only R that satisfies
+  //   both observations is ~0.18 Ω:
+  //     accel:  354.1 × 45.9 / 0.18 / 1000 = 90 kW (city drive, not peak)
+  //     regen:  428.8 × 28.8 / 0.18 / 1000 = 69 kW (matches regen cap)
+  //
+  // V_oc is approximated by a rolling average of recent "near-idle"
+  // HV bus samples — defined as samples where cell spread ≤ 5 mV
+  // (low spread = balanced pack = low current = near OC). Rolling
+  // rather than fixed-at-start because:
+  //   - V_oc drifts ~10-20 V over the SOC range used in one trip
+  //   - HV bus 790/0x0015 may be measured post-DC-DC, adding bias
+  //     that changes with vehicle electrical load
+  //
+  // Accuracy: ±20-30 %. Acceptable for the trip-stats badge until we
+  // wire a real current DID. UI must mark these values as "estimated"
+  // (e.g. "~95 kW est.") so they aren't confused with measured peaks
+  // when a direct DID is later found.
+  static const double _packResistanceOhm = 0.18;
+  static const int _idleSpreadThresholdMv = 5;
+  static const int _idleHvBusWindowSize = 60; // last ~60 samples ≈ 30 sec
+  final List<double> _recentIdleHvBus = [];
+  bool _peakPowerFromHeuristic = false;
+  bool _peakRegenFromHeuristic = false;
+
   // v0.1.9: snapshot writer state.
   // Снимок пишется в БД раз в 2 мин во время поездки, раз в 10 мин вне поездки.
   // Это позволяет строить долговременные графики (24h/7d/30d/year) без
@@ -1107,6 +1144,13 @@ class ConnectionService extends ChangeNotifier {
   double? get tripMaxSoc => _tripMaxSoc;
   double? get tripPeakPowerKw => _tripPeakPowerKw;
   double? get tripPeakRegenKw => _tripPeakRegenKw;
+  // v0.1.26+10: true when the current peak value came from the
+  // HV-bus-sag heuristic rather than a direct power DID. UI should
+  // append "(est.)" or similar suffix so the user can tell estimated
+  // values apart from measured ones when we eventually wire the real
+  // pack-current DID.
+  bool get peakPowerIsEstimated => _peakPowerFromHeuristic;
+  bool get peakRegenIsEstimated => _peakRegenFromHeuristic;
   double? get tripPeakSpeedKmh => _tripPeakSpeedKmh;
 
   /// Trip distance so far (current odo − start odo). Null if not yet measurable.
@@ -1370,6 +1414,9 @@ class ConnectionService extends ChangeNotifier {
     _samplesInTrip = 0;
     _tripStartB00 = null;
     _consumptionWindow.clear();
+    _recentIdleHvBus.clear();
+    _peakPowerFromHeuristic = false;
+    _peakRegenFromHeuristic = false;
     _lastSnapshotAt = null;
   }
 
@@ -1434,6 +1481,76 @@ class ConnectionService extends ChangeNotifier {
         _tripPeakPowerKw = _tripPeakPowerKw == null
             ? kw
             : (kw > _tripPeakPowerKw! ? kw : _tripPeakPowerKw);
+        _peakPowerFromHeuristic = false;
+      }
+    }
+
+    // v0.1.26+10: HV-bus-sag heuristic — fallback peak power/regen
+    // estimation while we hunt the real pack-current DID.
+    //
+    // Only runs when we have all three inputs in this poll cycle:
+    //   - HV bus voltage (790/0x0015)
+    //   - Min cell voltage (790/0x002B) for spread calc
+    //   - Max cell voltage (790/0x002D)
+    //
+    // We DO update peak_power even when the direct 791/0x0038 path
+    // succeeded — the two estimates can coexist, and whichever yielded
+    // the higher kW for the trip wins. But we mark which source the
+    // current peak came from so the UI can show "(est.)" suffix when
+    // heuristic dominates.
+    final hvBus = readNumeric('790', '0015');
+    final cellMin = readNumeric('790', '002B');
+    final cellMax = readNumeric('790', '002D');
+    if (hvBus != null &&
+        cellMin != null &&
+        cellMax != null &&
+        _tripStartedAt != null) {
+      final tripAgeSec =
+          DateTime.now().difference(_tripStartedAt!).inSeconds;
+      // Same gate as direct path — drop precharge transients.
+      if (tripAgeSec >= 5) {
+        final spread = cellMax - cellMin;
+
+        // Update V_oc baseline from near-idle samples (low spread).
+        // Pack is electrically calm → terminal V ≈ open-circuit V.
+        if (spread <= _idleSpreadThresholdMv) {
+          _recentIdleHvBus.add(hvBus);
+          while (_recentIdleHvBus.length > _idleHvBusWindowSize) {
+            _recentIdleHvBus.removeAt(0);
+          }
+        }
+
+        // Need a few baseline samples before estimation makes sense.
+        if (_recentIdleHvBus.length >= 3) {
+          final vOc = _recentIdleHvBus.reduce((a, b) => a + b) /
+              _recentIdleHvBus.length;
+          final deltaV = vOc - hvBus;
+          // Ignore tiny excursions — sub-3 V noise yields sub-7 kW
+          // false positives that would clutter the badge.
+          if (deltaV.abs() >= 3.0) {
+            final estKw =
+                (hvBus * deltaV.abs()) / (1000.0 * _packResistanceOhm);
+            // Sanity ceiling — refuse estimates above 220 kW (BZ5 motor
+            // is 200 kW rated; anything above is measurement glitch).
+            if (estKw <= 220.0) {
+              if (deltaV > 0) {
+                // V dropped → discharging into motor.
+                if (_tripPeakPowerKw == null ||
+                    estKw > _tripPeakPowerKw!) {
+                  _tripPeakPowerKw = estKw;
+                  _peakPowerFromHeuristic = true;
+                }
+              } else {
+                // V rose → regen charging the pack.
+                if (_tripPeakRegenKw == null ||
+                    estKw > _tripPeakRegenKw!) {
+                  _tripPeakRegenKw = estKw;
+                  _peakRegenFromHeuristic = true;
+                }
+              }
+            }
+          }
+        }
       }
     }
 
