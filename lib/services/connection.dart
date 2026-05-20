@@ -1018,25 +1018,10 @@ class ConnectionService extends ChangeNotifier {
     // v0.1.20: reset cell-pair sanity drop counter for new session
     _cellPairDropCount = 0;
     // v0.1.9: reset trip aggregates and snapshot timer.
-    _tripMinTempC = null;
-    _tripMaxTempC = null;
-    _tripMaxCellSpreadMv = null;
-    _tripMinSoc = null;
-    _tripMaxSoc = null;
-    _tripPeakSpeedKmh = null;
-    _tripPeakPowerKw = null;
-    _tripPeakRegenKw = null;
-    _tripRegenEnergyKwh = null;
-    // v0.1.21:
-    _tripSpeedSum = 0;
-    _tripSpeedSamples = 0;
-    _tripMovingSec = 0;
-    _tripIdleSec = 0;
-    _lastSpeedSampleAt = null;
-    _tripStartSocPrecise = null;
-    // v0.1.23: clear EMA window for new session
-    _consumptionWindow.clear();
-    _lastSnapshotAt = null;
+    // v0.1.26+6: extracted to _resetTripAggregates() so it can be called
+    // both here (clean BLE-session start) AND from _maybeStartTrip()
+    // (start of each new trip in long-running session).
+    _resetTripAggregates();
     _tripStartedAt = null;
     _pollLoop();
     notifyListeners();
@@ -1276,6 +1261,24 @@ class ConnectionService extends ChangeNotifier {
       _latestValues.putIfAbsent('740', () => {});
       _latestValues['740']!['0008'] =
           DecodedValue(numeric: kmh, unit: 'km/h');
+      // v0.1.26+6: also save to samples DB so the in-trip speed history
+      // is recorded. Previously _pollEcu(packMonitor) was the only writer
+      // for 740/0008 → samples, but as of v0.1.26+6 we skip it there to
+      // avoid clobbering _latestValues. Without this save, exported
+      // trips would contain zero 740/0008 samples in their history,
+      // which would make trip-detail speed charts and post-hoc trip
+      // re-analysis impossible.
+      if (_currentTripId != null) {
+        await db.insertSample(
+          tripId: _currentTripId,
+          ecuTx: '740',
+          did: '0008',
+          rawHex: r!.rawHex,
+          numeric: kmh,
+          text: null,
+        );
+        _samplesInTrip++;
+      }
       notifyListeners();
     } catch (_) {
       // Ignore — next sub-poll attempt will retry.
@@ -1308,12 +1311,51 @@ class ConnectionService extends ChangeNotifier {
       _wantTripCreation = false;
       debugPrint('Polling started during charging — no Trip created.');
     } else {
+      // v0.1.26+6: reset all rolling trip aggregates BEFORE allocating
+      // the new trip_id. Without this the new trip inherits peak_speed,
+      // peak_power, moving_seconds and other counters from the previous
+      // trip. Observed in trips 11 & 12 from 2026-05-19/20 export: trip
+      // 11 had all 25 of its 740/0008 speed samples = 0.0, yet
+      // peak_speed_kmh = 80.9 — leaked from an even earlier session.
+      _resetTripAggregates();
       _currentTripId = await db.startTrip();
       _tripStartedAt = DateTime.now();
       _wantTripCreation = false;
       debugPrint('Trip #$_currentTripId created.');
     }
     notifyListeners();
+  }
+
+  /// v0.1.26+6: extracted out of startPolling so a new trip created mid-session
+  /// (e.g. user parked, walked away, came back, started driving again) gets
+  /// clean aggregates instead of inheriting peak_speed / peak_power / moving
+  /// counters from the previous trip. Previously _maybeStartTrip allocated a
+  /// new trip_id but left _tripMovingSec, _tripPeakSpeedKmh, etc. populated
+  /// from the prior session — directly visible in exported trip 11 where
+  /// peak_speed=80.9 km/h was inherited despite all 740/0x0008 samples
+  /// reading 0 within that trip.
+  void _resetTripAggregates() {
+    _tripMinTempC = null;
+    _tripMaxTempC = null;
+    _tripMaxCellSpreadMv = null;
+    _tripMinSoc = null;
+    _tripMaxSoc = null;
+    _tripPeakSpeedKmh = null;
+    _tripPeakPowerKw = null;
+    _tripPeakRegenKw = null;
+    _tripRegenEnergyKwh = null;
+    _tripSpeedSum = 0;
+    _tripSpeedSamples = 0;
+    _tripMovingSec = 0;
+    _tripIdleSec = 0;
+    _lastSpeedSampleAt = null;
+    _tripStartSocPrecise = null;
+    _tripStartSoc = null;
+    _tripStartOdo = null;
+    _samplesInTrip = 0;
+    _tripStartB00 = null;
+    _consumptionWindow.clear();
+    _lastSnapshotAt = null;
   }
 
   /// v0.1.9: rolling aggregates updated each poll cycle.
@@ -1678,6 +1720,16 @@ class ConnectionService extends ChangeNotifier {
 
     for (final spec in ecu.dids) {
       if (spec.category == DidCategory.cells) continue;
+      // v0.1.26+6: skip 740/0x0008 here — it's polled exclusively by
+      // _pollSpeedOnly (sub-poll between ECU iterations). Polling it
+      // here too creates a race: _pollSpeedOnly writes a real kmh into
+      // _latestValues, then this _pollEcu iteration overwrites with
+      // whatever the next BLE read returns — and in trips 11/12 of the
+      // 2026-05-19 export, every sample written here was raw 0x0000
+      // while concurrent livelog reads on the same DID showed varied
+      // non-zero values. Letting only _pollSpeedOnly own 0008 cuts
+      // the contention and makes trip_aggregates see real speed.
+      if (ecu.txId == '740' && spec.did == '0008') continue;
 
       try {
         final r = await _client!.readDid(spec.did, tx: ecu.txId, rx: ecu.rxId)
