@@ -668,15 +668,64 @@ class _SpeedHistogramCardState extends State<_SpeedHistogramCard> {
 
                   return BarChart(
                     BarChartData(
-                      maxY: percents.reduce((a, b) => a > b ? a : b) * 1.15,
+                      // v0.1.26+5: extra headroom on top so the in-axis
+                      // value labels (from topTitles below) don't kiss the
+                      // chart border.
+                      maxY: percents.reduce((a, b) => a > b ? a : b) * 1.25,
                       barTouchData: BarTouchData(enabled: false),
                       gridData: const FlGridData(show: false),
                       borderData: FlBorderData(show: false),
                       titlesData: FlTitlesData(
                         rightTitles: const AxisTitles(
                             sideTitles: SideTitles(showTitles: false)),
-                        topTitles: const AxisTitles(
-                            sideTitles: SideTitles(showTitles: false)),
+                        // v0.1.26+5: per-bar % label rendered ABOVE the
+                        // bar (not as a tooltip overlay). The previous
+                        // `showingTooltipIndicators` approach popped the
+                        // raw fl_chart tooltip over each bar — at the
+                        // chart's own scale that meant labels overlapped
+                        // bars and showed raw double values like
+                        // "44.44444444444". topTitles renders in the
+                        // reserved axis strip above the plot, so labels
+                        // never overlap bars.
+                        topTitles: AxisTitles(
+                          sideTitles: SideTitles(
+                            showTitles: true,
+                            reservedSize: 20,
+                            interval: 1,
+                            getTitlesWidget: (v, _) {
+                              final idx = v.toInt();
+                              if (idx < 0 || idx >= visibleBins) {
+                                return const SizedBox.shrink();
+                              }
+                              final pct = percents[idx];
+                              // Drop tiny bars (<5%) to declutter — they
+                              // were too small to be useful anyway.
+                              if (pct < 5.0) return const SizedBox.shrink();
+                              // Match label colour to bar colour so the
+                              // value stays visually attached to its bar
+                              // without an arrow / leader line.
+                              Color labelColor;
+                              if (counts[idx] >= maxCount * 0.8) {
+                                labelColor = Colors.redAccent;
+                              } else if (counts[idx] >= maxCount * 0.5) {
+                                labelColor = Colors.yellowAccent.shade700;
+                              } else {
+                                labelColor = Colors.greenAccent.shade400;
+                              }
+                              return Padding(
+                                padding: const EdgeInsets.only(bottom: 2),
+                                child: Text(
+                                  '${pct.toStringAsFixed(0)}%',
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w600,
+                                    color: labelColor,
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                        ),
                         leftTitles: const AxisTitles(
                             sideTitles: SideTitles(showTitles: false)),
                         bottomTitles: AxisTitles(
@@ -723,10 +772,6 @@ class _SpeedHistogramCardState extends State<_SpeedHistogramCard> {
                                   top: Radius.circular(3)),
                             ),
                           ],
-                          showingTooltipIndicators:
-                              pct > maxCount * 100.0 / total * 0.3
-                                  ? [0]
-                                  : [],
                         );
                       }),
                     ),

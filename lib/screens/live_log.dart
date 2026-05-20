@@ -239,7 +239,16 @@ class _LiveLogScreenState extends State<LiveLogScreen> {
         ..._entries.asMap().entries.map((e) {
           final idx = e.key;
           final entry = e.value;
+          // v0.1.26+5 fix: ObjectKey ties row's State to a specific
+          // _DidEntry instance. When _applyPreset() rebuilds _entries
+          // with brand-new instances, Flutter sees the keys changed,
+          // disposes old States and creates fresh ones — so the
+          // late-initialised controllers pick up the new tx/rx/did
+          // values via initState. Without this, controllers stayed
+          // pinned to whatever the user (or previous preset) had typed,
+          // even though _entries had been replaced.
           return _DidEntryRow(
+            key: ObjectKey(entry),
             entry: entry,
             onChanged: () => setState(() {}),
             onRemove: _entries.length > 1

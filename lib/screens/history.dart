@@ -41,16 +41,58 @@ class HistoryScreen extends StatelessWidget {
   }
 }
 
-class _TripsTab extends StatelessWidget {
+class _TripsTab extends StatefulWidget {
   const _TripsTab();
 
   @override
+  State<_TripsTab> createState() => _TripsTabState();
+}
+
+class _TripsTabState extends State<_TripsTab> {
+  // v0.1.26+5 fix: cache the trips query in state so it doesn't re-fire
+  // on every notifyListeners() (~3×/sec) from ConnectionService. The
+  // previous pattern was:
+  //   final svc = context.watch<ConnectionService>();
+  //   return FutureBuilder(future: svc.db.getRecentTrips(), ...)
+  // which created a fresh Future every rebuild — i.e. ~3 DB queries
+  // per second hitting the main isolate. On older phones this could
+  // stall the rendering thread enough that the active-trip card's
+  // live metrics appeared to update only every few minutes. Now we
+  // re-query only on these explicit triggers:
+  //   - initState (first load)
+  //   - connection state change (trip just started or ended)
+  //   - manual refresh (pull-to-refresh, if added later)
+  Future<List<Trip>>? _tripsFuture;
+  bool? _lastTripActive;
+
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+  }
+
+  void _refresh() {
+    final svc = context.read<ConnectionService>();
+    setState(() {
+      _tripsFuture = svc.db.getRecentTrips();
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
+    // We still want to know when a trip starts/ends to refresh the list.
+    // Subscribing via select() to a single bool means we only rebuild
+    // when that flag flips, not on every notify.
     final svc = context.watch<ConnectionService>();
+    final tripActive = svc.currentTripId != null;
+    if (_lastTripActive != null && _lastTripActive != tripActive) {
+      // Active state flipped — refresh the list to pick up new/ended trip.
+      WidgetsBinding.instance.addPostFrameCallback((_) => _refresh());
+    }
+    _lastTripActive = tripActive;
+
     return FutureBuilder<List<Trip>>(
-      // Watching svc triggers rebuilds on connection state changes,
-      // which re-runs this future — refreshing the list when trips end.
-      future: svc.db.getRecentTrips(),
+      future: _tripsFuture,
       builder: (context, snapshot) {
         if (!snapshot.hasData) {
           return const Center(child: CircularProgressIndicator());
@@ -90,7 +132,11 @@ class _TripsTab extends StatelessWidget {
           itemCount: active.length + past.length,
           itemBuilder: (context, i) {
             if (i < active.length) {
-              return _ActiveTripCard(trip: active[i], svc: svc);
+              // v0.1.26+5: do NOT pass svc down — _ActiveTripCard will
+              // watch it itself, so its live metrics rebuild on every
+              // notifyListeners without dragging this whole ListView
+              // along for the ride.
+              return _ActiveTripCard(trip: active[i]);
             }
             return _TripCard(trip: past[i - active.length]);
           },
@@ -102,13 +148,18 @@ class _TripsTab extends StatelessWidget {
 
 /// Active trip card — shows live metrics from ConnectionService getters.
 /// Updates with every `notifyListeners()` on svc (every poll cycle).
+///
+/// v0.1.26+5: takes svc via context.watch (own subscription) instead of
+/// via constructor. This lets the parent _TripsTab unsubscribe from
+/// the high-frequency notifyListeners stream — only this card needs to
+/// rebuild on every poll, not the entire trips list.
 class _ActiveTripCard extends StatelessWidget {
   final Trip trip;
-  final ConnectionService svc;
-  const _ActiveTripCard({required this.trip, required this.svc});
+  const _ActiveTripCard({required this.trip});
 
   @override
   Widget build(BuildContext context) {
+    final svc = context.watch<ConnectionService>();
     final dateStr = DateFormat('d MMM HH:mm').format(trip.startedAt);
     final duration = svc.tripDuration ?? DateTime.now().difference(trip.startedAt);
     final dist = svc.tripDistanceKm;

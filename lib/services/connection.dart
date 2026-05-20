@@ -1398,16 +1398,31 @@ class ConnectionService extends ChangeNotifier {
 
         // Time accounting: delta from last sample, attributed to moving
         // or idle based on whether current sample > 1.0 km/h.
+        //
+        // v0.1.26+5 fix: previously the 30s cap was a `drop everything
+        // longer` filter — `if (dt > 0 && dt < 30000)`. Side effect: any
+        // BLE hiccup, ECU sleep window, or pause where 740/0x0008
+        // stopped responding for >30s caused the *entire* gap (could be
+        // minutes) to disappear from the moving/idle tally. One user
+        // observed a 35-minute trip showing only 17 minutes of accounted
+        // time. New behaviour: cap the per-sample contribution at 120s
+        // (so a single rogue sample can't extrapolate forever) but DO
+        // accumulate the capped portion. The trip's wall-clock duration
+        // and the sum of moving+idle now agree to within ~minutes even
+        // under heavy BLE chop.
         final now = DateTime.now();
         if (_lastSpeedSampleAt != null) {
           final dt = now.difference(_lastSpeedSampleAt!).inMilliseconds;
-          // Cap at 30s to avoid huge gaps (BLE drop) inflating counts.
-          if (dt > 0 && dt < 30000) {
-            final secs = dt ~/ 1000;
-            if (kmh > 1.0) {
-              _tripMovingSec += secs;
-            } else {
-              _tripIdleSec += secs;
+          if (dt > 0) {
+            const capMs = 120000;
+            final attribMs = dt > capMs ? capMs : dt;
+            final secs = attribMs ~/ 1000;
+            if (secs > 0) {
+              if (kmh > 1.0) {
+                _tripMovingSec += secs;
+              } else {
+                _tripIdleSec += secs;
+              }
             }
           }
         }
