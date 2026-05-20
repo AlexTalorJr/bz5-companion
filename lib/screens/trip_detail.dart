@@ -107,7 +107,14 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                 did: '002F',
                 color: Colors.orangeAccent,
                 unit: '°C',
-                valueTransform: (v) => v - 40,
+                // v0.1.26+9: NO valueTransform — the registry decoder for
+                // 790/0x002F already applies offset -40, so numeric_value
+                // in the samples table is already °C. Doing v-40 again
+                // here was a double-offset bug that displayed batteries
+                // sitting at ~18°C as ~-22°C with axis labels -24..-19
+                // (matched user screenshot of trip 13 detail view).
+                // Same fix mirrors _updateTripAggregates which figured
+                // this out for trip min/max temp back in v0.1.10.
                 svc: svc,
               ),
               const SizedBox(height: 12),
@@ -193,7 +200,8 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
             did: '002F',
             color: Colors.orangeAccent,
             unit: '°C',
-            valueTransform: (v) => v - 40,
+            // v0.1.26+9: see narrow-layout comment — registry already
+            // applies offset -40, doing it again here was a double-offset.
             svc: svc,
           ),
           _ChartCard(

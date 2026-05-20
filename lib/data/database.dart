@@ -228,6 +228,28 @@ class AppDatabase extends _$AppDatabase {
     ));
   }
 
+  /// v0.1.26+8: backfill start_soc / start_odometer for a trip whose row
+  /// already exists. Used by the fallback capture path in ConnectionService:
+  /// when _maybeStartTrip can't pull these anchors from _latestValues
+  /// at trip-creation time (e.g. 791/0026 hadn't been read yet), a later
+  /// successful read calls this to fix the column in-place.
+  ///
+  /// Idempotent and forgiving — passing null for either field leaves
+  /// that column alone, so the caller can update just one anchor without
+  /// racing the other.
+  Future<void> updateTripStartAnchors(
+    int tripId, {
+    double? startSoc,
+    double? startOdo,
+  }) async {
+    await (update(trips)..where((t) => t.id.equals(tripId))).write(
+      TripsCompanion(
+        startSoc: startSoc != null ? Value(startSoc) : const Value.absent(),
+        startOdometer: startOdo != null ? Value(startOdo) : const Value.absent(),
+      ),
+    );
+  }
+
   /// v0.1.21.1: find orphaned trips (endedAt IS NULL) from previous app
   /// runs. Caller should iterate and call [forceCloseTrip] on each.
   ///

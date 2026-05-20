@@ -313,7 +313,9 @@ class _SelectedTripDetail extends StatelessWidget {
                   did: '002F',
                   color: Colors.orangeAccent,
                   unit: '°C',
-                  valueTransform: (v) => v - 40,
+                  // v0.1.26+9: NO valueTransform — registry already
+                  // applies offset -40 (see trip_detail.dart for the
+                  // long form of this comment).
                   svc: svc,
                 ),
               ),
