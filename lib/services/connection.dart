@@ -1318,10 +1318,25 @@ class ConnectionService extends ChangeNotifier {
       // 11 had all 25 of its 740/0008 speed samples = 0.0, yet
       // peak_speed_kmh = 80.9 — leaked from an even earlier session.
       _resetTripAggregates();
-      _currentTripId = await db.startTrip();
+      // v0.1.26+8: capture trip-start anchors from already-populated
+      // _latestValues BEFORE inserting the trip row, so the start_odometer
+      // and start_soc columns get filled at creation time (not via a
+      // later poll-cycle capture path that almost never fired — every
+      // trip in the 2026-05-20 export had start_odometer = NULL despite
+      // 791/0026 being readable, because _pollEcu's capture site sits
+      // *after* _maybeStartTrip in the cycle and 791 silently times out
+      // once the car is moving).
+      _tripStartOdo = _latestValues['791']?['0026']?.numeric;
+      _tripStartSoc = _latestValues['790']?['0005']?.numeric;
+      _tripStartSocPrecise = socPrecisePct;
+      _currentTripId = await db.startTrip(
+        startSoc: _tripStartSoc,
+        startOdo: _tripStartOdo,
+      );
       _tripStartedAt = DateTime.now();
       _wantTripCreation = false;
-      debugPrint('Trip #$_currentTripId created.');
+      debugPrint('Trip #$_currentTripId created. start_odo='
+          '${_tripStartOdo} start_soc=${_tripStartSoc}');
     }
     notifyListeners();
   }
@@ -1757,9 +1772,23 @@ class ConnectionService extends ChangeNotifier {
 
           if (spec.did == '0005' && ecu.txId == '790' && _tripStartSoc == null) {
             _tripStartSoc = decoded.numeric;
+            // v0.1.26+8: backfill DB row too (in-memory only would mean
+            // the column stays NULL on disk).
+            if (decoded.numeric != null) {
+              await db.updateTripStartAnchors(
+                _currentTripId!,
+                startSoc: decoded.numeric,
+              );
+            }
           }
           if (spec.did == '0026' && ecu.txId == '791' && _tripStartOdo == null) {
             _tripStartOdo = decoded.numeric;
+            if (decoded.numeric != null) {
+              await db.updateTripStartAnchors(
+                _currentTripId!,
+                startOdo: decoded.numeric,
+              );
+            }
           }
         }
       } catch (_) {}
