@@ -353,6 +353,17 @@ class _DerivedMetricsCard extends StatelessWidget {
           trip.peakRegenKw != null
               ? '${trip.peakRegenKw!.toStringAsFixed(1)} kW'
               : '— (DID not identified)'),
+      // v0.1.26+10: peak_power_kw / peak_regen_kw are now populated by
+      // an HV-bus-sag heuristic (R_pack ≈ 0.18 Ω) when the direct
+      // 791/0x0038 DID is silent — which is the common case during
+      // motion. Accuracy is ±20-30 %.
+      const Padding(
+        padding: EdgeInsets.fromLTRB(0, 4, 0, 4),
+        child: Text(
+          '↑ peak values estimated from HV-bus sag (±20-30%) until pack-current DID is identified',
+          style: TextStyle(fontSize: 10, color: Colors.grey, fontStyle: FontStyle.italic),
+        ),
+      ),
       // v0.1.22: peak speed now actually populated (740/0x0008 verified).
       // Remove the "DID not identified" placeholder when value present.
       _MetricRow('Peak speed',
