@@ -436,6 +436,7 @@ class _DidEntryRow extends StatefulWidget {
   final VoidCallback onChanged;
   final VoidCallback? onRemove;
   const _DidEntryRow({
+    super.key,
     required this.entry,
     required this.onChanged,
     this.onRemove,
