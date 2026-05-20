@@ -1,0 +1,63 @@
+<!--
+  AndroidManifest additions for native BYD car-platform support.
+  Merge into android/app/src/main/AndroidManifest.xml.
+
+  All BYDAUTO_*_COMMON permissions are dangerous-level → runtime-grant
+  via permission_handler or ActivityCompat.requestPermissions(). The
+  com.byd.car.server.PROVIDER permission is normal-level and granted
+  at install time.
+
+  The list below mirrors BydPermissions.PERMISSIONS in the plugin code.
+  Add a permission here ONLY after also adding it to that map, otherwise
+  the runtime "declared/granted" check will be wrong.
+
+  Some of the BYDAUTO permissions may not exist on every firmware
+  variant. Android tolerates <uses-permission> for permissions that
+  don't exist on a given device (they're treated as "not requested"
+  rather than installation failure), so it's safe to declare a superset.
+-->
+
+<!-- Bind to com.byd.car.server's ContentProvider (normal, install-time). -->
+<uses-permission android:name="com.byd.car.server.PROVIDER" />
+
+<!-- Per-domain runtime permissions (dangerous, runtime-grant).
+     Two naming conventions exist on BYD firmware: `_COMMON` (general,
+     covers read+write) and `_GET`/`_SET` (split). Empirically observed
+     from CanDataCollect.apk: it uses `_COMMON` for Bodywork but `_GET`
+     for Power — so the conventions are inconsistent. Declaring both
+     variants for the domains we actually need is the safest. Android
+     silently ignores permissions that don't exist on the firmware. -->
+<uses-permission android:name="android.permission.BYDAUTO_POWER_COMMON" />
+<uses-permission android:name="android.permission.BYDAUTO_POWER_GET" />
+<uses-permission android:name="android.permission.BYDAUTO_CHARGING_COMMON" />
+<uses-permission android:name="android.permission.BYDAUTO_CHARGING_GET" />
+<uses-permission android:name="android.permission.BYDAUTO_ENERGY_COMMON" />
+<uses-permission android:name="android.permission.BYDAUTO_ENERGY_GET" />
+<uses-permission android:name="android.permission.BYDAUTO_SPEED_COMMON" />
+<uses-permission android:name="android.permission.BYDAUTO_SPEED_GET" />
+<uses-permission android:name="android.permission.BYDAUTO_GEARBOX_COMMON" />
+<uses-permission android:name="android.permission.BYDAUTO_GEARBOX_GET" />
+<uses-permission android:name="android.permission.BYDAUTO_INSTRUMENT_COMMON" />
+<uses-permission android:name="android.permission.BYDAUTO_TYRE_COMMON" />
+<uses-permission android:name="android.permission.BYDAUTO_STATISTIC_COMMON" />
+<uses-permission android:name="android.permission.BYDAUTO_STATISTIC_GET" />
+<uses-permission android:name="android.permission.BYDAUTO_LOCATION_COMMON" />
+<uses-permission android:name="android.permission.BYDAUTO_BODYWORK_COMMON" />
+<uses-permission android:name="android.permission.BYDAUTO_DTC_COMMON" />
+<uses-permission android:name="android.permission.BYDAUTO_LIGHTS_COMMON" />
+<uses-permission android:name="android.permission.BYDAUTO_DOORLOCK_COMMON" />
+<uses-permission android:name="android.permission.BYDAUTO_TIME_COMMON" />
+<uses-permission android:name="android.permission.BYDAUTO_TEST_COMMON" />
+<uses-permission android:name="android.permission.BYDAUTO_VERSION_COMMON" />
+<uses-permission android:name="android.permission.BYDAUTO_VEHICLE_DATA_COMMON" />
+<uses-permission android:name="android.permission.BYDAUTO_BIGDATA_COMMON" />
+
+<!--
+  Query visibility for Android 11+ (API 30): we must declare which
+  packages/providers we intend to access so that PackageManager queries
+  return them. Add this inside <manifest>, NOT inside <application>.
+-->
+<queries>
+    <package android:name="com.byd.car.server" />
+    <provider android:authorities="com.byd.car.server.provider.CarServiceProvider" />
+</queries>
