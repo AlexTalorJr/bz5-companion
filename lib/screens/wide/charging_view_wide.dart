@@ -123,7 +123,7 @@ class _PowerHero extends StatelessWidget {
             ),
             const SizedBox(height: 4),
             Text(
-              'Power = ΔB00 × ${Bz5Model.chargeCounterWh.toInt()} Wh/unit (calibration TBD)',
+              'Power = ΔSOC × pack kWh / Δt (~80 sec refresh at AC 3 kW)',
               style: TextStyle(fontSize: 10, color: Colors.grey.shade600),
             ),
           ],
@@ -533,7 +533,7 @@ class _BottomSummaryStrip extends StatelessWidget {
                 value: chargedKwh != null
                     ? '${chargedKwh.toStringAsFixed(2)} kWh'
                     : '—',
-                hint: 'счётчик × ${Bz5Model.chargeCounterWh.toInt()} Wh (calib TBD)',
+                hint: 'ΔSOC × pack kWh',
               ),
             ),
             Expanded(

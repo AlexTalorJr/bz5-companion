@@ -22,18 +22,50 @@ class Bz5Model {
   static const double batteryCapacityKwh = 65.28;
 
   /// Scale для 0B00 charge counter — 1 unit ≈ 460 Wh.
-  /// Откалибровано на полной зарядной сессии 48% → 100%:
-  /// ΔSOC × ёмкость = 33.95 кВт·ч, Δ0x0B00 = +79 единиц
-  /// 33950 / 79 ≈ 430 Wh/unit (DC-side), с учётом OBC efficiency ~88% AC-side ≈ 489 Wh/unit
-  /// Усреднённое значение 460 Wh/unit ±10%.
+  /// ⚠ DEPRECATED as of v0.1.26+11. Charge counter 0x0B00 has been
+  /// confirmed empirically NOT to be a linear energy counter:
   ///
-  /// ⚠ NB! v6.1: idle sweeps на стоянке (2026-05-02) и в Ready+AC (2026-05-03)
-  /// показали что counter НЕ ведёт себя как чистый cumulative energy counter:
-  /// на стоянке убывает ~1 unit/95s (соответствовало бы фейковой нагрузке 17 кВт),
-  /// в Ready колеблется в пределах ±1 unit без чёткого тренда.
-  /// Калибровка 460 Wh/unit подтверждена только на зарядной сессии и сейчас
-  /// используется только для дисплея энергии в trip-сессии. См. TODO ниже.
+  /// Test 2026-05-20 (livelog session 22):
+  ///   - 5-minute AC charge at constant 2.85 kW (station readout)
+  ///   - SOC progression was perfectly linear: +0.10% every ~83 sec
+  ///     (consistent with 2.83 kW into pack — ~99% AC efficiency)
+  ///   - Counter behaviour was wildly nonlinear:
+  ///     · first ~30 sec: ~1 unit / 2 sec (precharge / initial burst)
+  ///     · middle phase: ~1 unit / 9 sec
+  ///     · steady-state: ~1 unit / 30 sec
+  ///     · saturation:   ~1 unit / 60+ sec
+  ///   - Implied "Wh per unit" varied from 2.6 to 32+ within ONE session
+  ///     at constant input power
+  ///
+  /// Interpretation: 0x0B00 increments on internal OBC/BMS state-machine
+  /// events (precharge ticks, sync pulses, balance cycles), not on
+  /// integrated energy. Treating it as energy gave numbers 5-150× off.
+  ///
+  /// Replacement strategy:
+  ///   - For energy:  ΔSOC × batteryCapacityKwh (precise, slow refresh)
+  ///   - For power:   d(SOC)/dt × batteryCapacityKwh (slow but accurate)
+  ///   - For detection ONLY: counter rate change (still ideal — counter
+  ///     IS rock-stable in parked state and IS rising during any charge)
+  ///
+  /// This constant is kept around with value preserved so existing
+  /// references don't break the build during the transition; all
+  /// production code paths are migrating off it. New code MUST NOT
+  /// reference it. Remove entirely in v0.1.27 once UI is verified.
+  @Deprecated('0x0B00 is not a linear energy counter — use ΔSOC × batteryCapacityKwh instead')
   static const double chargeCounterWh = 460.0;
+
+  /// Pack capacity, kWh. BZ5 has two known variants:
+  ///   - 65.28 kWh (smaller pack — verified on this vehicle)
+  ///   - 73.984 kWh (larger pack — owner-reported)
+  ///
+  /// Used for ALL energy/power calculations on the charging side via
+  /// ΔSOC × batteryCapacityKwh / 100. Also used as backstop for
+  /// trip-side energy-from-SOC when no charging session is active.
+  ///
+  /// TODO v0.1.27 — auto-detect pack variant from 740/0105 part number
+  /// or 1FFD low16 fingerprint (BZ5 = 0x3B09 across both variants per
+  /// observation, so part-number lookup will be required).
+  static const double batteryCapacityKwh = 65.28;
 
   /// Pack voltage scale: DID 0x0015, raw × 0.02 V.
   /// Подтверждено на стоянке: на 100% SOC raw=18077 → 361.5 V (норма LFP),
@@ -423,7 +455,71 @@ class ConnectionService extends ChangeNotifier {
   Map<String, Map<String, DecodedValue>> get latestValues => _latestValues;
   List<int> get liveCells => _liveCells;
 
-  double get chargingPowerKw => _instantaneousChargingPowerKw;
+  /// Instantaneous charging power in kW, computed from SOC rate of change.
+  ///
+  /// v0.1.26+11: COMPLETELY rewritten from a 0x0B00 counter-rate approach
+  /// (broken — counter is nonlinear event signal, not energy integrator)
+  /// to a SOC-derived approach (linear, accurate, but slower to refresh).
+  ///
+  /// Algorithm:
+  ///   - Look at the [_chargingHistory] window (samples every 5 sec, max
+  ///     age 60 min) and find the most recent samples where SOC has
+  ///     actually moved by at least one precise-SOC step (0.01%).
+  ///   - Compute ΔSOC × pack capacity / Δt over the longest window
+  ///     where we have data (up to 60 sec to smooth jitter).
+  ///   - Returns 0 when not charging or insufficient samples.
+  ///
+  /// Refresh characteristics:
+  ///   - AC 3 kW:   1 update every ~80 sec (one 0.01% SOC tick)
+  ///   - AC 7 kW:   1 update every ~34 sec
+  ///   - DC 50 kW:  1 update every ~4.7 sec
+  ///   - DC 100 kW: 1 update every ~2.3 sec (within one poll cycle)
+  ///
+  /// Replaces the old _instantaneousChargingPowerKw cache which is now
+  /// kept around only for legacy callers; it is no longer maintained.
+  double get chargingPowerKw {
+    if (!isCharging) return 0.0;
+    if (_chargingHistory.length < 2) return 0.0;
+
+    // Find the latest sample with a precise SOC reading, and the
+    // oldest sample (within last 60s) where SOC was lower.
+    final latest = _chargingHistory.last;
+    final latestSoc = latest.socPct;
+    if (latestSoc == null) return 0.0;
+
+    // Window: prefer 60 sec back for smoothing, but accept down to 10 sec
+    // if we don't have enough history yet (session just started).
+    final cutoff = latest.time.subtract(const Duration(seconds: 60));
+    ChargingSample? anchor;
+    for (final s in _chargingHistory) {
+      if (s.time.isBefore(cutoff)) continue;
+      if (s.socPct == null) continue;
+      if (s.socPct! < latestSoc) {
+        anchor = s;
+        break;
+      }
+    }
+    if (anchor == null) {
+      // Fallback: oldest sample of this session
+      for (final s in _chargingHistory) {
+        if (s.socPct == null) continue;
+        if (s.socPct! < latestSoc) {
+          anchor = s;
+          break;
+        }
+      }
+    }
+    if (anchor == null) return 0.0;
+
+    final dtSec = latest.time.difference(anchor.time).inMilliseconds / 1000.0;
+    if (dtSec < 1.0) return 0.0;
+    final dSocPct = latestSoc - (anchor.socPct ?? latestSoc);
+    if (dSocPct <= 0) return 0.0;
+
+    // P[kW] = (ΔSOC% × packKwh / 100) / (dt_sec / 3600)
+    //       = ΔSOC% × packKwh × 36 / dt_sec
+    return dSocPct * Bz5Model.batteryCapacityKwh * 36.0 / dtSec;
+  }
 
   /// Cycle count from BMS DID 0B02 — likely full-charge equivalent cycles
   int? get cycleCount {
@@ -655,21 +751,37 @@ class ConnectionService extends ChangeNotifier {
     return remainingKwh * 1000 / Bz5Model.avgConsumptionWhKm;
   }
 
+  /// v0.1.26+11: trip-side energy delivered (positive = charged, negative = consumed).
+  ///
+  /// Previously this was computed from delta of 0x0B00 counter × 460 Wh/unit.
+  /// That formula was wrong by 1-2 orders of magnitude (counter is a
+  /// nonlinear OBC event signal, not energy — see [Bz5Model.chargeCounterWh]).
+  ///
+  /// Now uses ΔSOC × pack capacity, which is the same path used by the
+  /// trip-detail "energy_from_soc" display and matches station meters
+  /// within ~1% on AC charging tests.
+  ///
+  /// Returns null when no anchor (no trip yet), or SOC delta is non-positive.
   double? get chargedThisSessionKwh {
-    if (_tripStartB00 == null) return null;
-    final cur = readNumeric('790', '0B00');
+    if (_tripStartSocPrecise == null) return null;
+    final cur = socPrecisePct ?? readNumeric('790', '0005');
     if (cur == null) return null;
-    final delta = cur - _tripStartB00!;
-    if (delta <= 0) return null;
-    return delta * Bz5Model.chargeCounterWh / 1000.0;
+    final deltaPct = cur - _tripStartSocPrecise!;
+    if (deltaPct <= 0) return null;
+    return deltaPct * Bz5Model.batteryCapacityKwh / 100.0;
   }
 
+  /// v0.1.26+11: trip-side energy used (or gained) in kWh, signed.
+  ///
+  /// Positive value means charged, negative means consumed. Allows the
+  /// trip card to show energy gain during charging session and energy
+  /// loss during driving with the same field.
   double? get tripEnergyKwh {
-    if (_tripStartB00 == null) return null;
-    final cur = readNumeric('790', '0B00');
+    if (_tripStartSocPrecise == null) return null;
+    final cur = socPrecisePct ?? readNumeric('790', '0005');
     if (cur == null) return null;
-    final delta = cur - _tripStartB00!;
-    return delta * Bz5Model.chargeCounterWh / 1000.0;
+    final deltaPct = cur - _tripStartSocPrecise!;
+    return deltaPct * Bz5Model.batteryCapacityKwh / 100.0;
   }
 
   int? get smoothedCellSpread {
@@ -1715,15 +1827,20 @@ class ConnectionService extends ChangeNotifier {
     }
   }
 
-  /// v6.1: обновление истории 0x0B00 + расчёт мгновенной мощности зарядки.
+  /// v0.1.26+11: обновление истории 0x0B00 (для charging detection)
+  /// + maintenance _chargingHistory (для UI графиков).
   ///
-  /// Старая версия v6 использовала единственное значение `_lastB00Value` и
-  /// мгновенный delta; любой stale-read давал false-positive (бесконечный
-  /// banner "Charging Connected" на стоянке). Новая версия:
-  ///  - ведёт rolling history последних 20 минут
-  ///  - дописывает snapshot при изменении значения ИЛИ раз в 10 секунд
-  ///  - мгновенная мощность считается из последнего положительного delta
-  ///  - сама детекция зарядки делегирована getter'у [isCharging]
+  /// Counter-based power calculation REMOVED in v0.1.26+11. Empirical
+  /// testing on 5-minute AC 2.85 kW session (livelog 22) showed counter
+  /// is a nonlinear OBC state-machine event signal, not an energy
+  /// integrator. See [Bz5Model.chargeCounterWh] doc for full evidence.
+  /// Power is now derived from SOC rate of change in [chargingPowerKw]
+  /// getter — accurate but slower (~80 sec refresh at AC 3 kW, ~2 sec
+  /// at DC 100 kW).
+  ///
+  /// 0B00 counter still gets sampled here because it remains useful for:
+  ///   - Charging detection (rate > 0 vs stable-in-idle) — see [isCharging]
+  ///   - Future analysis when we identify what events it actually counts
   void _updatePowerCalculations() {
     final now = DateTime.now();
     final b00 = readNumeric('790', '0B00');
@@ -1747,33 +1864,8 @@ class ConnectionService extends ChangeNotifier {
       _b00History.removeAt(0);
     }
 
-    // Instantaneous charging power: based on last positive transition only.
-    //
-    // Derivation:
-    //   E[kWh] = delta_units × chargeCounterWh[Wh/unit] / 1000
-    //   P[kW] = E[kWh] / t[h] = E[kWh] × 3600 / t[s]
-    //         = delta × chargeCounterWh × 3.6 / dt_sec
-    //
-    // Sanity check: AC 2.8 kW → 1 unit per ~590 s
-    //   P = 1 × 460 × 3.6 / 590 ≈ 2.81 kW ✓
-    //
-    // v0.1.26+2 hotfix: previously had an extra `/ 1000.0` which gave
-    // results 1000× too small (0.003 kW instead of 2.8 kW). That broke
-    // PowerHero ("0.0 kW"), PowerChart (flat zero), and forced
-    // `chargingPhase` to always return `almostDone` (since
-    // `powerKw < 3.0` was vacuously true on 0.003).
-    if (_b00History.length >= 2) {
-      final cur = _b00History[_b00History.length - 1];
-      final prev = _b00History[_b00History.length - 2];
-      final delta = cur.value - prev.value;
-      final dt = cur.time.difference(prev.time).inMilliseconds / 1000.0;
-      if (delta > 0 && dt > 1.0) {
-        _instantaneousChargingPowerKw =
-            delta * Bz5Model.chargeCounterWh * 3.6 / dt;
-      } else {
-        _instantaneousChargingPowerKw = 0.0;
-      }
-    }
+    // Clear legacy cached value — chargingPowerKw getter now computes fresh.
+    _instantaneousChargingPowerKw = 0.0;
 
     // v0.1.26: maintain rolling-window charging history for the
     // ChargingViewWide widget. Read isCharging via the getter so this
@@ -1826,12 +1918,38 @@ class ConnectionService extends ChangeNotifier {
     }
     _lastChargingSampleAt = now;
 
+    // v0.1.26+11: power is now SOC-derived via the chargingPowerKw getter,
+    // which walks the EXISTING _chargingHistory window — but we're about
+    // to append a new sample to that window. To avoid the getter using
+    // the not-yet-added sample as anchor (latest), compute power BEFORE
+    // append and treat 0/null as "still warming up" for early samples.
+    final currentSoc = socPrecisePct ?? readNumeric('790', '0005');
+    double? powerForSample;
+    if (_chargingHistory.length >= 2 && currentSoc != null) {
+      // Look back up to 60 sec for SOC delta
+      final cutoffTime = now.subtract(const Duration(seconds: 60));
+      ChargingSample? anchor;
+      for (final s in _chargingHistory) {
+        if (s.time.isBefore(cutoffTime)) continue;
+        if (s.socPct == null) continue;
+        if (s.socPct! < currentSoc) {
+          anchor = s;
+          break;
+        }
+      }
+      if (anchor != null) {
+        final dtSec = now.difference(anchor.time).inMilliseconds / 1000.0;
+        final dSoc = currentSoc - (anchor.socPct ?? currentSoc);
+        if (dtSec >= 1.0 && dSoc > 0) {
+          powerForSample = dSoc * Bz5Model.batteryCapacityKwh * 36.0 / dtSec;
+        }
+      }
+    }
+
     _chargingHistory.add(ChargingSample(
       time: now,
-      powerKw: _instantaneousChargingPowerKw > 0
-          ? _instantaneousChargingPowerKw
-          : null,
-      socPct: socPrecisePct ?? readNumeric('790', '0005'),
+      powerKw: powerForSample,
+      socPct: currentSoc,
       hvBusV: hvBusV,
       cellMinMv: globalMinCellMv,
       cellMaxMv: globalMaxCellMv,
@@ -2226,20 +2344,28 @@ class ConnectionService extends ChangeNotifier {
   DateTime? get chargingSessionStartedAt => _chargingSessionStartedAt;
 
   /// Energy delivered since the start of the current charging session,
-  /// in kWh. Computed from delta of 0x0B00 charge counter × nominal
-  /// [Bz5Model.chargeCounterWh] per unit. Returns null when not charging
-  /// or counter hasn't moved since session start.
+  /// in kWh.
   ///
-  /// Scale is currently a best-estimate (460 Wh/unit, [Bz5Model]) and will
-  /// be calibrated against the DC charger's display readout from the
-  /// session this feature was built for.
+  /// v0.1.26+11: Computed from ΔSOC × pack capacity, NOT from the
+  /// 0x0B00 counter (which was empirically shown to be a non-linear
+  /// event counter, not an energy integrator — see [Bz5Model.chargeCounterWh]
+  /// deprecation doc for evidence).
+  ///
+  /// Precision floor: 1FFD precise SOC has 0.01% resolution → 6.528 Wh
+  /// per minimum step at 65.28 kWh pack. Below that resolution the
+  /// reading shows zero gain even when energy is actually flowing.
+  /// At AC 3 kW this means first non-zero reading appears ~8 sec after
+  /// charging started; at DC 100 kW ~0.2 sec.
+  ///
+  /// Returns null when not in a charging session, or session anchor
+  /// (start SOC) is missing, or current SOC reading is unavailable.
   double? get chargedThisChargingSessionKwh {
-    if (_chargingSessionStartCounter == null) return null;
-    final cur = readNumeric('790', '0B00');
+    if (_chargingSessionStartSocPct == null) return null;
+    final cur = socPrecisePct ?? readNumeric('790', '0005');
     if (cur == null) return null;
-    final delta = cur.toInt() - _chargingSessionStartCounter!;
-    if (delta <= 0) return null;
-    return delta * Bz5Model.chargeCounterWh / 1000.0;
+    final deltaPct = cur - _chargingSessionStartSocPct!;
+    if (deltaPct <= 0) return null;
+    return deltaPct * Bz5Model.batteryCapacityKwh / 100.0;
   }
 
   /// SOC delta since the start of the current charging session, %.
@@ -2271,7 +2397,9 @@ class ConnectionService extends ChangeNotifier {
     if (_chargingHistory.length < 3) return ChargingPhase.unknown;
 
     final soc = socPrecisePct ?? readNumeric('790', '0005');
-    final powerKw = _instantaneousChargingPowerKw;
+    // v0.1.26+11: use SOC-derived power (single source of truth)
+    // instead of the deprecated _instantaneousChargingPowerKw cache.
+    final powerKw = chargingPowerKw;
     final maxCellMv = globalMaxCellMv;
 
     if ((soc != null && soc >= 95) || (powerKw > 0 && powerKw < 3.0)) {
