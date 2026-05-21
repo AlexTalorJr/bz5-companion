@@ -16,11 +16,6 @@ enum PollMode { driving, charging, full }
 ///
 /// Калибровочные константы из реверс-инжиниринга 30 апреля - 1 мая 2026.
 class Bz5Model {
-  /// Паспортная ёмкость батареи (кВт·ч).
-  /// Подтверждена ETA-калькуляцией приборки (13ч 26м при 2.8 кВт от 46% =
-  /// 35.25 кВт·ч до полной → ёмкость 65.3 кВт·ч).
-  static const double batteryCapacityKwh = 65.28;
-
   /// Scale для 0B00 charge counter — 1 unit ≈ 460 Wh.
   /// ⚠ DEPRECATED as of v0.1.26+11. Charge counter 0x0B00 has been
   /// confirmed empirically NOT to be a linear energy counter:
@@ -61,6 +56,9 @@ class Bz5Model {
   /// Used for ALL energy/power calculations on the charging side via
   /// ΔSOC × batteryCapacityKwh / 100. Also used as backstop for
   /// trip-side energy-from-SOC when no charging session is active.
+  ///
+  /// 65.28 kWh value подтверждена ETA-калькуляцией приборки (13ч 26м при
+  /// 2.8 кВт от 46% = 35.25 кВт·ч до полной → ёмкость 65.3 кВт·ч).
   ///
   /// TODO v0.1.27 — auto-detect pack variant from 740/0105 part number
   /// or 1FFD low16 fingerprint (BZ5 = 0x3B09 across both variants per
