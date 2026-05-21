@@ -25,6 +25,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../services/diag_dump_file.dart';
 import '../../services/native_car_channel.dart';
 import '../../services/native_detector.dart';
 
@@ -69,11 +70,23 @@ class _NativeExplorerWideState extends State<NativeExplorerWide> {
   bool _logAutoFollow = true;
   final _logScrollCtrl = ScrollController();
 
+  // v0.1.26+18: persistent diagnostic dump file on /sdcard/Download/.
+  // When _autoDumpEnabled is true, every _setResult() additionally
+  // appends a labeled section to the file so the user has a permanent
+  // recon journal they can copy to USB. The flag is off by default to
+  // avoid surprising filesystem writes; the user enables it from the
+  // Status card switch. _dumpInfo is refreshed after each write so the
+  // path-and-size row reflects current reality.
+  bool _autoDumpEnabled = false;
+  DiagDumpInfo? _dumpInfo;
+  bool _dumpBusy = false;
+
   @override
   void initState() {
     super.initState();
     _refreshPerms();
     _refreshDiagnostics();
+    _refreshDumpInfo();
     _eventSub = _ch.events.listen(_onEvent);
     _startLogPolling();
   }
@@ -339,11 +352,190 @@ class _NativeExplorerWideState extends State<NativeExplorerWide> {
   /// copies it to the clipboard. The user can then paste it into any
   /// note app / Telegram message / Toyota launcher's notepad and ship
   /// it off the head unit. No file system / ADB needed.
+  ///
+  /// v0.1.26+18: body now comes from _buildFullSnapshotBody so the
+  /// clipboard path and the "Save dump to file" path stay in sync.
   Future<void> _doExportDiagnostics() async {
-    final buf = StringBuffer()
+    final header = StringBuffer()
       ..writeln('=== BZ5 Companion native diagnostics ===')
       ..writeln('Captured: ${DateTime.now().toIso8601String()}')
-      ..writeln()
+      ..writeln();
+    final blob = header.toString() + _buildFullSnapshotBody();
+    await Clipboard.setData(ClipboardData(text: blob));
+    _setResult('Diagnostics copied to clipboard (${blob.length} chars). '
+        'Paste anywhere to share — Telegram, notes, email, etc.');
+  }
+
+  // ─── helpers ─────────────────────────────────────────────────────
+
+  bool _looksValid(String s) =>
+      RegExp(r'^0x[0-9A-Fa-f]+$').hasMatch(s);
+
+  /// Human-readable error explaining why the current input isn't valid.
+  /// v0.1.26+15: replaces the opaque "Expected format: 0x<HEX_FEATURE_ID>"
+  /// which left the user with no idea what to type. Now we say what's
+  /// wrong and suggest the next step.
+  String _validationHint(String s) {
+    if (s.isEmpty || s == '0x') {
+      return 'Enter a hex feature ID (e.g. 0x99002B0A). '
+          'See assets/native_api/bz5_feature_catalog.csv for the 10016 known IDs, '
+          'or tap a preset below.';
+    }
+    if (!s.toLowerCase().startsWith('0x')) {
+      return 'Feature ID must start with 0x (e.g. 0x99002B0A).';
+    }
+    return 'Feature ID has non-hex characters after 0x.';
+  }
+
+  void _setResult(String s) {
+    setState(() => _lastResultText = s);
+    // v0.1.26+18: auto-append every action's result to the persistent
+    // dump file on /sdcard/Download/ when the user has enabled it.
+    // This is the single hook point — adding it here means every
+    // existing handler (VinRefresh, DtcSnapshot, HalProbe, HalGet,
+    // Probe, Get/Subscribe/Config etc.) is auto-captured without
+    // having to touch each call site.
+    //
+    // Title heuristic: first line of `s`, since action handlers
+    // already put a meaningful label there ("VIN refresh: ...",
+    // "DTC snapshot: ...", "HAL Get ENERGY 0xXXXX → ..."). The full
+    // text becomes the body so multi-line results are preserved.
+    if (_autoDumpEnabled) {
+      final firstLine = s.split('\n').first.trim();
+      final title = firstLine.isEmpty ? '(empty result)' : firstLine;
+      // Fire-and-forget: if the write fails we don't want to block
+      // the UI thread or chain an error dialog onto every probe.
+      // The user notices via the dump-info row not updating, and a
+      // manual "Save dump to file" click would surface the error.
+      // Keep async work off this synchronous setState path.
+      unawaited(_appendToDumpFile(title: title, body: s, refresh: true));
+    }
+  }
+
+  /// v0.1.26+18: write a labeled section into the persistent dump
+  /// file. Called either by [_setResult] (when auto-dump is on) or
+  /// explicitly by the "Save dump to file" button (which writes a
+  /// full snapshot — env + perms + last result + recent logs).
+  Future<void> _appendToDumpFile({
+    required String title,
+    required String body,
+    bool refresh = true,
+  }) async {
+    try {
+      final res = await DiagDumpFile.instance.append(
+        title: title,
+        body: body,
+      );
+      if (refresh && mounted) {
+        setState(() => _dumpInfo = DiagDumpInfo(
+              path: res.path,
+              sizeBytes: res.sizeBytes,
+              isPublicDownloads: res.isPublicDownloads,
+              exists: true,
+            ));
+      }
+    } catch (e) {
+      // Don't loop _setResult here — that would recurse via auto-dump.
+      // Update the result text directly without the append-hook path.
+      if (mounted) {
+        setState(() => _lastResultText =
+            'Dump append failed: $e (auto-dump may be off-target)');
+      }
+    }
+  }
+
+  /// v0.1.26+18: refresh the dump-file info row (path, size, whether
+  /// it landed in public Downloads or a fallback dir). Called on init
+  /// and after every write so the UI doesn't lie about where the file
+  /// actually is.
+  Future<void> _refreshDumpInfo() async {
+    try {
+      final info = await DiagDumpFile.instance.info();
+      if (mounted) setState(() => _dumpInfo = info);
+    } catch (_) {
+      // Info should never throw — but if it does, leave _dumpInfo as-is.
+    }
+  }
+
+  /// v0.1.26+18: explicit "save everything I have right now" — same
+  /// payload as _doExportDiagnostics (env + perms + last result +
+  /// recent logs), but appended to the persistent file instead of (or
+  /// in addition to) the clipboard. The clipboard variant stays as
+  /// _doExportDiagnostics for cases where the user wants to paste
+  /// into Telegram/chat.
+  Future<void> _doSaveDumpToFile() async {
+    if (_dumpBusy) return;
+    setState(() => _dumpBusy = true);
+    try {
+      final body = _buildFullSnapshotBody();
+      final res = await DiagDumpFile.instance.append(
+        title: 'Full diagnostics snapshot',
+        body: body,
+      );
+      if (!mounted) return;
+      setState(() => _dumpInfo = DiagDumpInfo(
+            path: res.path,
+            sizeBytes: res.sizeBytes,
+            isPublicDownloads: res.isPublicDownloads,
+            exists: true,
+          ));
+      // Use _lastResultText directly (NOT _setResult) so we don't
+      // double-append the snapshot via the auto-dump hook.
+      setState(() => _lastResultText =
+          '${res.describeForUi()}\nPath: ${res.path}');
+    } catch (e) {
+      if (mounted) {
+        setState(() => _lastResultText = 'Save dump FAILED: $e');
+      }
+    } finally {
+      if (mounted) setState(() => _dumpBusy = false);
+    }
+  }
+
+  /// v0.1.26+18: delete the persistent dump file. Asks confirmation
+  /// via a simple dialog so an accidental tap doesn't nuke a session
+  /// the user just spent an hour collecting.
+  Future<void> _doClearDumpFile() async {
+    final info = _dumpInfo;
+    if (info == null || !info.exists) {
+      setState(() => _lastResultText =
+          'Dump file does not exist — nothing to clear.');
+      return;
+    }
+    final ok = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('Clear dump file?'),
+            content: Text(
+                'This deletes ${info.path} '
+                '(${(info.sizeBytes / 1024).toStringAsFixed(1)} KB). '
+                'The file will be recreated on the next append.'),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.of(ctx).pop(false),
+                  child: const Text('Cancel')),
+              TextButton(
+                  onPressed: () => Navigator.of(ctx).pop(true),
+                  child: const Text('Delete')),
+            ],
+          ),
+        ) ??
+        false;
+    if (!ok) return;
+    final deleted = await DiagDumpFile.instance.clear();
+    await _refreshDumpInfo();
+    if (mounted) {
+      setState(() => _lastResultText = deleted
+          ? 'Dump file deleted.'
+          : 'Dump file delete returned false — see logcat.');
+    }
+  }
+
+  /// Body builder shared between "Copy diagnostics" (clipboard) and
+  /// "Save dump to file" (persistent). The two used to inline this
+  /// content; v0.1.26+18 factored it out so they stay in sync.
+  String _buildFullSnapshotBody() {
+    final buf = StringBuffer()
       ..writeln('--- environment ---');
     _diag.forEach((k, v) => buf.writeln('  $k: $v'));
     buf
@@ -374,36 +566,7 @@ class _NativeExplorerWideState extends State<NativeExplorerWide> {
         }
       }
     }
-
-    final blob = buf.toString();
-    await Clipboard.setData(ClipboardData(text: blob));
-    _setResult('Diagnostics copied to clipboard (${blob.length} chars). '
-        'Paste anywhere to share — Telegram, notes, email, etc.');
-  }
-
-  // ─── helpers ─────────────────────────────────────────────────────
-
-  bool _looksValid(String s) =>
-      RegExp(r'^0x[0-9A-Fa-f]+$').hasMatch(s);
-
-  /// Human-readable error explaining why the current input isn't valid.
-  /// v0.1.26+15: replaces the opaque "Expected format: 0x<HEX_FEATURE_ID>"
-  /// which left the user with no idea what to type. Now we say what's
-  /// wrong and suggest the next step.
-  String _validationHint(String s) {
-    if (s.isEmpty || s == '0x') {
-      return 'Enter a hex feature ID (e.g. 0x99002B0A). '
-          'See assets/native_api/bz5_feature_catalog.csv for the 10016 known IDs, '
-          'or tap a preset below.';
-    }
-    if (!s.toLowerCase().startsWith('0x')) {
-      return 'Feature ID must start with 0x (e.g. 0x99002B0A).';
-    }
-    return 'Feature ID has non-hex characters after 0x.';
-  }
-
-  void _setResult(String s) {
-    setState(() => _lastResultText = s);
+    return buf.toString();
   }
 
   // ─── build ───────────────────────────────────────────────────────
@@ -463,6 +626,11 @@ class _NativeExplorerWideState extends State<NativeExplorerWide> {
               ),
             ),
           ),
+          const SizedBox(height: 8),
+          // v0.1.26+18: persistent dump file card. Writes to
+          // /sdcard/Download/bz5_companion_diag.md so the user can
+          // grab it via Toyota Проводник → USB flash without ADB.
+          _buildDumpCard(),
           const SizedBox(height: 8),
           // v0.1.27: env diagnostics — no-adb workflow. Each field is the
           // single most informative signal for that layer.
@@ -871,6 +1039,111 @@ class _NativeExplorerWideState extends State<NativeExplorerWide> {
   //
   // Below the buttons we also expose a HAL Direct Get prober — pick a
   // domain, enter a feature ID, see the decoded value.
+  /// v0.1.26+18: Dump File card. Two controls + one info row.
+  ///
+  /// Toggle: when on, every action's result (the one shown in the
+  /// "Last result" panel) is also appended to a single Markdown file
+  /// at /sdcard/Download/bz5_companion_diag.md. Survives app
+  /// reinstalls (same keystore = same signing = no data clear).
+  ///
+  /// Buttons:
+  ///   * Save dump to file — appends a full snapshot (env + perms
+  ///     + last result + recent logs), same payload as Copy
+  ///     diagnostics but persistent instead of clipboard.
+  ///   * Clear — deletes the file (with confirmation dialog).
+  ///
+  /// Info row: where the file actually is (public Downloads vs
+  /// fallback), current size, exists/missing.
+  Widget _buildDumpCard() {
+    final info = _dumpInfo;
+    return Card(
+      color: const Color(0xFFE8F5E9), // pale green so it's visually distinct
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(children: [
+              const Icon(Icons.save_alt, size: 18, color: Colors.green),
+              const SizedBox(width: 6),
+              Text('Dump file (v0.1.26+18)',
+                  style: Theme.of(context).textTheme.titleMedium),
+              const Spacer(),
+              if (_dumpBusy)
+                const SizedBox(
+                  width: 16, height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+            ]),
+            const SizedBox(height: 4),
+            const Text(
+              'Append-only diagnostic log on /sdcard/Download/ so you '
+              'can pick it up via Toyota Проводник → USB flash. One '
+              'file, sections delimited by timestamps.',
+              style: TextStyle(fontSize: 11, color: Colors.black54),
+            ),
+            const SizedBox(height: 8),
+            // Toggle row.
+            Row(children: [
+              Switch(
+                value: _autoDumpEnabled,
+                onChanged: (v) => setState(() => _autoDumpEnabled = v),
+              ),
+              const SizedBox(width: 4),
+              Expanded(
+                child: Text(
+                  _autoDumpEnabled
+                      ? 'Auto-append: ON — every action writes to file'
+                      : 'Auto-append: OFF — file only updates on "Save"',
+                  style: const TextStyle(fontSize: 12),
+                ),
+              ),
+            ]),
+            const SizedBox(height: 4),
+            // Action buttons.
+            Wrap(spacing: 6, runSpacing: 6, children: [
+              ElevatedButton.icon(
+                onPressed: _dumpBusy ? null : _doSaveDumpToFile,
+                icon: const Icon(Icons.download, size: 16),
+                label: const Text('Save dump to file'),
+              ),
+              OutlinedButton.icon(
+                onPressed: _dumpBusy ? null : _refreshDumpInfo,
+                icon: const Icon(Icons.refresh, size: 16),
+                label: const Text('Refresh info'),
+              ),
+              OutlinedButton.icon(
+                onPressed: _dumpBusy ? null : _doClearDumpFile,
+                icon: const Icon(Icons.delete_outline, size: 16),
+                label: const Text('Clear'),
+              ),
+            ]),
+            const SizedBox(height: 8),
+            // Info row.
+            if (info == null)
+              const Text('(probing dump file location...)',
+                  style: TextStyle(fontSize: 11, color: Colors.black54))
+            else ...[
+              _kv('Path', info.path ?? '(unresolved)'),
+              _kv(
+                'Status',
+                info.exists
+                    ? '${(info.sizeBytes / 1024).toStringAsFixed(1)} KB'
+                    : 'not yet created',
+              ),
+              _kv(
+                'Location',
+                info.isPublicDownloads
+                    ? 'public Downloads (visible to Проводник)'
+                    : 'app-private fallback (use share / file mgr)',
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildDeepProbeCard() {
     return Card(
       color: const Color(0xFFFFF8E1), // subtle amber tint so the card stands out
