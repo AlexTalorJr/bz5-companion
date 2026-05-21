@@ -79,6 +79,13 @@ class _PowerHero extends StatelessWidget {
   Widget build(BuildContext context) {
     final kw = svc.chargingPowerKw;
     final hv = svc.hvBusV;
+    // v0.1.26+17: power getter now returns 0 during the first ~7 min
+    // of an AC session because precise SOC quantises in ~0.1% steps —
+    // we wait for at least 3 quanta of growth before reporting a kW
+    // figure to avoid the 4.4 kW phantom we saw at 2.4 kW real input.
+    // Tell the user that explicitly when kW==0 but isCharging==true,
+    // otherwise the big "—" looks broken.
+    final isCalibrating = kw == 0 && svc.isCharging;
     return Card(
       color: Colors.amber.shade900.withValues(alpha: 0.12),
       child: Padding(
@@ -123,7 +130,10 @@ class _PowerHero extends StatelessWidget {
             ),
             const SizedBox(height: 4),
             Text(
-              'Power = ΔSOC × pack kWh / Δt (~80 sec refresh at AC 3 kW)',
+              isCalibrating
+                  ? 'Calculating… need ≥0.3% SOC growth to overcome quantization noise '
+                      '(~7 min at 2 kW AC, ~3 min at 7 kW AC, ~20 sec at 50 kW DC)'
+                  : 'Power = ΔSOC × pack kWh / Δt, integrated over up to 10 min for accuracy',
               style: TextStyle(fontSize: 10, color: Colors.grey.shade600),
             ),
           ],

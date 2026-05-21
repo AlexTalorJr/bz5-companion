@@ -612,6 +612,22 @@ class SpeedHistogramCardState extends State<SpeedHistogramCard> {
     _samples = _loadSamples();
   }
 
+  @override
+  void didUpdateWidget(covariant SpeedHistogramCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // v0.1.26+16: when the parent (history_wide._SelectedTripDetail)
+    // switches between trips, the widget gets a new `tripId` but the
+    // State instance is reused. Without this hook the stale `_samples`
+    // Future keeps resolving to the previously selected trip's data —
+    // so the Speed Distribution chart kept showing samples from trip
+    // 18:22 (29 min) even after the user selected the 1m 38s active
+    // trip. Reload only when the actual id changed to avoid blowing
+    // away an in-flight load on hot-reload or layout rebuilds.
+    if (oldWidget.tripId != widget.tripId) {
+      _samples = _loadSamples();
+    }
+  }
+
   Future<List<Sample>> _loadSamples() async {
     final db = Provider.of<ConnectionService>(context, listen: false).db;
     return db.getSamplesForTrip(widget.tripId, ecuTx: '740', did: '0008');
@@ -786,7 +802,13 @@ class SpeedHistogramCardState extends State<SpeedHistogramCard> {
                             BarChartRodData(
                               toY: pct,
                               color: barColor,
-                              width: 14,
+                              // v0.1.26+16: thicker bars (was 14). On the
+                              // BZ5 wide head-unit (~1400px chart area)
+                              // 14px looked spindly and dwarfed by white
+                              // space between bins; 26px reads as a proper
+                              // bar chart. Still small enough that 14 bins
+                              // (0-130 km/h) fit comfortably.
+                              width: 26,
                               borderRadius: const BorderRadius.vertical(
                                   top: Radius.circular(3)),
                             ),
