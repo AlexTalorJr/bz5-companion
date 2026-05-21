@@ -106,6 +106,11 @@ class BydNativePlugin : FlutterPlugin, ActivityAware, MethodChannel.MethodCallHa
         activeSubs.clear()
         try { propertyClient?.close() } catch (_: Throwable) {}
         propertyClient = null
+        // v0.1.27+1: HAL probe maintains its own singleton cache for
+        // BYDAutoXxxDevice instances; clear it so a hot-restart sees
+        // fresh state and we don't keep stale instances if the
+        // framework's internal state changed.
+        try { BydHalProbe.clearCache() } catch (_: Throwable) {}
 
         methodChannel.setMethodCallHandler(null)
         eventChannel.setStreamHandler(null)
@@ -156,6 +161,13 @@ class BydNativePlugin : FlutterPlugin, ActivityAware, MethodChannel.MethodCallHa
                 "clearLogs"         -> { BydLogger.clear(); result.success(true) }
                 "openAppSettings"   -> result.success(openAppSettings())
                 "getDiagnostics"    -> result.success(buildDiagnostics())
+                // v0.1.27+1: deep probing endpoints. None of these
+                // require ICarPropertyService to be reachable — they
+                // are independent diagnostic paths the user runs from
+                // Native Explorer to find a working route.
+                "probeConnectionPaths" -> handleProbeConnectionPaths(result)
+                "halProbeAll"          -> handleHalProbeAll(result)
+                "halGet"               -> handleHalGet(call, result)
                 else                -> result.notImplemented()
             }
         } catch (t: Throwable) {
@@ -297,6 +309,52 @@ class BydNativePlugin : FlutterPlugin, ActivityAware, MethodChannel.MethodCallHa
                 result.success(mapOf("code" to status.code, "description" to status.description))
             } catch (t: Throwable) {
                 result.error("PROPERTY_SET_ERROR", t.message, t.stackTraceToString())
+            }
+        }.start()
+    }
+
+    // ─── v0.1.27+1: deep diagnostic probes ────────────────────────────────
+    //
+    // These three handlers exist to find a working data path on
+    // firmware variants where the canonical ICarPropertyService
+    // bootstrap fails silently. They run independently of the property
+    // client, so they keep working even when connect() throws.
+
+    private fun handleProbeConnectionPaths(result: MethodChannel.Result) {
+        Thread {
+            try {
+                val report = BydConnectionProbe.probeAll(appContext)
+                // Also stash a human-readable rendering so the UI can
+                // copy-paste it without re-rendering on the Dart side.
+                val text = BydConnectionProbe.renderReport(report)
+                result.success(report + mapOf("rendered" to text))
+            } catch (t: Throwable) {
+                result.error("PROBE_ERROR", t.message, t.stackTraceToString())
+            }
+        }.start()
+    }
+
+    private fun handleHalProbeAll(result: MethodChannel.Result) {
+        Thread {
+            try {
+                result.success(BydHalProbe.probeAll(appContext))
+            } catch (t: Throwable) {
+                result.error("HAL_PROBE_ERROR", t.message, t.stackTraceToString())
+            }
+        }.start()
+    }
+
+    private fun handleHalGet(call: MethodCall, result: MethodChannel.Result) {
+        val domain = call.argument<String>("domain")
+            ?: return result.error("BAD_ARGS", "missing 'domain'", null)
+        val featureIds = call.argument<List<Number>>("featureIds")
+            ?: return result.error("BAD_ARGS", "missing 'featureIds'", null)
+        val ints = IntArray(featureIds.size) { featureIds[it].toInt() }
+        Thread {
+            try {
+                result.success(BydHalProbe.halGet(appContext, domain, ints))
+            } catch (t: Throwable) {
+                result.error("HAL_GET_ERROR", t.message, t.stackTraceToString())
             }
         }.start()
     }

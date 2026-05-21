@@ -4,6 +4,7 @@ import android.content.Context
 import android.database.Cursor
 import android.net.Uri
 import android.os.Binder
+import android.os.Bundle
 import android.os.IBinder
 import android.os.Parcel
 import android.os.Parcelable
@@ -82,35 +83,113 @@ class BydCarPropertyClient(private val context: Context) : Closeable {
     private val callbacks = ConcurrentHashMap<SubscriptionToken, PropertyCallbackStub>()
 
     // ─── bootstrap ──────────────────────────────────────────────────────
+    //
+    // v0.1.27+1: field test on carserver 2.1.0-alpha10 showed that the
+    // canonical `query(content://Authority, [recon-FQCN])` returns null,
+    // probably because BinderProvider silently swallowed an internal
+    // failure (Class.forName on a renamed FQCN, race with carserver
+    // init, etc.). To recover, we now try a small matrix instead of one
+    // fixed call — and log every attempt's outcome so the user's
+    // diagnostics dump tells us which path actually works.
 
     @Throws(Exception::class)
     fun connect() {
         if (serviceBinder?.isBinderAlive == true) return
-        val uri = Uri.parse("content://$AUTHORITY")
-        val cursor: Cursor = context.contentResolver.query(
-            uri,
-            arrayOf(IFACE_TOKEN),   // projection[0] = AIDL FQCN — the service selector
-            null, null, null
-        ) ?: throw IllegalStateException(
-            "ContentResolver.query returned null for $uri. " +
-            "Either carserver is missing or the projection FQCN is wrong."
-        )
-        cursor.use { c ->
-            val extras = c.extras
-                ?: throw IllegalStateException("BinderCursor has no extras Bundle")
-            val parcelable = extras.getParcelable<Parcelable>(BUNDLE_KEY_BINDER)
-                ?: throw IllegalStateException(
-                    "No '$BUNDLE_KEY_BINDER' Parcelable in cursor extras. " +
-                    "Keys present: ${extras.keySet()}"
-                )
-            val binder = extractBinder(parcelable)
-                ?: throw IllegalStateException(
-                    "Could not unwrap IBinder from ${parcelable.javaClass.name}. " +
-                    "Expected a class with getBinder():IBinder method."
-                )
-            serviceBinder = binder
-            BydLogger.i(TAG, "ICarPropertyService connected via $uri")
+
+        val attempts = mutableListOf<String>()
+
+        // Phase 1: query() — primary recon-verified plus a few FQCN fallbacks
+        for (uri in URI_FALLBACKS) {
+            for (fqcn in IFACE_FALLBACKS) {
+                val b = tryQuery(uri, fqcn, attempts) ?: continue
+                serviceBinder = b
+                BydLogger.i(TAG, "ICarPropertyService connected via query() uri=$uri fqcn=$fqcn")
+                return
+            }
         }
+
+        // Phase 2: call() fallback — some BinderProvider variants expose
+        // the binder via ContentProvider.call() instead of (or in
+        // addition to) query().
+        val callUri = Uri.parse("content://$AUTHORITY")
+        for (method in CALL_METHODS) {
+            for (fqcn in IFACE_FALLBACKS) {
+                val b = tryCall(callUri, method, fqcn, attempts) ?: continue
+                serviceBinder = b
+                BydLogger.i(TAG, "ICarPropertyService connected via call(method=$method arg=$fqcn)")
+                return
+            }
+        }
+
+        // All attempts failed — surface a single consolidated message.
+        BydLogger.w(TAG, "ICarPropertyService bootstrap exhausted ${attempts.size} attempts:\n" +
+            attempts.joinToString("\n  - ", prefix = "  - "))
+        throw IllegalStateException(
+            "ICarPropertyService unreachable after ${attempts.size} bootstrap attempts. " +
+            "Run 'Probe connection paths' in Native Explorer for the full report."
+        )
+    }
+
+    private fun tryQuery(uri: Uri, fqcn: String, failures: MutableList<String>): IBinder? {
+        val cursor: Cursor? = try {
+            context.contentResolver.query(uri, arrayOf(fqcn), null, null, null)
+        } catch (t: Throwable) {
+            failures += "query($uri, [$fqcn]) threw ${t.javaClass.simpleName}: ${t.message?.take(160)}"
+            return null
+        }
+        if (cursor == null) {
+            failures += "query($uri, [$fqcn]) cursor=null"
+            return null
+        }
+        return cursor.use { c ->
+            val extras = c.extras
+            if (extras == null) {
+                failures += "query($uri, [$fqcn]) cursor=ok extras=null"
+                return@use null
+            }
+            // Try the canonical key first, then the extras' own keys as
+            // a last resort — some firmwares may use a different label.
+            val candidateKeys = (listOf(BUNDLE_KEY_BINDER) + extras.keySet()).distinct()
+            for (k in candidateKeys) {
+                val p = try { extras.getParcelable<Parcelable>(k) } catch (_: Throwable) { null }
+                    ?: continue
+                val b = extractBinder(p) ?: continue
+                if (b.isBinderAlive) {
+                    BydLogger.i(TAG, "query($uri, [$fqcn]) → binder via key='$k'")
+                    return@use b
+                }
+            }
+            failures += "query($uri, [$fqcn]) cursor=ok no binder under any key=${extras.keySet()}"
+            null
+        }
+    }
+
+    private fun tryCall(uri: Uri, method: String, arg: String, failures: MutableList<String>): IBinder? {
+        val bundle: Bundle? = try {
+            context.contentResolver.call(uri, method, arg, null)
+        } catch (t: Throwable) {
+            failures += "call(method=$method arg=$arg) threw ${t.javaClass.simpleName}: ${t.message?.take(160)}"
+            return null
+        }
+        if (bundle == null) {
+            failures += "call(method=$method arg=$arg) bundle=null"
+            return null
+        }
+        val candidateKeys = (listOf(BUNDLE_KEY_BINDER) + bundle.keySet()).distinct()
+        for (k in candidateKeys) {
+            val v: Any? = try { bundle.get(k) } catch (_: Throwable) { null } ?: continue
+            val b: IBinder? = when (v) {
+                is IBinder    -> v
+                is Parcelable -> extractBinder(v)
+                else          -> null
+            }
+            if (b != null && b.isBinderAlive) {
+                BydLogger.i(TAG, "call(method=$method arg=$arg) → binder via key='$k'")
+                return b
+            }
+        }
+        failures += "call(method=$method arg=$arg) bundle ok but no binder, keys=${bundle.keySet()}"
+        return null
     }
 
     override fun close() {
@@ -514,5 +593,34 @@ class BydCarPropertyClient(private val context: Context) : Closeable {
 
         // Listener side. Verified: oneway, TX 1.
         private const val TX_ON_EVENT = 1
+
+        // v0.1.27+1: bootstrap fallbacks. Each connect() walks this
+        // matrix until one combination yields a live IBinder.
+        //
+        // The recon-verified pair (URI="", FQCN=com.byd.car.property…)
+        // returned null on carserver 2.1.0-alpha10. The fallbacks are
+        // educated guesses based on common BinderProvider conventions
+        // and naming patterns seen in adjacent BYD modules. Cheap to
+        // try, expensive to be missing.
+        private val URI_FALLBACKS = listOf(
+            Uri.parse("content://$AUTHORITY"),
+            Uri.parse("content://$AUTHORITY/service"),
+            Uri.parse("content://$AUTHORITY/binder"),
+            Uri.parse("content://$AUTHORITY/property"),
+        )
+
+        private val IFACE_FALLBACKS = listOf(
+            "com.byd.car.property.ICarPropertyService",       // recon-verified
+            "com.byd.car.cd.property.ICarPropertyService",
+            "com.byd.cd.property.ICarPropertyService",
+            "com.byd.car.ICarPropertyService",
+            "com.byd.datasource.feature.ICarPropertyService",
+            "com.byd.car.server.property.ICarPropertyService",
+            "com.byd.car.server.ICarPropertyService",
+        )
+
+        private val CALL_METHODS = listOf(
+            "getService", "getBinder", "binder", "service", "ICarPropertyService"
+        )
     }
 }

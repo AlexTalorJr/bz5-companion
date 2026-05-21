@@ -45,6 +45,18 @@ class _NativeExplorerWideState extends State<NativeExplorerWide> {
   List<Map<String, Object?>> _dtcRows = const [];
   Map<String, Object?> _diag = const {};
 
+  // v0.1.27+1: deep probe results — only populated after the user
+  // explicitly clicks the buttons. Empty until first run so the card
+  // shows a meaningful "not yet probed" CTA.
+  Map<String, Object?> _connProbeReport = const {};
+  String? _connProbeRendered;
+  List<Map<String, Object?>> _halProbeRows = const [];
+  bool _probeBusy = false;
+  // HAL Direct Get inputs — domain dropdown + feature id input field.
+  String _halDomain = 'ENERGY';
+  final _halFeatureCtrl = TextEditingController(text: '0x99002B0A');
+  String? _halGetResultText;
+
   // Active subscriptions: name → recent N values (cyclic buffer).
   final Map<String, List<_Sample>> _samples = {};
   StreamSubscription<NativeEvent>? _eventSub;
@@ -75,6 +87,7 @@ class _NativeExplorerWideState extends State<NativeExplorerWide> {
       _ch.unsubscribe(_samples.keys.toList());
     }
     _propController.dispose();
+    _halFeatureCtrl.dispose();
     _logScrollCtrl.dispose();
     super.dispose();
   }
@@ -196,6 +209,86 @@ class _NativeExplorerWideState extends State<NativeExplorerWide> {
     await widget.detector.detect(force: true);
     await _refreshDiagnostics();
     _setResult('VIN refresh: ${widget.detector.vin ?? "(none)"}');
+  }
+
+  // ─── v0.1.27+1: deep probe actions ─────────────────────────────────
+  //
+  // These three actions exist to find a working data path on firmwares
+  // where the canonical ContentResolver.query bootstrap returns null
+  // (as observed on carserver 2.1.0-alpha10). They run independently of
+  // the property client, so they keep working even when the normal
+  // Get/Subscribe buttons fail.
+
+  Future<void> _doProbeConnectionPaths() async {
+    setState(() => _probeBusy = true);
+    try {
+      final r = await _ch.probeConnectionPaths();
+      final rendered = r['rendered']?.toString();
+      setState(() {
+        _connProbeReport = r;
+        _connProbeRendered = rendered;
+      });
+      if (rendered != null) {
+        await Clipboard.setData(ClipboardData(text: rendered));
+      }
+      _setResult('Connection probe complete (${r['attemptCount']} attempts). '
+          'Report copied to clipboard.');
+    } on PlatformException catch (e) {
+      _setResult('Connection probe FAILED: ${e.code} ${e.message}');
+    } finally {
+      if (mounted) setState(() => _probeBusy = false);
+    }
+  }
+
+  Future<void> _doHalProbeAll() async {
+    setState(() => _probeBusy = true);
+    try {
+      final rows = await _ch.halProbeAll();
+      setState(() => _halProbeRows = rows);
+      final ok = rows.where((r) => r['getInstanceOk'] == true).length;
+      _setResult('HAL probe complete: $ok / ${rows.length} domains reached '
+          'getInstance(). See HAL Probe card for details.');
+    } on PlatformException catch (e) {
+      _setResult('HAL probe FAILED: ${e.code} ${e.message}');
+    } finally {
+      if (mounted) setState(() => _probeBusy = false);
+    }
+  }
+
+  Future<void> _doHalGet() async {
+    final raw = _halFeatureCtrl.text.trim();
+    if (!_looksValid(raw)) {
+      _setResult('HAL Get: ${_validationHint(raw)}');
+      return;
+    }
+    final id = int.tryParse(raw.substring(2), radix: 16);
+    if (id == null) {
+      _setResult('HAL Get: could not parse "$raw" as hex int');
+      return;
+    }
+    setState(() => _probeBusy = true);
+    try {
+      final r = await _ch.halGet(_halDomain, [id]);
+      final text = 'HAL Get $_halDomain $raw → $r';
+      setState(() => _halGetResultText = text);
+      _setResult(text);
+    } on PlatformException catch (e) {
+      final text = 'HAL Get $_halDomain $raw FAILED: ${e.code} ${e.message}';
+      setState(() => _halGetResultText = text);
+      _setResult(text);
+    } finally {
+      if (mounted) setState(() => _probeBusy = false);
+    }
+  }
+
+  Future<void> _doCopyProbeReport() async {
+    final t = _connProbeRendered;
+    if (t == null) {
+      _setResult('No probe report yet — tap "Probe connection paths" first.');
+      return;
+    }
+    await Clipboard.setData(ClipboardData(text: t));
+    _setResult('Probe report copied to clipboard (${t.length} chars).');
   }
 
   Future<void> _doOpenAppSettings() async {
@@ -411,6 +504,12 @@ class _NativeExplorerWideState extends State<NativeExplorerWide> {
               ),
             ),
           ),
+          const SizedBox(height: 8),
+          // v0.1.27+1: deep probe card. Two buttons that run extensive
+          // diagnostics — used when the canonical Get/Subscribe path
+          // fails (as it does on carserver 2.1.0-alpha10 due to
+          // ContentResolver.query returning null).
+          _buildDeepProbeCard(),
           const SizedBox(height: 8),
           Card(
             child: Padding(
@@ -752,6 +851,212 @@ class _NativeExplorerWideState extends State<NativeExplorerWide> {
           ),
         ]),
       );
+
+  // ─── v0.1.27+1: Deep Probe card ────────────────────────────────────
+  //
+  // Two parallel diagnostic paths the user can run to find a working
+  // data channel when the canonical ICarPropertyService bootstrap
+  // fails:
+  //
+  //   * "Probe connection paths" runs a matrix of URI × FQCN × call()
+  //     combinations through ContentResolver, plus a
+  //     ServiceManager.getService() sweep. Output is a clipboard-
+  //     friendly text dump.
+  //
+  //   * "HAL probe all domains" walks every BYDAutoXxxDevice we know
+  //     of, reports class loadability, getInstance reachability,
+  //     method inventory, and permission state. For domains that come
+  //     back green we can use the direct HAL path (BydHalProbe.halGet)
+  //     completely bypassing CarServiceProvider.
+  //
+  // Below the buttons we also expose a HAL Direct Get prober — pick a
+  // domain, enter a feature ID, see the decoded value.
+  Widget _buildDeepProbeCard() {
+    return Card(
+      color: const Color(0xFFFFF8E1), // subtle amber tint so the card stands out
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(children: [
+              const Icon(Icons.troubleshoot, size: 18, color: Colors.deepOrange),
+              const SizedBox(width: 6),
+              Text('Deep Probe (v0.1.27+1)',
+                  style: Theme.of(context).textTheme.titleMedium),
+              const Spacer(),
+              if (_probeBusy)
+                const SizedBox(
+                  width: 16, height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+            ]),
+            const SizedBox(height: 4),
+            const Text(
+              'Diagnostics for "ContentResolver returned null" / HAL access. '
+              'Run both probes once after granting permissions; copy the '
+              'reports back to chat.',
+              style: TextStyle(fontSize: 11, color: Colors.black54),
+            ),
+            const SizedBox(height: 8),
+            Wrap(spacing: 6, runSpacing: 6, children: [
+              ElevatedButton.icon(
+                onPressed: _probeBusy ? null : _doProbeConnectionPaths,
+                icon: const Icon(Icons.network_check, size: 16),
+                label: const Text('Probe connection paths'),
+              ),
+              ElevatedButton.icon(
+                onPressed: _probeBusy ? null : _doHalProbeAll,
+                icon: const Icon(Icons.memory, size: 16),
+                label: const Text('HAL probe all domains'),
+              ),
+              if (_connProbeRendered != null)
+                OutlinedButton.icon(
+                  onPressed: _doCopyProbeReport,
+                  icon: const Icon(Icons.copy, size: 16),
+                  label: const Text('Copy report'),
+                ),
+            ]),
+            if (_connProbeReport.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              _kv('connection attempts',
+                  '${_connProbeReport['attemptCount'] ?? "?"}'),
+              if (_connProbeRendered != null)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Text(
+                    _connProbeRendered!.length > 600
+                        ? '${_connProbeRendered!.substring(0, 600)}…\n\n'
+                          '(${_connProbeRendered!.length} chars total — full '
+                          'report is in clipboard)'
+                        : _connProbeRendered!,
+                    style: const TextStyle(
+                        fontFamily: 'monospace', fontSize: 10),
+                  ),
+                ),
+            ],
+            if (_halProbeRows.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              const Text('HAL probe results:',
+                  style: TextStyle(fontWeight: FontWeight.w500, fontSize: 12)),
+              const SizedBox(height: 4),
+              ..._halProbeRows.map(_buildHalRow),
+              const SizedBox(height: 8),
+              const Divider(height: 1),
+              const SizedBox(height: 8),
+              const Text('HAL Direct Get (bypasses CarServiceProvider):',
+                  style: TextStyle(fontWeight: FontWeight.w500, fontSize: 12)),
+              const SizedBox(height: 4),
+              Row(children: [
+                DropdownButton<String>(
+                  value: _halDomain,
+                  isDense: true,
+                  items: const [
+                    DropdownMenuItem(value: 'ENERGY',     child: Text('ENERGY')),
+                    DropdownMenuItem(value: 'CHARGING',   child: Text('CHARGING')),
+                    DropdownMenuItem(value: 'SPEED',      child: Text('SPEED')),
+                    DropdownMenuItem(value: 'GEARBOX',    child: Text('GEARBOX')),
+                    DropdownMenuItem(value: 'STATISTIC',  child: Text('STATISTIC')),
+                    DropdownMenuItem(value: 'TYRE',       child: Text('TYRE')),
+                    DropdownMenuItem(value: 'INSTRUMENT', child: Text('INSTRUMENT')),
+                    DropdownMenuItem(value: 'POWER',      child: Text('POWER')),
+                    DropdownMenuItem(value: 'BODYWORK',   child: Text('BODYWORK')),
+                    DropdownMenuItem(value: 'VEHICLE_DATA', child: Text('VEHICLE_DATA')),
+                  ],
+                  onChanged: (v) {
+                    if (v != null) setState(() => _halDomain = v);
+                  },
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: TextField(
+                    controller: _halFeatureCtrl,
+                    decoration: const InputDecoration(
+                      isDense: true,
+                      labelText: 'Feature ID (0x…)',
+                    ),
+                    style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                ElevatedButton(
+                  onPressed: _probeBusy ? null : _doHalGet,
+                  child: const Text('HAL Get'),
+                ),
+              ]),
+              if (_halGetResultText != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Text(
+                    _halGetResultText!,
+                    style: const TextStyle(
+                        fontFamily: 'monospace', fontSize: 11),
+                  ),
+                ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Renders a single HAL-domain probe row: green check if getInstance
+  /// reached, red cross + truncated error if not. Compact, scannable.
+  Widget _buildHalRow(Map<String, Object?> row) {
+    final name = row['name']?.toString() ?? '?';
+    final classLoaded = row['classLoaded'] == true;
+    final getOk = row['getInstanceOk'] == true;
+    final hasGet = row['hasGenericGet'] == true;
+    final commonG = row['commonGranted'] == true;
+    final getG = row['getGranted'] == true;
+    final err = row['getInstanceErr']?.toString();
+
+    final IconData icon;
+    final Color color;
+    if (getOk) {
+      icon = Icons.check_circle; color = Colors.green;
+    } else if (classLoaded) {
+      icon = Icons.error_outline; color = Colors.orange;
+    } else {
+      icon = Icons.cancel; color = Colors.red;
+    }
+
+    final flags = <String>[];
+    flags.add(commonG ? 'C+' : 'C−');
+    flags.add(getG ? 'G+' : 'G−');
+    if (hasGet) flags.add('.get');
+    final flagsStr = flags.join(' ');
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 1),
+      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Icon(icon, size: 14, color: color),
+        const SizedBox(width: 6),
+        SizedBox(
+          width: 90,
+          child: Text(name,
+              style: const TextStyle(
+                  fontFamily: 'monospace', fontSize: 11)),
+        ),
+        SizedBox(
+          width: 70,
+          child: Text(flagsStr,
+              style: const TextStyle(fontSize: 11, color: Colors.black54)),
+        ),
+        Expanded(
+          child: Text(
+            getOk
+                ? 'getInstance OK'
+                : (err != null
+                    ? (err.length > 110 ? '${err.substring(0, 110)}…' : err)
+                    : (classLoaded ? 'class loaded only' : 'class missing')),
+            style: const TextStyle(fontSize: 11),
+            softWrap: true,
+          ),
+        ),
+      ]),
+    );
+  }
 }
 
 class _Sample {

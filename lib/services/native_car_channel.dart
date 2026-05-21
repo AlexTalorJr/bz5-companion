@@ -230,6 +230,56 @@ class NativeCarChannel {
     return r.map((k, v) => MapEntry(k.toString(), v));
   }
 
+  /// v0.1.27+1: deep matrix probe of every way we know to reach
+  /// ICarPropertyService — different URIs, different AIDL FQCNs,
+  /// `ContentProvider.call()` fallback, and `ServiceManager.getService()`.
+  /// Used by Native Explorer's "Probe connection paths" button when the
+  /// canonical bootstrap returns null (as observed on carserver
+  /// 2.1.0-alpha10).
+  ///
+  /// Returns a structured report. The key field `rendered` is a
+  /// pre-formatted human-readable dump suitable for clipboard.
+  Future<Map<String, Object?>> probeConnectionPaths() async {
+    final r = await _method
+        .invokeMethod<Map<Object?, Object?>>('probeConnectionPaths');
+    if (r == null) return const {};
+    return r.map((k, v) => MapEntry(k.toString(), v));
+  }
+
+  /// v0.1.27+1: probe every HAL device class we know about. Independent
+  /// of ICarPropertyService — talks to `BYDAutoXxxDevice` factories
+  /// through reflection, the same path BydVinDetector uses.
+  ///
+  /// Returns one map per domain with: name, ordinal, classLoaded,
+  /// getInstanceOk, getInstanceErr, hasGenericGet, methodsPublic (up to
+  /// 40), commonGranted, getGranted.
+  Future<List<Map<String, Object?>>> halProbeAll() async {
+    final r = await _method.invokeMethod<List<Object?>>('halProbeAll');
+    if (r == null) return const [];
+    return r
+        .whereType<Map<Object?, Object?>>()
+        .map((m) => m.map((k, v) => MapEntry(k.toString(), v)))
+        .toList();
+  }
+
+  /// v0.1.27+1: call `BYDAutoXxxDevice.get(int[], Class)` directly via
+  /// reflection. Bypasses ICarPropertyService entirely.
+  ///
+  /// [domain] is one of the names in `BydHalProbe.DOMAINS` (e.g.
+  /// `'ENERGY'`, `'SPEED'`, `'CHARGING'`). [featureIds] are the integer
+  /// IDs from the proto catalog (or hex literals from the recon doc).
+  ///
+  /// Returns a map describing success or failure. On success: `ok=true`,
+  /// `typeHint`, `value`. On failure: `ok=false`, `error`, `errorClass`.
+  Future<Map<String, Object?>> halGet(String domain, List<int> featureIds) async {
+    final r = await _method.invokeMethod<Map<Object?, Object?>>(
+      'halGet',
+      {'domain': domain, 'featureIds': featureIds},
+    );
+    if (r == null) return const {'ok': false, 'error': 'no_response'};
+    return r.map((k, v) => MapEntry(k.toString(), v));
+  }
+
   /// Broadcast stream of all subscription events. Multiple listeners
   /// share one underlying EventChannel handle.
   Stream<NativeEvent> get events {

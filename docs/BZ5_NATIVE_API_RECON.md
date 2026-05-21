@@ -413,6 +413,74 @@ Catalog в `bz5_feature_catalog.csv` — стартовый список для 
 - `bz5_findings_v1_0_0.zip` — AIDL сигнатуры всех 93 сервисов  
 - `carserver_assets/` — оригинальные `config_*.bin` + parsed `.txt` (proto raw decode)
 
+## 13. Field test 2026-05-21 (carserver 2.1.0-alpha10) и стратегия параллельных каналов
+
+После накатывания v0.1.26+14..+17 на реальный head unit (TOYOTA AUTO/TOYOTA SPACE, Android 12) выяснились конкретные ограничения этой firmware:
+
+### 13.1 Two-layer permission gating (confirmed)
+
+`BYDAutoBodyworkDevice` имеет **два независимых** permission check:
+
+- `getInstance(Context)` — line 628 — требует `BYDAUTO_BODYWORK_COMMON`
+- `getDataFlag()` — line 2201, вызывается из любого VIN getter — требует `BYDAUTO_BODYWORK_GET`
+
+`_COMMON` гранчится после `requestRuntimePermissions()` (declared as dangerous), но `_GET` на этом образе firmware — **signature-protected**, runtime grant не помогает. Без system signature reflection-доступ к VIN перекрыт. Это same pattern, который вероятно действует и на других доменах.
+
+Granted после `requestRuntimePermissions`: BODYWORK_COMMON, ENERGY_COMMON, SPEED_COMMON, GEARBOX_COMMON, INSTRUMENT_COMMON, TYRE_COMMON, STATISTIC_COMMON, CHARGING_COMMON, TIME_COMMON. Denied: POWER_COMMON (sic), все `_GET`, VEHICLE_DATA_COMMON, BIGDATA_COMMON, и остальные редкие `_COMMON`.
+
+### 13.2 ContentResolver.query returned null (open problem)
+
+Канонический bootstrap для `ICarPropertyService`:
+
+```kotlin
+contentResolver.query(content://com.byd.car.server.provider.CarServiceProvider,
+                      arrayOf("com.byd.car.property.ICarPropertyService"),
+                      null, null, null)
+```
+
+на alpha10 **возвращает null**, при этом:
+
+- `pm.resolveContentProvider(authority)` → non-null (provider visible)
+- `com.byd.car.server.PROVIDER` permission — granted
+- `<queries>` блок в манифесте присутствует
+- `Class.forName("...BYDAutoBodyworkDevice")` succeeds (framework on classpath)
+- Никакого SecurityException не бросается — просто **молчаливый null**
+
+Симптом match'ит паттерн "BinderProvider.query() catch-all returned null on internal failure" (Class.forName на нашем FQCN внутри carserver-процесса, race с lazy registration, или Spi.getService возвращает null до permission check).
+
+### 13.3 Strategy: parallel diagnostic + parallel data channels
+
+В v0.1.27+1 добавлены три новых диагностических endpoint'а в плагине, доступных через Native Explorer → секция "Deep Probe":
+
+1. **`probeConnectionPaths` (BydConnectionProbe.probeAll)** — матрица из 4 URI × 8 FQCN candidates × `query()` + 5 `call()` method names + `ServiceManager.getService()` через рефлексию. Возвращает структурированный отчёт `{ attempts: [...] }` с outcome каждой попытки (cursor null/empty, extras keys, binder extraction status) плюс предготовленный clipboard-friendly text rendering.
+
+2. **`halProbeAll` (BydHalProbe.probeAll)** — для каждого из 10 BYDAuto*Device доменов: пробует Class.forName, getInstance(Context), inventory public methods (до 40), наличие generic `.get(int[], Class)`, состояние `_COMMON`/`_GET` permission. Это **independent path** — не требует ContentProvider вообще, использует тот же reflection, которым ходит BydVinDetector (и который, как мы знаем, доходит до permission check, т.е. инфраструктура HAL device factories на этой firmware работает).
+
+3. **`halGet` (BydHalProbe.halGet)** — прямой вызов `dev.get(int[], BYDAutoEventValue.class)` для указанного домена и feature ID. Decode через тот же `BydReflection.decodeEventValue` что и event listener'ы. Bypasses CarServiceProvider entirely.
+
+В Native Explorer для всех трёх — кнопки + dropdown domain + feature ID input. Результаты копируются в clipboard для return в чат.
+
+### 13.4 What to do next on the car
+
+Workflow для следующего field test:
+
+1. Установить v0.1.27+1.
+2. Запустить "Request perms" (Native Explorer → Status), убедиться что 10 `_COMMON` гранчены.
+3. Нажать **"Probe connection paths"**, отправить отчёт в чат. Это покажет: a) есть ли FQCN variant, который проходит query; b) reagiruет ли BinderProvider на `call()`; c) видны ли car-related services в `ServiceManager.listServices()`.
+4. Нажать **"HAL probe all domains"**. Для каждого домена с `getInstance OK` и `hasGenericGet=true` — можем читать данные напрямую.
+5. Для green-доменов попробовать "HAL Direct Get" с feature ID из presets — отправить значение в чат, оценить magnitude.
+
+После этих шагов мы будем знать **какой именно путь работает** и можем писать `NativeCarDataSource` поверх него (HAL direct, через `dev.get`, или ICarPropertyService — что окажется доступным).
+
+### 13.5 Fallback plan if both paths blocked
+
+Если ни ContentProvider ни HAL direct не дают пройти permission checks:
+
+- Получить engineering build firmware у дилера / на форумах BZ5 (signature-protected перестанет применяться к нашему unsigned APK)
+- Изучить, не предоставляет ли третий вектор — `diag_socket_channel` (Unix abstract socket, SELinux-зависим, текущая попытка падала с EACCES) — чего-то полезного. Это можно повторно проверить через "DTC snapshot" в Native Explorer после `_COMMON` grants — некоторые SELinux политики смягчаются после permission grants даже без system signature.
+- В крайнем случае — остаёмся на BLE+ELM как primary, native API как opportunistic add-on (VIN auto-detect, DTC scan).
+
+
 ---
 
 **Конец recon**. Дальше — имплементация в bz5-companion.
