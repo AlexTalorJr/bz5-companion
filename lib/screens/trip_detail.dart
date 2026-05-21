@@ -71,19 +71,19 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
     return ListView(
             padding: const EdgeInsets.all(12),
             children: [
-              _TripSummaryCard(trip: trip, svc: svc),
+              TripSummaryCard(trip: trip, svc: svc),
               const SizedBox(height: 12),
-              _DerivedMetricsCard(trip: trip),
+              DerivedMetricsCard(trip: trip),
               const SizedBox(height: 12),
               // v0.1.25: Tesla-style trip stats panel — speed histogram,
               // odometer range, moving/idle breakdown. Visualises data
               // we already collect, sits between metrics and charts so
               // a user scrolling sees overview → distribution → curves.
-              _OdometerRangeCard(trip: trip),
+              OdometerRangeCard(trip: trip),
               const SizedBox(height: 12),
-              _MovingIdleDonutCard(trip: trip),
+              MovingIdleDonutCard(trip: trip),
               const SizedBox(height: 12),
-              _SpeedHistogramCard(tripId: trip.id),
+              SpeedHistogramCard(tripId: trip.id),
               const SizedBox(height: 12),
               // v0.1.24: SOC chart switched from integer 0x0005 (which
               // steps in 1% chunks and looks jagged on short trips) to
@@ -171,16 +171,16 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
       padding: const EdgeInsets.all(12),
       children: [
         pair(
-          _TripSummaryCard(trip: trip, svc: svc),
-          _DerivedMetricsCard(trip: trip),
+          TripSummaryCard(trip: trip, svc: svc),
+          DerivedMetricsCard(trip: trip),
         ),
         const SizedBox(height: 12),
         pair(
-          _OdometerRangeCard(trip: trip),
-          _MovingIdleDonutCard(trip: trip),
+          OdometerRangeCard(trip: trip),
+          MovingIdleDonutCard(trip: trip),
         ),
         const SizedBox(height: 12),
-        _SpeedHistogramCard(tripId: trip.id),
+        SpeedHistogramCard(tripId: trip.id),
         const SizedBox(height: 12),
         _ChartCard(
           title: 'SOC vs time',
@@ -229,10 +229,10 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
   }
 }
 
-class _TripSummaryCard extends StatelessWidget {
+class TripSummaryCard extends StatelessWidget {
   final Trip trip;
   final ConnectionService svc;
-  const _TripSummaryCard({required this.trip, required this.svc});
+  const TripSummaryCard({required this.trip, required this.svc});
 
   @override
   Widget build(BuildContext context) {
@@ -303,9 +303,9 @@ class _TripSummaryCard extends StatelessWidget {
   }
 }
 
-class _DerivedMetricsCard extends StatelessWidget {
+class DerivedMetricsCard extends StatelessWidget {
   final Trip trip;
-  const _DerivedMetricsCard({required this.trip});
+  const DerivedMetricsCard({required this.trip});
 
   @override
   Widget build(BuildContext context) {
@@ -416,9 +416,9 @@ class _DerivedMetricsCard extends StatelessWidget {
 /// is the delta) by exposing the absolute readings — useful for sanity-
 /// checking that the trip's odo readings make sense, and for users who
 /// want to cross-reference with the car's own trip-meter.
-class _OdometerRangeCard extends StatelessWidget {
+class OdometerRangeCard extends StatelessWidget {
   final Trip trip;
-  const _OdometerRangeCard({required this.trip});
+  const OdometerRangeCard({required this.trip});
 
   @override
   Widget build(BuildContext context) {
@@ -476,9 +476,9 @@ class _OdometerRangeCard extends StatelessWidget {
 /// Useful for understanding trip character: a 30-min trip with 20 min
 /// moving + 10 min idle reads very differently from a pure highway
 /// 30-min trip with 1 min idle.
-class _MovingIdleDonutCard extends StatelessWidget {
+class MovingIdleDonutCard extends StatelessWidget {
   final Trip trip;
-  const _MovingIdleDonutCard({required this.trip});
+  const MovingIdleDonutCard({required this.trip});
 
   @override
   Widget build(BuildContext context) {
@@ -595,15 +595,15 @@ class _MovingIdleDonutCard extends StatelessWidget {
 /// ones stay green. Quick visual: "where did this trip happen"?
 ///
 /// Excluded: speed = 0 (stopped/idle) — those are in the donut card.
-class _SpeedHistogramCard extends StatefulWidget {
+class SpeedHistogramCard extends StatefulWidget {
   final int tripId;
-  const _SpeedHistogramCard({required this.tripId});
+  const SpeedHistogramCard({required this.tripId});
 
   @override
-  State<_SpeedHistogramCard> createState() => _SpeedHistogramCardState();
+  State<SpeedHistogramCard> createState() => SpeedHistogramCardState();
 }
 
-class _SpeedHistogramCardState extends State<_SpeedHistogramCard> {
+class SpeedHistogramCardState extends State<SpeedHistogramCard> {
   late Future<List<Sample>> _samples;
 
   @override
