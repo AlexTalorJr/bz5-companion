@@ -17,6 +17,14 @@
 /// The probe is cheap (single Class.forName on the platform side) so
 /// re-running it on each app cold start is fine. Hot-restart preserves
 /// the cache via the platform side's memoization.
+///
+/// v0.1.26+14: head-unit detection used to require a successful VIN
+/// read for `isOnHeadUnit == true`. Field test on a real BZ5 found
+/// that BYDAutoBodyworkDevice exists (framework present) but its VIN
+/// methods throw with no diagnostic, leaving the detector permanently
+/// in `isOnHeadUnit=false` even though we WERE running on the head
+/// unit. Fix: framework presence is now the truth signal. VIN is
+/// reported separately for display, but doesn't gate the boolean.
 library;
 
 import 'dart:async';
@@ -41,26 +49,33 @@ class NativeDetector extends ChangeNotifier {
     if (_detected && !force) return;
     final ch = NativeCarChannel.instance;
     try {
-      // Cheap probe first — no I/O on the CAN bus.
+      // The framework-present probe is the head-unit signal. On a real
+      // BZ5 this returns true; on a phone the class doesn't exist and
+      // it returns false. Reflection only — no CAN I/O — so it's cheap
+      // and never throws here (the platform side swallows exceptions).
       final present = await ch.isNativeAvailable();
-      if (!present) {
-        _isOnHeadUnit = false;
+      _isOnHeadUnit = present;
+
+      // VIN read is a separate concern. We try it for display, but its
+      // failure does NOT downgrade isOnHeadUnit. Some firmware revisions
+      // throw on getRealAutoVIN() even though everything else is fine —
+      // see BydVinDetector for the multi-method fallback dance and the
+      // diagnostic logging we now emit so the failure mode is visible.
+      if (present) {
+        try {
+          _vin = await ch.detectVin(fresh: false);
+        } catch (_) {
+          _vin = null;
+        }
+      } else {
         _vin = null;
-        _detected = true;
-        _lastError = null;
-        notifyListeners();
-        return;
       }
 
-      // VIN read is the authoritative confirmation. A class can exist
-      // but return null/empty if we're on an emulator with stubs, so
-      // we treat "framework present + valid VIN" as the real signal.
-      final vin = await ch.detectVin(fresh: false);
-      _isOnHeadUnit = vin != null && vin.length == 17;
-      _vin = vin;
       _detected = true;
       _lastError = null;
     } catch (e) {
+      // Top-level failure of isNativeAvailable() — only happens if the
+      // MethodChannel itself is broken. Falls back to BLE mode.
       _isOnHeadUnit = false;
       _vin = null;
       _detected = true;

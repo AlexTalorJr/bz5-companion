@@ -1,7 +1,11 @@
 package com.bz5companion.bz5_companion
 
+import android.app.Activity
 import android.content.Context
+import androidx.core.app.ActivityCompat
 import io.flutter.embedding.engine.plugins.FlutterPlugin
+import io.flutter.embedding.engine.plugins.activity.ActivityAware
+import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.EventChannel
@@ -47,11 +51,17 @@ import java.util.concurrent.ConcurrentHashMap
  * The COMMON permissions are dangerous-level — you must runtime-request
  * them on Android 6+. See BydPermissions.PERMISSIONS for the full list.
  */
-class BydNativePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
+class BydNativePlugin : FlutterPlugin, ActivityAware, MethodChannel.MethodCallHandler {
 
     private lateinit var methodChannel: MethodChannel
     private lateinit var eventChannel: EventChannel
     private lateinit var appContext: Context
+
+    // Activity binding is needed for runtime permission requests, which
+    // require an Activity context (Context.startActivity won't trigger
+    // the system permission dialog — only ActivityCompat.requestPermissions
+    // on a real Activity does).
+    @Volatile private var activity: Activity? = null
 
     // VIN detector is stateless; share a single instance for caching.
     private val vinDetector = BydVinDetector()
@@ -103,6 +113,29 @@ class BydNativePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
         BydLogger.i(TAG, "BydNativePlugin detached")
     }
 
+    // ─── ActivityAware ─────────────────────────────────────────────────────
+    //
+    // We track the current Activity so requestPermissions() can find a
+    // real Activity to attach the system dialog to. Without this binding
+    // the plugin would only have applicationContext, which can't host
+    // the permission UI.
+
+    override fun onAttachedToActivity(binding: ActivityPluginBinding) {
+        activity = binding.activity
+    }
+
+    override fun onDetachedFromActivityForConfigChanges() {
+        activity = null
+    }
+
+    override fun onReattachedToActivityForConfigChanges(binding: ActivityPluginBinding) {
+        activity = binding.activity
+    }
+
+    override fun onDetachedFromActivity() {
+        activity = null
+    }
+
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         // Wrap every handler so an exception becomes a Flutter error rather
         // than a JVM crash on the main thread.
@@ -118,6 +151,7 @@ class BydNativePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 "unsubscribe"       -> handleUnsubscribe(call, result)
                 "setProperty"       -> handleSetProperty(call, result)
                 "checkPermissions"  -> result.success(BydPermissions.declaredAndGranted(appContext))
+                "requestRuntimePermissions" -> result.success(requestRuntimePermissions())
                 "pullLogs"          -> handlePullLogs(call, result)
                 "clearLogs"         -> { BydLogger.clear(); result.success(true) }
                 "openAppSettings"   -> result.success(openAppSettings())
@@ -316,6 +350,62 @@ class BydNativePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
     }
 
     /**
+     * v0.1.26+14: programmatically trigger the system runtime-permission
+     * prompt for every dangerous-level BYDAUTO_* permission that the
+     * manifest declares but the OS hasn't granted yet.
+     *
+     * On the BZ5 field test, "Open App Settings" did show the app's
+     * permission screen but BYDAUTO_* perms didn't appear there as
+     * grantable entries — they're declared and "Declared" in our UI but
+     * never reach the user-facing settings list. The likely reason is
+     * that the system's per-app permission UI only surfaces permissions
+     * the OS has classified as user-facing; signature-protected ones
+     * are hidden. requestPermissions() may still work though, because
+     * it asks the framework directly rather than going through Settings.
+     *
+     * Returns a map of result codes per permission:
+     *   {"BYDAUTO_X": "requested" | "already_granted" | "no_activity"}
+     * "requested" means the system dialog was shown (or the request
+     * was queued — for some permissions the system grants silently
+     * without showing a dialog). The actual outcome must be re-checked
+     * via checkPermissions() after the dialog dismisses.
+     */
+    private fun requestRuntimePermissions(): Map<String, Any?> {
+        val act = activity
+        if (act == null) {
+            BydLogger.w(TAG, "requestRuntimePermissions called with no Activity bound")
+            return mapOf("ok" to false, "error" to "no_activity")
+        }
+
+        val toRequest = BydPermissions.DANGEROUS.filter {
+            appContext.checkSelfPermission(it) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        }
+
+        if (toRequest.isEmpty()) {
+            BydLogger.i(TAG, "requestRuntimePermissions: nothing to request, all granted")
+            return mapOf("ok" to true, "requested" to 0, "alreadyGranted" to BydPermissions.DANGEROUS.size)
+        }
+
+        return try {
+            ActivityCompat.requestPermissions(
+                act,
+                toRequest.toTypedArray(),
+                REQ_CODE_BYDAUTO_PERMS
+            )
+            BydLogger.i(TAG, "requestRuntimePermissions: requested ${toRequest.size} perms")
+            mapOf(
+                "ok" to true,
+                "requested" to toRequest.size,
+                "alreadyGranted" to (BydPermissions.DANGEROUS.size - toRequest.size),
+                "names" to toRequest,
+            )
+        } catch (t: Throwable) {
+            BydLogger.w(TAG, "requestRuntimePermissions failed: ${t.message}")
+            mapOf("ok" to false, "error" to (t.message ?: "unknown"))
+        }
+    }
+
+    /**
      * Snapshot of everything we know about the environment. Used by the
      * Native Explorer's "Diagnostics" panel to give the user a single
      * exportable view of what's wrong.
@@ -376,5 +466,7 @@ class BydNativePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
         private const val TAG = "BydNativePlugin"
         const val CHANNEL_METHOD = "bz5_companion/native_car"
         const val CHANNEL_EVENTS = "bz5_companion/native_car/events"
+        // Arbitrary 12-bit non-conflicting request code for our perm batch.
+        private const val REQ_CODE_BYDAUTO_PERMS = 0x42D
     }
 }

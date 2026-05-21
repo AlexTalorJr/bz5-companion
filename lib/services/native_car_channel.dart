@@ -200,6 +200,25 @@ class NativeCarChannel {
     return r ?? false;
   }
 
+  /// v0.1.26+14: programmatically trigger the system runtime-permission
+  /// prompt for every dangerous-level BYDAUTO_* permission that the
+  /// manifest declares but the OS hasn't granted yet.
+  ///
+  /// Returns a map: `{ok: bool, requested: int, alreadyGranted: int,
+  /// names?: List<String>, error?: String}`.
+  ///
+  /// This is a different mechanism from openAppSettings: that opens the
+  /// system Settings UI; this asks the framework directly via
+  /// ActivityCompat.requestPermissions. Some signature-protected
+  /// permissions don't appear in Settings as user-flippable entries
+  /// but can still be granted (or at least requested) via this API.
+  Future<Map<String, Object?>> requestRuntimePermissions() async {
+    final r = await _method
+        .invokeMethod<Map<Object?, Object?>>('requestRuntimePermissions');
+    if (r == null) return const {'ok': false, 'error': 'no_response'};
+    return r.map((k, v) => MapEntry(k.toString(), v));
+  }
+
   /// One-shot environment snapshot: carserver presence/version, content
   /// provider resolution, BYD framework class availability, granted
   /// permission count, etc. Used by the "Diagnostics" panel and by the

@@ -202,6 +202,35 @@ class _NativeExplorerWideState extends State<NativeExplorerWide> {
     }
   }
 
+  /// v0.1.26+14: programmatically trigger the system runtime-permission
+  /// prompt. Field test showed Open App Settings reaches the app page
+  /// but BYDAUTO_* perms aren't listed there — this API may surface
+  /// them directly.
+  Future<void> _doRequestPermissions() async {
+    try {
+      final r = await _ch.requestRuntimePermissions();
+      final ok = r['ok'] == true;
+      final requested = (r['requested'] as num?)?.toInt() ?? 0;
+      final already = (r['alreadyGranted'] as num?)?.toInt() ?? 0;
+      if (!ok) {
+        _setResult('Request failed: ${r['error']}');
+      } else if (requested == 0) {
+        _setResult('All $already BYDAUTO permissions already granted.');
+      } else {
+        _setResult(
+          'Requested $requested permission(s) ($already already granted). '
+          'Re-check perms in a few seconds to see updated status.',
+        );
+        // Auto-refresh after a delay so the user sees the new state.
+        Future<void>.delayed(const Duration(seconds: 2), () {
+          if (mounted) _refreshPerms();
+        });
+      }
+    } catch (e) {
+      _setResult('Request perms threw: $e');
+    }
+  }
+
   Future<void> _doClearLogs() async {
     await _ch.clearLogs();
     if (mounted) setState(() => _logs.clear());
@@ -305,6 +334,10 @@ class _NativeExplorerWideState extends State<NativeExplorerWide> {
                     OutlinedButton(
                       onPressed: _doOpenAppSettings,
                       child: const Text('Open App Settings'),
+                    ),
+                    OutlinedButton(
+                      onPressed: _doRequestPermissions,
+                      child: const Text('Request perms'),
                     ),
                     OutlinedButton(
                       onPressed: _doExportDiagnostics,
