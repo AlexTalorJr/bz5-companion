@@ -455,68 +455,85 @@ class ConnectionService extends ChangeNotifier {
 
   /// Instantaneous charging power in kW, computed from SOC rate of change.
   ///
-  /// v0.1.26+11: COMPLETELY rewritten from a 0x0B00 counter-rate approach
-  /// (broken — counter is nonlinear event signal, not energy integrator)
-  /// to a SOC-derived approach (linear, accurate, but slower to refresh).
+  /// v0.1.26+11: rewrote from broken 0x0B00 counter-rate approach to SOC-
+  /// derived (linear, but slower refresh — SOC has finite granularity).
   ///
-  /// Algorithm:
-  ///   - Look at the [_chargingHistory] window (samples every 5 sec, max
-  ///     age 60 min) and find the most recent samples where SOC has
-  ///     actually moved by at least one precise-SOC step (0.01%).
-  ///   - Compute ΔSOC × pack capacity / Δt over the longest window
-  ///     where we have data (up to 60 sec to smooth jitter).
-  ///   - Returns 0 when not charging or insufficient samples.
+  /// v0.1.26+17: quantization-aware rework. Empirical 5-min test on AC
+  /// 2.4 kW (station readout) on 2026-05-21 showed our app reported
+  /// 4.4 kW vs the car's own dash 2.4 kW. Root cause: precise SOC from
+  /// 790/0x1FFD turns out to quantize at roughly 0.1% steps on this
+  /// firmware — not 0.01% as the BYD framework docs implied. With a
+  /// 60-second integration window at 2.4 kW input we accumulate only
+  /// ~0.06% of true SOC delta, but the observable delta is whatever
+  /// quantum boundary the SOC tick happens to cross — usually 0 or
+  /// 0.1%. When it lands on 0.1%, the formula
+  ///     P = 0.1% × 65.28 kWh × 36 / 60 s = 3.92 kW
+  /// — close to the 4.4 kW the user reported (rounding to nearest tick
+  /// happens at slightly different phase across samples).
   ///
-  /// Refresh characteristics:
-  ///   - AC 3 kW:   1 update every ~80 sec (one 0.01% SOC tick)
-  ///   - AC 7 kW:   1 update every ~34 sec
-  ///   - DC 50 kW:  1 update every ~4.7 sec
-  ///   - DC 100 kW: 1 update every ~2.3 sec (within one poll cycle)
+  /// Fix: require ≥3 observed SOC quanta of growth in the window before
+  /// reporting a power figure. With 0.1% quantization that means waiting
+  /// for ≥0.3% accumulated growth. At 2.4 kW that's ~7.5 min of charge;
+  /// at 7 kW AC that's ~2.5 min; at 50 kW DC ~22 sec; at 100 kW DC ~11
+  /// sec. Window extended to 600 s (10 min) to give 3 quanta room even
+  /// at the slowest AC rates.
   ///
-  /// Replaces the old _instantaneousChargingPowerKw cache which is now
-  /// kept around only for legacy callers; it is no longer maintained.
+  /// Until the threshold is reached the getter returns 0 — UI should
+  /// treat 0 during isCharging==true as "calculating, please wait" and
+  /// display a hint rather than a misleading 4.4 kW. This is honest
+  /// behaviour for an integer-derived signal.
+  ///
+  /// Refresh characteristics under the new policy:
+  ///   - AC 2 kW:   first reliable reading after ~9 min, then every ~3 min
+  ///   - AC 3 kW:   first ~6 min, then every ~2 min
+  ///   - AC 7 kW:   first ~2.5 min, then every ~50 sec
+  ///   - DC 50 kW:  first ~22 sec, then every ~7 sec
+  ///   - DC 100 kW: first ~11 sec, then every ~3.5 sec
   double get chargingPowerKw {
     if (!isCharging) return 0.0;
     if (_chargingHistory.length < 2) return 0.0;
 
-    // Find the latest sample with a precise SOC reading, and the
-    // oldest sample (within last 60s) where SOC was lower.
     final latest = _chargingHistory.last;
     final latestSoc = latest.socPct;
     if (latestSoc == null) return 0.0;
 
-    // Window: prefer 60 sec back for smoothing, but accept down to 10 sec
-    // if we don't have enough history yet (session just started).
-    final cutoff = latest.time.subtract(const Duration(seconds: 60));
-    ChargingSample? anchor;
-    for (final s in _chargingHistory) {
-      if (s.time.isBefore(cutoff)) continue;
-      if (s.socPct == null) continue;
-      if (s.socPct! < latestSoc) {
+    // Try the freshest window first, fall back to older if not enough
+    // delta has accumulated. The "min quanta" threshold rejects results
+    // dominated by SOC quantization noise — see the docstring for the
+    // empirical justification (0.1% quanta observed on BZ5 firmware,
+    // need ≥0.3% to get within ±20% of true power).
+    const double minDeltaPct = 0.3;
+    const List<int> windowSeconds = [600, 300, 120];
+
+    for (final winSec in windowSeconds) {
+      final cutoff = latest.time.subtract(Duration(seconds: winSec));
+      ChargingSample? anchor;
+      // Walk from oldest forward — we want the OLDEST sample within
+      // the window that has a lower SOC than latest. That maximises
+      // dtSec which dampens quantization noise.
+      for (final s in _chargingHistory) {
+        if (s.time.isBefore(cutoff)) continue;
+        if (s.socPct == null) continue;
+        if (s.socPct! >= latestSoc) continue;
         anchor = s;
         break;
       }
-    }
-    if (anchor == null) {
-      // Fallback: oldest sample of this session
-      for (final s in _chargingHistory) {
-        if (s.socPct == null) continue;
-        if (s.socPct! < latestSoc) {
-          anchor = s;
-          break;
-        }
-      }
-    }
-    if (anchor == null) return 0.0;
+      if (anchor == null) continue;
 
-    final dtSec = latest.time.difference(anchor.time).inMilliseconds / 1000.0;
-    if (dtSec < 1.0) return 0.0;
-    final dSocPct = latestSoc - (anchor.socPct ?? latestSoc);
-    if (dSocPct <= 0) return 0.0;
+      final dSocPct = latestSoc - anchor.socPct!;
+      if (dSocPct < minDeltaPct) continue;
 
-    // P[kW] = (ΔSOC% × packKwh / 100) / (dt_sec / 3600)
-    //       = ΔSOC% × packKwh × 36 / dt_sec
-    return dSocPct * Bz5Model.batteryCapacityKwh * 36.0 / dtSec;
+      final dtSec =
+          latest.time.difference(anchor.time).inMilliseconds / 1000.0;
+      if (dtSec < 1.0) continue;
+
+      // P[kW] = ΔSOC% × packKwh × 36 / dt_sec
+      return dSocPct * Bz5Model.batteryCapacityKwh * 36.0 / dtSec;
+    }
+
+    // No window had ≥0.3% accumulated growth — return 0 so the UI
+    // shows "calculating" rather than a noisy mis-estimate.
+    return 0.0;
   }
 
   /// Cycle count from BMS DID 0B02 — likely full-charge equivalent cycles
@@ -2226,6 +2243,14 @@ class ConnectionService extends ChangeNotifier {
   String? readText(String ecuTx, String did) =>
       _latestValues[ecuTx]?[did]?.text;
 
+  /// v0.1.26+17: hysteresis state for [isCharging]. Holds the last
+  /// reported value plus a counter of consecutive "off" detections.
+  /// Flips back to false only after [_chargingHysteresisOffThreshold]
+  /// consecutive negative checks in a row.
+  bool _isChargingHysteretic = false;
+  int _isChargingConsecutiveOff = 0;
+  static const int _chargingHysteresisOffThreshold = 3;
+
   /// v6.1 / v0.1.26+3: Детекция зарядки через rolling-window анализ 0x0B00.
   ///
   /// Two-track:
@@ -2253,7 +2278,27 @@ class ConnectionService extends ChangeNotifier {
   ///   • DC ≥80 кВт:    30–60 сек
   ///   • AC 7–22 кВт:   3–10 мин (slow path, 10-мин окно)
   ///   • AC 2.8 кВт:    ~20 мин (известный edge-case с v6.1)
-  bool get isCharging => _isChargingFast() || _isChargingSlow();
+  ///
+  /// v0.1.26+17: hysteresis on the OFF transition. Field test showed
+  /// the "CHARGING" label flickering off and on intermittently during
+  /// a steady 2.4 kW AC session — likely the slow path momentarily
+  /// dipping below its threshold when the 10-min window's anchor and
+  /// head samples briefly tie. With hysteresis we require 3 consecutive
+  /// off detections (each runs ~1× per poll cycle ≈ 1 sec) to genuinely
+  /// flip OFF. Latency on the ON side is unchanged.
+  bool get isCharging {
+    final raw = _isChargingFast() || _isChargingSlow();
+    if (raw) {
+      _isChargingHysteretic = true;
+      _isChargingConsecutiveOff = 0;
+    } else if (_isChargingHysteretic) {
+      _isChargingConsecutiveOff++;
+      if (_isChargingConsecutiveOff >= _chargingHysteresisOffThreshold) {
+        _isChargingHysteretic = false;
+      }
+    }
+    return _isChargingHysteretic;
+  }
 
   /// Fast-path detection — DC ≥80 кВт.
   ///

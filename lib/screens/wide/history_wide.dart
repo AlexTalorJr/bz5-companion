@@ -183,7 +183,18 @@ class _TripsListColumn extends StatelessWidget {
       child: ListView.separated(
         padding: const EdgeInsets.symmetric(vertical: 8),
         itemCount: trips.length,
-        separatorBuilder: (_, __) => const Divider(height: 1),
+        // v0.1.26+16: divider was `height: 1` plain Divider — invisible
+        // on the BZ5 head-unit dark theme (the 1px hairline blended
+        // into the card background). Bumped to indent + visible color
+        // so trip entries read as a proper list rather than a wall of
+        // text.
+        separatorBuilder: (_, __) => Divider(
+          height: 1,
+          thickness: 1,
+          color: Colors.white.withValues(alpha: 0.08),
+          indent: 16,
+          endIndent: 16,
+        ),
         itemBuilder: (context, i) {
           final t = trips[i];
           final selected = t.id == selectedId;
