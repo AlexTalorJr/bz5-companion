@@ -20,13 +20,18 @@ import android.content.pm.PackageManager
  *     reports its required read/write permission via `getGetPermission()`
  *     / `getSetPermission()` — they map 1:1 with these.
  *
- *  3. **Legacy / always-on**: storage permissions used by the snapshot
- *     export feature (already declared by the BLE codebase).
+ *  3. **Per-domain BYDAUTO_*_GET variants**: present on newer BYD
+ *     firmware where Read and Write got split into separate
+ *     permissions. CanDataCollect.apk declared `BYDAUTO_POWER_GET`
+ *     specifically (not _COMMON), so the convention is inconsistent
+ *     across domains. We declare both variants in the manifest for
+ *     the domains where the inconsistency was observed.
  *
- * The list below is what we currently care about. As we discover new
- * features whose `getGetPermission()` reports something not here, add
- * it — uncovered permissions silently fail at runtime, so it's worth
- * keeping this set complete.
+ * v0.1.26+14: catalog expanded from 17 to 24 entries to match the
+ * manifest. Previously the Native Explorer would report "1 / 17
+ * declared (of 17 known)" while the manifest had 24 declared — the
+ * extra 7 (`_GET` variants + vehicle_data + bigdata) were invisible
+ * to the UI. Now the count is honest.
  *
  * NB: this list is empirical. The exact "permission name → which
  * features it gates" mapping needs to be verified on a real BYD car.
@@ -40,23 +45,35 @@ object BydPermissions {
 
     /** Permission name → human label, for the runtime-grant UI. */
     val PERMISSIONS: Map<String, String> = linkedMapOf(
-        "com.byd.car.server.PROVIDER"             to "Car server provider (bind)",
-        "android.permission.BYDAUTO_POWER_COMMON"    to "Power & ignition state",
-        "android.permission.BYDAUTO_CHARGING_COMMON" to "Charging session",
-        "android.permission.BYDAUTO_ENERGY_COMMON"   to "Battery / energy",
-        "android.permission.BYDAUTO_SPEED_COMMON"    to "Vehicle speed",
-        "android.permission.BYDAUTO_GEARBOX_COMMON"  to "Gearbox state",
+        "com.byd.car.server.PROVIDER"                  to "Car server provider (bind)",
+        // _COMMON variants — historical naming.
+        "android.permission.BYDAUTO_POWER_COMMON"      to "Power & ignition (R/W)",
+        "android.permission.BYDAUTO_CHARGING_COMMON"   to "Charging session (R/W)",
+        "android.permission.BYDAUTO_ENERGY_COMMON"     to "Battery / energy (R/W)",
+        "android.permission.BYDAUTO_SPEED_COMMON"      to "Vehicle speed (R/W)",
+        "android.permission.BYDAUTO_GEARBOX_COMMON"    to "Gearbox state (R/W)",
         "android.permission.BYDAUTO_INSTRUMENT_COMMON" to "Instrument cluster",
-        "android.permission.BYDAUTO_TYRE_COMMON"     to "Tyre pressure",
-        "android.permission.BYDAUTO_STATISTIC_COMMON" to "Vehicle statistics",
-        "android.permission.BYDAUTO_LOCATION_COMMON" to "Vehicle location",
-        "android.permission.BYDAUTO_BODYWORK_COMMON" to "VIN / body data",
-        "android.permission.BYDAUTO_DTC_COMMON"      to "Diagnostic codes",
-        "android.permission.BYDAUTO_LIGHTS_COMMON"   to "Lights state",
-        "android.permission.BYDAUTO_DOORLOCK_COMMON" to "Door lock state",
-        "android.permission.BYDAUTO_TIME_COMMON"     to "Vehicle clock",
-        "android.permission.BYDAUTO_TEST_COMMON"     to "Factory test channel",
-        "android.permission.BYDAUTO_VERSION_COMMON"  to "Software version info",
+        "android.permission.BYDAUTO_TYRE_COMMON"       to "Tyre pressure",
+        "android.permission.BYDAUTO_STATISTIC_COMMON"  to "Vehicle statistics (R/W)",
+        "android.permission.BYDAUTO_LOCATION_COMMON"   to "Vehicle location",
+        "android.permission.BYDAUTO_BODYWORK_COMMON"   to "VIN / body data",
+        "android.permission.BYDAUTO_DTC_COMMON"        to "Diagnostic codes",
+        "android.permission.BYDAUTO_LIGHTS_COMMON"     to "Lights state",
+        "android.permission.BYDAUTO_DOORLOCK_COMMON"   to "Door lock state",
+        "android.permission.BYDAUTO_TIME_COMMON"       to "Vehicle clock",
+        "android.permission.BYDAUTO_TEST_COMMON"       to "Factory test channel",
+        "android.permission.BYDAUTO_VERSION_COMMON"    to "Software version info",
+        // _GET variants — used on some firmware revisions where R/W is
+        // split. CanDataCollect.apk used _GET for Power specifically.
+        "android.permission.BYDAUTO_POWER_GET"         to "Power & ignition (R only)",
+        "android.permission.BYDAUTO_CHARGING_GET"      to "Charging session (R only)",
+        "android.permission.BYDAUTO_ENERGY_GET"        to "Battery / energy (R only)",
+        "android.permission.BYDAUTO_SPEED_GET"         to "Vehicle speed (R only)",
+        "android.permission.BYDAUTO_GEARBOX_GET"       to "Gearbox state (R only)",
+        "android.permission.BYDAUTO_STATISTIC_GET"     to "Vehicle statistics (R only)",
+        // Newer / specialised domains.
+        "android.permission.BYDAUTO_VEHICLE_DATA_COMMON" to "Vehicle data (CAN frame stream)",
+        "android.permission.BYDAUTO_BIGDATA_COMMON"      to "Big data / register tables",
     )
 
     /**
