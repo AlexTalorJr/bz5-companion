@@ -134,7 +134,7 @@ class _NativeExplorerWideState extends State<NativeExplorerWide> {
   Future<void> _doGet() async {
     final name = _propController.text.trim();
     if (!_looksValid(name)) {
-      _setResult('Invalid name. Expected format: 0x<HEX_FEATURE_ID>');
+      _setResult(_validationHint(name));
       return;
     }
     try {
@@ -147,7 +147,10 @@ class _NativeExplorerWideState extends State<NativeExplorerWide> {
 
   Future<void> _doGetConfig() async {
     final name = _propController.text.trim();
-    if (!_looksValid(name)) return;
+    if (!_looksValid(name)) {
+      _setResult(_validationHint(name));
+      return;
+    }
     try {
       final r = await _ch.getPropertyConfig([name]);
       _setResult('CONFIG $name → $r');
@@ -158,7 +161,10 @@ class _NativeExplorerWideState extends State<NativeExplorerWide> {
 
   Future<void> _doSubscribe() async {
     final name = _propController.text.trim();
-    if (!_looksValid(name)) return;
+    if (!_looksValid(name)) {
+      _setResult(_validationHint(name));
+      return;
+    }
     setState(() => _subscribing = true);
     try {
       await _ch.subscribe([name]);
@@ -286,6 +292,22 @@ class _NativeExplorerWideState extends State<NativeExplorerWide> {
 
   bool _looksValid(String s) =>
       RegExp(r'^0x[0-9A-Fa-f]+$').hasMatch(s);
+
+  /// Human-readable error explaining why the current input isn't valid.
+  /// v0.1.26+15: replaces the opaque "Expected format: 0x<HEX_FEATURE_ID>"
+  /// which left the user with no idea what to type. Now we say what's
+  /// wrong and suggest the next step.
+  String _validationHint(String s) {
+    if (s.isEmpty || s == '0x') {
+      return 'Enter a hex feature ID (e.g. 0x99002B0A). '
+          'See assets/native_api/bz5_feature_catalog.csv for the 10016 known IDs, '
+          'or tap a preset below.';
+    }
+    if (!s.toLowerCase().startsWith('0x')) {
+      return 'Feature ID must start with 0x (e.g. 0x99002B0A).';
+    }
+    return 'Feature ID has non-hex characters after 0x.';
+  }
 
   void _setResult(String s) {
     setState(() => _lastResultText = s);
@@ -475,9 +497,27 @@ class _NativeExplorerWideState extends State<NativeExplorerWide> {
                     border: OutlineInputBorder(),
                     isDense: true,
                     hintText: '0x99002B0A',
-                    helperText: 'Hex feature ID from bz5_feature_catalog.csv',
+                    helperText: 'Hex feature ID. Tap a preset below or pick one from docs/bz5_feature_catalog.csv',
                   ),
                 ),
+                const SizedBox(height: 6),
+                // v0.1.26+15: preset chips. The featureID -> semantic
+                // mapping is NOT verified — these are candidates to
+                // probe. Tap to fill the field, then Get / Config /
+                // Subscribe. If the value looks plausible (SOC around
+                // current pack state, voltage ~350V, speed 0 at parked,
+                // ...) we found one. If not, try the next preset.
+                Wrap(spacing: 4, runSpacing: 4, children: [
+                  for (final p in _presetCandidates)
+                    ActionChip(
+                      label: Text(p.label, style: const TextStyle(fontSize: 11)),
+                      tooltip: '${p.id} (${p.note})',
+                      onPressed: () {
+                        _propController.text = p.id;
+                        _setResult('Loaded preset: ${p.label} = ${p.id}\n${p.note}');
+                      },
+                    ),
+                ]),
                 const SizedBox(height: 8),
                 Wrap(spacing: 6, runSpacing: 6, children: [
                   ElevatedButton(onPressed: _doGet, child: const Text('Get')),
@@ -720,3 +760,47 @@ class _Sample {
   final String? type;
   _Sample(this.ts, this.value, this.type);
 }
+
+/// v0.1.26+15: candidate featureID presets for the prober.
+///
+/// These are EDUCATED GUESSES, not verified mappings. The plan:
+///   1. Tap a preset.
+///   2. Tap Config — see what dataType/permission it reports.
+///   3. Tap Get — see the value.
+///   4. If the value matches expected magnitude (SOC=0..100, voltage
+///      ~350V, etc.), the guess holds. Mark it. If not, try another.
+///
+/// The featureID values picked here are heuristic — taken from the
+/// 10016-entry catalog by filtering on interfaceName (POWER, ENERGY,
+/// CHARGING, SPEED, INSTRUMENT) and dataType, then picking IDs that
+/// "look" like data signals based on byte structure. They may all be
+/// wrong; that's why this is a probing UI, not a wiring UI.
+///
+/// Once we calibrate these on a real car, the mapping moves into a
+/// proper VehicleDataSource implementation and these chips become
+/// obsolete.
+class _PresetCandidate {
+  final String label;
+  final String id;
+  final String note;
+  const _PresetCandidate(this.label, this.id, this.note);
+}
+
+const List<_PresetCandidate> _presetCandidates = [
+  _PresetCandidate('SOC?',        '0x99002B0A',
+      'POWER/STATISTIC domain candidate. Expected: 0..100 (or 0..10000 ×100).'),
+  _PresetCandidate('Speed?',      '0x98000801',
+      'SPEED domain candidate. Expected: km/h, ~0 when parked.'),
+  _PresetCandidate('HV bus V?',   '0x99001501',
+      'ENERGY domain. Expected: ~350-400 V (or ×40 raw).'),
+  _PresetCandidate('Pack V?',     '0x99002201',
+      'ENERGY domain. Expected: ~350-400 V.'),
+  _PresetCandidate('Pack I?',     '0x99002101',
+      'ENERGY domain. Expected: signed A, ~0 idle, ±50A driving.'),
+  _PresetCandidate('Gear?',       '0x95000901',
+      'GEARBOX domain. Expected: enum (1=P, 2=R, 3=N, 4=D).'),
+  _PresetCandidate('Odometer?',   '0x96000101',
+      'INSTRUMENT domain. Expected: km, large monotonic number.'),
+  _PresetCandidate('12V V?',      '0x98010401',
+      'POWER domain. Expected: ~12-14 V (or ×10).'),
+];

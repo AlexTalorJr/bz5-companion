@@ -63,17 +63,34 @@ object BydPermissions {
         "android.permission.BYDAUTO_TIME_COMMON"       to "Vehicle clock",
         "android.permission.BYDAUTO_TEST_COMMON"       to "Factory test channel",
         "android.permission.BYDAUTO_VERSION_COMMON"    to "Software version info",
-        // _GET variants — used on some firmware revisions where R/W is
-        // split. CanDataCollect.apk used _GET for Power specifically.
-        "android.permission.BYDAUTO_POWER_GET"         to "Power & ignition (R only)",
-        "android.permission.BYDAUTO_CHARGING_GET"      to "Charging session (R only)",
-        "android.permission.BYDAUTO_ENERGY_GET"        to "Battery / energy (R only)",
-        "android.permission.BYDAUTO_SPEED_GET"         to "Vehicle speed (R only)",
-        "android.permission.BYDAUTO_GEARBOX_GET"       to "Gearbox state (R only)",
-        "android.permission.BYDAUTO_STATISTIC_GET"     to "Vehicle statistics (R only)",
+        // _GET variants — used on firmware revisions where R/W is
+        // split. v0.1.26+15: empirical test on a real BZ5 showed
+        // BYDAUTO_BODYWORK_GET is required for Bodywork.getDataFlag()
+        // (line 2201) AFTER _COMMON grants. So the two-layer gating
+        // is real and per-domain. We now declare _GET for all 18
+        // domains — the system silently ignores names that don't exist
+        // on this particular firmware.
+        "android.permission.BYDAUTO_POWER_GET"            to "Power & ignition (R only)",
+        "android.permission.BYDAUTO_CHARGING_GET"         to "Charging session (R only)",
+        "android.permission.BYDAUTO_ENERGY_GET"           to "Battery / energy (R only)",
+        "android.permission.BYDAUTO_SPEED_GET"            to "Vehicle speed (R only)",
+        "android.permission.BYDAUTO_GEARBOX_GET"          to "Gearbox state (R only)",
+        "android.permission.BYDAUTO_INSTRUMENT_GET"       to "Instrument cluster (R only)",
+        "android.permission.BYDAUTO_TYRE_GET"             to "Tyre pressure (R only)",
+        "android.permission.BYDAUTO_STATISTIC_GET"        to "Vehicle statistics (R only)",
+        "android.permission.BYDAUTO_LOCATION_GET"         to "Vehicle location (R only)",
+        "android.permission.BYDAUTO_BODYWORK_GET"         to "VIN / body data (R only)",
+        "android.permission.BYDAUTO_DTC_GET"              to "Diagnostic codes (R only)",
+        "android.permission.BYDAUTO_LIGHTS_GET"           to "Lights state (R only)",
+        "android.permission.BYDAUTO_DOORLOCK_GET"         to "Door lock state (R only)",
+        "android.permission.BYDAUTO_TIME_GET"             to "Vehicle clock (R only)",
+        "android.permission.BYDAUTO_TEST_GET"             to "Factory test channel (R only)",
+        "android.permission.BYDAUTO_VERSION_GET"          to "Software version info (R only)",
         // Newer / specialised domains.
-        "android.permission.BYDAUTO_VEHICLE_DATA_COMMON" to "Vehicle data (CAN frame stream)",
-        "android.permission.BYDAUTO_BIGDATA_COMMON"      to "Big data / register tables",
+        "android.permission.BYDAUTO_VEHICLE_DATA_COMMON"  to "Vehicle data (CAN frame stream)",
+        "android.permission.BYDAUTO_BIGDATA_COMMON"       to "Big data / register tables",
+        "android.permission.BYDAUTO_VEHICLE_DATA_GET"     to "Vehicle data (R only)",
+        "android.permission.BYDAUTO_BIGDATA_GET"          to "Big data (R only)",
     )
 
     /**
