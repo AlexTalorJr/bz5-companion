@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import '../../data/database.dart';
 import '../../services/connection.dart';
 import '../trends.dart';
+import '../trip_detail.dart';
 
 /// v0.1.9: Wide layout for History on head unit.
 ///
@@ -249,9 +250,39 @@ class _SelectedTripDetail extends StatelessWidget {
         (trip.endedAt ?? DateTime.now()).difference(trip.startedAt);
     final dateStr = DateFormat('d MMMM y, HH:mm').format(trip.startedAt);
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
+    // v0.1.26+13: previously this rendered only a thin date+metrics
+    // header plus 4 chart cards (SOC / battery temp / pack V / HV bus),
+    // missing the summary, derived metrics, speed histogram, odometer
+    // range, and moving/idle donut cards that trip_detail.dart provides
+    // on phone. The wide head-unit view should be a superset of the
+    // phone view, not a subset.
+    //
+    // The fix: instead of a hand-rolled compact panel, reuse the same
+    // wide-layout structure as TripDetailScreen._buildWideLayout. Those
+    // cards (TripSummaryCard / DerivedMetricsCard / OdometerRangeCard /
+    // MovingIdleDonutCard / SpeedHistogramCard) are now public exports
+    // from trip_detail.dart. The header row at the very top is kept —
+    // it duplicates some of TripSummaryCard's info but with a different
+    // visual treatment (big inline metrics) that matches the rest of
+    // the head-unit chrome.
+
+    Widget pair(Widget left, Widget right) => IntrinsicHeight(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Expanded(child: left),
+              const SizedBox(width: 12),
+              Expanded(child: right),
+            ],
+          ),
+        );
+
+    return ListView(
+      padding: EdgeInsets.zero,
       children: [
+        // Header card: same as before — the "21 May 2026, 10:21" line +
+        // DISTANCE / ENERGY / AVG inline. Kept verbatim to preserve the
+        // visual you've been used to.
         Card(
           child: Padding(
             padding: const EdgeInsets.all(16),
@@ -289,69 +320,70 @@ class _SelectedTripDetail extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 12),
-        Expanded(
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Expanded(
-                child: _ChartCard(
-                  title: 'SOC',
-                  tripId: trip.id,
-                  ecuTx: '790',
-                  did: '0005',
-                  color: Colors.greenAccent,
-                  unit: '%',
-                  svc: svc,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _ChartCard(
-                  title: 'Battery temp',
-                  tripId: trip.id,
-                  ecuTx: '790',
-                  did: '002F',
-                  color: Colors.orangeAccent,
-                  unit: '°C',
-                  // v0.1.26+9: NO valueTransform — registry already
-                  // applies offset -40 (see trip_detail.dart for the
-                  // long form of this comment).
-                  svc: svc,
-                ),
-              ),
-            ],
+        // v0.1.26+13: full trip detail content. Mirrors TripDetailScreen
+        // wide layout: summary | metrics on row 1, odometer | donut on
+        // row 2, full-width histogram on row 3, charts after that.
+        pair(
+          TripSummaryCard(trip: trip, svc: svc),
+          DerivedMetricsCard(trip: trip),
+        ),
+        const SizedBox(height: 12),
+        pair(
+          OdometerRangeCard(trip: trip),
+          MovingIdleDonutCard(trip: trip),
+        ),
+        const SizedBox(height: 12),
+        SpeedHistogramCard(tripId: trip.id),
+        const SizedBox(height: 12),
+        SizedBox(
+          height: 240,
+          child: pair(
+            _ChartCard(
+              title: 'SOC',
+              tripId: trip.id,
+              ecuTx: '790',
+              did: '0005',
+              color: Colors.greenAccent,
+              unit: '%',
+              svc: svc,
+            ),
+            _ChartCard(
+              title: 'Battery temp',
+              tripId: trip.id,
+              ecuTx: '790',
+              did: '002F',
+              color: Colors.orangeAccent,
+              unit: '°C',
+              // v0.1.26+9: NO valueTransform — registry already
+              // applies offset -40 (see trip_detail.dart for the
+              // long form of this comment).
+              svc: svc,
+            ),
           ),
         ),
         const SizedBox(height: 12),
-        Expanded(
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Expanded(
-                child: _ChartCard(
-                  title: 'Pack voltage',
-                  tripId: trip.id,
-                  ecuTx: '740',
-                  did: '0022',
-                  color: Colors.yellowAccent,
-                  unit: 'V',
-                  // No valueTransform — registry decoder already applies scale.
-                  svc: svc,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _ChartCard(
-                  title: 'HV bus',
-                  tripId: trip.id,
-                  ecuTx: '790',
-                  did: '0015',
-                  color: Colors.lightBlueAccent,
-                  unit: 'V',
-                  svc: svc,
-                ),
-              ),
-            ],
+        SizedBox(
+          height: 240,
+          child: pair(
+            _ChartCard(
+              title: 'Pack voltage',
+              tripId: trip.id,
+              ecuTx: '740',
+              did: '0022',
+              color: Colors.yellowAccent,
+              unit: 'V',
+              // No valueTransform — registry decoder already applies scale.
+              svc: svc,
+            ),
+            _ChartCard(
+              title: 'HV bus',
+              tripId: trip.id,
+              ecuTx: '790',
+              did: '0015',
+              color: Colors.lightBlueAccent,
+              unit: 'V',
+              svc: svc,
+            ),
           ),
         ),
       ],
