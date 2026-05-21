@@ -29,6 +29,43 @@
          Same maxSdkVersion logic. -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="29" />
+
+    <!-- v0.1.27: BYD car framework access for native head-unit mode.
+         These permissions only mean anything on real BZ5/BYD head units —
+         on phones they're silently ignored by the system. The car-side
+         provider auth permission is normal-level (granted at install).
+         The BYDAUTO_*_COMMON and _GET permissions are dangerous/runtime —
+         we declare a superset (both naming conventions) because CanDataCollect
+         decompile showed BYD uses both styles inconsistently across domains;
+         missing ones are just ignored by the system.
+         The provider permission grants us access to the ContentProvider
+         that bootstraps ICarPropertyService via the BinderProvider pattern. -->
+    <uses-permission android:name="com.byd.car.server.PROVIDER" />
+    <uses-permission android:name="android.permission.BYDAUTO_POWER_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_POWER_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_CHARGING_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_CHARGING_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_ENERGY_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_ENERGY_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_SPEED_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_SPEED_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_GEARBOX_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_GEARBOX_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_INSTRUMENT_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_TYRE_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_STATISTIC_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_STATISTIC_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_LOCATION_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_BODYWORK_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_DTC_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_LIGHTS_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_DOORLOCK_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_TIME_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_TEST_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_VERSION_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_VEHICLE_DATA_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_BIGDATA_COMMON" />
+
     <!-- v0.1.2: required="false" to allow install on devices that may not
          report BLE feature (e.g. some car head units with custom BT stacks).
          App will check BLE availability at runtime in connect screen. -->
@@ -77,5 +114,10 @@
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
         </intent>
+        <!-- v0.1.27: on Android 11+ (API 30+) package visibility is restricted.
+             Without these <queries> entries, ContentResolver returns null for
+             carserver's BinderProvider even with the right permission. -->
+        <package android:name="com.byd.car.server" />
+        <provider android:authorities="com.byd.car.server.provider.CarServiceProvider" />
     </queries>
 </manifest>
