@@ -1,7 +1,7 @@
 name: bz5_companion
 description: Toyota BZ5 telemetry & monitoring app
 publish_to: 'none'
-version: 0.1.28+1
+version: 0.1.29+1
 
 environment:
   sdk: '>=3.3.0 <4.0.0'
@@ -25,9 +25,6 @@ dependencies:
   share_plus: ^10.0.0       # system share sheet (USB / cloud / messaging)
   # v0.1.14: in-car DID sweep.
   wakelock_plus: ^1.2.8     # keep screen awake during long sweeps (~55 min)
-  # v0.1.28: cloud backup via bz5-bridge.
-  http: ^1.2.0              # REST client for bridge.
-  flutter_secure_storage: ^9.2.2  # Keystore/Keychain for client_token.
 
 dev_dependencies:
   flutter_test:
