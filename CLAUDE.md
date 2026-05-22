@@ -214,12 +214,26 @@ APK подписывается одним и тем же keystore во всех 
 ### Запомнённые vehicle facts (из livelog сессий)
 
 - Пакет: 65.28 kWh для базовой / 73.984 kWh для большой
-- 124s LFP cells, HV bus 348-361 V (scale 0.025 V/unit), cell V 3.09-3.37 V
+- **136 cells в series** (подтверждено BMS: 790/0x0B03 = 0x88 = 136, и
+  marketing math: 136 × 150 Ah × 3.2 V = 65.28 kWh точно). Старые
+  упоминания "124s" в коде и handoff — **ошибка**, исправлено в
+  v0.1.27+2 (packVoltageFromCells использует `_packCellCount ?? 136`).
+- LFP cells, HV bus 348-361 V (scale 0.025 V/unit), cell V 3.09-3.37 V
 - Мотор: 200 kW (272 hp, 330 Nm)
 - 1FFD low16 fingerprint = 0x3B09 (используется в connection.dart для распознавания протокола)
-- Factory consumption: 144 Wh/km
+- Factory consumption: 144 Wh/km (WLTP, **не реальный**; реальный
+  16-18 kWh/100km — поэтому footer "@ 14.4 kWh/100km · 65.28 kWh" в
+  dashboard удалён в v0.1.29+1)
 - OBC efficiency ~99% на AC slow
 - Pack resistance R=0.18 Ω (для HV-bus-sag power heuristic в v0.1.26+10)
+- **740/0022 = 0x4650 (450 V)** — платформенная константа, **НЕ live
+  pack voltage** (verified across sweeps). Не использовать как primary V.
+- **791/0038 stable ~80.5** при всех state — **НЕ pack current**
+  (verified DC charging 2026-05-22: const при 0-92 A). Семантика TBD.
+- **740/0009 — transient ADC noise**, не charger output V (verified v0.1.24).
+- **hvBus (790/0015) под DC charging показывает -83V offset** относительно
+  sum-of-cells на 76 kW peak — физически невозможно, значит DID имеет
+  dual semantics. Не использовать как primary V под нагрузкой.
 
 ### Запомнённые decompile findings (BYD car framework)
 
@@ -259,6 +273,125 @@ APK подписывается одним и тем же keystore во всех 
 
 Поэтому: после `git push` ждать ~5 минут пока CI отработает, потом скачивать APK артефакт из вкладки Actions GitHub.
 
+## bz5-bridge — облачный backend (отдельный репо, отдельная плоскость)
+
+С v0.1.28 у проекта есть **серверный компонент** — `bz5-bridge`,
+FastAPI + Postgres сервис на VPS владельца. Не путать с
+`bz5_companion`: это два **независимых** репозитория, два деплоя,
+два source of truth.
+
+### Источник правды о контракте — **публичные endpoints живой инсталляции**
+
+```
+https://carbridge.neardo.work/client-api.md   ← intent + rules + retry policy
+https://carbridge.neardo.work/openapi.json    ← machine spec, FastAPI auto-gen
+https://carbridge.neardo.work/docs            ← Swagger UI (для глаз)
+```
+
+**Перед тем как трогать любой клиентский код связанный с bridge'ом**
+(`lib/services/cloud_sync_service.dart`, `lib/services/bridge_diag_service.dart`,
+setup flow в Settings) — **обязательно** прочитать обе спеки выше.
+Они auto-deploy'ятся при каждом `make deploy` на VPS; версия в
+памяти / в старой переписке быстро устаревает.
+
+Если WebFetch к этим URL'ам падает — попроси владельца проверить
+статус bridge'а **до** того как делать предположения о контракте.
+
+### Две независимые плоскости в bridge'е
+
+Это критичный архитектурный принцип. Они НЕ должны смешиваться в
+клиенте:
+
+**Plane B — Cloud backup** (`/v1/data/*`):
+- Долговечная. Трипы, snapshots, sweep runs, live-log sessions,
+  feature catalog.
+- Клиент: `lib/services/cloud_sync_service.dart` — singleton
+  ChangeNotifier. Включается флагом `cloud_sync_enabled` в
+  SharedPreferences.
+- UI: блок "Cloud backup" в Settings screen.
+- Что делает: периодически (1 min) пушит новые Drift-записи на
+  сервер по cursor'ам. Read-only к Drift, никогда не пишет обратно.
+
+**Plane A — Diagnostic recon** (`/v1/diag/*`, `/v1/commands/*`):
+- Временная. Будет удалена когда native API калибровка завершится
+  и Plane A перестанет быть нужным.
+- Клиент: `lib/services/bridge_diag_service.dart` — singleton
+  ChangeNotifier. Включается флагом `bridge_diag_enabled`.
+- UI: только в Native Explorer screen (debug-only, скрыт за toggle).
+- Что делает: long-poll к `/v1/commands/next`, исполняет команды
+  через NativeCarChannel или BLE, постит результат обратно.
+
+**Принцип не нарушать**:
+- Никакого shared state между двумя сервисами.
+- Никаких shared cursors, shared backoff, shared error buffers.
+- Каждый имеет свой флаг в SharedPreferences.
+- Каждый можно выключить независимо.
+- UI каждого появляется только в своём месте (Settings vs Native
+  Explorer); никогда не на основных экранах Dashboard/Driver/etc.
+
+### Авторизация — три типа токенов
+
+- **Setup token** — одноразовый, выдаётся владельцем человеку.
+  Используется ОДИН раз в `POST /v1/setup/register-device`.
+  Клиент дропает после успешной регистрации.
+- **Client token** — формат `<device_id>.<secret>`. Возвращается
+  register-device endpoint'ом. Хранится в `flutter_secure_storage`
+  (Keystore/Keychain), **никогда не в SharedPreferences**.
+  Используется для всех ingest + command channel calls.
+- **Admin token** — у владельца / у Claude Code на VPS. **В app
+  никогда не попадает**.
+
+### Vehicle и device-ids — текущие константы для тестов
+
+- `vehicle_id = 842665c4-a20b-4c6f-bc9c-ece32bf58cc8` (BYD BZ5 2024)
+- `BRIDGE_DOMAIN = carbridge.neardo.work`
+
+После register-device клиент получает device_id, дальше работает
+по нему. Setup token ротируется владельцем — не хардкодить.
+
+### CLIENT_API.md error contract memo
+
+Эта секция отражает ПОНИМАНИЕ автора клиента на момент написания
+этой строки. **При расхождении со спекой на сервере — спека на
+сервере выигрывает**, обнови этот раздел или просто перечитай
+WebFetch.
+
+- 401 → markTokenBad после **3 подряд** (не первого). Это
+  отступление от изначального дизайна — нужно для устойчивости
+  к транзиентным сбоям nginx во время deploy. Реализовано не
+  везде — проверить.
+- 403 samples_disabled → запомнить в prefs `samples-rejected: true`,
+  не повторять 24 часа.
+- 408/429/5xx → exponential backoff 5/15/45/120 s.
+- 409 already_revoked → сразу authFailed, попросить re-register.
+- Idempotency через `(device_id, client_*_id)` UNIQUE с ON CONFLICT
+  DO NOTHING. Повтор POST'а — безопасный no-op.
+
+### Что НЕ делать на клиентской стороне (повтор для bridge-кода)
+
+Это копия v2-prompt'а §4 для напоминания:
+
+- Не трогать `connection.dart` / `elm327_ble.dart` / `database.dart`
+  при работе над bridge кодом. Bridge — аддитивный слой.
+- Не модифицировать существующие Drift таблицы. Bridge state
+  (cursors, retry queue) живёт в SharedPreferences или новой
+  таблице `bridge_outbox`, никогда inline в existing tables.
+- Два независимых сервиса, не один комбинированный uploader.
+- Команды от server'а выполнять serially в order received.
+  Не reorder'ить.
+
+### Что осталось как baseline для будущих сессий
+
+- **v0.1.28+1** — CloudSyncService Phase 1 (ingest + setup). Готов
+  но **ещё не интегрирован end-to-end** (ждём подтверждения 
+  обновлённого error contract от server'а и patch'а с 429/409/3-401).
+- **BridgeDiagService** — не начат на момент v0.1.29+1. Track 2
+  в roadmap.
+- **MCP-сервер** поверх admin endpoints bridge'а — anti-scope сейчас.
+  Когда будет — клиентский Claude получит способность ставить
+  команды через MCP вместо curl.
+
+
 ## Принципы кода
 
 - **Минимальное вторжение в существующий код**. `ConnectionService` (3519 LOC) — не рефакторить. Новые feature — параллельные модули.
@@ -283,7 +416,37 @@ APK подписывается одним и тем же keystore во всех 
 - Если редактируешь MainActivity.kt / AndroidManifest.xml — предупреждай в commit message что если у пользователя там были кастомные правки, они потерялись, и предлагай `git diff HEAD~1` для проверки.
 - Если что-то неоднозначное в decompile recon — отметь в `docs/BZ5_NATIVE_API_RECON.md` как "не верифицировано" и не клади в production код, пока пользователь не подтвердит на машине.
 
-## .gitignore gotcha — kotlin/ исторически был исключён (исправлено в v0.1.27)
+## Patch history at a glance — последние патчи и их суть
+
+Когда восстанавливаешь контекст в новой сессии, эта таблица —
+быстрый способ понять что недавно делали и какая логика в каком
+файле живёт. Список в обратном хронологическом порядке.
+
+| Версия     | Что сделано (одна строка) |
+|------------|---------------------------|
+| 0.1.29+1   | BZ3 tall portrait dashboard: conditional 3-col grid + `_TallDriverSection` под grid когда `height > 1400 && width > 700`. Удалён factory footer "@14.4 kWh/100km · 65.28 kWh" из SocCard и из Calibration card (устаревший + BZ5-specific). |
+| 0.1.28+1   | CloudSyncService: новый файл `lib/services/cloud_sync_service.dart` (singleton ChangeNotifier), Plane B ingest для trips/snapshots/sweeps/livelogs/heartbeat. UI в Settings (новая секция Cloud backup с 3-шаговым setup-флоу). Added deps: `http`, `flutter_secure_storage`. **Pending**: 429 retry, 409 already_revoked, 3-consecutive-401 — ждём финальный CLIENT_API.md от bridge owner'а. |
+| 0.1.27+2   | `packVoltageFromCells` getter в connection.dart — primary live pack V = avg(20 cells) × (_packCellCount ?? 136). Заменяет hvBusV (показывал -83V offset при DC charging — физически невозможно) и nominal 450V константу. **Аддитивный getter, существующие не тронуты**. Dashboard hero panel переключён на новый источник. |
+| 0.1.27+1   | Trip cost UI (CostSettings ChangeNotifier + UI в Settings: cost_per_kwh + currency_symbol). Driver wide получил primary cost cell справа от "THIS TRIP #N". Trip Detail: добавлен "Total cost", удалены неработающие Peak power / Peak regen rows + italic note про HV-bus sag estimation. Cells.dart: header 'TEMP °C' → 'Δ'. M6 fallback color от соседнего модуля. |
+| 0.1.26+18  | Diagnostic dump file feature: новый `lib/services/diag_dump_file.dart` пишет в `/sdcard/Download/bz5_companion_diag.md`. Toggle "Auto-append" в Dump card в Native Explorer. |
+
+### Файлы которые накапливают изменения чаще всего
+
+- `lib/services/connection.dart` — но **только additive getter'ы**,
+  без рефакторинга existing logic
+- `lib/screens/dashboard.dart` — узкий dashboard, BZ5 phone + BZ3 portrait
+- `lib/screens/wide/dashboard_wide.dart` — широкий dashboard, BZ5 head unit
+- `lib/screens/settings.dart` — растёт каждый patch (cost, cloud sync, etc.)
+- `lib/screens/wide/driver_view_wide.dart` — Driver tab head unit
+
+### Файлы которые **не** меняем
+
+- `lib/services/elm327_ble.dart`
+- `lib/data/database.dart` (Drift schema — никаких новых таблиц/колонок)
+- `android/app/src/main/AndroidManifest.xml` (BLE+BYDAUTO perms финализированы)
+- Любой `.g.dart` (auto-generated)
+
+
 
 В этом репо до v0.1.27 в `.gitignore` была строка:
 
