@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import 'data/database.dart';
 import 'services/connection.dart';
 import 'services/cost_settings.dart';
+import 'services/cloud_sync_service.dart';
 import 'screens/home.dart';
 
 void main() async {
@@ -69,6 +70,13 @@ class _BZ5AppState extends State<BZ5App> with WidgetsBindingObserver {
     // ChangeNotifier (see services/cost_settings.dart) — kept separate
     // from ConnectionService per CLAUDE.md (don't touch the 3519-LOC
     // BLE god-object).
+    //
+    // v0.1.28: CloudSyncService added as a third independent provider.
+    // It reads Drift tables read-only (never writes back) and pushes
+    // to the bz5-bridge server. Lives entirely independently of
+    // ConnectionService — bridge work is additive per CLAUDE.md.
+    // Its .init() is fire-and-forget; first build shows
+    // CloudSyncStatus.disconnected until prefs/keystore loads complete.
     return MultiProvider(
       providers: [
         ChangeNotifierProvider<ConnectionService>.value(value: widget.svc),
@@ -78,6 +86,9 @@ class _BZ5AppState extends State<BZ5App> with WidgetsBindingObserver {
           // prefs actually arrive. In practice load is sub-100ms so
           // this only matters on the very first frame.
           create: (_) => CostSettings()..load(),
+        ),
+        ChangeNotifierProvider<CloudSyncService>(
+          create: (_) => CloudSyncService(db: widget.db)..init(),
         ),
       ],
       child: MaterialApp(

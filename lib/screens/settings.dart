@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../services/connection.dart';
 import '../services/cost_settings.dart';
+import '../services/cloud_sync_service.dart';
 import 'about.dart';
 import 'data_management.dart';
 import 'diagnostics.dart';
@@ -170,6 +171,420 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  // v0.1.28: cloud backup UI helpers. Three pieces:
+  //   * _buildCloudHeader — section title + icon
+  //   * _buildCloudBody — the four states (disconnected, paused,
+  //     ok, error) each with its own buttons and status text
+  //   * _showCloudSetupDialog — multi-step setup flow (token →
+  //     vehicle list → confirm)
+  // No state on the screen itself — CloudSyncService is the source
+  // of truth and triggers rebuilds via Provider.
+
+  Widget _buildCloudHeader(CloudSyncService cs) {
+    final color = _cloudStatusColor(cs.status);
+    return ListTile(
+      leading: Icon(Icons.cloud_outlined, color: color),
+      title: const Text('Cloud backup'),
+      subtitle: Text(_cloudStatusLabel(cs)),
+    );
+  }
+
+  Widget _buildCloudBody(BuildContext context, CloudSyncService cs) {
+    if (!cs.isInitialized) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        child: Text('Loading…', style: TextStyle(color: Colors.grey)),
+      );
+    }
+    if (!cs.isRegistered) {
+      // Disconnected. Show a button to start setup.
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          const Text(
+            'Save trip history and BMS snapshots to the bz5-bridge so '
+            'they survive head-unit reinstalls. Setup needs a token '
+            'from the bridge owner.',
+            style: TextStyle(fontSize: 12, color: Colors.grey),
+          ),
+          const SizedBox(height: 8),
+          ElevatedButton.icon(
+            icon: const Icon(Icons.cloud_sync),
+            label: const Text('Set up cloud backup'),
+            onPressed: () => _showCloudSetupDialog(context, cs),
+          ),
+        ]),
+      );
+    }
+    // Registered. Show toggle + status + actions.
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(0, 0, 0, 8),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        SwitchListTile(
+          dense: true,
+          title: const Text('Enabled'),
+          subtitle: Text(cs.vehicleName ?? '(unknown vehicle)'),
+          value: cs.enabled,
+          onChanged: (v) => cs.setEnabled(v),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            if (cs.lastSuccessAt != null)
+              Text('Last sync: ${_relTime(cs.lastSuccessAt!)}',
+                  style: const TextStyle(fontSize: 12, color: Colors.grey))
+            else
+              const Text('Last sync: never',
+                  style: TextStyle(fontSize: 12, color: Colors.grey)),
+            if (cs.stats.totalPending > 0)
+              Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: Text(
+                  'Pending: ${cs.stats.pendingTrips} trips, '
+                  '${cs.stats.pendingSnapshots} snapshots, '
+                  '${cs.stats.pendingSweeps} sweeps, '
+                  '${cs.stats.pendingLiveLogs} live-logs',
+                  style: const TextStyle(fontSize: 12, color: Colors.grey),
+                ),
+              ),
+            if (cs.lastError != null) ...[
+              const SizedBox(height: 4),
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.red.withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  cs.lastError!,
+                  style: const TextStyle(fontSize: 12, color: Colors.redAccent),
+                ),
+              ),
+            ],
+          ]),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+          child: Wrap(spacing: 8, runSpacing: 4, children: [
+            OutlinedButton.icon(
+              icon: const Icon(Icons.refresh, size: 18),
+              label: const Text('Sync now'),
+              onPressed: cs.status == CloudSyncStatus.syncing
+                  ? null
+                  : () => cs.syncOnce(reason: 'manual-button'),
+            ),
+            OutlinedButton.icon(
+              icon: const Icon(Icons.replay, size: 18),
+              label: const Text('Force full resync'),
+              onPressed: cs.status == CloudSyncStatus.syncing
+                  ? null
+                  : () => _confirmAndForceResync(context, cs),
+            ),
+            OutlinedButton.icon(
+              icon: const Icon(Icons.link_off, size: 18),
+              label: const Text('Disconnect'),
+              onPressed: () => _confirmAndDisconnect(context, cs),
+            ),
+          ]),
+        ),
+      ]),
+    );
+  }
+
+  Color _cloudStatusColor(CloudSyncStatus s) {
+    switch (s) {
+      case CloudSyncStatus.idle:
+        return Colors.lightGreenAccent;
+      case CloudSyncStatus.syncing:
+        return Colors.lightBlueAccent;
+      case CloudSyncStatus.error:
+      case CloudSyncStatus.authFailed:
+        return Colors.redAccent;
+      case CloudSyncStatus.pausedByUser:
+        return Colors.amber;
+      case CloudSyncStatus.disconnected:
+        return Colors.grey;
+    }
+  }
+
+  String _cloudStatusLabel(CloudSyncService cs) {
+    switch (cs.status) {
+      case CloudSyncStatus.disconnected:
+        return 'Not set up';
+      case CloudSyncStatus.pausedByUser:
+        return 'Paused';
+      case CloudSyncStatus.idle:
+        return cs.stats.totalPending == 0 ? 'Up to date' : 'Caught up, scheduled';
+      case CloudSyncStatus.syncing:
+        return 'Syncing…';
+      case CloudSyncStatus.error:
+        return 'Error — retrying';
+      case CloudSyncStatus.authFailed:
+        return 'Auth failed — re-register required';
+    }
+  }
+
+  String _relTime(DateTime t) {
+    final diff = DateTime.now().difference(t);
+    if (diff.inSeconds < 60) return '${diff.inSeconds}s ago';
+    if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
+    if (diff.inHours < 24) return '${diff.inHours}h ago';
+    return '${diff.inDays}d ago';
+  }
+
+  Future<void> _showCloudSetupDialog(
+      BuildContext context, CloudSyncService cs) async {
+    final tokenCtrl = TextEditingController();
+    final urlCtrl = TextEditingController(text: cs.baseUrl);
+    // Step 1: collect setup token + (optionally) override base URL.
+    final phase1 = await showDialog<Map<String, String>?>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Cloud backup — Setup'),
+        content: SingleChildScrollView(
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            const Text(
+              'Enter the setup token provided by the bridge owner. '
+              'This token can only be used once; the owner will need '
+              'to reissue it if you re-register later.',
+              style: TextStyle(fontSize: 12),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: tokenCtrl,
+              autofocus: true,
+              decoration: const InputDecoration(
+                labelText: 'Setup token',
+                hintText: 'e.g. n0u…',
+              ),
+            ),
+            const SizedBox(height: 8),
+            ExpansionTile(
+              title: const Text('Advanced', style: TextStyle(fontSize: 13)),
+              tilePadding: EdgeInsets.zero,
+              childrenPadding: EdgeInsets.zero,
+              children: [
+                TextField(
+                  controller: urlCtrl,
+                  decoration: const InputDecoration(
+                    labelText: 'Bridge URL',
+                    hintText: 'https://carbridge.neardo.work',
+                  ),
+                ),
+              ],
+            ),
+          ]),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(null),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              if (tokenCtrl.text.trim().isEmpty) return;
+              Navigator.of(ctx).pop({
+                'token': tokenCtrl.text.trim(),
+                'url': urlCtrl.text.trim(),
+              });
+            },
+            child: const Text('Continue'),
+          ),
+        ],
+      ),
+    );
+    if (phase1 == null) return;
+    final setupToken = phase1['token']!;
+    final newUrl = phase1['url']!;
+
+    if (newUrl.isNotEmpty && newUrl != cs.baseUrl) {
+      await cs.setBaseUrl(newUrl);
+    }
+
+    // Step 2: fetch vehicle list and let user pick. Show a "loading"
+    // dialog while the request is in flight.
+    List<CloudVehicle>? vehicles;
+    String? err;
+    if (!context.mounted) return;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const AlertDialog(
+        content: SizedBox(
+          height: 60,
+          child: Center(child: CircularProgressIndicator()),
+        ),
+      ),
+    );
+    try {
+      vehicles = await cs.listVehiclesForSetup(setupToken);
+    } catch (e) {
+      err = e.toString();
+    }
+    if (!context.mounted) return;
+    Navigator.of(context, rootNavigator: true).pop(); // dismiss loader
+
+    if (err != null) {
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Setup failed'),
+          content: Text(err!),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text('OK')),
+          ],
+        ),
+      );
+      return;
+    }
+    if (vehicles == null || vehicles.isEmpty) {
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => const AlertDialog(
+          title: Text('No vehicles'),
+          content: Text(
+              'The bridge has no vehicles configured. Ask the owner to seed one.'),
+        ),
+      );
+      return;
+    }
+
+    final picked = await showDialog<CloudVehicle>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Choose vehicle'),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: ListView(
+            shrinkWrap: true,
+            children: vehicles!
+                .map((v) => ListTile(
+                      title: Text(v.displayName),
+                      subtitle: Text('${v.manufacturer} ${v.model}'
+                          '${v.modelYear != null ? " ${v.modelYear}" : ""}'),
+                      onTap: () => Navigator.of(ctx).pop(v),
+                    ))
+                .toList(),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Cancel'),
+          ),
+        ],
+      ),
+    );
+    if (picked == null) return;
+
+    // Step 3: register. Show loader, capture error.
+    if (!context.mounted) return;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const AlertDialog(
+        content: SizedBox(
+          height: 60,
+          child: Center(child: CircularProgressIndicator()),
+        ),
+      ),
+    );
+    String? regErr;
+    try {
+      // Display name reflects this app instance — "phone" is a sensible
+      // default since the user is doing setup from their phone. The
+      // owner can rename via admin tools later if needed.
+      await cs.registerDevice(
+        setupToken: setupToken,
+        vehicleId: picked.id,
+        displayName: 'BZ5 companion (phone)',
+        clientVersion: '0.1.28+1',
+        kind: 'phone',
+      );
+    } catch (e) {
+      regErr = e.toString();
+    }
+    if (!context.mounted) return;
+    Navigator.of(context, rootNavigator: true).pop();
+
+    if (regErr != null) {
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Registration failed'),
+          content: Text(regErr!),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text('OK')),
+          ],
+        ),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content: Text('Connected to ${picked.displayName}. '
+                'First sync will run in the background.')),
+      );
+    }
+  }
+
+  Future<void> _confirmAndForceResync(
+      BuildContext context, CloudSyncService cs) async {
+    final ok = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('Force full resync?'),
+            content: const Text(
+                'This re-uploads every trip, snapshot, sweep and live-log '
+                'from local DB. The bridge will dedupe — old records '
+                'already on the server are not duplicated. Useful after '
+                'a Drift restore. May take a few minutes.'),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.of(ctx).pop(false),
+                  child: const Text('Cancel')),
+              ElevatedButton(
+                  onPressed: () => Navigator.of(ctx).pop(true),
+                  child: const Text('Force resync')),
+            ],
+          ),
+        ) ??
+        false;
+    if (ok) {
+      await cs.forceFullResync();
+    }
+  }
+
+  Future<void> _confirmAndDisconnect(
+      BuildContext context, CloudSyncService cs) async {
+    final ok = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('Disconnect from bridge?'),
+            content: const Text(
+                'This removes the saved client token. Local Drift data '
+                'stays intact. To re-enable you will need a fresh setup '
+                'token from the bridge owner.'),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.of(ctx).pop(false),
+                  child: const Text('Cancel')),
+              TextButton(
+                  style: TextButton.styleFrom(foregroundColor: Colors.red),
+                  onPressed: () => Navigator.of(ctx).pop(true),
+                  child: const Text('Disconnect')),
+            ],
+          ),
+        ) ??
+        false;
+    if (ok) {
+      await cs.disconnect();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final svc = context.watch<ConnectionService>();
@@ -249,6 +664,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
             ]);
           }),
+          // v0.1.28: cloud backup card. Builder isolates the watch
+          // call so only this section rebuilds when sync status
+          // changes. UI-only; all logic lives in CloudSyncService.
+          Builder(builder: (context) {
+            final cs = context.watch<CloudSyncService>();
+            return Column(children: [
+              const Divider(),
+              _buildCloudHeader(cs),
+              _buildCloudBody(context, cs),
+            ]);
+          }),
+          const Divider(),
           if (svc.status != ConnectionStatus.connected) ...[
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
