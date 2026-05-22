@@ -72,8 +72,13 @@ class _Connected extends StatelessWidget {
     final rangeKm = svc.rangeEstimateKm;
     final tripEnergy = svc.tripEnergyKwh;
     final cycles = svc.cycleCount;
+    // v0.1.27+2: primary pack V = sum-of-cells average × N (N = BMS-reported
+    // series count, fallback 136 for BZ5). Most reliable live source;
+    // see ConnectionService.packVoltageFromCells. Old sources kept as
+    // fallback only.
+    final packFromCells = svc.packVoltageFromCells;
     final packV = svc.packVoltageV;       // platform constant ~450V (kept for snapshot DB)
-    final hvBus = svc.hvBusV;              // live HV bus voltage
+    final hvBus = svc.hvBusV;              // HV bus, used as fallback only
     final parkingEngaged = svc.parkingPawlEngaged;
     final chargedSession = svc.chargedThisSessionKwh;
     // v0.1.22: live signals from PDU (740) added to UI.
@@ -103,19 +108,22 @@ class _Connected extends StatelessWidget {
               // Decoder применяет offset −40, не вычитаем повторно.
               value: tempRaw != null ? '${tempRaw.toInt()}°C' : '—',
             ),
-            // v0.1.20: primary V source = HV bus 790/0x0015 (the only
-            // genuinely live pack voltage we have). 740/0x0022 was nominal
-            // platform constant (~450V) and didn't reflect actual load.
-            // Fallback chain: hvBus first → packV nominal → '—'.
+            // v0.1.27+2: primary = avg(cells) × N — most reliable
+            // live pack V (N = BMS-reported series cell count, 136
+            // on BZ5). Fallback chain when cells haven't been polled
+            // yet: hvBus → nominal constant → '—'. Asterisk on
+            // fallbacks indicates degraded source.
             _MetricCard(
               icon: Icons.bolt,
               color: Colors.yellowAccent,
               label: 'Pack V',
-              value: hvBus != null
-                  ? '${hvBus.toStringAsFixed(1)} V'
-                  : packV != null
-                      ? '${packV.toStringAsFixed(1)} V*'
-                      : '—',
+              value: packFromCells != null
+                  ? '${packFromCells.toStringAsFixed(1)} V'
+                  : hvBus != null
+                      ? '${hvBus.toStringAsFixed(1)} V*'
+                      : packV != null
+                          ? '${packV.toStringAsFixed(1)} V*'
+                          : '—',
             ),
             _MetricCard(
               icon: Icons.speed,

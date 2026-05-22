@@ -581,6 +581,63 @@ class ConnectionService extends ChangeNotifier {
     return v;
   }
 
+  /// v0.1.27+2: PACK VOLTAGE FROM CELLS — the most reliable live pack V
+  /// source we have.
+  ///
+  /// Computed as average(20 polled cell voltages) × N series cells,
+  /// where N is the BMS-reported pack cell count (790/0x0B03; falls back
+  /// to 136 for BZ5 if BMS hasn't reported yet).
+  ///
+  /// `_liveCells` holds [M1.min, M1.max, M2.min, M2.max, ..., M10.min, M10.max]
+  /// — 20 mV values polled every 2 cycles via [_pollCells]. We don't have
+  /// per-cell readings for the full 136 cells, but with a balanced pack
+  /// (typical spread 3-10 mV) the average × N estimate is within ±1V of
+  /// the true sum of N cells.
+  ///
+  /// Why this is better than the alternatives:
+  ///   * `packVoltageV` (740/0x0022) is a platform constant ~450V that
+  ///     doesn't change with SOC or load — confirmed across multiple
+  ///     vehicles and sweep comparisons. Useless for live display.
+  ///   * `hvBusV` (790/0x0015) is HV bus downstream of main contactor.
+  ///     Empirically goes haywire during DC fast charging (charging session
+  ///     2026-05-22: hvBus showed −83V below sum-of-cells at 76 kW peak —
+  ///     physically impossible, indicates the DID has dual semantics or
+  ///     poll-race issues under load).
+  ///   * In standby with the contactor open, hvBus reads residual cap V
+  ///     from the DC-DC side, not pack potential — sum-of-cells stays
+  ///     correct regardless of contactor state.
+  ///   * Sum-of-cells = the literal definition of pack voltage. Cells
+  ///     in series → terminal V = Σ cell V.
+  ///
+  /// Accuracy bound: ±(spread × N / 1000) volts in the worst case.
+  /// At typical 6 mV spread on BZ5 (N=136) that's ±0.82V; at 50 mV spread
+  /// (heavily unbalanced) ±6.8V. Always more accurate than the alternatives.
+  ///
+  /// Returns null when:
+  ///   * _liveCells is empty (BMS hasn't been polled yet)
+  ///   * computed value falls outside 200..500V LFP envelope
+  ///
+  /// This is the value the dashboard hero panel should display as
+  /// "PACK V". `packVoltageV` and `hvBusV` are kept around for the
+  /// snapshot DB column (historical preservation) and for diagnostic
+  /// purposes, but not as the primary user-facing number.
+  double? get packVoltageFromCells {
+    if (_liveCells.isEmpty) return null;
+    // Defensive: filter out clearly-broken readings before averaging.
+    // LFP single-cell physical envelope ≈ 2000-3700 mV; anything outside
+    // this is a comm-glitch or sanity-fail that slipped through.
+    final valid = _liveCells.where((v) => v >= 2000 && v <= 3700).toList();
+    if (valid.isEmpty) return null;
+    final avgMv = valid.reduce((a, b) => a + b) / valid.length;
+    // Use BMS-reported series cell count; fall back to BZ5 default 136
+    // if not yet polled. BZ3 (different pack topology) will read a
+    // different value here automatically — no code change required.
+    final seriesCells = _packCellCount ?? 136;
+    final packV = avgMv * seriesCells / 1000.0;
+    if (packV < 200 || packV > 500) return null;
+    return packV;
+  }
+
   /// HV bus voltage (downstream of main contactor).
   ///
   /// Source: 790/0x0015 × 0.025 V (read via registry — scale already

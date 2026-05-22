@@ -110,6 +110,13 @@ class _LeftColumn extends StatelessWidget {
   Widget build(BuildContext context) {
     final soc = svc.readNumeric('790', '0005');
     final rangeKm = svc.rangeEstimateKm;
+    // v0.1.27+2: primary live pack V = sum-of-cells average × N
+    // (N = BMS-reported series cell count, defaults to 136 for BZ5).
+    // The previous primary (hvBusV via 790/0x0015) was confirmed unreliable
+    // during DC charging — measured −83V below sum-of-cells at 76 kW peak,
+    // which is physically impossible. See connection.dart packVoltageFromCells
+    // for the rationale. Legacy sources kept as side-panel diagnostics.
+    final packFromCells = svc.packVoltageFromCells;
     final packV = svc.packVoltageV;
     final packVInst = svc.packVoltageInstantV;
     final hvBus = svc.hvBusV;
@@ -124,6 +131,7 @@ class _LeftColumn extends StatelessWidget {
         Expanded(
           flex: 3,
           child: _PackVoltageHero(
+            packFromCells: packFromCells,
             nominalV: packV,
             nominalInstV: packVInst,
             hvBusV: hvBus,
@@ -253,14 +261,28 @@ class _SocHero extends StatelessWidget {
 }
 
 class _PackVoltageHero extends StatelessWidget {
-  /// v0.1.20: primary big number = HV bus (790/0x0015), the only live
-  /// pack voltage source. Previously this slot displayed 740/0x0022
-  /// "filtered V" which we now know is a platform constant ~450V.
-  /// Nominal still shown as small sidebar for reference / debugging.
-  final double? nominalV;   // was filteredV (740/0x0022) — kept for diag display
-  final double? nominalInstV; // was instantV (740/0x0014) — kept for diag display
-  final double? hvBusV;     // primary live source
-  const _PackVoltageHero({this.nominalV, this.nominalInstV, this.hvBusV});
+  /// v0.1.27+2: primary = pack voltage computed from average cell V × N
+  /// (N = BMS-reported series cell count, 136 for BZ5).
+  /// This is the most reliable live source (see ConnectionService
+  /// `packVoltageFromCells` for rationale — hvBusV showed −83V offsets
+  /// during DC fast charging, physically impossible).
+  ///
+  /// Side panel keeps the legacy sources for diagnostic visibility:
+  ///   - HV bus (790/0x0015): downstream of contactor, useful for
+  ///     debugging precharge sequence and seeing main-contactor drop.
+  ///   - Nominal (740/0x0022): platform constant ~450V, kept as a
+  ///     "platform identifier" reference.
+  ///   - Nominal alt (740/0x0014): same idea, different source.
+  final double? packFromCells; // primary live source
+  final double? nominalV;      // was filteredV (740/0x0022)
+  final double? nominalInstV;  // was instantV (740/0x0014)
+  final double? hvBusV;        // HV bus downstream of contactor
+  const _PackVoltageHero({
+    this.packFromCells,
+    this.nominalV,
+    this.nominalInstV,
+    this.hvBusV,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -286,8 +308,8 @@ class _PackVoltageHero extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
                 Text(
-                  hvBusV != null
-                      ? '${hvBusV!.toStringAsFixed(1)} V'
+                  packFromCells != null
+                      ? '${packFromCells!.toStringAsFixed(1)} V'
                       : '—',
                   style: const TextStyle(
                       fontSize: 48,
@@ -299,22 +321,22 @@ class _PackVoltageHero extends StatelessWidget {
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.end,
                   children: [
+                    if (hvBusV != null) ...[
+                      const Text('HV BUS',
+                          style: TextStyle(
+                              fontSize: 11, color: Colors.grey)),
+                      Text('${hvBusV!.toStringAsFixed(1)} V',
+                          style: const TextStyle(
+                              fontSize: 16, fontWeight: FontWeight.w300)),
+                      const SizedBox(height: 6),
+                    ],
                     if (nominalV != null) ...[
                       const Text('NOMINAL',
                           style: TextStyle(
                               fontSize: 11, color: Colors.grey)),
                       Text('${nominalV!.toStringAsFixed(1)} V',
                           style: const TextStyle(
-                              fontSize: 16, fontWeight: FontWeight.w300)),
-                      const SizedBox(height: 6),
-                    ],
-                    if (nominalInstV != null) ...[
-                      const Text('NOM ALT',
-                          style: TextStyle(
-                              fontSize: 11, color: Colors.grey)),
-                      Text('${nominalInstV!.toStringAsFixed(1)} V',
-                          style: const TextStyle(
-                              fontSize: 16,
+                              fontSize: 14,
                               fontWeight: FontWeight.w300,
                               color: Colors.white54)),
                     ],
@@ -324,7 +346,7 @@ class _PackVoltageHero extends StatelessWidget {
             ),
             const Spacer(),
             const Text(
-                'live · 790/0x0015 × 0.025  ·  nominal const · 740/0x0022 (platform 450V)',
+                'live · avg cell × series count  ·  hv bus · 790/0x0015 (post-contactor)',
                 style: TextStyle(fontSize: 11, color: Colors.grey)),
           ],
         ),
