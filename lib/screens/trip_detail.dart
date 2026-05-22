@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 
 import '../data/database.dart';
 import '../services/connection.dart';
+import '../services/cost_settings.dart';
 
 /// v0.1.9: Trip detail screen.
 ///
@@ -309,6 +310,10 @@ class DerivedMetricsCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // v0.1.27: watch cost settings so the Total cost row rebuilds
+    // reactively when the user edits cost_per_kwh in Settings.
+    final cost = context.watch<CostSettings>();
+
     final dist = trip.distanceKm ??
         ((trip.endOdometer != null && trip.startOdometer != null)
             ? (trip.endOdometer! - trip.startOdometer!)
@@ -317,6 +322,13 @@ class DerivedMetricsCard extends StatelessWidget {
         ? (trip.startSoc! - trip.endSoc!)
         : null;
 
+    // v0.1.27: trip cost — only included when cost_per_kwh is
+    // configured AND we have an energy figure to multiply by.
+    final double? totalCost =
+        (cost.isConfigured && trip.energyUsedKwh != null)
+            ? trip.energyUsedKwh! * cost.costPerKwh
+            : null;
+
     final rows = <Widget>[
       _MetricRow('Distance',
           dist != null ? '${dist.toStringAsFixed(2)} km' : '—'),
@@ -324,6 +336,13 @@ class DerivedMetricsCard extends StatelessWidget {
           trip.energyUsedKwh != null
               ? '${trip.energyUsedKwh!.toStringAsFixed(2)} kWh'
               : '—'),
+      // v0.1.27: Total cost row. Hidden when tariff is not configured
+      // (showing "Total cost: —" would just be noise; users who
+      // haven't set cost/kWh don't care about cost). Placed right
+      // after Energy used because conceptually they're the same
+      // metric in two units (kWh vs currency).
+      if (totalCost != null)
+        _MetricRow('Total cost', cost.formatAmount(totalCost)),
       _MetricRow('Avg consumption',
           trip.avgConsumptionKwh100km != null
               ? '${trip.avgConsumptionKwh100km!.toStringAsFixed(1)} kWh/100km'
@@ -345,25 +364,14 @@ class DerivedMetricsCard extends StatelessWidget {
           trip.maxCellSpreadMv != null
               ? '${trip.maxCellSpreadMv!.toStringAsFixed(0)} mV'
               : '—'),
-      _MetricRow('Peak power',
-          trip.peakPowerKw != null
-              ? '${trip.peakPowerKw!.toStringAsFixed(1)} kW'
-              : '— (DID not identified)'),
-      _MetricRow('Peak regen',
-          trip.peakRegenKw != null
-              ? '${trip.peakRegenKw!.toStringAsFixed(1)} kW'
-              : '— (DID not identified)'),
-      // v0.1.26+10: peak_power_kw / peak_regen_kw are now populated by
-      // an HV-bus-sag heuristic (R_pack ≈ 0.18 Ω) when the direct
-      // 791/0x0038 DID is silent — which is the common case during
-      // motion. Accuracy is ±20-30 %.
-      const Padding(
-        padding: EdgeInsets.fromLTRB(0, 4, 0, 4),
-        child: Text(
-          '↑ peak values estimated from HV-bus sag (±20-30%) until pack-current DID is identified',
-          style: TextStyle(fontSize: 10, color: Colors.grey, fontStyle: FontStyle.italic),
-        ),
-      ),
+      // v0.1.27: removed Peak power / Peak regen rows and their
+      // italic explanatory note. Peak power was an HV-bus-sag
+      // heuristic with ±20-30% accuracy; Peak regen had no
+      // identified DID at all. Showing rough/missing values gives a
+      // false sense of precision in what's otherwise a well-derived
+      // metrics card. They'll come back when the underlying DID is
+      // identified (currently being calibrated through Native
+      // Explorer + future bz5-bridge calibration sessions).
       // v0.1.22: peak speed now actually populated (740/0x0008 verified).
       // Remove the "DID not identified" placeholder when value present.
       _MetricRow('Peak speed',

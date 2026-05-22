@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 
 import 'data/database.dart';
 import 'services/connection.dart';
+import 'services/cost_settings.dart';
 import 'screens/home.dart';
 
 void main() async {
@@ -63,8 +64,22 @@ class _BZ5AppState extends State<BZ5App> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    return ChangeNotifierProvider.value(
-      value: widget.svc,
+    // v0.1.27: wrap in MultiProvider so reactive Cost-settings are
+    // available alongside ConnectionService. CostSettings is its own
+    // ChangeNotifier (see services/cost_settings.dart) — kept separate
+    // from ConnectionService per CLAUDE.md (don't touch the 3519-LOC
+    // BLE god-object).
+    return MultiProvider(
+      providers: [
+        ChangeNotifierProvider<ConnectionService>.value(value: widget.svc),
+        ChangeNotifierProvider<CostSettings>(
+          // load() fires async; UI uses CostSettings.isLoaded to avoid
+          // briefly displaying a 0 value as "not configured" before
+          // prefs actually arrive. In practice load is sub-100ms so
+          // this only matters on the very first frame.
+          create: (_) => CostSettings()..load(),
+        ),
+      ],
       child: MaterialApp(
         title: 'BZ5 Companion',
         debugShowCheckedModeBanner: false,

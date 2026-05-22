@@ -269,21 +269,77 @@ class _ThermalView extends StatelessWidget {
                       style: const TextStyle(fontSize: 10, letterSpacing: 0.5, color: Colors.grey),
                     ),
                     const Spacer(),
-                    const Text('MIN..MAX mV · TEMP °C',
+                    // v0.1.27: column heading now says only the
+                    // delta sign — the two columns to the right
+                    // are cell-voltage range and cell-voltage
+                    // delta (both in mV), neither is a temperature
+                    // reading. Per-module temperature is shown
+                    // inside the bar to the left.
+                    const Text('MIN..MAX mV · Δ',
                         style: TextStyle(fontSize: 9, letterSpacing: 0.3, color: Colors.grey)),
                   ],
                 ),
                 const SizedBox(height: 10),
-                ...modules.map((m) => _ModuleRow(
-                      module: m,
-                      tempRange: reportedTemps.isEmpty ? null : reportedTemps,
-                    )),
+                // v0.1.27: for modules without their own temperature
+                // sensor (e.g. M6 on BZ5 — structural, no sensor by
+                // design) we color the bar fill using the nearest
+                // neighbour's temperature so the row doesn't look
+                // visually broken next to its peers. Caption text
+                // inside the bar stays as 'no temp sensor' to keep
+                // the user informed; only the color is borrowed.
+                // Search order: previous (lower index) first, then
+                // next (higher index) — for M6 on BZ5 that means M5
+                // is used by default, exactly as requested.
+                ..._buildModuleRows(modules, reportedTemps),
               ],
             ),
           ),
         ),
       ],
     );
+  }
+
+  /// v0.1.27: build _ModuleRow widgets with neighbour-fallback
+  /// temperatures for modules without their own sensor. The fallback
+  /// is only used for *coloring* the bar — the label inside stays
+  /// 'no temp sensor' so the user knows the value isn't measured.
+  List<Widget> _buildModuleRows(
+    List<ModuleSnapshot> modules,
+    List<double> reportedTemps,
+  ) {
+    final out = <Widget>[];
+    for (int i = 0; i < modules.length; i++) {
+      final m = modules[i];
+      double? fallback;
+      if (!m.hasAnyTemp) {
+        // Search backward first (closer to the user's mental model
+        // of "use the previous module" — M6 borrows from M5).
+        for (int j = i - 1; j >= 0; j--) {
+          final t = modules[j].avgTemp;
+          if (t != null) {
+            fallback = t;
+            break;
+          }
+        }
+        // Forward fallback only if nothing found behind (e.g. when
+        // the very first module of the pack is sensorless).
+        if (fallback == null) {
+          for (int j = i + 1; j < modules.length; j++) {
+            final t = modules[j].avgTemp;
+            if (t != null) {
+              fallback = t;
+              break;
+            }
+          }
+        }
+      }
+      out.add(_ModuleRow(
+        module: m,
+        tempRange: reportedTemps.isEmpty ? null : reportedTemps,
+        fallbackTempC: fallback,
+      ));
+    }
+    return out;
   }
 }
 
@@ -317,11 +373,28 @@ class _SummaryTile extends StatelessWidget {
 class _ModuleRow extends StatelessWidget {
   final ModuleSnapshot module;
   final List<double>? tempRange;
-  const _ModuleRow({required this.module, this.tempRange});
+  /// v0.1.27: optional fallback temperature for modules without an
+  /// own temperature sensor. When set, the bar is filled with the
+  /// color that corresponds to this temperature (instead of being
+  /// a transparent outlined box) so the row sits visually flush
+  /// with its neighbours. The label inside the bar remains 'no temp
+  /// sensor' — only the color is borrowed, not the value.
+  final double? fallbackTempC;
+  const _ModuleRow({
+    required this.module,
+    this.tempRange,
+    this.fallbackTempC,
+  });
 
   @override
   Widget build(BuildContext context) {
     final temp = module.avgTemp;
+    // v0.1.27: temperature used purely for choosing the bar color.
+    // If the module has its own sensor, use that. Otherwise borrow
+    // the neighbour's temperature (passed in via fallbackTempC). If
+    // neither — leave null, which falls through to the original
+    // transparent-outlined-box look.
+    final tempForColor = temp ?? fallbackTempC;
     final delta = module.cellDelta;
     final deltaColor = delta == null
         ? Colors.grey
@@ -333,11 +406,14 @@ class _ModuleRow extends StatelessWidget {
     // визуально ложное "M10 наполовину пустой" когда у него было всего
     // на 0.5°C ниже остальных модулей.
     Color tempBarColor = const Color(0xFF7AB9D4);
-    if (temp != null && tempRange != null && tempRange!.isNotEmpty) {
+    if (tempForColor != null &&
+        tempRange != null &&
+        tempRange!.isNotEmpty) {
       final tmin = tempRange!.reduce((a, b) => a < b ? a : b);
       final tmax = tempRange!.reduce((a, b) => a > b ? a : b);
       if (tmax - tmin > 0.5) {
-        final ratio = ((temp - tmin) / (tmax - tmin)).clamp(0.0, 1.0);
+        final ratio =
+            ((tempForColor - tmin) / (tmax - tmin)).clamp(0.0, 1.0);
         // hot = orange, cool = blue
         tempBarColor = Color.lerp(
           const Color(0xFF7AB9D4),
@@ -376,56 +452,85 @@ class _ModuleRow extends StatelessWidget {
           ),
           // Temperature bar
           Expanded(
-            child: Container(
-              height: 16,
-              decoration: BoxDecoration(
-                color: module.hasAnyTemp ? Colors.grey.shade800 : Colors.transparent,
-                borderRadius: BorderRadius.circular(8),
-                border: module.hasAnyTemp
-                    ? null
-                    : Border.all(color: Colors.grey.shade700, style: BorderStyle.solid, width: 1),
-              ),
-              child: Stack(
-                children: [
-                  if (module.hasAnyTemp)
-                    Container(
-                      decoration: BoxDecoration(
-                        color: tempBarColor,
-                        borderRadius: BorderRadius.circular(8),
+            child: Builder(builder: (context) {
+              // v0.1.27: bar gets a colored fill if the module has its
+              // OWN sensor OR if a neighbour fallback temperature is
+              // available. When borrowing, the bar looks the same as
+              // a measured module — only the label inside differs
+              // ('no temp sensor' instead of '+28°C').
+              final hasFill =
+                  module.hasAnyTemp || fallbackTempC != null;
+              return Container(
+                height: 16,
+                decoration: BoxDecoration(
+                  color: hasFill
+                      ? Colors.grey.shade800
+                      : Colors.transparent,
+                  borderRadius: BorderRadius.circular(8),
+                  border: hasFill
+                      ? null
+                      : Border.all(
+                          color: Colors.grey.shade700,
+                          style: BorderStyle.solid,
+                          width: 1),
+                ),
+                child: Stack(
+                  children: [
+                    if (hasFill)
+                      Container(
+                        decoration: BoxDecoration(
+                          color: tempBarColor,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                      ),
+                    Padding(
+                      padding:
+                          const EdgeInsets.symmetric(horizontal: 8),
+                      child: Align(
+                        alignment: Alignment.centerLeft,
+                        child: tempText != null
+                            ? Text(tempText,
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  color: tempBarColor
+                                              .computeLuminance() >
+                                          0.4
+                                      ? const Color(0xFF1a0a00)
+                                      : Colors.white,
+                                  fontWeight: FontWeight.w500,
+                                ))
+                            : Text(
+                                // v0.1.3: structural, not a comm
+                                // dropout — M6 has no temperature
+                                // sensors by design on BZ5. Cell
+                                // voltages M6 read normally.
+                                // v0.1.6: 'no temp sensor' clearer
+                                // than 'no sensors' (the latter sounds
+                                // like the whole module is offline).
+                                // v0.1.27: when bar is filled via
+                                // fallbackTempC, contrast the label
+                                // against the fill color the same
+                                // way the real temp text does.
+                                'no temp sensor',
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  color: hasFill
+                                      ? (tempBarColor
+                                                  .computeLuminance() >
+                                              0.4
+                                          ? const Color(0xFF1a0a00)
+                                              .withOpacity(0.7)
+                                          : Colors.white70)
+                                      : Colors.grey.shade500,
+                                  letterSpacing: 0.3,
+                                ),
+                              ),
                       ),
                     ),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 8),
-                    child: Align(
-                      alignment: Alignment.centerLeft,
-                      child: tempText != null
-                          ? Text(tempText,
-                              style: TextStyle(
-                                fontSize: 11,
-                                color: tempBarColor.computeLuminance() > 0.4
-                                    ? const Color(0xFF1a0a00)
-                                    : Colors.white,
-                                fontWeight: FontWeight.w500,
-                              ))
-                          : Text(
-                              // v0.1.3: structural, not a comm dropout — M6
-                              // has no temperature sensors by design on BZ5.
-                              // Cell voltages M6 read normally.
-                              // v0.1.6: 'no temp sensor' clearer than 'no
-                              // sensors' (the latter sounds like the whole
-                              // module is offline)
-                              'no temp sensor',
-                              style: TextStyle(
-                                fontSize: 10,
-                                color: Colors.grey.shade500,
-                                letterSpacing: 0.3,
-                              ),
-                            ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
+                  ],
+                ),
+              );
+            }),
           ),
           // Cell range: voltages of A and B in this module (mV)
           SizedBox(

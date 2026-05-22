@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../services/connection.dart';
+import '../services/cost_settings.dart';
 import 'about.dart';
 import 'data_management.dart';
 import 'diagnostics.dart';
@@ -64,6 +65,111 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  // v0.1.27: cost settings editors. Both use a simple AlertDialog +
+  // TextField pattern rather than going through a separate screen —
+  // we have exactly two scalars to edit and a dedicated screen would
+  // be overkill. The dialog dismisses on Save/Cancel; current value
+  // is pre-filled for easy correction of typos.
+  Future<void> _editCostPerKwh(
+      BuildContext context, CostSettings cs) async {
+    final ctrl = TextEditingController(
+      text: cs.costPerKwh > 0 ? cs.costPerKwh.toString() : '',
+    );
+    final result = await showDialog<double>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Стоимость 1 кВт·ч'),
+        content: TextField(
+          controller: ctrl,
+          keyboardType:
+              const TextInputType.numberWithOptions(decimal: true),
+          autofocus: true,
+          decoration: InputDecoration(
+            labelText: 'Цена',
+            hintText: 'Например: 5.50',
+            helperText:
+                'В вашей валюте (символ — ниже в настройках). '
+                '0 = выключить отображение стоимости.',
+            suffixText: cs.currencySymbol,
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(null),
+            child: const Text('Отмена'),
+          ),
+          TextButton(
+            onPressed: () {
+              // Accept comma as decimal separator too — many EU
+              // locales use it natively, and Android numeric keypad
+              // may emit either depending on system locale.
+              final raw = ctrl.text.trim().replaceAll(',', '.');
+              final parsed = double.tryParse(raw);
+              Navigator.of(ctx).pop(parsed);
+            },
+            child: const Text('Сохранить'),
+          ),
+        ],
+      ),
+    );
+    if (result != null) {
+      await cs.setCostPerKwh(result);
+    }
+  }
+
+  Future<void> _editCurrencySymbol(
+      BuildContext context, CostSettings cs) async {
+    final ctrl = TextEditingController(text: cs.currencySymbol);
+    final result = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Символ валюты'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            TextField(
+              controller: ctrl,
+              autofocus: true,
+              maxLength: 4,
+              decoration: const InputDecoration(
+                labelText: 'Символ',
+                hintText: '\$, €, ₽, ¥, RUB, USD...',
+              ),
+            ),
+            const SizedBox(height: 4),
+            const Text('Быстрый выбор:',
+                style: TextStyle(fontSize: 12, color: Colors.grey)),
+            const SizedBox(height: 4),
+            Wrap(
+              spacing: 6,
+              children: [
+                for (final s in ['\$', '€', '£', '¥', '₽', 'RUB'])
+                  ActionChip(
+                    label: Text(s),
+                    onPressed: () => Navigator.of(ctx).pop(s),
+                  ),
+              ],
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(null),
+            child: const Text('Отмена'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(ctrl.text),
+            child: const Text('Сохранить'),
+          ),
+        ],
+      ),
+    );
+    if (result != null) {
+      await cs.setCurrencySymbol(result);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final svc = context.watch<ConnectionService>();
@@ -101,6 +207,48 @@ class _SettingsScreenState extends State<SettingsScreen> {
             value: _matchSpeedometer,
             onChanged: _setMatchSpeedometer,
           ),
+          // v0.1.27: trip cost. Two soft-settings:
+          //   * cost_per_kwh — number in user's currency units.
+          //     Default 0 means "not configured" and hides cost
+          //     displays everywhere in the UI.
+          //   * currency_symbol — short string ($, €, ₽, RUB, etc).
+          //
+          // Both live in CostSettings (services/cost_settings.dart),
+          // a ChangeNotifier registered via Provider in main.dart.
+          // Driver view and trip_detail listen via context.watch and
+          // rebuild reactively when the user edits these values.
+          //
+          // No DB schema change: cost is computed on the fly from
+          // trip.energyUsedKwh × costPerKwh at display time. Changing
+          // the tariff re-prices all historical trips at the new rate
+          // (acceptable for a single-owner app; if multi-tariff
+          // history becomes a requirement that's a separate patch).
+          Builder(builder: (context) {
+            final cs = context.watch<CostSettings>();
+            return Column(children: [
+              const Divider(),
+              ListTile(
+                leading: const Icon(Icons.attach_money,
+                    color: Colors.amber),
+                title: const Text('Cost per kWh'),
+                subtitle: Text(cs.costPerKwh > 0
+                    ? '${cs.formatAmount(cs.costPerKwh)} за 1 кВт·ч'
+                    : 'Не настроено — стоимость поездки не показывается'),
+                trailing: const Icon(Icons.edit),
+                onTap: () => _editCostPerKwh(context, cs),
+              ),
+              ListTile(
+                leading: const Icon(Icons.currency_exchange,
+                    color: Colors.lightGreenAccent),
+                title: const Text('Currency symbol'),
+                subtitle: Text(
+                    'Текущий: "${cs.currencySymbol}" '
+                    '(пример: ${cs.formatAmount(10)})'),
+                trailing: const Icon(Icons.edit),
+                onTap: () => _editCurrencySymbol(context, cs),
+              ),
+            ]);
+          }),
           if (svc.status != ConnectionStatus.connected) ...[
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
