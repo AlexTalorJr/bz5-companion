@@ -72,19 +72,37 @@ class _Connected extends StatelessWidget {
     final rangeKm = svc.rangeEstimateKm;
     final tripEnergy = svc.tripEnergyKwh;
     final cycles = svc.cycleCount;
-    // v0.1.27+2: primary pack V = sum-of-cells average × N (N = BMS-reported
-    // series count, fallback 136 for BZ5). Most reliable live source;
-    // see ConnectionService.packVoltageFromCells. Old sources kept as
-    // fallback only.
-    final packFromCells = svc.packVoltageFromCells;
     final packV = svc.packVoltageV;       // platform constant ~450V (kept for snapshot DB)
-    final hvBus = svc.hvBusV;              // HV bus, used as fallback only
+    final hvBus = svc.hvBusV;              // live HV bus voltage
     final parkingEngaged = svc.parkingPawlEngaged;
     final chargedSession = svc.chargedThisSessionKwh;
     // v0.1.22: live signals from PDU (740) added to UI.
     final vehicleSpeed = svc.vehicleSpeedKmh;       // 740/0x0008 / 14.09
     final pduTemp1 = svc.readNumeric('740', '0010'); // PDU heatsink 1
     final pduTemp2 = svc.readNumeric('740', '0011'); // PDU heatsink 2
+
+    // v0.1.29: detect "tall portrait" head units (BZ3 in particular —
+    // 1080×1920 px, 172 PPI → devicePixelRatio ≈ 1.075 → logical
+    // ~1005 × ~1786 dp). On these we get massive vertical headroom
+    // that we previously left blank, and want to inject a driver-
+    // mini section under the metrics grid.
+    //
+    // Thresholds:
+    //   isTall: height > 1400 dp covers BZ3 (~1786) but never fires
+    //           on phones (typically 700-1000 dp) or BZ5 head unit in
+    //           landscape (~720 dp). Safe one-way enrichment.
+    //   isWideEnough: width > 700 dp lets us fit 3 metric columns
+    //           comfortably. BZ3 (~1005 dp) yes; phones (~412 dp) no.
+    //
+    // When both true we switch the metric grid to 3 columns and
+    // append a driver-mini section (speed/power/peak) below it.
+    // When false the layout is byte-identical to the pre-0.1.29
+    // dashboard — phones see no change.
+    final mq = MediaQuery.of(context);
+    final isTall = mq.size.height > 1400;
+    final isWideEnough = mq.size.width > 700;
+    final useTallLayout = isTall && isWideEnough;
+    final gridCols = useTallLayout ? 3 : 2;
 
     return ListView(
       padding: const EdgeInsets.all(16),
@@ -94,6 +112,7 @@ class _Connected extends StatelessWidget {
         if (isCharging) _ChargingBanner(svc: svc, chargedSession: chargedSession),
         if (isCharging) const SizedBox(height: 12),
         _GridCards(
+          crossAxisCount: gridCols,
           children: [
             _MetricCard(
               icon: Icons.favorite,
@@ -108,22 +127,19 @@ class _Connected extends StatelessWidget {
               // Decoder применяет offset −40, не вычитаем повторно.
               value: tempRaw != null ? '${tempRaw.toInt()}°C' : '—',
             ),
-            // v0.1.27+2: primary = avg(cells) × N — most reliable
-            // live pack V (N = BMS-reported series cell count, 136
-            // on BZ5). Fallback chain when cells haven't been polled
-            // yet: hvBus → nominal constant → '—'. Asterisk on
-            // fallbacks indicates degraded source.
+            // v0.1.20: primary V source = HV bus 790/0x0015 (the only
+            // genuinely live pack voltage we have). 740/0x0022 was nominal
+            // platform constant (~450V) and didn't reflect actual load.
+            // Fallback chain: hvBus first → packV nominal → '—'.
             _MetricCard(
               icon: Icons.bolt,
               color: Colors.yellowAccent,
               label: 'Pack V',
-              value: packFromCells != null
-                  ? '${packFromCells.toStringAsFixed(1)} V'
-                  : hvBus != null
-                      ? '${hvBus.toStringAsFixed(1)} V*'
-                      : packV != null
-                          ? '${packV.toStringAsFixed(1)} V*'
-                          : '—',
+              value: hvBus != null
+                  ? '${hvBus.toStringAsFixed(1)} V'
+                  : packV != null
+                      ? '${packV.toStringAsFixed(1)} V*'
+                      : '—',
             ),
             _MetricCard(
               icon: Icons.speed,
@@ -174,6 +190,23 @@ class _Connected extends StatelessWidget {
               ),
           ],
         ),
+        // v0.1.29: tall-only driver mini-section. Shows the live driving
+        // figures that the wide head-unit Driver tab gets, condensed into
+        // a single card. Hidden on phones (no height for it) and on
+        // landscape head units (which have a dedicated Driver tab).
+        if (useTallLayout) ...[
+          const SizedBox(height: 16),
+          _TallDriverSection(
+            vehicleSpeed: vehicleSpeed,
+            isCharging: isCharging,
+            chargingPower: svc.chargingPowerKw,
+            tripEnergy: tripEnergy,
+            chargedSession: chargedSession,
+            tripPeakSpeed: svc.tripPeakSpeedKmh,
+            tripDistance: svc.tripDistanceKm,
+            tripAvgConsumption: svc.tripAvgConsumptionKwh100km,
+          ),
+        ],
         const SizedBox(height: 12),
         // v5: Parking pawl indicator (мини-строка под grid)
         if (parkingEngaged != null)
@@ -357,9 +390,13 @@ class _SocCard extends StatelessWidget {
                 valueColor: AlwaysStoppedAnimation(color),
               ),
             ),
-            const SizedBox(height: 8),
-            const Text('@ 14.4 kWh/100km · 65.28 kWh capacity',
-                style: TextStyle(fontSize: 10, color: Colors.grey)),
+            // v0.1.29: removed the factory-spec consumption + capacity
+            // footer that lived here. The 14.4 kWh/100km number was a
+            // WLTP marketing figure not matching observed reality
+            // (16-18 kWh/100km on this car), and the 65.28 kWh
+            // capacity is BZ5-specific (BZ3 has 49.92 kWh). Capacity
+            // remains documented in the CALIBRATION card at the
+            // bottom of the dashboard for diagnostic reference.
           ],
         ),
       ),
@@ -511,8 +548,7 @@ class _PhysicsModelCard extends StatelessWidget {
                   '• SOC: BMS 0x0005 · SOH: BMS 0x0029\n'
                   '• Charge counter: BMS 0x0B00, ≈460 Wh/unit\n'
                   '• Cycle count: BMS 0x0B02\n'
-                  '• Gear: VCU 0x0009 (1=P, 2=R, 3=N, 4=D)\n'
-                  '• Avg consumption: 14.4 kWh/100km',
+                  '• Gear: VCU 0x0009 (1=P, 2=R, 3=N, 4=D)',
                   style: const TextStyle(fontSize: 11, color: Colors.grey, height: 1.5),
                 ),
                 if (minIdx != null && maxIdx != null) ...[
@@ -534,17 +570,24 @@ class _PhysicsModelCard extends StatelessWidget {
 
 class _GridCards extends StatelessWidget {
   final List<Widget> children;
-  const _GridCards({required this.children});
+  /// v0.1.29: configurable column count. Defaults to 2 (phone case);
+  /// tall portrait head units like BZ3 pass 3 to get more density and
+  /// free up vertical space for the driver/cells sections below.
+  final int crossAxisCount;
+  const _GridCards({required this.children, this.crossAxisCount = 2});
 
   @override
   Widget build(BuildContext context) {
     return GridView.count(
-      crossAxisCount: 2,
+      crossAxisCount: crossAxisCount,
       shrinkWrap: true,
       physics: const NeverScrollableScrollPhysics(),
       mainAxisSpacing: 8,
       crossAxisSpacing: 8,
-      childAspectRatio: 1.6,
+      // 3-column layout uses narrower cards, so we slightly tighten
+      // the aspect ratio to keep them readable; 2-col stays the
+      // familiar 1.6.
+      childAspectRatio: crossAxisCount == 3 ? 1.3 : 1.6,
       children: children,
     );
   }
@@ -717,6 +760,180 @@ class _MiniStat extends StatelessWidget {
       children: [
         Text(label, style: const TextStyle(fontSize: 11, color: Colors.grey)),
         Text(value, style: TextStyle(fontSize: 16, fontWeight: FontWeight.w500, color: color)),
+      ],
+    );
+  }
+}
+
+/// v0.1.29: tall-portrait driver mini-section. Shows the most
+/// important live driving figures in one card so users on tall
+/// head-unit screens (BZ3 in particular, where the screen is
+/// effectively a portrait tablet ~1005×1786 dp) don't see acres
+/// of empty space below the metrics grid.
+///
+/// Layout:
+///   Row 1 (large): SPEED (km/h, only when moving) +
+///                  POWER (kW, charging or driving — context-sensitive)
+///   Row 2 (small): TRIP DISTANCE | TRIP ENERGY | AVG kWh/100km | PEAK SPEED
+///
+/// All values are nullable-safe. Hidden gracefully when the BMS or
+/// PDU hasn't reported the underlying DID yet — shows "—".
+class _TallDriverSection extends StatelessWidget {
+  final double? vehicleSpeed;
+  final bool isCharging;
+  final double chargingPower;
+  final double? tripEnergy;
+  final double? chargedSession;
+  final double? tripPeakSpeed;
+  final double? tripDistance;
+  final double? tripAvgConsumption;
+
+  const _TallDriverSection({
+    required this.vehicleSpeed,
+    required this.isCharging,
+    required this.chargingPower,
+    required this.tripEnergy,
+    required this.chargedSession,
+    required this.tripPeakSpeed,
+    required this.tripDistance,
+    required this.tripAvgConsumption,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    // Context-sensitive primary power figure:
+    //   * charging session → show charging power (positive kW into pack)
+    //   * driving → ConnectionService doesn't currently expose live drive
+    //     power as a public getter (the underlying DID isn't identified
+    //     yet — see v0.1.27+1 removal of peak power/regen). We keep
+    //     "POWER" hidden in this case, rather than show "—" which would
+    //     just be noise on a primary metric.
+    final showChargingPower = isCharging && chargingPower > 0.1;
+    final speedShown = vehicleSpeed != null && vehicleSpeed! > 0.5;
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(children: const [
+              Icon(Icons.timeline, color: Colors.cyanAccent, size: 18),
+              SizedBox(width: 8),
+              Text('THIS TRIP',
+                  style: TextStyle(
+                      fontSize: 12, letterSpacing: 1.5, color: Colors.grey)),
+            ]),
+            const SizedBox(height: 14),
+            // Row 1: SPEED + POWER (each takes half width if both shown,
+            // full width if one is shown, hidden if neither).
+            if (speedShown || showChargingPower)
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  if (speedShown)
+                    Expanded(
+                      child: _BigDriverCell(
+                        label: 'SPEED',
+                        value: vehicleSpeed!.toStringAsFixed(0),
+                        unit: 'km/h',
+                        color: Colors.cyanAccent,
+                      ),
+                    ),
+                  if (showChargingPower)
+                    Expanded(
+                      child: _BigDriverCell(
+                        label: isCharging ? 'CHARGING' : 'POWER',
+                        value: chargingPower.toStringAsFixed(1),
+                        unit: 'kW',
+                        color: Colors.amberAccent,
+                      ),
+                    ),
+                ],
+              ),
+            if (speedShown || showChargingPower) const SizedBox(height: 16),
+            // Row 2: 4 mini stats. Uses MainAxisAlignment.spaceBetween so
+            // they distribute evenly regardless of how many are shown.
+            // Hidden values shown as "—" — this row is informational,
+            // showing dashes here doesn't hurt readability the way
+            // it would on a primary metric.
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                _MiniStat(
+                  'DIST',
+                  tripDistance != null
+                      ? '${tripDistance!.toStringAsFixed(1)} km'
+                      : '—',
+                ),
+                _MiniStat(
+                  'ENERGY',
+                  tripEnergy != null
+                      ? '${tripEnergy!.toStringAsFixed(2)} kWh'
+                      : (chargedSession != null && isCharging
+                          ? '+${chargedSession!.toStringAsFixed(2)} kWh'
+                          : '—'),
+                ),
+                _MiniStat(
+                  'AVG',
+                  tripAvgConsumption != null
+                      ? '${tripAvgConsumption!.toStringAsFixed(1)}'
+                      : '—',
+                  color: tripAvgConsumption != null
+                      ? Colors.white
+                      : Colors.grey.shade600,
+                ),
+                _MiniStat(
+                  'PEAK',
+                  tripPeakSpeed != null
+                      ? '${tripPeakSpeed!.toStringAsFixed(0)} km/h'
+                      : '—',
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Large value+unit cell used in the tall driver section's row 1.
+/// Pattern mirrors the wide Driver-tab styling (driver_view_wide.dart):
+/// big number, small unit, label above in muted color.
+class _BigDriverCell extends StatelessWidget {
+  final String label;
+  final String value;
+  final String unit;
+  final Color color;
+  const _BigDriverCell({
+    required this.label,
+    required this.value,
+    required this.unit,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label,
+            style: const TextStyle(
+                fontSize: 10, letterSpacing: 1.5, color: Colors.grey)),
+        const SizedBox(height: 4),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.baseline,
+          textBaseline: TextBaseline.alphabetic,
+          children: [
+            Text(value,
+                style: TextStyle(
+                    fontSize: 38, fontWeight: FontWeight.w300, color: color, height: 1.0)),
+            const SizedBox(width: 6),
+            Text(unit,
+                style: const TextStyle(fontSize: 12, color: Colors.grey)),
+          ],
+        ),
       ],
     );
   }
