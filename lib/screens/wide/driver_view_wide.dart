@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../services/connection.dart';
+import '../../services/cost_settings.dart';
 
 /// v0.1.23: Driver-first head-unit view.
 ///
@@ -401,6 +402,10 @@ class _TripMetricsPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final svc = context.watch<ConnectionService>();
+    // v0.1.27: also watch cost settings so the cost cell rebuilds
+    // reactively when the user edits the tariff or currency in
+    // Settings and returns to this view.
+    final cost = context.watch<CostSettings>();
 
     // Live trip metrics (rolling, not yet written to DB).
     final dist = svc.tripDistanceKm;
@@ -425,6 +430,16 @@ class _TripMetricsPanel extends StatelessWidget {
             ? '${consumption.toStringAsFixed(1)} kWh/100km'
             : '—');
 
+    // v0.1.27: trip cost — only shown when the tariff is configured.
+    // Cost = (live energy used) × (configured cost per kWh). Uses the
+    // precise-SOC-derived energyUsed so the value updates each poll
+    // cycle smoothly (the integer-SOC version stair-steps in 0.65 kWh
+    // chunks — visually ugly for a primary metric).
+    final showCost = cost.isConfigured && energyUsed != null;
+    final tripCostStr = showCost
+        ? cost.formatAmount(energyUsed * cost.costPerKwh)
+        : null;
+
     return Card(
       child: Padding(
         padding: const EdgeInsets.fromLTRB(20, 14, 20, 14),
@@ -441,10 +456,43 @@ class _TripMetricsPanel extends StatelessWidget {
                         fontSize: 11,
                         letterSpacing: 1.5,
                         color: Colors.grey)),
-                const Spacer(),
+                const SizedBox(width: 10),
                 Text('#${svc.currentTripId ?? "—"}',
                     style: const TextStyle(
                         fontSize: 11, color: Colors.grey)),
+                const Spacer(),
+                // v0.1.27: live trip cost — primary user-facing metric
+                // requested by the owner. Shown as a large amber figure
+                // so it reads at a glance from the driver's seat, with
+                // a tiny "TRIP COST" caption above it for context.
+                //
+                // Visibility rules:
+                //   * Hidden entirely when cost_per_kwh is 0 (not
+                //     configured) — users who don't care never see it.
+                //   * Hidden when tripEnergyUsedPreciseKwh is null
+                //     (first few poll cycles after trip start, before
+                //     the integration window establishes itself).
+                //
+                // Format: uses CostSettings.formatAmount which picks
+                // leading vs trailing symbol placement automatically
+                // ($1.45 vs 145 ₽).
+                if (tripCostStr != null) ...[
+                  const Text('TRIP COST',
+                      style: TextStyle(
+                          fontSize: 10,
+                          letterSpacing: 1.2,
+                          color: Colors.grey)),
+                  const SizedBox(width: 8),
+                  Text(
+                    tripCostStr,
+                    style: const TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.w500,
+                      color: Colors.amberAccent,
+                      fontFeatures: [FontFeature.tabularFigures()],
+                    ),
+                  ),
+                ],
               ],
             ),
             const SizedBox(height: 8),
