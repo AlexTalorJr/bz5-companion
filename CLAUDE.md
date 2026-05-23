@@ -149,20 +149,35 @@ Regression: XML balance, version triple-match, parity check — pass.
 
 ## Регрессионное тестирование — обязательно перед доставкой
 
-У меня нет flutter SDK на этом контейнере (network egress ограничен). Что я делаю:
+**Основной инструмент с v0.1.29+14**: `python3 tools/check_repo.py` из корня репо. 7 проверок, exit 0 = pass, 1 = fail, 2 = misconfig (запущен не из корня). Запускать **перед каждой доставкой патча** — и решать failures **внутри** того же патча, а не "временно отложить" (v0.1.29+9 показал что "временно" живёт минимум 4 версии).
 
-1. **Bracket/paren/brace balance** для всех Kotlin и Dart файлов через python.
-2. **Kotlinc syntax check** (через `apt-get install kotlin` — кnotlin 1.3.31, старый, но синтаксически корректный код парсит). Ожидаемые false positives: trailing commas в parameter lists (Kotlin 1.4+), unresolved android.* / io.flutter.* (нет SDK в classpath). Реальные syntax errors надо вычистить.
-3. **MethodChannel/EventChannel name match**: regex find в Dart и Kotlin, сравнить sets.
-4. **Method dispatch consistency**: каждый `_method.invokeMethod('X')` в Dart должен соответствовать `"X" ->` в Kotlin `when (call.method)`.
-5. **Plugin → support classes**: все вызовы из плагина в BydCarPropertyClient/BydVinDetector/BydDiagSocket/BydPermissions резолвятся к существующим методам.
-6. **Cross-file Dart symbol resolution**: для каждого custom symbol используемого в файле — поиск его definition в imported file.
-7. **AndroidManifest.xml well-formed**: `xml.etree.ElementTree.parse()`.
-8. **File inventory**: перечисление ожидаемых файлов + проверка наличия каждого.
+Что покрывает (источник правды — сам файл `tools/check_repo.py`):
 
-Все эти проверки должны быть в одном python-скрипте, который запускается в bash. Не делать "на глаз".
+- Brace balance на всех `lib/*.dart` (catches truncated edits)
+- pubspec.yaml ↔ imports parity (lesson v0.1.29+3)
+- Version triple-sync pubspec / cloud_sync._readAppVersion / _kDiagVersion (lesson v0.1.29+1)
+- Android permissions ↔ Flutter feature pairings (lesson v0.1.29+10)
+- Null-safety guard hazard heuristic (lesson v0.1.29+5)
+- BZ3 tall portrait layout math consistency (lesson v0.1.29+7, +13)
+- Protected files structural sanity tripwire
 
-Хороший пример полного suite — в истории turn'ов v0.1.27 scaffold delivery.
+**Что НЕ покрывает**: runtime behaviour, Dart type-checking (это работа `flutter analyze` + kernel snapshot в build.yml), визуальные регрессии (это поле).
+
+Когда добавляешь новую feature — расширяй `check_repo.py` соответствующим check'ом, **не** оставляй проверку только в bash heredoc сессии. Эти heredoc'и теряются между context resets. `check_repo.py` — не теряются.
+
+### Дополнительно если контейнер позволяет
+
+У меня нет flutter SDK на этом контейнере (network egress ограничен). Сверх `check_repo.py` иногда полезно:
+
+1. **Kotlinc syntax check** (через `apt-get install kotlin` — kotlin 1.3.31, старый, но синтаксически корректный код парсит). Ожидаемые false positives: trailing commas в parameter lists (Kotlin 1.4+), unresolved android.* / io.flutter.* (нет SDK в classpath). Реальные syntax errors надо вычистить.
+2. **MethodChannel/EventChannel name match**: regex find в Dart и Kotlin, сравнить sets.
+3. **Method dispatch consistency**: каждый `_method.invokeMethod('X')` в Dart должен соответствовать `"X" ->` в Kotlin `when (call.method)`.
+4. **Plugin → support classes**: все вызовы из плагина в BydCarPropertyClient/BydVinDetector/BydDiagSocket/BydPermissions резолвятся к существующим методам.
+5. **Cross-file Dart symbol resolution**: для каждого custom symbol используемого в файле — поиск его definition в imported file.
+6. **AndroidManifest.xml well-formed**: `xml.etree.ElementTree.parse()`.
+7. **File inventory**: перечисление ожидаемых файлов + проверка наличия каждого.
+
+Эти проверки имеет смысл оставить в session bash heredoc — они либо требуют tools, либо специфичны для конкретного patch'а. Но general-purpose проверки **всегда** в `check_repo.py`.
 
 ### Когда Dart string-stripping регулярка ломается на Kotlin template strings
 
@@ -600,6 +615,7 @@ WebFetch.
 
 | Версия     | Что сделано (одна строка) |
 |------------|---------------------------|
+| 0.1.29+14  | Добавлен `tools/check_repo.py` — формализация регрессионного suite'а как файл репо (переживёт context resets). 7 проверок: brace balance на всех `lib/*.dart`, pubspec ↔ imports parity, version triple-sync (pubspec / cloud_sync / _kDiagVersion), Android permissions ↔ feature pairings, null-safety guard hazard heuristic (`hasX = Y != null` → потеря промоушна Y вниз по коду), BZ3 layout math (детектор thresholds + aspect ratio + compact threshold consistency), structural sanity для protected files. Exit 0/1/2. Запуск: `python3 tools/check_repo.py` из корня репо. Скрипт **немедленно нашёл** version drift: `_kDiagVersion='v0.1.29+8'` в dashboard.dart при pubspec=0.1.29+13 — попутно исправлен → `_kDiagVersion='v0.1.29+14'`. cloud_sync `_readAppVersion` → 0.1.29+14. |
 | 0.1.29+13  | BZ3 layout polish per field feedback: (1) TripMetricsPanel compact font bumps — labelFontSize 9→11, unitFontSize 11→13 (BZ3 user сообщил "очень мелкий шрифт"). (2) `_GridCards` childAspectRatio для 3-col grid 1.3 → 2.2 — карточки стали значительно шире чем выше, экономия ~30dp по высоте. (3) `_MetricCard` через `LayoutBuilder` авто-детектит compact (maxHeight < 60) → переключает padding 12→`(8,5)`, valueFontSize 24→20, labelFontSize 10→9, iconSize 18→14, убирает `Spacer()` (используется `MainAxisAlignment.spaceBetween`). Phone (2-col, maxHeight ~80-100) — байт-в-байт как раньше. Должно убрать вертикальную прокрутку на BZ3 tall. cloud_sync `_readAppVersion` → 0.1.29+13. |
 | 0.1.29+12  | Отключён lint workflow — `.github/workflows/lint.yml` теперь только `workflow_dispatch` (manual trigger), не fires автоматически на push/PR. Reason: слишком много pre-existing info/warning'ов в репо (deprecated_member_use, prefer_const_constructors, unused_field в connection.dart, etc.) перевешивали сигнал. Реальные type errors всё равно ловит build.yml на kernel snapshot — медленнее (~3 мин vs ~30 сек) но без шума. cloud_sync `_readAppVersion` → 0.1.29+12. |
 | 0.1.29+11  | Hotfix lint.yml: добавлен `dart run build_runner build --delete-conflicting-outputs` step (мирор с build.yml). Без него Drift codegen не запускался → 200+ `Undefined name 'trips'`/`Undefined class 'Trip'` errors на CI. Заодно: убраны 2 избыточных `import 'dart:ui'` (FontFeature реэкспортируется через material.dart) в dashboard.dart и driver_panels.dart. test/widget_test.dart заменён пустым stub'ом (auto-scaffolded от `flutter create` ссылался на несуществующий `MyApp` класс — `creation_with_non_type` error). cloud_sync `_readAppVersion` → 0.1.29+11. |
