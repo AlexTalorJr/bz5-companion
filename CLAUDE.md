@@ -216,6 +216,30 @@ diff /tmp/imported /tmp/declared
 `<` в diff = используется, но не объявлен (**обязательно фиксить, CI упадёт**).
 `>` в diff = объявлен, но не используется (ОК, можно почистить).
 
+### Android permissions при работе с новыми фичами
+
+При добавлении любой фичи которая использует системный ресурс — **проверить что соответствующее permission объявлено в `android/app/src/main/AndroidManifest.xml`**. Особенно когда это **новый класс ресурса** (раньше приложение не делало сетевых запросов и не объявляло `INTERNET`; добавили CloudSyncService — а permission забыли).
+
+Симптом отсутствующего permission **не вылавливается ни Dart analyzer'ом, ни CI'ем** — приложение собирается чисто, ставится без ошибок, и падает только в момент когда соответствующий syscall реально вызывается. Самые "тихие" примеры:
+
+- `INTERNET` отсутствует → `Failed host lookup ... errno=7 No address associated with hostname`. DNS resolver работает как stub. Любые `package:http` запросы упадут с SocketException.
+- `ACCESS_NETWORK_STATE` отсутствует → `Connectivity.checkConnectivity()` либо кидает, либо возвращает unreliable значение.
+- `BLUETOOTH_CONNECT` (Android 12+) отсутствует → `flutter_blue_plus` connect() кидает SecurityException только на API 31+.
+- `FOREGROUND_SERVICE` отсутствует → app silently killed при попытке startForegroundService.
+- `POST_NOTIFICATIONS` (Android 13+) отсутствует → системные уведомления не показываются и не кидают error.
+
+Quick check при добавлении любой фичи которая делает что-то "новое":
+
+```bash
+# Все permissions объявлены сейчас:
+grep "uses-permission" android/app/src/main/AndroidManifest.xml \
+  | sed -E 's|.*name="([^"]+)".*|\1|'
+```
+
+Сопоставить с тем что новая фича использует — если networking, проверить `INTERNET`; если background sync — проверить `WAKE_LOCK` и (опц.) `FOREGROUND_SERVICE`; если новый sensor — проверить соответствующий dangerous permission. Список Android permissions: https://developer.android.com/reference/android/Manifest.permission
+
+История пропусков: v0.1.28+1 ввёл CloudSyncService с HTTPS через `package:http`, но `INTERNET` permission не добавили. APK собирался и ставился без проблем 9 версий подряд; фактически network-flow не тестировался до v0.1.29+9 когда владелец впервые открыл setup dialog → мгновенный `errno=7`. Hotfix v0.1.29+10 добавил `INTERNET` и `ACCESS_NETWORK_STATE`.
+
 ### Версии и pubspec
 
 При бампе версии трогать **два** места:
@@ -275,6 +299,7 @@ final hasTemp = tempForColor != null;
 | Dart type promotion при смене guard | v0.1.29+4 переопределил `hasTemp` на проверку другой переменной; downstream `temp.toStringAsFixed` слетел; CI build #76 упал на kernel snapshot | v0.1.29+5 |
 | BZ3 layout threshold (Android density bucket) | v0.1.29+1 рассчитал logical dp от маркетинговых PPI (172/160=1.075); реальность Android pins hdpi=1.5 → BZ3 720×1106dp; пороги не сработали 2 версии | v0.1.29+7 |
 | Дублирование widgets между phone и wide layouts | v0.1.29+1 создал собственный `_TallDriverSection` в dashboard.dart вместо переиспользования `_TripMetricsPanel` из driver_view_wide.dart; v0.1.29+8 пришлось extract в shared `lib/widgets/driver_panels.dart` чтобы убрать drift | v0.1.29+8 (через shared widgets pattern) |
+| Android permissions (INTERNET / NETWORK_STATE) | v0.1.28+1 добавил CloudSyncService с HTTP клиентом но забыл `<uses-permission android:name="android.permission.INTERNET">` в AndroidManifest. Сетевой stack возвращает stub resolver → `errno=7 host lookup failed` на любой запрос. Не проявлялось 2 версии потому что владелец не пробовал boevoy setup flow; вылезло сразу как открыл диалог | v0.1.29+10 |
 | cloud_sync `_readAppVersion()` hardcoded | sync с pubspec руками каждый bump; пропуски v0.1.29+1 не заметили | TBD когда добавим package_info_plus |
 
 ## Установка APK без ADB
@@ -554,6 +579,7 @@ WebFetch.
 
 | Версия     | Что сделано (одна строка) |
 |------------|---------------------------|
+| 0.1.29+10  | Hotfix: добавлены `INTERNET` и `ACCESS_NETWORK_STATE` permissions в `AndroidManifest.xml`. Без них Dart http client кидал `SocketException: Failed host lookup ... errno=7` на любой сетевой запрос — DNS не резолвился потому что Android networking stack для приложений без `INTERNET` отдаёт stub resolver. CloudSyncService с v0.1.28+1 был фактически неработоспособен (никто не пробовал boevoy setup flow). Обнаружено когда пользователь впервые ставил cloud backup на head unit. cloud_sync `_readAppVersion` → 0.1.29+10. |
 | 0.1.29+9   | CloudSyncService Phase 3 hardening per CLIENT_API.md §1+§8: одиночный 401 больше не убивает токен — счётчик `_consecutiveAuthFailures` в памяти, throw `_TransientAuthException` пока <3 (soft error, не trip), `_AuthException` (permanent → wipe token, stop timers) только при ≥3 подряд ИЛИ 409 already_revoked. Любой 2xx сбрасывает счётчик. 408/429/5xx получают exponential backoff 5/15/45/120s внутри `_postIngest` (4 retry'я), потом `_RetryableException` который в syncOnce записывает soft error без wipe'а. Retry-After header (если сервер пришлёт) honored с cap 5min. Только один файл изменён. |
 | 0.1.29+8   | BZ3 tall portrait dashboard перепроектирован: Speed/Status strip + компактная SoC card в top row (3:2), полная TripMetricsPanel (6 cells + TRIP COST) под parking pawl, грид 6 cells (SOH/Battery/PackV/Odometer/PDU1/PDU2) — без Cycles/Gear/Speed (Gear переехал в SoC badge), Calibration card убран. Подход: извлечены `SpeedAndStatusStrip`, `TripMetricsPanel`, `TripCell`, `consumptionColor` из `driver_view_wide.dart` в новый `lib/widgets/driver_panels.dart` как public widgets с параметром `compact: bool`. Driver wide использует default (full size); dashboard на tall — `compact: true`. Phone layout НЕ изменён. cloud_sync `_readAppVersion` → 0.1.29+8. |
 | 0.1.29+7   | BZ3 tall portrait threshold переопределён под реальные размеры (полученные через v0.1.29+6 diagnostic). Было `height > 1400 && width > 700` (ожидали dpr=1.075); реальность — Android pins hdpi (dpr=1.5), BZ3 рапортует `720 × 1106 dp`. Новый порог `height >= 1000 && width >= 720`. Phones не проходят isWide, BZ5 портретный не доходит до этого кода. `_LayoutDiagnostic` остался — теперь скрыт на phones (`shortestSide < 600`), показывается только когда head-unit-class экран не triggers tall layout. Внутри diagnostic'а пороги синхронизированы с detector'ом. cloud_sync → 0.1.29+7. |
