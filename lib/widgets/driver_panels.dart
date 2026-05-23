@@ -215,9 +215,15 @@ class TripMetricsPanel extends StatelessWidget {
         ? cost.formatAmount(energyUsed * cost.costPerKwh)
         : null;
 
+    // v0.1.29+13: compact font bumps per BZ3 owner field feedback
+    // ("очень мелкий шрифт"). cellFontSize stays at 22 — the big
+    // numbers were readable. labels and units bumped:
+    //   labelFontSize 9  → 11 ("distance", "consumption", "avg moving")
+    //   unitFontSize  11 → 13 ("km", "kWh", "km/h", "calculating…")
+    // Wide (non-compact) sizes unchanged.
     final cellFontSize = compact ? 22.0 : 36.0;
-    final labelFontSize = compact ? 9.0 : 11.0;
-    final unitFontSize = compact ? 11.0 : 14.0;
+    final labelFontSize = compact ? 11.0 : 11.0;
+    final unitFontSize = compact ? 13.0 : 14.0;
     final padding = compact
         ? const EdgeInsets.fromLTRB(14, 10, 14, 10)
         : const EdgeInsets.fromLTRB(20, 14, 20, 14);
