@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../services/connection.dart';
+import '../widgets/driver_panels.dart';
 
 class DashboardScreen extends StatelessWidget {
   const DashboardScreen({super.key});
@@ -90,46 +91,104 @@ class _Connected extends StatelessWidget {
     final pduTemp1 = svc.readNumeric('740', '0010'); // PDU heatsink 1
     final pduTemp2 = svc.readNumeric('740', '0011'); // PDU heatsink 2
 
-    // v0.1.29: detect "tall portrait" head units (BZ3 in particular —
-    // 1080×1920 px, 172 PPI → devicePixelRatio ≈ 1.075 → logical
-    // ~1005 × ~1786 dp). On these we get massive vertical headroom
-    // that we previously left blank, and want to inject a driver-
-    // mini section under the metrics grid.
+    // v0.1.29: detect "tall portrait" head units (BZ3 in particular).
     //
-    // Thresholds:
-    //   isTall: height > 1400 dp covers BZ3 (~1786) but never fires
-    //           on phones (typically 700-1000 dp) or BZ5 head unit in
-    //           landscape (~720 dp). Safe one-way enrichment.
-    //   isWideEnough: width > 700 dp lets us fit 3 metric columns
-    //           comfortably. BZ3 (~1005 dp) yes; phones (~412 dp) no.
+    // Field measurement 2026-05-23 (BZ3 owner's screenshot of in-app
+    // _LayoutDiagnostic):
+    //   logical:    720.0 × 1106.0 dp
+    //   physical:   1080 × 1659 px · dpr=1.5
+    //   padding:    all zero (system bars don't eat MQ in this context)
     //
-    // When both true we switch the metric grid to 3 columns and
-    // append a driver-mini section (speed/power/peak) below it.
-    // When false the layout is byte-identical to the pre-0.1.29
-    // dashboard — phones see no change.
+    // The original v0.1.29+1 thresholds (height > 1400 && width > 700)
+    // assumed dpr ≈ 1.075 (from 172 marketing PPI / 160), which would
+    // have given ~1786 dp height. Reality: Android pins hdpi bucket
+    // (dpr=1.5) regardless of physical PPI, and the head unit reports
+    // only 1659 px usable height (261 px likely consumed by the host
+    // OS / inter-app layout) — so logical height tops out at 1106 dp.
+    // The 1400 threshold never fired and BZ3 fell to phone-style 2-col
+    // for two whole patch cycles.
     //
-    // v0.1.29+6: BZ3 field test 2026-05-23 showed phone-style 2-col
-    // layout despite expected logical ~1005×1786 dp. The threshold
-    // didn't fire — but we don't know why yet (density bucket different
-    // from 172/160, MediaQuery padding eating dp, or some other Android
-    // quirk on the head unit). Logic unchanged this patch; the
-    // Calibration card below now displays raw MediaQuery values when
-    // the tall layout is NOT active, so the BZ3 owner can screenshot
-    // and we can patch the threshold against real numbers next round
-    // instead of guessing.
+    // v0.1.29+7 fix: shift the threshold to the actual numbers, with
+    // ~10% margin on both sides:
+    //   isTall: height >= 1000 dp (BZ3 measured 1106; phones ≤ ~900)
+    //   isWide: width  >= 720 dp (BZ3 measured 720; phones ≤ ~500)
+    // The width margin is tight (0 dp at the BZ3 number) but we know
+    // the value is exact: it's 1080 physical / 1.5 dpr, a clean ratio.
+    // If a future head unit reports 700 dp width exactly we can lower
+    // to 700; until then 720 stays.
+    //
+    // Phones in portrait (412-450 dp width) fail isWide. Phones in
+    // landscape (700-900 dp width × 350-450 dp height) fail isTall.
+    // BZ5 head unit gates earlier in home.dart via useHeadUnitLayout
+    // (needs width > height) and never reaches this code.
     final mq = MediaQuery.of(context);
-    final isTall = mq.size.height > 1400;
-    final isWideEnough = mq.size.width > 700;
+    final isTall = mq.size.height >= 1000;
+    final isWideEnough = mq.size.width >= 720;
     final useTallLayout = isTall && isWideEnough;
     final gridCols = useTallLayout ? 3 : 2;
 
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        _SocCard(soc: soc, socPrecise: svc.socPrecisePct, rangeKm: rangeKm),
+        // v0.1.29+8: top zone differs between BZ3 tall portrait and phone:
+        //   - Tall: Row(Speed/Status | _TallSocCard) at 170 dp height.
+        //     Uses the same SpeedAndStatusStrip widget as the BZ5 wide
+        //     Driver tab, in compact mode.
+        //   - Phone: existing _SocCard full-width (no Speed panel —
+        //     phones don't have the real estate for a big speed read
+        //     and the existing UX has been stable since v0.1.0).
+        if (useTallLayout)
+          SizedBox(
+            height: 170,
+            child: Row(
+              children: [
+                const Expanded(
+                  flex: 3,
+                  child: SpeedAndStatusStrip(compact: true),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  flex: 2,
+                  child: _TallSocCard(
+                    soc: soc,
+                    socPrecise: svc.socPrecisePct,
+                    rangeKm: rangeKm,
+                    gear: gear,
+                    parkingEngaged: parkingEngaged,
+                    isCharging: isCharging,
+                  ),
+                ),
+              ],
+            ),
+          )
+        else
+          _SocCard(soc: soc, socPrecise: svc.socPrecisePct, rangeKm: rangeKm),
         const SizedBox(height: 12),
         if (isCharging) _ChargingBanner(svc: svc, chargedSession: chargedSession),
         if (isCharging) const SizedBox(height: 12),
+        // v5: Parking pawl indicator. Moved BEFORE the grid on tall layout
+        // so the safety indicator sits high in the scroll position; on
+        // phone it stays below the grid (existing UX).
+        if (useTallLayout && parkingEngaged != null) ...[
+          _ParkingPawlRow(engaged: parkingEngaged),
+          const SizedBox(height: 12),
+        ],
+        // v0.1.29+8: trip section differs:
+        //   - Tall: full TripMetricsPanel (6 cells + cost) from
+        //     widgets/driver_panels.dart, in compact mode. Same widget
+        //     as BZ5 Driver tab — only one source of truth now.
+        //   - Phone: existing _TripCard mini-strip (just trip ID +
+        //     kWh used). Compact for phone real estate.
+        if (svc.currentTripId != null && tripEnergy != null) ...[
+          if (useTallLayout)
+            const SizedBox(
+              height: 130,
+              child: TripMetricsPanel(compact: true),
+            )
+          else
+            _TripCard(svc: svc),
+          const SizedBox(height: 12),
+        ],
         _GridCards(
           crossAxisCount: gridCols,
           children: [
@@ -170,24 +229,31 @@ class _Connected extends StatelessWidget {
               label: 'Odometer',
               value: odo != null ? '${odo.toStringAsFixed(1)} km' : '—',
             ),
-            _MetricCard(
-              icon: Icons.refresh,
-              color: Colors.purpleAccent,
-              label: 'Cycles',
-              value: cycles != null ? '$cycles' : '—',
-            ),
-            _MetricCard(
-              icon: Icons.directions_car,
-              color: _gearColor(gear, parkingEngaged, isCharging),
-              label: 'Gear',
-              // v5: правильный mapping 1=P, 2=R, 3=N, 4=D
-              value: _gearStr(gear),
-            ),
+            // v0.1.29+8: Cycles and Gear are hidden on tall layout —
+            // Gear is shown inside _TallSocCard as a P/D/R/N badge,
+            // and Cycles wasn't critical enough to justify duplication.
+            // Phone layout keeps both (existing UX).
+            if (!useTallLayout)
+              _MetricCard(
+                icon: Icons.refresh,
+                color: Colors.purpleAccent,
+                label: 'Cycles',
+                value: cycles != null ? '$cycles' : '—',
+              ),
+            if (!useTallLayout)
+              _MetricCard(
+                icon: Icons.directions_car,
+                color: _gearColor(gear, parkingEngaged, isCharging),
+                label: 'Gear',
+                // v5: правильный mapping 1=P, 2=R, 3=N, 4=D
+                value: _gearStr(gear),
+              ),
             // v0.1.22: vehicle speed from 740/0x0008 (verified 2026-05-19).
-            // Hidden at standstill — a permanent "0 km/h" is noise. Toyota
-            // speedos read ~4-7 % higher than reality by law; expect this
-            // value to read slightly lower than your speedometer.
-            if (vehicleSpeed != null && vehicleSpeed > 0.5)
+            // On tall layout the Speed is the huge cell at top-left, so
+            // we don't duplicate it in the grid. On phone it's a small
+            // conditional cell that only appears at standstill > 0.5 km/h
+            // (a permanent "0 km/h" would be noise).
+            if (!useTallLayout && vehicleSpeed != null && vehicleSpeed > 0.5)
               _MetricCard(
                 icon: Icons.speed,
                 color: Colors.cyanAccent,
@@ -213,31 +279,13 @@ class _Connected extends StatelessWidget {
               ),
           ],
         ),
-        // v0.1.29: tall-only driver mini-section. Shows the live driving
-        // figures that the wide head-unit Driver tab gets, condensed into
-        // a single card. Hidden on phones (no height for it) and on
-        // landscape head units (which have a dedicated Driver tab).
-        if (useTallLayout) ...[
-          const SizedBox(height: 16),
-          _TallDriverSection(
-            vehicleSpeed: vehicleSpeed,
-            isCharging: isCharging,
-            chargingPower: svc.chargingPowerKw,
-            tripEnergy: tripEnergy,
-            chargedSession: chargedSession,
-            tripPeakSpeed: svc.tripPeakSpeedKmh,
-            tripDistance: svc.tripDistanceKm,
-            tripAvgConsumption: svc.tripAvgConsumptionKwh100km,
-          ),
-        ],
         const SizedBox(height: 12),
-        // v5: Parking pawl indicator (мини-строка под grid)
-        if (parkingEngaged != null)
+        // v5: Parking pawl indicator on PHONE layout sits below the grid
+        // (existing UX). Tall layout already showed it above the grid.
+        if (!useTallLayout && parkingEngaged != null) ...[
           _ParkingPawlRow(engaged: parkingEngaged),
-        if (parkingEngaged != null) const SizedBox(height: 12),
-        if (svc.currentTripId != null && tripEnergy != null)
-          _TripCard(svc: svc),
-        const SizedBox(height: 12),
+          const SizedBox(height: 12),
+        ],
         _CellsSummaryCard(
           cells: cells,
           cellMin: cellMin,
@@ -246,7 +294,12 @@ class _Connected extends StatelessWidget {
           smoothedSpread: svc.smoothedCellSpread,
         ),
         const SizedBox(height: 16),
-        _PhysicsModelCard(),
+        // v0.1.29+8: Calibration card hidden on tall layout entirely
+        // (per BZ3 owner's request — they have plenty of vertical room
+        // for the useful metrics and don't need the technical note).
+        // Phone keeps it: still useful as a self-documenting reference
+        // when explaining the app to new users.
+        if (!useTallLayout) _PhysicsModelCard(),
       ],
     );
   }
@@ -424,6 +477,159 @@ class _SocCard extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+/// v0.1.29+8: compact SoC card for BZ3 tall portrait Row(Speed | SoC).
+///
+/// Sits inside `Expanded(flex: 2)` inside a `SizedBox(height: 170)` —
+/// so we have bounded height and can use Expanded() internally for the
+/// big SOC FittedBox to fill available vertical room.
+///
+/// Renders:
+///   - "STATE OF CHARGE" label (small)
+///   - SOC % big with 1 decimal (red < 20, orange < 50, green ≥ 50)
+///   - Range estimate (small line)
+///   - Progress bar
+///   - Gear/Park badge (replaces the standalone Gear cell removed
+///     from the metric grid on tall layout)
+class _TallSocCard extends StatelessWidget {
+  final double? soc;
+  final double? socPrecise;
+  final double? rangeKm;
+  final double? gear;
+  final bool? parkingEngaged;
+  final bool isCharging;
+  const _TallSocCard({
+    required this.soc,
+    required this.socPrecise,
+    required this.rangeKm,
+    required this.gear,
+    required this.parkingEngaged,
+    required this.isCharging,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final displaySoc = socPrecise ?? soc;
+    final pct = displaySoc ?? 0;
+    // Same threshold band as _SocCard for consistency across phone/tall.
+    final color = pct < 20
+        ? Colors.redAccent
+        : pct < 50
+            ? Colors.orangeAccent
+            : Colors.greenAccent;
+
+    // FP-safe one-decimal split — same approach as the driver wide
+    // _SocCard, kept in lockstep so the BZ5 and BZ3 SOC displays show
+    // identical values down to the displayed decimal.
+    String big = '—', small = '';
+    if (displaySoc != null) {
+      final r = (displaySoc * 10).round() / 10;
+      big = r.truncate().toString();
+      small = '.${((r - r.truncate()) * 10).round()}';
+    }
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('STATE OF CHARGE',
+                style: TextStyle(
+                    fontSize: 10, letterSpacing: 1.0, color: Colors.grey)),
+            const SizedBox(height: 4),
+            Expanded(
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.centerLeft,
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Text(big,
+                        style: TextStyle(
+                            fontSize: 56,
+                            fontWeight: FontWeight.w400,
+                            color: color,
+                            height: 0.9)),
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 4),
+                      child: Text(small,
+                          style: TextStyle(
+                              fontSize: 24,
+                              fontWeight: FontWeight.w400,
+                              color: color,
+                              height: 0.9)),
+                    ),
+                    const Padding(
+                      padding: EdgeInsets.only(bottom: 8),
+                      child: Text(' %',
+                          style: TextStyle(
+                              fontSize: 14, color: Colors.grey)),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 4),
+            if (rangeKm != null)
+              Text('Range ~${rangeKm!.toInt()} km',
+                  style: const TextStyle(
+                      fontSize: 11, color: Colors.white70)),
+            const SizedBox(height: 4),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(3),
+              child: LinearProgressIndicator(
+                value: (pct / 100).clamp(0.0, 1.0),
+                minHeight: 4,
+                backgroundColor: Colors.grey.shade800,
+                valueColor: AlwaysStoppedAnimation(color),
+              ),
+            ),
+            const SizedBox(height: 6),
+            Row(
+              children: [
+                Icon(Icons.directions_car,
+                    size: 13,
+                    color: _gearTintColor(gear, parkingEngaged, isCharging)),
+                const SizedBox(width: 4),
+                Text(_gearLabel(gear, isCharging),
+                    style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                        color: _gearTintColor(
+                            gear, parkingEngaged, isCharging))),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // Mapping kept inline (not a free function) because it shares the
+  // colour table with _gearColor in DashboardScreen but adds the
+  // charging glyph case which the top-level helper doesn't.
+  String _gearLabel(double? g, bool isCharging) {
+    if (g == null && isCharging) return '⚡';
+    if (g == null) return '—';
+    return switch (g.toInt()) {
+      1 => 'P', 2 => 'R', 3 => 'N', 4 => 'D', _ => '?',
+    };
+  }
+
+  Color _gearTintColor(double? g, bool? parking, bool isCharging) {
+    if (g == null && isCharging) return Colors.amber;
+    if (g == null) return Colors.grey;
+    if (parking == true) return Colors.lightBlueAccent;
+    return switch (g.toInt()) {
+      1 => Colors.lightBlueAccent,
+      2 => Colors.redAccent,
+      3 => Colors.orangeAccent,
+      4 => Colors.greenAccent,
+      _ => Colors.grey,
+    };
   }
 }
 
@@ -615,12 +821,19 @@ class _LayoutDiagnostic extends StatelessWidget {
     final dpr = mq.devicePixelRatio;
     final pad = mq.padding;
     final ins = mq.viewInsets;
-    final isTall = size.height > 1400;
-    final isWide = size.width > 700;
-    // Hide when threshold worked — phones and BZ5 stop seeing this
-    // once the actual physical numbers are known. Only "broken case"
-    // owners see the diagnostic.
+    // v0.1.29+7: thresholds here MUST mirror the detector in
+    // DashboardScreen.build above. If you change one, change the other.
+    // A divergence would lie to the user about why their layout is what
+    // it is.
+    final isTall = size.height >= 1000;
+    final isWide = size.width >= 720;
     final tallLayoutActive = isTall && isWide;
+    // v0.1.29+7: hide unless we're on a head-unit-class screen where
+    // the diagnostic actually matters. Phones (short side < 600 dp)
+    // never get the tall layout intentionally, so the debug block
+    // would be noise. Head units that DO trigger tall layout also
+    // hide the block (no investigation needed).
+    if (size.shortestSide < 600) return const SizedBox.shrink();
     if (tallLayoutActive) return const SizedBox.shrink();
     final physicalW = (size.width * dpr).round();
     final physicalH = (size.height * dpr).round();
@@ -634,7 +847,7 @@ class _LayoutDiagnostic extends StatelessWidget {
         'padding: L=${pad.left.toStringAsFixed(0)} T=${pad.top.toStringAsFixed(0)} '
         'R=${pad.right.toStringAsFixed(0)} B=${pad.bottom.toStringAsFixed(0)}\n'
         'viewInsets: B=${ins.bottom.toStringAsFixed(0)}\n'
-        'isTall(>1400)=$isTall · isWide(>700)=$isWide → '
+        'isTall(>=1000)=$isTall · isWide(>=720)=$isWide → '
         'tallLayout=$tallLayoutActive',
         style: const TextStyle(
           fontSize: 10,
@@ -649,7 +862,7 @@ class _LayoutDiagnostic extends StatelessWidget {
 
 /// Bump when changing the diagnostic format — helps cross-reference
 /// screenshots to specific app versions while iterating.
-const String _kDiagVersion = 'v0.1.29+6';
+const String _kDiagVersion = 'v0.1.29+8';
 
 class _GridCards extends StatelessWidget {
   final List<Widget> children;
@@ -843,180 +1056,6 @@ class _MiniStat extends StatelessWidget {
       children: [
         Text(label, style: const TextStyle(fontSize: 11, color: Colors.grey)),
         Text(value, style: TextStyle(fontSize: 16, fontWeight: FontWeight.w500, color: color)),
-      ],
-    );
-  }
-}
-
-/// v0.1.29: tall-portrait driver mini-section. Shows the most
-/// important live driving figures in one card so users on tall
-/// head-unit screens (BZ3 in particular, where the screen is
-/// effectively a portrait tablet ~1005×1786 dp) don't see acres
-/// of empty space below the metrics grid.
-///
-/// Layout:
-///   Row 1 (large): SPEED (km/h, only when moving) +
-///                  POWER (kW, charging or driving — context-sensitive)
-///   Row 2 (small): TRIP DISTANCE | TRIP ENERGY | AVG kWh/100km | PEAK SPEED
-///
-/// All values are nullable-safe. Hidden gracefully when the BMS or
-/// PDU hasn't reported the underlying DID yet — shows "—".
-class _TallDriverSection extends StatelessWidget {
-  final double? vehicleSpeed;
-  final bool isCharging;
-  final double chargingPower;
-  final double? tripEnergy;
-  final double? chargedSession;
-  final double? tripPeakSpeed;
-  final double? tripDistance;
-  final double? tripAvgConsumption;
-
-  const _TallDriverSection({
-    required this.vehicleSpeed,
-    required this.isCharging,
-    required this.chargingPower,
-    required this.tripEnergy,
-    required this.chargedSession,
-    required this.tripPeakSpeed,
-    required this.tripDistance,
-    required this.tripAvgConsumption,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    // Context-sensitive primary power figure:
-    //   * charging session → show charging power (positive kW into pack)
-    //   * driving → ConnectionService doesn't currently expose live drive
-    //     power as a public getter (the underlying DID isn't identified
-    //     yet — see v0.1.27+1 removal of peak power/regen). We keep
-    //     "POWER" hidden in this case, rather than show "—" which would
-    //     just be noise on a primary metric.
-    final showChargingPower = isCharging && chargingPower > 0.1;
-    final speedShown = vehicleSpeed != null && vehicleSpeed! > 0.5;
-
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(children: const [
-              Icon(Icons.timeline, color: Colors.cyanAccent, size: 18),
-              SizedBox(width: 8),
-              Text('THIS TRIP',
-                  style: TextStyle(
-                      fontSize: 12, letterSpacing: 1.5, color: Colors.grey)),
-            ]),
-            const SizedBox(height: 14),
-            // Row 1: SPEED + POWER (each takes half width if both shown,
-            // full width if one is shown, hidden if neither).
-            if (speedShown || showChargingPower)
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  if (speedShown)
-                    Expanded(
-                      child: _BigDriverCell(
-                        label: 'SPEED',
-                        value: vehicleSpeed!.toStringAsFixed(0),
-                        unit: 'km/h',
-                        color: Colors.cyanAccent,
-                      ),
-                    ),
-                  if (showChargingPower)
-                    Expanded(
-                      child: _BigDriverCell(
-                        label: isCharging ? 'CHARGING' : 'POWER',
-                        value: chargingPower.toStringAsFixed(1),
-                        unit: 'kW',
-                        color: Colors.amberAccent,
-                      ),
-                    ),
-                ],
-              ),
-            if (speedShown || showChargingPower) const SizedBox(height: 16),
-            // Row 2: 4 mini stats. Uses MainAxisAlignment.spaceBetween so
-            // they distribute evenly regardless of how many are shown.
-            // Hidden values shown as "—" — this row is informational,
-            // showing dashes here doesn't hurt readability the way
-            // it would on a primary metric.
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                _MiniStat(
-                  'DIST',
-                  tripDistance != null
-                      ? '${tripDistance!.toStringAsFixed(1)} km'
-                      : '—',
-                ),
-                _MiniStat(
-                  'ENERGY',
-                  tripEnergy != null
-                      ? '${tripEnergy!.toStringAsFixed(2)} kWh'
-                      : (chargedSession != null && isCharging
-                          ? '+${chargedSession!.toStringAsFixed(2)} kWh'
-                          : '—'),
-                ),
-                _MiniStat(
-                  'AVG',
-                  tripAvgConsumption != null
-                      ? '${tripAvgConsumption!.toStringAsFixed(1)}'
-                      : '—',
-                  color: tripAvgConsumption != null
-                      ? Colors.white
-                      : Colors.grey.shade600,
-                ),
-                _MiniStat(
-                  'PEAK',
-                  tripPeakSpeed != null
-                      ? '${tripPeakSpeed!.toStringAsFixed(0)} km/h'
-                      : '—',
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-/// Large value+unit cell used in the tall driver section's row 1.
-/// Pattern mirrors the wide Driver-tab styling (driver_view_wide.dart):
-/// big number, small unit, label above in muted color.
-class _BigDriverCell extends StatelessWidget {
-  final String label;
-  final String value;
-  final String unit;
-  final Color color;
-  const _BigDriverCell({
-    required this.label,
-    required this.value,
-    required this.unit,
-    required this.color,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(label,
-            style: const TextStyle(
-                fontSize: 10, letterSpacing: 1.5, color: Colors.grey)),
-        const SizedBox(height: 4),
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.baseline,
-          textBaseline: TextBaseline.alphabetic,
-          children: [
-            Text(value,
-                style: TextStyle(
-                    fontSize: 38, fontWeight: FontWeight.w300, color: color, height: 1.0)),
-            const SizedBox(width: 6),
-            Text(unit,
-                style: const TextStyle(fontSize: 12, color: Colors.grey)),
-          ],
-        ),
       ],
     );
   }
