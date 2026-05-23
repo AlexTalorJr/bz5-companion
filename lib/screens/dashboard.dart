@@ -72,8 +72,15 @@ class _Connected extends StatelessWidget {
     final rangeKm = svc.rangeEstimateKm;
     final tripEnergy = svc.tripEnergyKwh;
     final cycles = svc.cycleCount;
-    final packV = svc.packVoltageV;       // platform constant ~450V (kept for snapshot DB)
-    final hvBus = svc.hvBusV;              // live HV bus voltage
+    // v0.1.29+2: primary live pack V = sum-of-cells avg × N (BMS cell count).
+    // Synchronised with wide dashboard's hero panel. hvBusV and platform
+    // nominal kept as fallbacks only — both proven unreliable under load
+    // (DC 2026-05-22: hvBus showed -83V offset vs cells; AC 2026-05-23:
+    // hvBus showed 405.5V while cells×136 = 458.9V → -53V offset).
+    // See connection.dart packVoltageFromCells for full rationale.
+    final packFromCells = svc.packVoltageFromCells;
+    final packV = svc.packVoltageV;       // platform constant ~450V (fallback only)
+    final hvBus = svc.hvBusV;              // HV bus (live but lies under charge)
     final parkingEngaged = svc.parkingPawlEngaged;
     final chargedSession = svc.chargedThisSessionKwh;
     // v0.1.22: live signals from PDU (740) added to UI.
@@ -127,19 +134,23 @@ class _Connected extends StatelessWidget {
               // Decoder применяет offset −40, не вычитаем повторно.
               value: tempRaw != null ? '${tempRaw.toInt()}°C' : '—',
             ),
-            // v0.1.20: primary V source = HV bus 790/0x0015 (the only
-            // genuinely live pack voltage we have). 740/0x0022 was nominal
-            // platform constant (~450V) and didn't reflect actual load.
-            // Fallback chain: hvBus first → packV nominal → '—'.
+            // v0.1.29+2: Primary = sum-of-cells average × N (the only
+            // physically-correct pack V we have). Fallbacks marked '*' kept
+            // for visibility when cells haven't been polled yet:
+            //   1. packFromCells — primary, sum-of-cells average × N
+            //   2. hvBusV — live HV bus (790/0x0015); ±50V offset under charge
+            //   3. packV nominal — 740/0x0022 platform constant (~450V)
             _MetricCard(
               icon: Icons.bolt,
               color: Colors.yellowAccent,
               label: 'Pack V',
-              value: hvBus != null
-                  ? '${hvBus.toStringAsFixed(1)} V'
-                  : packV != null
-                      ? '${packV.toStringAsFixed(1)} V*'
-                      : '—',
+              value: packFromCells != null
+                  ? '${packFromCells.toStringAsFixed(1)} V'
+                  : hvBus != null
+                      ? '${hvBus.toStringAsFixed(1)} V*'
+                      : packV != null
+                          ? '${packV.toStringAsFixed(1)} V*'
+                          : '—',
             ),
             _MetricCard(
               icon: Icons.speed,
@@ -544,7 +555,8 @@ class _PhysicsModelCard extends StatelessWidget {
                 const SizedBox(height: 8),
                 Text(
                   '65.28 kWh · $cellsText in $modText (LFP blade)\n'
-                  '• Pack V: 740/0x0022 × 0.025 V (filtered)\n'
+                  '• Pack V: avg(cells) × N (sum-of-cells, primary)\n'
+                  '   ↳ fallbacks: 790/0x0015 (HV bus), 740/0x0022 (nominal)\n'
                   '• SOC: BMS 0x0005 · SOH: BMS 0x0029\n'
                   '• Charge counter: BMS 0x0B00, ≈460 Wh/unit\n'
                   '• Cycle count: BMS 0x0B02\n'
