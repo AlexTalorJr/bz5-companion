@@ -1,5 +1,25 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
+    <!-- v0.1.29+10 HOTFIX: HTTPS calls to bz5-bridge.
+         CloudSyncService was added in v0.1.28+1 and BridgeDiagService is
+         planned (P1.1) — both make outbound HTTPS to carbridge.neardo.work.
+         Without this permission the Dart http client raises:
+           ClientException with SocketException:
+             Failed host lookup: 'carbridge.neardo.work'
+             OS Error: No address associated with hostname, errno = 7
+         Browsers and other apps work because they ship with INTERNET
+         declared. Field-discovered 2026-05-23 when the user first tried
+         the setup flow on the head unit.
+
+         ACCESS_NETWORK_STATE lets the app inspect connectivity state
+         (Wi-Fi vs cellular vs offline) without itself initiating any
+         network traffic — useful for future "skip cloud sync when
+         offline" optimisations and for a clearer "no network" UI hint
+         in the Cloud backup status card. Declared now so we don't
+         repeat the v0.1.28+1 omission pattern. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
     <!-- Bluetooth permissions for Android 12+ -->
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
         android:usesPermissionFlags="neverForLocation"
