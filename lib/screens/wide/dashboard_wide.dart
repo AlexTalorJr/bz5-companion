@@ -1213,7 +1213,17 @@ class _ModuleRow extends StatelessWidget {
           SizedBox(
             width: 56,
             child: Text(
-              hasTemp
+              // v0.1.29+5: text label gated on `temp != null` (the module's
+              // OWN measurement), not on hasTemp (which is true when a
+              // neighbour fallback was found). This achieves two things:
+              //   1. Dart flow analysis promotes `temp` to non-null inside
+              //      the then-branch — without this guard the build fails
+              //      with "Operator '>=' cannot be called on 'double?'".
+              //   2. UX semantics: M6 (no sensor, borrows colour from M5)
+              //      still shows the "no temp" label here, because we only
+              //      borrow the COLOUR for the bar, not the measurement
+              //      itself. Matches cells.dart behaviour exactly.
+              temp != null
                   ? ((tempMax != null &&
                           tempMin != null &&
                           (tempMax! - tempMin!) > 0.5)
@@ -1225,7 +1235,7 @@ class _ModuleRow extends StatelessWidget {
                   : 'no temp',
               style: TextStyle(
                   fontSize: 12,
-                  color: hasTemp ? Colors.white70 : Colors.grey,
+                  color: temp != null ? Colors.white70 : Colors.grey,
                   fontFeatures: const [FontFeature.tabularFigures()]),
               textAlign: TextAlign.right,
             ),
