@@ -214,6 +214,17 @@ class CloudSyncService extends ChangeNotifier {
   bool _syncInProgress = false;
   bool _initialized = false;
 
+  /// v0.1.29+9: per CLIENT_API.md §8 + §1, single 401s can be transient
+  /// (clock skew on the server, intermittent token store glitch, race
+  /// during owner-side admin maintenance). Per the spec, "a sustained
+  /// run of 401s (e.g. 3 consecutive ingest 401s) is the signal" to
+  /// wipe the token. We count consecutive 401s in memory only — a
+  /// successful response of any kind resets to 0. Restart-the-app also
+  /// resets to 0 (not persisted), which is what we want: a user who
+  /// killed the app between 401s should get fresh attempts, not have
+  /// the counter carry across.
+  int _consecutiveAuthFailures = 0;
+
   Timer? _periodicTimer;
   Timer? _heartbeatTimer;
   final http.Client _http = http.Client();
@@ -513,12 +524,34 @@ class CloudSyncService extends ChangeNotifier {
       await _recomputeStats();
       _recomputeStatus();
     } on _AuthException {
-      _lastError = 'Authentication failed — re-register required';
+      // v0.1.29+9: permanent auth failure (3+ consecutive 401s OR
+      // explicit 409 already_revoked). Wipe the token from secure
+      // storage so the next app start doesn't keep retrying with a
+      // dead credential, and stop the timers — the user must run
+      // the setup flow with a fresh setup token from the owner.
+      _lastError = 'Auth failed — re-register required '
+          '(token wiped after 3 consecutive 401s)';
       _status = CloudSyncStatus.authFailed;
       await _persistError(_lastError!);
-      // Stop timers; user must take action.
+      await _wipeTokenAndCursors();
       _periodicTimer?.cancel();
       _heartbeatTimer?.cancel();
+    } on _TransientAuthException catch (e) {
+      // v0.1.29+9: one or two 401s in a row — non-fatal. Surface a
+      // soft error to UI but keep the token and let the next periodic
+      // tick try again. The counter persists across syncOnce calls
+      // (it's a field on this), so the third in-a-row across multiple
+      // ticks will still flip to _AuthException.
+      _lastError = e.toString();
+      _status = CloudSyncStatus.error;
+      await _persistError(_lastError!);
+    } on _RetryableException catch (e) {
+      // v0.1.29+9: 5xx/429/408 that survived the internal retry
+      // budget. Don't touch the token; the next periodic tick will
+      // try again with a fresh request.
+      _lastError = e.toString();
+      _status = CloudSyncStatus.error;
+      await _persistError(_lastError!);
     } on _BridgeException catch (e) {
       _lastError = e.message;
       _status = CloudSyncStatus.error;
@@ -540,6 +573,25 @@ class CloudSyncService extends ChangeNotifier {
       _syncInProgress = false;
       notifyListeners();
     }
+  }
+
+  /// v0.1.29+9: clear the credential and device-side cached identity
+  /// when the server tells us we're done (3× 401 or explicit revoke).
+  /// Keeps cursors so that if the user re-registers and the owner
+  /// re-issues a token for the same device_id (rare but possible),
+  /// we won't re-upload everything from scratch. If they re-register
+  /// fresh (new device_id), the cursors are irrelevant because the
+  /// server dedupes on (device_id, client_id).
+  Future<void> _wipeTokenAndCursors() async {
+    try {
+      await _secureStorage.delete(key: _kTokenKey);
+    } catch (e) {
+      debugPrint('CloudSync: secure storage delete failed: $e');
+    }
+    _clientToken = null;
+    // Leave _deviceId / _vehicleId in SharedPreferences for the UI
+    // to display "Last registered as XYZ" if helpful. They're not
+    // credentials.
   }
 
   Future<void> _syncTrips() async {
@@ -657,12 +709,35 @@ class CloudSyncService extends ChangeNotifier {
       await _postIngest('/v1/data/ingest/heartbeat',
           {'client_version': await _readAppVersion()});
     } catch (e) {
-      // Heartbeat failure is non-fatal; just log.
+      // Heartbeat failure is non-fatal; just log. Note: if this hits
+      // a 401, _postIngest still increments _consecutiveAuthFailures,
+      // so a heartbeat-induced auth storm will eventually trip the
+      // 3-strike rule in the next syncOnce. We intentionally don't
+      // re-handle the wipe path here — it would race with syncOnce.
       debugPrint('CloudSync: heartbeat failed: $e');
     }
   }
 
   // ─── HTTP wrapper ───────────────────────────────────────────────
+
+  /// v0.1.29+9: backoff schedule from CLIENT_API.md §8 for retryable
+  /// errors (408/429/5xx). Five entries → up to four retries before
+  /// giving up; the final entry of `null` is the sentinel for "no
+  /// more sleeping, give up now". The first attempt does not consume
+  /// a slot — slot N is the sleep BEFORE attempt N+1.
+  ///
+  /// Total worst-case wall time per call: 5 + 15 + 45 + 120 = 185 s
+  /// of sleeps plus 5 × (request RTT, capped at 30 s timeout each) =
+  /// up to ~5 minutes. The next periodic tick (1 min) won't fire
+  /// while syncOnce is in flight (the in-progress guard at line ~498
+  /// blocks it), so this is safe — we won't pile up requests.
+  static const List<Duration?> _retryBackoff = [
+    Duration(seconds: 5),
+    Duration(seconds: 15),
+    Duration(seconds: 45),
+    Duration(seconds: 120),
+    null, // give up
+  ];
 
   Future<Map<String, dynamic>> _postIngest(
       String path, Map<String, dynamic> body) async {
@@ -671,41 +746,154 @@ class CloudSyncService extends ChangeNotifier {
       throw const _AuthException();
     }
     final uri = Uri.parse('$_baseUrl$path');
-    final resp = await _http
-        .post(
-      uri,
-      headers: {
-        'Authorization': 'Bearer $token',
-        'Content-Type': 'application/json',
-      },
-      body: jsonEncode(body),
-    )
-        .timeout(const Duration(seconds: 30));
-    final code = resp.statusCode;
-    if (code >= 200 && code < 300) {
-      if (resp.body.isEmpty) return const {};
+    final encodedBody = jsonEncode(body);
+    final headers = {
+      'Authorization': 'Bearer $token',
+      'Content-Type': 'application/json',
+    };
+
+    int attempt = 0;
+    while (true) {
+      attempt++;
+      http.Response resp;
       try {
-        return jsonDecode(resp.body) as Map<String, dynamic>;
-      } catch (_) {
-        return const {};
+        resp = await _http
+            .post(uri, headers: headers, body: encodedBody)
+            .timeout(const Duration(seconds: 30));
+      } on TimeoutException {
+        // Treat client-side timeout like 408: retryable per CLIENT_API
+        // §8 (408/429/5xx → backoff 5/15/45/120s).
+        final delay = _retryBackoff[attempt - 1];
+        if (delay == null) {
+          throw const _RetryableException(408, 'client timeout');
+        }
+        debugPrint('CloudSync: timeout on $path attempt $attempt, '
+            'sleeping ${delay.inSeconds}s');
+        await Future<void>.delayed(delay);
+        continue;
+      } on SocketException catch (e) {
+        // Same treatment — transient network error, backoff and retry.
+        final delay = _retryBackoff[attempt - 1];
+        if (delay == null) {
+          // Bubble up to syncOnce, which will catch SocketException
+          // separately and mark the error without wiping the token.
+          rethrow;
+        }
+        debugPrint(
+            'CloudSync: network error on $path attempt $attempt: ${e.message}, '
+            'sleeping ${delay.inSeconds}s');
+        await Future<void>.delayed(delay);
+        continue;
       }
-    }
-    if (code == 401) {
-      throw const _AuthException();
-    }
-    if (code == 403) {
-      // Special-case samples_disabled so /samples can fail silently.
-      // No other 403 is expected for plane B; log it.
-      final errCode = _parseErrorCode(resp.body);
-      if (path.contains('/samples') && errCode == 'samples_disabled') {
-        await _markSamplesRejected();
-        throw _BridgeException('Samples ingest disabled on server');
+
+      final code = resp.statusCode;
+
+      // v0.1.29+9: any 2xx clears the consecutive auth counter — a
+      // single successful response is proof the token is valid.
+      if (code >= 200 && code < 300) {
+        if (_consecutiveAuthFailures > 0) {
+          debugPrint('CloudSync: auth recovered after '
+              '$_consecutiveAuthFailures consecutive 401s');
+          _consecutiveAuthFailures = 0;
+        }
+        if (resp.body.isEmpty) return const {};
+        try {
+          return jsonDecode(resp.body) as Map<String, dynamic>;
+        } catch (_) {
+          return const {};
+        }
       }
+
+      // v0.1.29+9: 401 handling per CLIENT_API.md §1.
+      // Threshold is exactly 3 consecutive — the spec uses "e.g. 3" as
+      // the canonical example. Until then, treat as transient: the
+      // outer syncOnce records a non-fatal error and the next periodic
+      // tick will retry on a fresh request.
+      if (code == 401) {
+        _consecutiveAuthFailures++;
+        debugPrint('CloudSync: 401 on $path '
+            '(consecutive=$_consecutiveAuthFailures of 3)');
+        if (_consecutiveAuthFailures >= 3) {
+          throw const _AuthException();
+        }
+        throw _TransientAuthException(_consecutiveAuthFailures);
+      }
+
+      // 403 handling unchanged from v0.1.28+1 baseline: silently
+      // remember samples_disabled, log other 403s. Not retryable.
+      if (code == 403) {
+        final errCode = _parseErrorCode(resp.body);
+        if (path.contains('/samples') && errCode == 'samples_disabled') {
+          await _markSamplesRejected();
+          throw _BridgeException('Samples ingest disabled on server');
+        }
+        throw _BridgeException(
+            'Forbidden (${errCode ?? 'no code'}) on $path: ${resp.body}');
+      }
+
+      // v0.1.29+9: 409 codes per CLIENT_API.md §8 are all "permanent"
+      // (already_finished, already_revoked, not_cancellable, device
+      // revoked variants). For ingest endpoints the only realistically
+      // reachable one is already_revoked (the owner revoked us in the
+      // admin UI). Treat as permanent auth failure — wipe and stop —
+      // because retrying would just hit the same 401-storm sequence.
+      // already_finished / not_cancellable apply to command endpoints
+      // (Plane A, BridgeDiagService — not us); for safety we still
+      // surface them as _BridgeException rather than _AuthException.
+      if (code == 409) {
+        final errCode = _parseErrorCode(resp.body);
+        if (errCode == 'already_revoked' || errCode == 'device_revoked') {
+          debugPrint('CloudSync: device revoked by owner — '
+              'wiping token, requesting re-registration');
+          throw const _AuthException();
+        }
+        throw _BridgeException(
+            'Conflict (${errCode ?? 'no code'}) on $path: '
+            '${_briefBody(resp.body)}');
+      }
+
+      // 400 / 404 / other 4xx — permanent client error, no retry.
+      // (CLIENT_API §8: 400/401/403/404/409 → no retry.)
+      if (code >= 400 && code < 500) {
+        throw _BridgeException(
+            'HTTP $code on $path: ${_briefBody(resp.body)}');
+      }
+
+      // 408 / 429 / 5xx — retryable. Honour Retry-After if the server
+      // sent it (HTTP/1.1 standard header; the bridge doesn't currently
+      // emit one but might in the future). Otherwise use our schedule.
+      if (code == 408 || code == 429 || code >= 500) {
+        final delay = _retryAfterDelay(resp) ?? _retryBackoff[attempt - 1];
+        if (delay == null) {
+          throw _RetryableException(code, _briefBody(resp.body));
+        }
+        debugPrint('CloudSync: HTTP $code on $path attempt $attempt, '
+            'sleeping ${delay.inSeconds}s');
+        await Future<void>.delayed(delay);
+        continue;
+      }
+
+      // 1xx / 3xx / anything weird — shouldn't happen via the bridge,
+      // but be defensive: don't loop, surface as a bridge error.
       throw _BridgeException(
-          'Forbidden (${errCode ?? 'no code'}) on $path: ${resp.body}');
+          'Unexpected HTTP $code on $path: ${_briefBody(resp.body)}');
     }
-    throw _BridgeException(
-        'HTTP $code on $path: ${_briefBody(resp.body)}');
+  }
+
+  /// Parse Retry-After header per RFC 7231 §7.1.3. Two formats:
+  ///   - Integer seconds: "Retry-After: 5"
+  ///   - HTTP date: "Retry-After: Wed, 21 Oct 2026 07:28:00 GMT"
+  /// We only honour the seconds form — the date form is rare in
+  /// modern APIs and the bridge spec doesn't promise it.
+  Duration? _retryAfterDelay(http.Response resp) {
+    final header = resp.headers['retry-after'];
+    if (header == null) return null;
+    final seconds = int.tryParse(header.trim());
+    if (seconds == null || seconds < 0) return null;
+    // Cap at 5 minutes — refusing to obey "sleep for an hour" is the
+    // right move for a foreground app.
+    final capped = seconds > 300 ? 300 : seconds;
+    return Duration(seconds: capped);
   }
 
   /// Extracts {"error":{"code":"..."}} (or {"detail":{"error":...}})
@@ -889,7 +1077,7 @@ class CloudSyncService extends ChangeNotifier {
   /// Read app version from the static value baked into the build.
   /// We don't have package_info_plus as a dep — pubspec-version is
   /// hardcoded here. Update when bumping. Off-by-one tolerated.
-  Future<String> _readAppVersion() async => '0.1.29+8';
+  Future<String> _readAppVersion() async => '0.1.29+9';
 }
 
 // ─── Internal exceptions ────────────────────────────────────────────
@@ -901,8 +1089,38 @@ class _BridgeException implements Exception {
   String toString() => message;
 }
 
+/// Permanent auth failure: 3+ consecutive 401s, OR a single 409
+/// already_revoked. Causes the service to wipe the stored client_token,
+/// mark the device as needing re-registration, and stop the periodic
+/// timers. The user must start the setup flow again with a fresh
+/// setup token from the owner.
 class _AuthException implements Exception {
   const _AuthException();
   @override
   String toString() => 'Authentication failed';
+}
+
+/// v0.1.29+9: transient auth blip — a single 401 (or 1-2 consecutive).
+/// CLIENT_API.md §1 explicitly tolerates this: "a sustained run of
+/// 401s (e.g. 3 consecutive ingest 401s) is the signal" — so a one-off
+/// shouldn't wipe the token. We treat this like any other transient
+/// network error: log it, surface a non-fatal error to UI, retry on
+/// the next periodic tick.
+class _TransientAuthException implements Exception {
+  final int consecutiveCount;
+  const _TransientAuthException(this.consecutiveCount);
+  @override
+  String toString() =>
+      'Auth blip (#$consecutiveCount of 3 — retrying next cycle)';
+}
+
+/// v0.1.29+9: server returned 408/429/5xx after the inner retry budget
+/// was exhausted. The outer syncOnce should NOT mark the token bad,
+/// just record the error and let the next periodic tick try again.
+class _RetryableException implements Exception {
+  final int statusCode;
+  final String body;
+  const _RetryableException(this.statusCode, this.body);
+  @override
+  String toString() => 'Retryable HTTP $statusCode: $body';
 }
