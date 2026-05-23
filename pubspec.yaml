@@ -1,7 +1,7 @@
 name: bz5_companion
 description: Toyota BZ5 telemetry & monitoring app
 publish_to: 'none'
-version: 0.1.29+2
+version: 0.1.29+3
 
 environment:
   sdk: '>=3.3.0 <4.0.0'
@@ -25,6 +25,11 @@ dependencies:
   share_plus: ^10.0.0       # system share sheet (USB / cloud / messaging)
   # v0.1.14: in-car DID sweep.
   wakelock_plus: ^1.2.8     # keep screen awake during long sweeps (~55 min)
+  # v0.1.28: CloudSyncService deps. Imported in lib/services/cloud_sync_service.dart
+  # since v0.1.28+1 baseline but accidentally never added here — caused CI build
+  # failures from v0.1.28+1 through v0.1.29+2. Fixed in v0.1.29+3.
+  flutter_secure_storage: ^9.0.0   # client token storage (Keystore/Keychain)
+  http: ^1.2.0                     # HTTPS client for bridge ingest
 
 dev_dependencies:
   flutter_test:
