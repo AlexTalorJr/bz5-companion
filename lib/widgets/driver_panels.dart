@@ -32,8 +32,6 @@
 // flag is simpler, less surprising, and matches the call sites which
 // know which mode they want anyway.
 
-import 'dart:ui' show FontFeature;
-
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 

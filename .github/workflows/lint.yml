@@ -1,19 +1,15 @@
 name: Lint (flutter analyze)
 
-# Runs `flutter analyze` on every push and PR. This is the fast feedback
-# loop that catches Dart type errors, null safety regressions, and unused
-# imports before they reach the assembleRelease step in build.yml.
+# Fast-feedback lint job. Catches Dart type errors and null-safety
+# regressions in ~1-2 minutes vs the full build.yml's ~3 minutes.
+# Runs independently of build.yml — both fire on push, lint usually
+# finishes first.
 #
-# History: v0.1.29+4 introduced a null-safety regression (changing
-# `hasTemp` from `temp != null` to `tempForColor != null` lost type
-# promotion on downstream `temp.toStringAsFixed(...)` calls). The full
-# build.yml took ~3 minutes to install Android SDK before kernel snapshot
-# revealed the error. This workflow catches the same class of errors in
-# ~30 seconds because it skips the Android SDK install and Gradle build.
-#
-# Runs independently of build.yml — both fire on push, but lint usually
-# finishes first. A red lint check means the build will fail too; fix
-# lint first, then push again.
+# v0.1.29+11: added build_runner step. Without it Drift's `database.g.dart`
+# isn't generated → 200+ `Undefined name 'trips'` / `Undefined class 'Trip'`
+# errors because Drift symbols don't exist until codegen runs. The build.yml
+# pipeline runs `dart run build_runner build --delete-conflicting-outputs`
+# at the same point; lint.yml now matches.
 
 on:
   push:
@@ -25,16 +21,14 @@ on:
 jobs:
   analyze:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Java
-        # `flutter create` (next step) needs Java to scaffold the
-        # android/ folder. Without this Flutter falls back to a JDK it
-        # may not find on the runner image, slowing the step. Pin to 17
-        # to match build.yml.
+        # `flutter create` needs Java for android/ scaffold. Pin to 17 to
+        # match build.yml.
         uses: actions/setup-java@v4
         with:
           distribution: 'zulu'
@@ -47,11 +41,9 @@ jobs:
           channel: 'stable'
           cache: true
 
-      - name: Create Android project files (with valid name)
-        # Required because we commit only lib/ and pubspec.yaml; the
-        # android/ folder is generated. Without it `pub get` succeeds but
-        # `analyze` can warn about missing platform dirs. Mirrors the
-        # equivalent step in build.yml.
+      - name: Create Android project files
+        # Same as build.yml — we commit lib/ + pubspec.yaml only, the
+        # android/ folder is generated.
         run: |
           flutter create --platforms=android \
             --org com.bz5companion \
@@ -60,9 +52,15 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
+      - name: Generate Drift code
+        # Drift uses build_runner to generate `database.g.dart` from
+        # `database.dart`. Without this, every Drift-using file fails
+        # to analyze with hundreds of "undefined name" errors. Mirror
+        # the build.yml step exactly.
+        run: dart run build_runner build --delete-conflicting-outputs
+
       - name: Run analyzer
-        # `--fatal-infos` and `--fatal-warnings` would make this stricter,
-        # but for now we mirror what `flutter build` actually rejects so
-        # the signal is the same. Adjust later if we want a separate
-        # warning-clean target.
+        # Default severity treats `error` as failure but lets `info` and
+        # `warning` pass. Matches what `flutter build` itself enforces,
+        # so the lint signal is identical to the build signal.
         run: flutter analyze
