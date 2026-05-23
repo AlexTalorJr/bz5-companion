@@ -1067,6 +1067,32 @@ class _ModulesListPanel extends StatelessWidget {
       tmax = reportedTemps.reduce((a, b) => a > b ? a : b);
     }
 
+    // v0.1.29+4: mirror the neighbour-fallback logic from cells.dart
+    // (introduced in v0.1.27+1) so modules without their own temp sensor
+    // (M6 on BZ5 is structural, no sensor by design) get the colour of
+    // the nearest sensored module instead of an empty grey-bordered
+    // rectangle. Search backward first (M6 borrows M5), then forward
+    // as a safety net for the unlikely case where module index 0 lacks
+    // a sensor. The fallback affects ONLY the bar colour — the row
+    // identity (M6 label, mV range) stays unambiguous.
+    final fallbackTemps = <double?>[];
+    for (int i = 0; i < modules.length; i++) {
+      double? fallback;
+      if (!modules[i].hasAnyTemp) {
+        for (int j = i - 1; j >= 0; j--) {
+          final t = modules[j].avgTemp;
+          if (t != null) { fallback = t; break; }
+        }
+        if (fallback == null) {
+          for (int j = i + 1; j < modules.length; j++) {
+            final t = modules[j].avgTemp;
+            if (t != null) { fallback = t; break; }
+          }
+        }
+      }
+      fallbackTemps.add(fallback);
+    }
+
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(14),
@@ -1092,6 +1118,7 @@ class _ModulesListPanel extends StatelessWidget {
                     module: modules[i],
                     tempMin: tmin,
                     tempMax: tmax,
+                    fallbackTempC: fallbackTemps[i],
                   );
                 },
               ),
@@ -1107,18 +1134,33 @@ class _ModuleRow extends StatelessWidget {
   final ModuleSnapshot module;
   final double? tempMin;
   final double? tempMax;
-  const _ModuleRow({required this.module, this.tempMin, this.tempMax});
+  /// v0.1.29+4: temperature borrowed from a neighbouring module for
+  /// colour purposes only. Used when the module has no temp sensor
+  /// (M6 on BZ5). Null when not applicable.
+  final double? fallbackTempC;
+  const _ModuleRow({
+    required this.module,
+    this.tempMin,
+    this.tempMax,
+    this.fallbackTempC,
+  });
 
   @override
   Widget build(BuildContext context) {
     final temp = module.avgTemp;
-    final hasTemp = module.hasAnyTemp && temp != null;
+    // v0.1.29+4: hasTemp now true when EITHER the module reports its own
+    // temp OR a neighbour fallback is available. Effect: the bar gets
+    // filled with the (borrowed) colour instead of showing an empty
+    // grey-bordered rectangle. Bars from real sensors and bars from
+    // fallback render identically — matches the Cells screen behaviour.
+    final tempForColor = temp ?? fallbackTempC;
+    final hasTemp = tempForColor != null;
 
     Color barColor = const Color(0xFF7AB9D4);
     if (hasTemp && tempMin != null && tempMax != null) {
       if ((tempMax! - tempMin!) > 0.5) {
         final ratio =
-            ((temp - tempMin!) / (tempMax! - tempMin!)).clamp(0.0, 1.0);
+            ((tempForColor - tempMin!) / (tempMax! - tempMin!)).clamp(0.0, 1.0);
         barColor = Color.lerp(
           const Color(0xFF7AB9D4),
           const Color(0xFFD4944A),

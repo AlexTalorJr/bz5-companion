@@ -119,12 +119,23 @@ class _SpeedAndStatusStrip extends StatelessWidget {
     // user enabled "match speedometer" toggle in Settings, otherwise
     // raw true speed). Trip aggregates still use the unscaled value.
     final speed = svc.displaySpeedKmh ?? 0.0;
+    // v0.1.29+4: primary Pack V on Driver tab is now sum-of-cells (mirrors
+    // Analytics tab and phone dashboard which switched in v0.1.27+2 and
+    // v0.1.29+2 respectively). hvBusV kept for the load-sag colour cue
+    // (red below 390V) — that semantic stays on the post-contactor line
+    // because it's the one that physically sags under load, which is the
+    // whole point of the warning. Display text is the more honest cells
+    // value; the colour is the safety alert.
+    final packFromCells = svc.packVoltageFromCells;
     final hvBus = svc.hvBusV;
     final batTemp = svc.readNumeric('790', '002F');
     final pdu1 = svc.readNumeric('740', '0010');
     final pdu2 = svc.readNumeric('740', '0011');
 
-    // Pack V severity color: red when sag below 390 V suggests heavy load
+    // Pack V severity color: red when sag below 390 V suggests heavy load.
+    // Color tracks hvBus (load-side observable) regardless of which value
+    // we render — when the bus actually sags the user should see red even
+    // if the sum-of-cells stays composed.
     final hvColor = (hvBus != null && hvBus < 390)
         ? Colors.redAccent
         : Colors.white70;
@@ -178,9 +189,12 @@ class _SpeedAndStatusStrip extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 8),
-            // Status strip: Pack V (live HV bus) + Battery temp + PDU temps.
-            // All in a single line, secondary tone, ~22-24 pt.
-            // Pack V goes red on sag (load warning).
+            // Status strip: Pack V (sum-of-cells) + Battery temp + PDU temps.
+            // v0.1.29+4: text shows sum-of-cells (the physically-correct
+            // pack voltage); colour stays tied to hvBus sag so the load
+            // warning still works. If cells haven't been polled yet, fall
+            // back to hvBus with '*' marker — keeps a value visible during
+            // startup instead of showing '—'.
             FittedBox(
               fit: BoxFit.scaleDown,
               alignment: Alignment.centerLeft,
@@ -190,9 +204,11 @@ class _SpeedAndStatusStrip extends StatelessWidget {
                       size: 18, color: Colors.yellowAccent),
                   const SizedBox(width: 4),
                   Text(
-                      hvBus != null
-                          ? '${hvBus.toStringAsFixed(1)} V'
-                          : '— V',
+                      packFromCells != null
+                          ? '${packFromCells.toStringAsFixed(1)} V'
+                          : hvBus != null
+                              ? '${hvBus.toStringAsFixed(1)} V*'
+                              : '— V',
                       style: TextStyle(
                           fontSize: 22,
                           fontWeight: FontWeight.w400,
