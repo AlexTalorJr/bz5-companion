@@ -1,3 +1,5 @@
+import 'dart:ui' show FontFeature;
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -105,6 +107,16 @@ class _Connected extends StatelessWidget {
     // append a driver-mini section (speed/power/peak) below it.
     // When false the layout is byte-identical to the pre-0.1.29
     // dashboard — phones see no change.
+    //
+    // v0.1.29+6: BZ3 field test 2026-05-23 showed phone-style 2-col
+    // layout despite expected logical ~1005×1786 dp. The threshold
+    // didn't fire — but we don't know why yet (density bucket different
+    // from 172/160, MediaQuery padding eating dp, or some other Android
+    // quirk on the head unit). Logic unchanged this patch; the
+    // Calibration card below now displays raw MediaQuery values when
+    // the tall layout is NOT active, so the BZ3 owner can screenshot
+    // and we can patch the threshold against real numbers next round
+    // instead of guessing.
     final mq = MediaQuery.of(context);
     final isTall = mq.size.height > 1400;
     final isWideEnough = mq.size.width > 700;
@@ -571,6 +583,15 @@ class _PhysicsModelCard extends StatelessWidget {
                     style: const TextStyle(fontSize: 11, color: Colors.grey, height: 1.4),
                   ),
                 ],
+                // v0.1.29+6: diagnostic — only show on non-tall layouts.
+                // Helps identify why BZ3 isn't triggering the tall portrait
+                // layout despite being a tall portrait head unit. Hidden on
+                // BZ5 wide head unit (it doesn't render this screen anyway —
+                // uses dashboard_wide.dart) and on tall layouts where the
+                // threshold already worked. Shows: logical size, device
+                // pixel ratio, system padding, view insets (keyboard), and
+                // the threshold result.
+                _LayoutDiagnostic(),
               ],
             ),
           ),
@@ -579,6 +600,56 @@ class _PhysicsModelCard extends StatelessWidget {
     );
   }
 }
+
+/// Inline diagnostic for understanding why a given screen falls into the
+/// phone vs tall-portrait layout bucket. Self-contained — reads MediaQuery
+/// from its own context. Renders nothing when the tall layout would have
+/// activated (threshold worked, no investigation needed).
+class _LayoutDiagnostic extends StatelessWidget {
+  const _LayoutDiagnostic();
+
+  @override
+  Widget build(BuildContext context) {
+    final mq = MediaQuery.of(context);
+    final size = mq.size;
+    final dpr = mq.devicePixelRatio;
+    final pad = mq.padding;
+    final ins = mq.viewInsets;
+    final isTall = size.height > 1400;
+    final isWide = size.width > 700;
+    // Hide when threshold worked — phones and BZ5 stop seeing this
+    // once the actual physical numbers are known. Only "broken case"
+    // owners see the diagnostic.
+    final tallLayoutActive = isTall && isWide;
+    if (tallLayoutActive) return const SizedBox.shrink();
+    final physicalW = (size.width * dpr).round();
+    final physicalH = (size.height * dpr).round();
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Text(
+        '— layout debug ($_kDiagVersion) —\n'
+        'logical: ${size.width.toStringAsFixed(1)} × '
+        '${size.height.toStringAsFixed(1)} dp\n'
+        'physical: $physicalW × $physicalH px · dpr=$dpr\n'
+        'padding: L=${pad.left.toStringAsFixed(0)} T=${pad.top.toStringAsFixed(0)} '
+        'R=${pad.right.toStringAsFixed(0)} B=${pad.bottom.toStringAsFixed(0)}\n'
+        'viewInsets: B=${ins.bottom.toStringAsFixed(0)}\n'
+        'isTall(>1400)=$isTall · isWide(>700)=$isWide → '
+        'tallLayout=$tallLayoutActive',
+        style: const TextStyle(
+          fontSize: 10,
+          color: Colors.amber,
+          height: 1.4,
+          fontFeatures: [FontFeature.tabularFigures()],
+        ),
+      ),
+    );
+  }
+}
+
+/// Bump when changing the diagnostic format — helps cross-reference
+/// screenshots to specific app versions while iterating.
+const String _kDiagVersion = 'v0.1.29+6';
 
 class _GridCards extends StatelessWidget {
   final List<Widget> children;
