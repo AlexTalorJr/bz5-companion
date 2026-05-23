@@ -878,10 +878,18 @@ class _GridCards extends StatelessWidget {
       physics: const NeverScrollableScrollPhysics(),
       mainAxisSpacing: 8,
       crossAxisSpacing: 8,
-      // 3-column layout uses narrower cards, so we slightly tighten
-      // the aspect ratio to keep them readable; 2-col stays the
-      // familiar 1.6.
-      childAspectRatio: crossAxisCount == 3 ? 1.3 : 1.6,
+      // v0.1.29+13: 3-col layout (tall portrait, BZ3) cards made
+      // short-and-wide to drop overall grid height per owner feedback.
+      // Math: BZ3 720dp wide, ListView padding 16+16, cross-axis
+      // spacing 16 (2 gaps in 3 cols) → card_width = (720-32-16)/3
+      // ≈ 224dp. At aspect 4.5: height ≈ 50dp — fits header (icon +
+      // label) on one line and value beside it in compact mode (see
+      // _MetricCard below for the LayoutBuilder branching). Two rows
+      // of these = ~108dp total vs ~344dp at the previous aspect 1.3,
+      // saving ~240dp which more than covers the prior scroll overflow.
+      // 2-col phone layout unchanged at 1.6 (card_width ~190dp →
+      // height ~118dp).
+      childAspectRatio: crossAxisCount == 3 ? 4.5 : 1.6,
       children: children,
     );
   }
@@ -898,31 +906,79 @@ class _MetricCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(children: [
-              Icon(icon, color: color, size: 18),
-              const SizedBox(width: 6),
-              Expanded(
-                child: Text(label.toUpperCase(),
-                    style: const TextStyle(fontSize: 10, letterSpacing: 0.5, color: Colors.grey),
-                    overflow: TextOverflow.ellipsis),
-              ),
-            ]),
-            const Spacer(),
-            FittedBox(
-              fit: BoxFit.scaleDown,
-              alignment: Alignment.centerLeft,
-              child: Text(value, style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w400)),
+    // v0.1.29+13: auto-detect compact mode via LayoutBuilder. With
+    // _GridCards aspect 4.5 on tall portrait (3-col), card height is
+    // ~50dp — not enough room for a Column(header, value) layout. We
+    // switch to a single Row(icon+label, value) which fits in 50dp.
+    // Phone 2-col layout still gets ~120dp tall cards → keeps the
+    // original Column layout with Spacer and unchanged sizes.
+    return LayoutBuilder(builder: (context, constraints) {
+      final compact = constraints.maxHeight < 70;
+      if (compact) {
+        // One-row layout for tall portrait. Icon + label on the left
+        // (Expanded so it eats the slack); value on the right
+        // FittedBox-scaled. EdgeInsets tightened to give the value
+        // more horizontal room.
+        return Card(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(10, 0, 12, 0),
+            child: Row(
+              children: [
+                Icon(icon, color: color, size: 14),
+                const SizedBox(width: 5),
+                Expanded(
+                  child: Text(label.toUpperCase(),
+                      style: const TextStyle(
+                          fontSize: 9,
+                          letterSpacing: 0.5,
+                          color: Colors.grey),
+                      overflow: TextOverflow.ellipsis),
+                ),
+                const SizedBox(width: 6),
+                FittedBox(
+                  fit: BoxFit.scaleDown,
+                  alignment: Alignment.centerRight,
+                  child: Text(value,
+                      style: const TextStyle(
+                          fontSize: 18, fontWeight: FontWeight.w500)),
+                ),
+              ],
             ),
-          ],
+          ),
+        );
+      }
+      // Phone 2-col: unchanged from pre-v0.1.29+13.
+      return Card(
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(children: [
+                Icon(icon, color: color, size: 18),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(label.toUpperCase(),
+                      style: const TextStyle(
+                          fontSize: 10,
+                          letterSpacing: 0.5,
+                          color: Colors.grey),
+                      overflow: TextOverflow.ellipsis),
+                ),
+              ]),
+              const Spacer(),
+              FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.centerLeft,
+                child: Text(value,
+                    style: const TextStyle(
+                        fontSize: 24, fontWeight: FontWeight.w400)),
+              ),
+            ],
+          ),
         ),
-      ),
-    );
+      );
+    });
   }
 }
 
