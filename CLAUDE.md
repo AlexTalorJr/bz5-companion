@@ -98,33 +98,54 @@ COMMITMSG
 
 ## Формат commit-сообщения
 
-Подробный, многострочный. Структура:
+**Цель**: как можно короче, но **раскрывая суть** изменений. Пользователь читает `git log` глазами, не хочет скроллить через 150-строчные простыни на каждом патче. Структура:
 
 ```
-<one-line summary: вер + лаконичное "что и зачем">
+<one-line summary: версия + одно предложение что и зачем>
 
-<абзац контекста: почему меняем, что было не так / какая фича добавляется>
+<2-5 строк контекста: почему меняем, корневая причина или цель>
 
-<техдетали: точные пути файлов, что именно изменилось в каждом,
-конкретные числа/факты, ссылки на где это в коде/recon доках>
+<техдетали bullet'ами: каждый изменённый файл + одна фраза что в нём>
 
-<что НЕ тронуто: чтобы было понятно где регрессии заведомо нет>
+<что НЕ тронуто — одна строка если нетривиально (например "BLE flow, Drift schema — не тронуто")>
 
-<что осталось пендинг / deferred — следующие шаги>
-
-<регрессионное тестирование: список того что я проверил перед отправкой>
+<регрессия — одна строка если что-то проверял ("brace balance, pubspec parity, 7 auth scenarios — pass")>
 ```
 
-Длина — от 30 до 150 строк нормально. Это git log, по нему искать. Хорошие примеры — в `v0.1.26+11` (SOC-derived charging), `v0.1.27_native_api_scaffold`. **Пишутся по-английски** (см. секцию "Язык общения" в начале файла). Старые коммиты в репо на смеси языков — это исторический артефакт, исправлять не надо, новые делать на английском.
+**Ориентир по длине**: 10-30 строк типично, до ~50 если патч действительно архитектурный. **Не растягивай искусственно** — нет ничего полезного в пересказе кода, который читатель и так увидит в diff'е.
 
-Технические идентификаторы НЕ оборачивай в backticks внутри commit message — bash их съест. Просто `BydCarPropertyClient` plain text.
+**Чего НЕ делать**:
+- Не дублируй информацию из CLAUDE.md (например "per CLAUDE.md rule X" — пользователь сам знает свои правила).
+- Не пересказывай diff построчно — git это делает лучше.
+- Не пиши "POST-DELIVERY VERIFICATION" с 10 пунктами что user'у проверять — это inline в чате после патча, не в коммите.
+- Не пиши истории про другие версии ("v0.1.29+5 had X, now we have Y") — для этого есть CLAUDE.md patch history table.
 
-### Что обязательно упомянуть
+**Что обязательно**:
+- Версия в первой строке.
+- Корневая причина / цель — почему этот патч существует.
+- Каждый изменённый файл упомянут.
+- Если трогали protected file (с разрешения пользователя) — отметить явно.
 
-- Каждый изменённый файл + одной фразой что в нём.
-- Каждый новый файл + что он делает.
-- Что НЕ меняли (особенно `connection.dart`, `database.dart`, BLE flow — пользователь явно беспокоится за регрессии).
-- Регрессионное тестирование bullet'ами с ✅.
+**Язык**: английский (см. "Язык общения" в начале). Технические идентификаторы НЕ оборачивай в backticks (bash их съест) — просто `BydCarPropertyClient` plain.
+
+**Хороший пример** (краткость через структуру bullet'ов, не через жертвование сутью):
+
+```
+v0.1.29+10 hotfix: add INTERNET permission for cloud sync
+
+CloudSyncService (added v0.1.28+1) couldn't make any HTTPS calls —
+AndroidManifest was missing INTERNET permission. Symptom: errno=7
+host lookup failed. Field-discovered when owner first tried setup
+flow on head unit; previously unexercised path.
+
+Changes:
+- AndroidManifest.xml: added INTERNET + ACCESS_NETWORK_STATE
+- pubspec.yaml + cloud_sync_service.dart: version 0.1.29+10
+- CLAUDE.md: new pre-flight section on permission ↔ feature parity
+
+Not touched: Dart code, BLE flow, Drift schema.
+Regression: XML balance, version triple-match, parity check — pass.
+```
 
 ## Регрессионное тестирование — обязательно перед доставкой
 
@@ -560,7 +581,7 @@ WebFetch.
 - ❌ НЕ создавать подпапку `scaffold/` или `patch/` внутри zip — пути должны быть от корня репо.
 - ❌ НЕ предлагать `adb install` / `adb logcat` / `pm grant` как primary workflow.
 - ❌ НЕ бампить версию для scaffold/infra патчей.
-- ❌ НЕ модифицировать `connection.dart`, `database.dart`, `elm327_ble.dart` без явной просьбы — пользователь дорожит регрессионной стабильностью BLE flow.
+- ⚠️ Файлы `connection.dart`, `database.dart`, `elm327_ble.dart` — protected. **Если трогать их разумно и необходимо для решения задачи, СПРОСИ у пользователя разрешения явно** ("Для X нужно тронуть connection.dart, конкретно метод Y — можно?"). Не игнорируй задачу молча и не предлагай worse solution только чтобы их обойти. Пользователь либо разрешит, либо предложит альтернативу. По умолчанию (без спроса) — не трогать.
 - ❌ НЕ ставить большие assets в Flutter `pubspec.yaml` без необходимости — CSV каталог 615 KB живёт в `docs/`, не в `assets/`.
 - ❌ НЕ генерировать `.aidl` файлы для ICarPropertyService — у Response.result полиморфный type-tagged Object, AIDL stub generator такое не умеет. Используем raw `IBinder.transact()`.
 - ❌ НЕ забывать о trailing commas в Kotlin — старый kotlinc на этом контейнере (1.3.31) ругается, но prod Kotlin 2.1+ принимает.
@@ -579,6 +600,7 @@ WebFetch.
 
 | Версия     | Что сделано (одна строка) |
 |------------|---------------------------|
+| 0.1.29+11  | Hotfix lint.yml: добавлен `dart run build_runner build --delete-conflicting-outputs` step (мирор с build.yml). Без него Drift codegen не запускался → 200+ `Undefined name 'trips'`/`Undefined class 'Trip'` errors на CI. Заодно: убраны 2 избыточных `import 'dart:ui'` (FontFeature реэкспортируется через material.dart) в dashboard.dart и driver_panels.dart. test/widget_test.dart заменён пустым stub'ом (auto-scaffolded от `flutter create` ссылался на несуществующий `MyApp` класс — `creation_with_non_type` error). cloud_sync `_readAppVersion` → 0.1.29+11. |
 | 0.1.29+10  | Hotfix: добавлены `INTERNET` и `ACCESS_NETWORK_STATE` permissions в `AndroidManifest.xml`. Без них Dart http client кидал `SocketException: Failed host lookup ... errno=7` на любой сетевой запрос — DNS не резолвился потому что Android networking stack для приложений без `INTERNET` отдаёт stub resolver. CloudSyncService с v0.1.28+1 был фактически неработоспособен (никто не пробовал boevoy setup flow). Обнаружено когда пользователь впервые ставил cloud backup на head unit. cloud_sync `_readAppVersion` → 0.1.29+10. |
 | 0.1.29+9   | CloudSyncService Phase 3 hardening per CLIENT_API.md §1+§8: одиночный 401 больше не убивает токен — счётчик `_consecutiveAuthFailures` в памяти, throw `_TransientAuthException` пока <3 (soft error, не trip), `_AuthException` (permanent → wipe token, stop timers) только при ≥3 подряд ИЛИ 409 already_revoked. Любой 2xx сбрасывает счётчик. 408/429/5xx получают exponential backoff 5/15/45/120s внутри `_postIngest` (4 retry'я), потом `_RetryableException` который в syncOnce записывает soft error без wipe'а. Retry-After header (если сервер пришлёт) honored с cap 5min. Только один файл изменён. |
 | 0.1.29+8   | BZ3 tall portrait dashboard перепроектирован: Speed/Status strip + компактная SoC card в top row (3:2), полная TripMetricsPanel (6 cells + TRIP COST) под parking pawl, грид 6 cells (SOH/Battery/PackV/Odometer/PDU1/PDU2) — без Cycles/Gear/Speed (Gear переехал в SoC badge), Calibration card убран. Подход: извлечены `SpeedAndStatusStrip`, `TripMetricsPanel`, `TripCell`, `consumptionColor` из `driver_view_wide.dart` в новый `lib/widgets/driver_panels.dart` как public widgets с параметром `compact: bool`. Driver wide использует default (full size); dashboard на tall — `compact: true`. Phone layout НЕ изменён. cloud_sync `_readAppVersion` → 0.1.29+8. |
@@ -603,12 +625,16 @@ WebFetch.
 - `lib/screens/settings.dart` — растёт каждый patch (cost, cloud sync, etc.)
 - `lib/screens/wide/driver_view_wide.dart` — Driver tab head unit
 
-### Файлы которые **не** меняем
+### Файлы которые **не** меняем без спроса (protected, см. Антипаттерны выше)
 
-- `lib/services/elm327_ble.dart`
-- `lib/data/database.dart` (Drift schema — никаких новых таблиц/колонок)
-- `android/app/src/main/AndroidManifest.xml` (BLE+BYDAUTO perms финализированы)
-- Любой `.g.dart` (auto-generated)
+- `lib/services/connection.dart` — спросить разрешения; только additive getter'ы по умолчанию
+- `lib/services/elm327_ble.dart` — спросить разрешения
+- `lib/data/database.dart` (Drift schema) — спросить разрешения (любая правка → миграция)
+- Любой `.g.dart` (auto-generated, никогда руками)
+
+### AndroidManifest.xml — раньше был "не трогать", теперь не protected
+
+С v0.1.29+10 manifest **можно** редактировать (там обнаружилось что `INTERNET` permission отсутствует с v0.1.28+1 и cloud sync не работал). Перед редактированием — предупредить пользователя в commit message что если у него были локальные кастомные правки, надо проверить `git diff HEAD~1`.
 
 
 
