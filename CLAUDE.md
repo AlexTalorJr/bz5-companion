@@ -147,6 +147,134 @@ COMMITMSG
 
 Kotlin `"foo ${bar.method()}"` содержит код внутри строки. Простое `re.sub(r'"..."', '""', t)` съест скобки из template expression и даст ложный fail на paren balance. Используй Kotlin-aware state machine (см. v0.1.27 final regression — там реализовано).
 
+## Pre-flight: где может жить дублирующая логика (читать ПЕРЕД редактированием)
+
+Кодовая база накопила параллельные реализации одного и того же UX-концепта в нескольких файлах без абстракции в shared widget. Когда трогаешь любую из перечисленных ниже концепций — обязательно проверь **все** места, не только то с которого начал. Пропуски здесь дорого обходятся: концепции v0.1.27+1 (M6 fallback color) и v0.1.27+2 (Pack V from cells) каждая прожили по два-три патча прежде чем накрыть все экраны (см. историю пропусков в конце секции).
+
+Метод проверки прежде чем редактировать любой файл из `lib/screens/` или `lib/services/`:
+
+```bash
+grep -rln "<symbol_or_concept_to_change>" lib/screens/ lib/services/
+```
+
+Если grep вернул >1 файла — внимательно подумать какие правки нужны и в остальных.
+
+### Pack V (отображение pack voltage)
+
+Три параллельных места отображения, все должны рендерить одну и ту же primary value (сейчас `packVoltageFromCells`):
+
+- `lib/screens/dashboard.dart` — phone dashboard, метрик-карта "Pack V"
+- `lib/screens/wide/dashboard_wide.dart` — head unit Analytics tab, класс `_PackVoltageHero`
+- `lib/screens/wide/driver_view_wide.dart` — head unit Driver tab, status strip строка с иконкой `Icons.bolt`
+
+Плюс две точки записи в snapshot DB (колонка `packVoltageV`):
+
+- `lib/services/connection.dart`, метод `_maybeWriteSnapshot` (~line 1879)
+- `lib/services/connection.dart`, метод `captureSnapshot` (~line 2604)
+
+Любое изменение источника, fallback chain, или формата — пять файлов, не один. Quick check:
+
+```bash
+grep -rn "packVoltageV\|packVoltageFromCells\|hvBusV" lib/screens/ lib/services/connection.dart
+```
+
+### Модули M1..M10 (cell-balance строки)
+
+Две параллельные реализации widget'а с **одинаковым именем `_ModuleRow`** в разных файлах:
+
+- `lib/screens/cells.dart` — full-width row с temp label внутри бара. Helper `_buildModuleRows` делает neighbour-fallback temp для модулей без сенсора (M6 на BZ5).
+- `lib/screens/wide/dashboard_wide.dart` — узкий bar в `_ModulesListPanel`. С v0.1.29+4 имеет аналогичный neighbour-fallback inline в `build()` метод панели.
+
+При изменении render-логики (цвет, fallback, hasTemp условие) — оба места. Quick check:
+
+```bash
+grep -rn "_ModuleRow\|hasAnyTemp\|fallbackTempC\|_buildModuleRows" lib/screens/
+```
+
+### pubspec.yaml ↔ lib/ package: imports
+
+При добавлении `import 'package:X/...'` в любой Dart файл — пакет X **обязательно** должен появиться в `pubspec.yaml` под `dependencies:`. CI билд падает на kernel snapshot с `FileSystemException` если хоть один импорт без объявленного deps. Симптом в логе CI:
+
+```
+Error: Couldn't resolve the package 'X' in 'package:X/X.dart'.
+```
+
+CloudSyncService v0.1.28+1 пропустил `flutter_secure_storage` и `http` → три CI билда подряд (v0.1.28+1, v0.1.29+0, v0.1.29+1, v0.1.29+2) упали по этой причине, прежде чем hotfix v0.1.29+3 закрыл. **Тип ошибки не очевиден из контекста**: imports локально парсятся и анализируются обычными инструментами Dart, проблема всплывает только в CI Flutter kernel build. Поэтому в regression suite ОБЯЗАТЕЛЕН такой check:
+
+```bash
+# Все импортируемые пакеты
+grep -rhE "^import 'package:[a-z][a-z0-9_]*/" lib/ \
+  | sed -E "s|.*package:([^/]+)/.*|\\1|" | sort -u > /tmp/imported
+
+# Все объявленные deps (примитивно, но работает)
+awk '/^dependencies:/,/^dev_dependencies:/' pubspec.yaml \
+  | grep -E "^  [a-z]" | cut -d: -f1 | tr -d ' ' | sort -u > /tmp/declared
+
+diff /tmp/imported /tmp/declared
+```
+
+`<` в diff = используется, но не объявлен (**обязательно фиксить, CI упадёт**).
+`>` в diff = объявлен, но не используется (ОК, можно почистить).
+
+### Версии и pubspec
+
+При бампе версии трогать **два** места:
+
+- `pubspec.yaml` строка `version: 0.1.X+Y`
+- `lib/services/cloud_sync_service.dart` метод `_readAppVersion()` — hardcoded string
+
+Иначе bridge heartbeat репортит устаревшую версию (косметический баг, но засоряет admin UI). v0.1.29+1 делали без bump'а cloud_sync, оно отрепортилось как 0.1.28+1 → задним числом увидели в v0.1.29+2. Когда package_info_plus добавим — оба места можно будет схлопнуть в одно.
+
+### Dart null safety и type promotion при правке guard-переменных
+
+Dart 3 flow analyzer промоутит nullable-локалы через final-bound boolean guards:
+
+```dart
+final temp = something.maybeNull;       // double?
+final hasTemp = temp != null;
+if (hasTemp) {
+  temp.someMethod();                    // ← Dart знает temp non-null, ОК
+}
+```
+
+Но **семантика promotion привязана к именно тому identifier'у который тестировался**. Если ты переопределяешь guard на ДРУГУЮ переменную — promotion слетает для старой:
+
+```dart
+// БЫЛО:
+final hasTemp = module.hasAnyTemp && temp != null;
+// промоутит temp внутри if (hasTemp)
+
+// СТАЛО (после рефакторинга для fallback):
+final tempForColor = temp ?? fallbackTempC;
+final hasTemp = tempForColor != null;
+// теперь промоутит tempForColor, НО НЕ temp.
+// Downstream `if (hasTemp) { temp.toStringAsFixed(...) }` ломается:
+//   "Operator cannot be called on 'double?' because it is potentially null"
+```
+
+`dart analyze` локально нет в этой среде, и CI ловит это только на kernel snapshot этапе (после ~3 минут установки Android SDK), что делает цикл feedback'а **очень дорогим**.
+
+Чек-лист **обязательно** перед коммитом любого изменения guard-локала (`hasX = ... != null` или подобное):
+
+1. Найди ВСЕ usages этого guard внутри функции:
+   ```bash
+   grep -nE "if \(hasTemp\b|hasTemp \?|\?\? hasTemp" lib/screens/wide/dashboard_wide.dart
+   ```
+2. Для каждого блока `if (guard) { ... }` или ternary `guard ? thenBranch : elseBranch` — посмотри какие nullable-локалы там используются.
+3. Если используется локал X который **раньше** промоутился через guard (потому что guard был `X != null` или содержал `X != null`), а **теперь** уже нет — нужен либо явный `if (X != null)` внутри ветки, либо отдельный guard `hasX = X != null`, либо `X!` если уверен что не null.
+
+История пропусков: v0.1.29+4 поменял `hasTemp` с `module.hasAnyTemp && temp != null` на `tempForColor != null`. Code downstream (text label на linе 1216-1228 dashboard_wide.dart) использовал `temp` непосредственно — упал в CI build #76. Хотфикс v0.1.29+5 заменил `hasTemp` на `temp != null` именно в text label (color/border остаются на `hasTemp`, потому что им нужен promotion на `tempForColor`).
+
+### История пропусков (чтобы не повторять)
+
+| Концепция | Pattern пропусков | Окончательно закрыт |
+|---|---|---|
+| M6 neighbour-fallback color | v0.1.27+1 сделал только cells.dart; Analytics tab остался с `Colors.transparent` ещё на 2 минорных версии | v0.1.29+4 |
+| Pack V → packVoltageFromCells | v0.1.27+2 сделал только Analytics `_PackVoltageHero`; phone dashboard забыт (v0.1.29+2), Driver wide забыт (v0.1.29+4). Snapshot column полтора месяца писала 740/0x0022 platform constant (~450V) — фикс v0.1.29+2 | v0.1.29+4 |
+| CloudSync deps в pubspec | v0.1.28+1 добавил два import'а без объявления deps; три consecutive CI failure'а до v0.1.29+3 | v0.1.29+3 |
+| Dart type promotion при смене guard | v0.1.29+4 переопределил `hasTemp` на проверку другой переменной; downstream `temp.toStringAsFixed` слетел; CI build #76 упал на kernel snapshot | v0.1.29+5 |
+| cloud_sync `_readAppVersion()` hardcoded | sync с pubspec руками каждый bump; пропуски v0.1.29+1 не заметили | TBD когда добавим package_info_plus |
+
 ## Установка APK без ADB
 
 В `INTEGRATION.md` (если делается feature, не релиз) или прямо в commit message — три метода в порядке надёжности:
@@ -424,6 +552,10 @@ WebFetch.
 
 | Версия     | Что сделано (одна строка) |
 |------------|---------------------------|
+| 0.1.29+5   | Hotfix: null safety regression от v0.1.29+4. `_ModuleRow` text label на dashboard_wide.dart использовал `temp` напрямую внутри ветки `if (hasTemp)`; после смены `hasTemp` на `tempForColor != null` Dart перестал промоутить `temp` в non-null → kernel snapshot fail на CI #76. Условие text label теперь `temp != null` (только своё измерение модуля); color/border остаются на `hasTemp` (включают fallback). Semantics: M6 показывает "no temp" в text, но bar заливается цветом M5 — идентично cells.dart. cloud_sync `_readAppVersion` → 0.1.29+5. |
+| 0.1.29+4   | Driver tab Pack V переключён на packVoltageFromCells (был на hvBusV — показывал 400.8V вместо 458.4V). dashboard_wide `_ModulesListPanel` получил neighbour-fallback temp для M6 — был с `Colors.transparent`, теперь рендерится цветом M5 идентично cells.dart. cloud_sync `_readAppVersion` → 0.1.29+4. |
+| 0.1.29+3   | Hotfix: добавлены `flutter_secure_storage: ^9.0.0` и `http: ^1.2.0` в `pubspec.yaml` dependencies. CloudSyncService импортировал оба пакета с v0.1.28+1, но в pubspec они никогда не были — три CI билда подряд падали с `Couldn't resolve the package`. cloud_sync `_readAppVersion` → 0.1.29+3. |
+| 0.1.29+2   | Phone dashboard Pack V переключён на packVoltageFromCells (был на hvBusV; синхронизирован с wide). snapshot DB column `packVoltageV` тоже теперь хранит sum-of-cells (был 740/0x0022 platform constant — все записи AC сессии 2026-05-23 содержали 450.0V). cloud_sync `_readAppVersion` → 0.1.29+2 (был 0.1.28+1 → heartbeat репортил устаревшее). |
 | 0.1.29+1   | BZ3 tall portrait dashboard: conditional 3-col grid + `_TallDriverSection` под grid когда `height > 1400 && width > 700`. Удалён factory footer "@14.4 kWh/100km · 65.28 kWh" из SocCard и из Calibration card (устаревший + BZ5-specific). |
 | 0.1.28+1   | CloudSyncService: новый файл `lib/services/cloud_sync_service.dart` (singleton ChangeNotifier), Plane B ingest для trips/snapshots/sweeps/livelogs/heartbeat. UI в Settings (новая секция Cloud backup с 3-шаговым setup-флоу). Added deps: `http`, `flutter_secure_storage`. **Pending**: 429 retry, 409 already_revoked, 3-consecutive-401 — ждём финальный CLIENT_API.md от bridge owner'а. |
 | 0.1.27+2   | `packVoltageFromCells` getter в connection.dart — primary live pack V = avg(20 cells) × (_packCellCount ?? 136). Заменяет hvBusV (показывал -83V offset при DC charging — физически невозможно) и nominal 450V константу. **Аддитивный getter, существующие не тронуты**. Dashboard hero panel переключён на новый источник. |
