@@ -1868,7 +1868,13 @@ class ConnectionService extends ChangeNotifier {
     final cellMax = globalMaxCellMv?.toDouble();
     final spread = (cellMin != null && cellMax != null) ? (cellMax - cellMin) : null;
     final odo = readNumeric('791', '0026');
-    final packV = packVoltageV;
+    // v0.1.29+2: snapshot column `packVoltageV` now stores sum-of-cells
+    // (the only physically-correct pack V we have). The historical content
+    // of that column was 740/0x0022 = ~450V platform constant — visible in
+    // 100% of AC session 2026-05-23 snapshots as garbage. We do NOT touch
+    // existing rows; new writes are honest sum-of-cells, or null when cells
+    // haven't been polled yet. hvBusV column unchanged.
+    final packLive = packVoltageFromCells;
     final hvBus = hvBusV;
     final gearRaw = readNumeric('791', '0009');
     final gear = gearRaw?.toInt();
@@ -1886,7 +1892,7 @@ class ConnectionService extends ChangeNotifier {
         cellSpread: Value(spread),
         odometer: Value(odo),
         tripId: Value(_currentTripId),
-        packVoltageV: Value(packV),
+        packVoltageV: Value(packLive),
         hvBusV: Value(hvBus),
         gear: Value(gear),
         pawlEngaged: Value(pawl),
@@ -2570,7 +2576,12 @@ class ConnectionService extends ChangeNotifier {
         ? (cellMax - cellMin)
         : null;
     final odo = readNumeric('791', '0026');
+    // v0.1.29+2: see [_maybeWriteSnapshot] for rationale. We keep both
+    // `pack_v_nominal` (legacy 740/0x0022 constant) and `pack_v_live`
+    // (sum-of-cells) in the clipboard/diag map for debug traceability;
+    // the DB column gets the live value only.
     final packV = packVoltageV;
+    final packLive = packVoltageFromCells;
     final hvBus = hvBusV;
     final gearRaw = readNumeric('791', '0009');
     final gear = gearRaw?.toInt();
@@ -2590,6 +2601,7 @@ class ConnectionService extends ChangeNotifier {
       'cell_max_mv': cellMax,
       'cell_spread_mv': spread,
       'pack_v_nominal': packV,
+      'pack_v_live': packLive,
       'hv_bus_v': hvBus,
       'charge_counter_raw_0B00': counter,
       'cycle_count_raw_0B02': cycles,
@@ -2611,7 +2623,7 @@ class ConnectionService extends ChangeNotifier {
         cellSpread: Value(spread?.toDouble()),
         odometer: Value(odo),
         tripId: Value(_currentTripId),
-        packVoltageV: Value(packV),
+        packVoltageV: Value(packLive),
         hvBusV: Value(hvBus),
         gear: Value(gear),
         pawlEngaged: Value(pawl),
