@@ -6,6 +6,7 @@ import 'data/database.dart';
 import 'services/connection.dart';
 import 'services/cost_settings.dart';
 import 'services/cloud_sync_service.dart';
+import 'services/bridge_diag_service.dart';
 import 'screens/home.dart';
 
 void main() async {
@@ -77,6 +78,12 @@ class _BZ5AppState extends State<BZ5App> with WidgetsBindingObserver {
     // ConnectionService — bridge work is additive per CLAUDE.md.
     // Its .init() is fire-and-forget; first build shows
     // CloudSyncStatus.disconnected until prefs/keystore loads complete.
+    //
+    // v0.1.29+15: BridgeDiagService added as a fourth provider — the
+    // Plane A command channel from CLIENT_API.md §7. Independent of
+    // CloudSyncService but reads the same client_token from secure
+    // storage. Off by default; user toggles it from Settings.
+    // Its .init() is also fire-and-forget.
     return MultiProvider(
       providers: [
         ChangeNotifierProvider<ConnectionService>.value(value: widget.svc),
@@ -89,6 +96,9 @@ class _BZ5AppState extends State<BZ5App> with WidgetsBindingObserver {
         ),
         ChangeNotifierProvider<CloudSyncService>(
           create: (_) => CloudSyncService(db: widget.db)..init(),
+        ),
+        ChangeNotifierProvider<BridgeDiagService>(
+          create: (_) => BridgeDiagService()..init(),
         ),
       ],
       child: MaterialApp(

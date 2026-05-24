@@ -450,11 +450,23 @@ def check_layout_math_bz3(root: Path) -> CheckResult:
     if m_thr:
         compact_thr = int(m_thr.group(1))
         r.ok(f"_MetricCard compact threshold: maxHeight < {compact_thr}")
-        # Sanity: BZ3 card height must trigger compact, phone must not
-        if card_h >= compact_thr:
+        # v0.1.29+16: switched intent. Previously we WANTED compact
+        # mode to fire on BZ3 (cards 50dp, one-row layout). Field
+        # feedback showed that was too cramped and left empty space
+        # below. Now we want cards ~70-80dp on BZ3 — phone-style
+        # Column layout in a 3-col grid. Both modes are valid; what
+        # matters is that:
+        #   1. BZ3 card height is in a reasonable range (40-100dp).
+        #   2. Phone never triggers compact accidentally.
+        if not (40 <= card_h <= 100):
             r.err(
-                f"BZ3 card height {card_h:.1f} >= compact threshold {compact_thr} — "
-                "compact mode WILL NOT fire, grid will be too tall"
+                f"BZ3 card height {card_h:.1f}dp out of sensible range 40-100dp "
+                f"— check aspect {aspect_3col}"
+            )
+        else:
+            uses_compact = card_h < compact_thr
+            r.ok(
+                f"BZ3 card → compact mode: {'YES (one-row Row)' if uses_compact else 'NO (phone-style Column)'}"
             )
         phone_w = (412 - 32 - 8) / 2  # ~186
         phone_h = phone_w / aspect_2col
