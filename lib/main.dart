@@ -84,6 +84,11 @@ class _BZ5AppState extends State<BZ5App> with WidgetsBindingObserver {
     // CloudSyncService but reads the same client_token from secure
     // storage. Off by default; user toggles it from Settings.
     // Its .init() is also fire-and-forget.
+    //
+    // v0.1.29+17 (Turn B): now takes ConnectionService via constructor
+    // injection so it can dispatch bleStart*/bleStopActiveOperation
+    // commands. Logical dependency — Plane A drives the car through
+    // the same channels ConnectionService already manages.
     return MultiProvider(
       providers: [
         ChangeNotifierProvider<ConnectionService>.value(value: widget.svc),
@@ -98,7 +103,7 @@ class _BZ5AppState extends State<BZ5App> with WidgetsBindingObserver {
           create: (_) => CloudSyncService(db: widget.db)..init(),
         ),
         ChangeNotifierProvider<BridgeDiagService>(
-          create: (_) => BridgeDiagService()..init(),
+          create: (_) => BridgeDiagService(svc: widget.svc)..init(),
         ),
       ],
       child: MaterialApp(
