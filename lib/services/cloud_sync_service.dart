@@ -314,6 +314,19 @@ class CloudSyncService extends ChangeNotifier {
       _restoreStatus == CloudRestoreStatus.preflight ||
       _restoreStatus == CloudRestoreStatus.fetching;
 
+  /// v0.1.29+18: expose the plaintext client_token to the UI so the
+  /// owner can copy it into a password manager. Server stores only
+  /// sha256(secret + pepper) per ADR-08 — once forgotten, only an
+  /// admin-side rotation can produce a new working token. Letting
+  /// the owner back it up themselves removes that round-trip from
+  /// the routine head-unit reinstall workflow.
+  ///
+  /// This is the ONLY public read of `_clientToken`. Sync paths
+  /// always use `_clientToken` directly through `_postIngest` /
+  /// `_getJson`; this getter is purely for the "Backup client
+  /// token" dialog in Settings.
+  String? get clientTokenForBackup => _clientToken;
+
   // ─── init / disposal ─────────────────────────────────────────────
 
   /// Load persisted state + start background timers if conditions met.
