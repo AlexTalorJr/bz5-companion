@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -379,6 +380,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
               onPressed: cs.status == CloudSyncStatus.syncing || cs.isRestoring
                   ? null
                   : () => _showRestoreDialog(context, cs),
+            ),
+            // v0.1.29+18: owner-self-service token backup. Without
+            // this, every head-unit reinstall requires Friend 2 to
+            // admin-rotate; with it, owner pre-saves the token once
+            // and reinstalls become a self-contained operation.
+            OutlinedButton.icon(
+              icon: const Icon(Icons.vpn_key_outlined, size: 18),
+              label: const Text('Backup token'),
+              onPressed: cs.isRestoring
+                  ? null
+                  : () => _showBackupTokenDialog(context, cs),
             ),
             OutlinedButton.icon(
               icon: const Icon(Icons.link_off, size: 18),
@@ -1075,6 +1087,129 @@ class _SettingsScreenState extends State<SettingsScreen> {
       );
     }
   }
+
+  /// v0.1.29+18: dialog for backing up the active client_token to a
+  /// password manager. Token is hidden by default (bullets) with a
+  /// Reveal/Hide toggle to defend against over-the-shoulder + screen
+  /// recording. Copy goes through Clipboard.setData and surfaces a
+  /// snackbar; the owner is expected to paste into their vault and
+  /// then close.
+  ///
+  /// Threat model: phone is single-owner, unlocked screen → owner
+  /// only. Token in clipboard sits there until the OS clears it
+  /// (Android 13+: auto-clears in ~60s). Acceptable risk in exchange
+  /// for removing Friend 2 from the routine reinstall loop.
+  Future<void> _showBackupTokenDialog(
+      BuildContext context, CloudSyncService cs) async {
+    final token = cs.clientTokenForBackup;
+    if (token == null) {
+      // Shouldn't be reachable — button is hidden in disconnected
+      // state and disabled while restoring. Defensive guard in case
+      // someone wires it differently later.
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('No token to back up'),
+          content: const Text(
+              'There is no active client token in secure storage. '
+              'Run Setup or Restore first.'),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text('OK')),
+          ],
+        ),
+      );
+      return;
+    }
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (innerCtx, setLocal) {
+          bool revealed = _backupTokenRevealed;
+          return AlertDialog(
+            title: const Text('Backup client token'),
+            content: SingleChildScrollView(
+              child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Save this token in a password manager. '
+                      'The server cannot recover it (sha256-hashed) — '
+                      'you\'ll need it to Restore after a head-unit '
+                      'reinstall.',
+                      style: TextStyle(fontSize: 12),
+                    ),
+                    const SizedBox(height: 12),
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withOpacity(0.3),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: SelectableText(
+                        revealed ? token : '•' * token.length,
+                        style: const TextStyle(
+                          fontFamily: 'monospace',
+                          fontSize: 12,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Length: ${token.length} chars',
+                      style:
+                          const TextStyle(fontSize: 11, color: Colors.grey),
+                    ),
+                  ]),
+            ),
+            actions: [
+              TextButton.icon(
+                icon: Icon(
+                    revealed ? Icons.visibility_off : Icons.visibility,
+                    size: 18),
+                label: Text(revealed ? 'Hide' : 'Reveal'),
+                onPressed: () {
+                  setLocal(() {
+                    _backupTokenRevealed = !_backupTokenRevealed;
+                  });
+                },
+              ),
+              TextButton.icon(
+                icon: const Icon(Icons.copy, size: 18),
+                label: const Text('Copy'),
+                onPressed: () async {
+                  await Clipboard.setData(ClipboardData(text: token));
+                  if (!innerCtx.mounted) return;
+                  ScaffoldMessenger.of(innerCtx).showSnackBar(
+                    const SnackBar(
+                      content: Text('Token copied to clipboard'),
+                      duration: Duration(seconds: 3),
+                    ),
+                  );
+                },
+              ),
+              TextButton(
+                onPressed: () => Navigator.of(innerCtx).pop(),
+                child: const Text('Close'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+    // Reset reveal flag after dialog closes — don't carry state
+    // into the next invocation. Each open starts hidden.
+    _backupTokenRevealed = false;
+  }
+
+  /// v0.1.29+18: scratch state for the Backup token dialog's
+  /// Reveal/Hide toggle. Lives on _SettingsScreenState (the dialog
+  /// uses StatefulBuilder for re-render but the flag itself
+  /// outlives the closure scope so we can reset it on dialog
+  /// close).
+  bool _backupTokenRevealed = false;
 
   @override
   Widget build(BuildContext context) {
