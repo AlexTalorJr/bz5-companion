@@ -350,9 +350,18 @@ class TripMetricsPanel extends StatelessWidget {
               ],
             ),
             SizedBox(height: compact ? 6 : 8),
-            if (compact) row1 else Expanded(child: row1),
-            Divider(height: compact ? 10 : 16, color: Colors.white12),
-            if (compact) row2 else Expanded(child: row2),
+            // v0.1.29+16: on compact mode (BZ3 tall portrait) row1
+            // and row2 use Expanded too — earlier they were natural-
+            // sized and visually overlapped with only a 10dp Divider
+            // between them. Inside a bounded SizedBox(height: 200)
+            // parent from dashboard.dart, Expanded distributes the
+            // remaining vertical space equally between rows, giving
+            // ~80dp per row with the divider acting as a clear
+            // separator. Wide mode (driver_view_wide.dart) already
+            // had Expanded — unchanged.
+            Expanded(child: row1),
+            Divider(height: compact ? 16 : 16, color: Colors.white24),
+            Expanded(child: row2),
           ],
         ),
       ),

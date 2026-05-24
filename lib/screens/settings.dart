@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../services/connection.dart';
 import '../services/cost_settings.dart';
 import '../services/cloud_sync_service.dart';
+import '../services/bridge_diag_service.dart';
 import 'about.dart';
 import 'data_management.dart';
 import 'diagnostics.dart';
@@ -324,6 +325,113 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  // ── v0.1.29+15: Bridge diagnostic card ────────────────────────────
+  //
+  // The diag service shares the client_token with CloudSyncService,
+  // so its UI is minimalist: a header with status, a toggle, and a
+  // small stats line. No separate setup flow — registration happens
+  // inside Cloud backup.
+
+  Widget _buildBridgeDiagHeader(BridgeDiagService bd) {
+    final color = _bridgeDiagStatusColor(bd.status);
+    return ListTile(
+      leading: Icon(Icons.cell_tower, color: color),
+      title: const Text('Bridge diagnostic'),
+      subtitle: Text(_bridgeDiagStatusLabel(bd)),
+    );
+  }
+
+  Widget _buildBridgeDiagBody(BuildContext context, BridgeDiagService bd) {
+    return Column(children: [
+      Padding(
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+        child: Text(
+          'Allows the bridge owner to push diagnostic commands to this '
+          'device for sweep / live-log / native probe sessions. Uses the '
+          'same registration as Cloud backup above — set that up first. '
+          'Off by default.',
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: Colors.white60,
+              ),
+        ),
+      ),
+      SwitchListTile(
+        title: const Text('Enable bridge diagnostic'),
+        // Block the toggle if not yet registered — the long-poll loop
+        // can't function without a token, and we share the token with
+        // Cloud backup.
+        value: bd.isEnabled,
+        onChanged: bd.isRegistered
+            ? (v) async {
+                // If user just enabled, refresh token from secure
+                // storage (CloudSyncService may have just finished
+                // setup in this same app session).
+                if (v) await bd.refreshTokenFromSharedStorage();
+                await bd.setEnabled(v);
+              }
+            : null,
+        secondary: const Icon(Icons.toggle_on),
+      ),
+      if (bd.isEnabled && bd.isRegistered) ...[
+        ListTile(
+          dense: true,
+          leading: const Icon(Icons.assignment_turned_in,
+              color: Colors.white54, size: 20),
+          title: Text(
+              'Executed: ${bd.stats.commandsExecuted}'
+              '  ·  Rejected: ${bd.stats.commandsRejected}',
+              style: const TextStyle(fontSize: 12)),
+          subtitle: bd.stats.lastCommandAt != null
+              ? Text(
+                  'Last: ${bd.stats.lastCommandKind ?? "?"} '
+                  '(${_relTime(bd.stats.lastCommandAt!)})',
+                  style: const TextStyle(fontSize: 11))
+              : null,
+        ),
+      ],
+      if (bd.lastError != null && bd.status == BridgeDiagStatus.error)
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+          child: Text(
+            bd.lastError!,
+            style: const TextStyle(fontSize: 11, color: Colors.redAccent),
+          ),
+        ),
+    ]);
+  }
+
+  Color _bridgeDiagStatusColor(BridgeDiagStatus s) {
+    switch (s) {
+      case BridgeDiagStatus.polling:
+        return Colors.lightGreenAccent;
+      case BridgeDiagStatus.executing:
+        return Colors.lightBlueAccent;
+      case BridgeDiagStatus.error:
+      case BridgeDiagStatus.authFailed:
+        return Colors.redAccent;
+      case BridgeDiagStatus.disabled:
+      case BridgeDiagStatus.notRegistered:
+        return Colors.grey;
+    }
+  }
+
+  String _bridgeDiagStatusLabel(BridgeDiagService bd) {
+    switch (bd.status) {
+      case BridgeDiagStatus.disabled:
+        return 'Off';
+      case BridgeDiagStatus.notRegistered:
+        return 'Register via Cloud backup first';
+      case BridgeDiagStatus.polling:
+        return 'Listening for commands';
+      case BridgeDiagStatus.executing:
+        return 'Executing ${bd.stats.lastCommandKind ?? "command"}…';
+      case BridgeDiagStatus.error:
+        return 'Error — retrying';
+      case BridgeDiagStatus.authFailed:
+        return 'Auth failed — re-register via Cloud backup';
+    }
+  }
+
   String _relTime(DateTime t) {
     final diff = DateTime.now().difference(t);
     if (diff.inSeconds < 60) return '${diff.inSeconds}s ago';
@@ -523,6 +631,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
       );
     } else {
+      // v0.1.29+15: registration succeeded → notify BridgeDiagService
+      // that it can now read the fresh client_token from shared
+      // secure storage. The diag service starts disabled — user must
+      // flip the Bridge diagnostic toggle explicitly to begin
+      // polling. We refresh here so that when they do, the token is
+      // already loaded into memory.
+      await context.read<BridgeDiagService>()
+          .refreshTokenFromSharedStorage();
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
             content: Text('Connected to ${picked.displayName}. '
@@ -673,6 +789,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
               const Divider(),
               _buildCloudHeader(cs),
               _buildCloudBody(context, cs),
+            ]);
+          }),
+          // v0.1.29+15: Bridge diagnostic card. Separate Builder so the
+          // Cloud backup card above doesn't rebuild on diag status
+          // changes and vice versa. Only visible if the user has at
+          // least registered cloud backup — the diag service shares
+          // the client_token, so it can't function before registration
+          // completes (the body itself shows a hint in that state).
+          Builder(builder: (context) {
+            final bd = context.watch<BridgeDiagService>();
+            return Column(children: [
+              const Divider(),
+              _buildBridgeDiagHeader(bd),
+              _buildBridgeDiagBody(context, bd),
             ]);
           }),
           const Divider(),

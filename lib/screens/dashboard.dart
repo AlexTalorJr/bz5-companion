@@ -179,8 +179,17 @@ class _Connected extends StatelessWidget {
         //     kWh used). Compact for phone real estate.
         if (svc.currentTripId != null && tripEnergy != null) ...[
           if (useTallLayout)
+            // v0.1.29+16: SizedBox(height: 200) — was 130 in +13 which
+            // overlapped row2 onto row1 ("наложение строчек" per BZ3
+            // owner). 200 dp gives:
+            //   header line (~28dp) + SizedBox(6) + Expanded row1 +
+            //   Divider(16) + Expanded row2 ≈ 200 dp
+            // Expanded'ы on row1/row2 are added in driver_panels.dart
+            // compact mode in the same patch — without them the rows
+            // would still collapse to intrinsic size and leave
+            // ~44 dp of empty padding at the bottom.
             const SizedBox(
-              height: 130,
+              height: 200,
               child: TripMetricsPanel(compact: true),
             )
           else
@@ -860,7 +869,7 @@ class _LayoutDiagnostic extends StatelessWidget {
 
 /// Bump when changing the diagnostic format — helps cross-reference
 /// screenshots to specific app versions while iterating.
-const String _kDiagVersion = 'v0.1.29+14';
+const String _kDiagVersion = 'v0.1.29+16';
 
 class _GridCards extends StatelessWidget {
   final List<Widget> children;
@@ -878,18 +887,16 @@ class _GridCards extends StatelessWidget {
       physics: const NeverScrollableScrollPhysics(),
       mainAxisSpacing: 8,
       crossAxisSpacing: 8,
-      // v0.1.29+13: 3-col layout (tall portrait, BZ3) cards made
-      // short-and-wide to drop overall grid height per owner feedback.
-      // Math: BZ3 720dp wide, ListView padding 16+16, cross-axis
-      // spacing 16 (2 gaps in 3 cols) → card_width = (720-32-16)/3
-      // ≈ 224dp. At aspect 4.5: height ≈ 50dp — fits header (icon +
-      // label) on one line and value beside it in compact mode (see
-      // _MetricCard below for the LayoutBuilder branching). Two rows
-      // of these = ~108dp total vs ~344dp at the previous aspect 1.3,
-      // saving ~240dp which more than covers the prior scroll overflow.
-      // 2-col phone layout unchanged at 1.6 (card_width ~190dp →
-      // height ~118dp).
-      childAspectRatio: crossAxisCount == 3 ? 4.5 : 1.6,
+      // v0.1.29+16: bumped 4.5 → 3.0 per BZ3 owner feedback
+      // ("слишком узко", overall has unused space at the bottom of
+      // the screen). At 4.5 cards were 50dp tall and rendered in
+      // compact one-row layout (Row(icon, label, value)) which felt
+      // cramped. 3.0 yields ~75dp cards — above the _MetricCard
+      // compact threshold (maxHeight < 70), so they render in the
+      // familiar phone-style Column layout (icon+label header, big
+      // value below), but in a denser 3-col grid than phone uses.
+      // 2-col phone layout unchanged at 1.6.
+      childAspectRatio: crossAxisCount == 3 ? 3.0 : 1.6,
       children: children,
     );
   }
