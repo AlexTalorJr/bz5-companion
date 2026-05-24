@@ -962,20 +962,25 @@ class CloudSyncService extends ChangeNotifier {
           final distanceKm = (raw['distance_km'] as num?)?.toDouble();
 
           // Dedup: (started_at, distance_km) is the contract from
-          // ROADMAP §P1.5 design. Treat null distance_km as a
-          // wildcard match against null in DB (Drift .isNull()).
-          final existing = await (_db.select(_db.trips)
-                ..where((t) {
-                  var cond = t.startedAt.equals(startedAt);
-                  if (distanceKm != null) {
-                    cond = cond & t.distanceKm.equals(distanceKm);
-                  } else {
-                    cond = cond & t.distanceKm.isNull();
-                  }
-                  return cond;
-                })
-                ..limit(1))
-              .getSingleOrNull();
+          // ROADMAP §P1.5 design. Multiple .where() calls AND together
+          // in Drift — matches the existing pattern in database.dart
+          // (getSamplesForTrip). Treat null distance_km as wildcard
+          // match against null in DB via .isNull().
+          //
+          // v0.1.29+19: was previously written using the `&` operator
+          // on Expression<bool>; that operator is defined through an
+          // extension in 'package:drift/drift.dart' which we don't
+          // import in full (only 'show Value'). Build failed in
+          // kernel_snapshot. Multiple .where() is the idiomatic
+          // Drift style and avoids the broader import.
+          final query = _db.select(_db.trips)..limit(1);
+          query.where((t) => t.startedAt.equals(startedAt));
+          if (distanceKm != null) {
+            query.where((t) => t.distanceKm.equals(distanceKm));
+          } else {
+            query.where((t) => t.distanceKm.isNull());
+          }
+          final existing = await query.getSingleOrNull();
 
           if (existing != null) {
             tripIdMap[clientTripId] = existing.id;
@@ -1654,7 +1659,7 @@ class CloudSyncService extends ChangeNotifier {
   /// Read app version from the static value baked into the build.
   /// We don't have package_info_plus as a dep — pubspec-version is
   /// hardcoded here. Update when bumping. Off-by-one tolerated.
-  Future<String> _readAppVersion() async => '0.1.29+18';
+  Future<String> _readAppVersion() async => '0.1.29+19';
 }
 
 // ─── Internal exceptions ────────────────────────────────────────────
