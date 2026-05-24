@@ -11,10 +11,22 @@
 // no shared error buffers.
 //
 // v0.1.29+15 (Turn A): scaffold + long-poll loop only. No command
-// handlers are implemented yet — every received command is rejected
-// with `{ok:false, error_kind:"unsupported"}`. The point of this turn
-// is to prove the long-poll mechanics work end-to-end. Turn B adds
-// BLE handlers; Turn C adds native ones.
+// handlers — every received command rejected with error_kind=unsupported.
+//
+// v0.1.29+17 (Turn B): BLE command handlers added. Three kinds wired:
+//   - bleStartSweep: fire-and-forget, ConnectionService.runSweep()
+//   - bleStartLiveLog: fire-and-forget, ConnectionService.runLiveLog()
+//   - bleStopActiveOperation: synchronous, composes cancelSweep + cancelLiveLog
+//
+// "Fire-and-forget" because runSweep/runLiveLog can take minutes to hours;
+// the command channel's 30s timeout doesn't fit the operation. The recon
+// side correlates command -> run by timestamp + vehicle_id, and observes
+// actual sweep/livelog results via Plane B (CloudSyncService push). A
+// future bridge v1.1 will add command_id FK to sweep_runs/live_log_sessions
+// for direct linkage in the admin UI.
+//
+// Turn C (later) will add native API command handlers (12 kinds) over
+// NativeCarChannel. Not blocking anything; deferred until next scope ask.
 
 import 'dart:async';
 import 'dart:convert';
@@ -24,6 +36,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+
+import 'connection.dart';
 
 // ─── Public enums / value objects ──────────────────────────────────
 
@@ -85,7 +99,16 @@ class BridgeDiagStats {
 // ─── Service ───────────────────────────────────────────────────────
 
 class BridgeDiagService extends ChangeNotifier {
-  BridgeDiagService();
+  BridgeDiagService({required ConnectionService svc}) : _svc = svc;
+
+  /// The shared BLE/UDS service used to dispatch bleStart* commands.
+  /// Plane A's whole purpose is to drive the car through the same
+  /// channels ConnectionService already manages, so a logical
+  /// dependency is natural here. Read-only — we never reach in and
+  /// mutate ConnectionService state directly; only call its public
+  /// methods (runSweep / runLiveLog / cancelSweep / cancelLiveLog)
+  /// and read its public getters.
+  final ConnectionService _svc;
 
   // Persistence keys. v0.1.29+15: only one persisted key for us —
   // the toggle. Everything else (token, base URL) is shared with
@@ -347,29 +370,311 @@ class BridgeDiagService extends ChangeNotifier {
 
   /// Execute one command and post the result.
   ///
-  /// Turn A (v0.1.29+15): every command is rejected as unsupported.
-  /// Turn B adds BLE handlers (bleStartSweep, bleStartLiveLog,
-  /// bleStopActiveOperation). Turn C adds native handlers.
+  /// Turn A (v0.1.29+15): every command rejected as unsupported.
+  /// Turn B (v0.1.29+17): bleStartSweep / bleStartLiveLog / bleStopActiveOperation
+  /// dispatched to ConnectionService. Other kinds still unsupported.
+  /// Turn C (later): native API kinds via NativeCarChannel.
   Future<void> _handleCommand(Map<String, dynamic> cmd) async {
     final id = cmd['id'];
     final kind = cmd['kind'] as String? ?? '<missing>';
+    final args = (cmd['args'] is Map)
+        ? Map<String, dynamic>.from(cmd['args'] as Map)
+        : <String, dynamic>{};
     debugPrint('BridgeDiag: received command id=$id kind=$kind');
 
     _status = BridgeDiagStatus.executing;
     notifyListeners();
 
     final started = DateTime.now().toUtc();
-    // Turn A: no command handlers yet. Reject as unsupported.
-    final result = {
-      'ok': false,
-      'error': 'Command kind not implemented in this client yet '
-          '(BridgeDiagService is in Turn A — long-poll scaffold only)',
-      'error_kind': 'unsupported',
+    Map<String, dynamic> body;
+    try {
+      switch (kind) {
+        case 'bleStartSweep':
+          body = _handleBleStartSweep(args);
+          break;
+        case 'bleStartLiveLog':
+          body = _handleBleStartLiveLog(args);
+          break;
+        case 'bleStopActiveOperation':
+          body = _handleBleStopActiveOperation(args);
+          break;
+        default:
+          body = _err('unsupported',
+              'Command kind "$kind" not implemented in this client yet. '
+              'BridgeDiagService Turn B supports BLE only '
+              '(bleStartSweep / bleStartLiveLog / bleStopActiveOperation). '
+              'Native handlers come in Turn C.');
+      }
+    } catch (e, st) {
+      // Defensive: handler threw unexpectedly. Don't crash the loop.
+      debugPrint('BridgeDiag: handler for $kind threw: $e\n$st');
+      body = _err('unknown', 'Handler threw: $e');
+    }
+
+    final result = <String, dynamic>{
+      ...body,
       'started_at': started.toIso8601String(),
       'finished_at': DateTime.now().toUtc().toIso8601String(),
     };
 
     await _postResult(id, result, kind);
+  }
+
+  // ─── Command handlers (Turn B — BLE) ─────────────────────────────
+
+  /// Error result shape per CLIENT_API.md §7.2 + agreed error_kind
+  /// whitelist (busy / not_connected / parse / validation / unsupported
+  /// / unknown). Caller adds started_at/finished_at.
+  Map<String, dynamic> _err(String kind, String msg) => {
+        'ok': false,
+        'error': msg,
+        'error_kind': kind,
+      };
+
+  /// Whether any BLE-channel operation is currently in progress.
+  /// Sweep/livelog/dtc-scan are mutually exclusive in ConnectionService
+  /// (they share the single ELM327 BLE channel); from our perspective
+  /// they're all "busy" for purposes of starting a new sweep/livelog.
+  bool get _bleBusy =>
+      _svc.sweepRunning || _svc.liveLogRunning || _svc.dtcScanRunning;
+
+  /// bleStartSweep: fire-and-forget. Validates args, checks state,
+  /// then kicks off ConnectionService.runSweep() WITHOUT awaiting —
+  /// the sweep can take hours. Returns ok=true with started:true,
+  /// recon Claude correlates the resulting SweepRun (visible via
+  /// Plane B sync) by timestamp + vehicle_id.
+  ///
+  /// Args contract per CLIENT_API.md §7.3:
+  ///   {tx_ecu, rx_ecu, start_did, end_did, period_ms}
+  /// All hex strings uppercase canonical (we accept lowercase too and
+  /// normalize), period_ms optional (default 250).
+  Map<String, dynamic> _handleBleStartSweep(Map<String, dynamic> args) {
+    // 1. Parse required string args.
+    final txEcu = args['tx_ecu'];
+    final rxEcu = args['rx_ecu'];
+    final startDid = args['start_did'];
+    final endDid = args['end_did'];
+    if (txEcu is! String || rxEcu is! String ||
+        startDid is! String || endDid is! String) {
+      return _err('parse',
+          'Missing or non-string required args: '
+          'tx_ecu, rx_ecu, start_did, end_did must all be strings');
+    }
+
+    // 2. Hex validation (case-insensitive parse; we'll uppercase later).
+    final startInt = int.tryParse(startDid, radix: 16);
+    final endInt = int.tryParse(endDid, radix: 16);
+    if (startInt == null || endInt == null) {
+      return _err('parse',
+          'start_did/end_did not valid hex: '
+          'got start_did=$startDid end_did=$endDid');
+    }
+    if (startInt < 0 || endInt > 0xFFFF) {
+      return _err('validation',
+          'DID range out of bounds (must fit 0000..FFFF), '
+          'got $startDid..$endDid');
+    }
+    if (endInt < startInt) {
+      return _err('validation',
+          'end_did < start_did ($endDid < $startDid)');
+    }
+
+    // 3. Optional period_ms.
+    final periodRaw = args['period_ms'];
+    final int periodMs;
+    if (periodRaw == null) {
+      periodMs = 250;
+    } else if (periodRaw is int) {
+      periodMs = periodRaw;
+    } else if (periodRaw is num) {
+      periodMs = periodRaw.toInt();
+    } else {
+      return _err('parse',
+          'period_ms must be an integer if provided, got $periodRaw');
+    }
+    if (periodMs < 50 || periodMs > 60000) {
+      return _err('validation',
+          'period_ms out of reasonable range [50..60000], got $periodMs');
+    }
+
+    // 4. State pre-check.
+    if (!_svc.isBleConnected) {
+      return _err('not_connected',
+          'No live BLE link to ELM327; pair the adapter first');
+    }
+    if (_bleBusy) {
+      return _err('busy',
+          'Another BLE operation in progress '
+          '(sweep=${_svc.sweepRunning} '
+          'livelog=${_svc.liveLogRunning} '
+          'dtc=${_svc.dtcScanRunning})');
+    }
+
+    // 5. Normalize hex to canonical uppercase per agreed contract.
+    final txU = txEcu.toUpperCase();
+    final rxU = rxEcu.toUpperCase();
+    final startU = startDid.toUpperCase().padLeft(4, '0');
+    final endU = endDid.toUpperCase().padLeft(4, '0');
+
+    // 6. Fire-and-forget. Capture errors in a debug log; the future
+    // outlives this method call by minutes-to-hours. The recon side
+    // sees the SweepRun via Plane B push when CloudSyncService runs.
+    unawaited(_svc
+        .runSweep(
+      txEcu: txU,
+      rxEcu: rxU,
+      startDidHex: startU,
+      endDidHex: endU,
+      periodMs: periodMs,
+      notes: 'started via bridge command',
+    )
+        .then((runId) {
+      debugPrint('BridgeDiag: bleStartSweep finished, '
+          'run_id=$runId (null=cancelled or aborted)');
+    }).catchError((Object e, StackTrace st) {
+      debugPrint('BridgeDiag: bleStartSweep threw: $e\n$st');
+    }));
+
+    return {
+      'ok': true,
+      'result': {'started': true, 'kind': 'sweep'},
+    };
+  }
+
+  /// bleStartLiveLog: fire-and-forget. Same shape as bleStartSweep.
+  ///
+  /// Args contract per CLIENT_API.md §7.3 + decision 2 with Friend 2:
+  ///   {did_list: [{tx_ecu, rx_ecu, did}, ...],
+  ///    duration_sec,
+  ///    period_ms (optional, IGNORED — ConnectionService.runLiveLog
+  ///               has no period parameter, the loop runs with
+  ///               minimal spacing)}
+  ///
+  /// max 7 DIDs (ConnectionService limit, see runLiveLog gate).
+  /// If period_ms is present, response includes ignored_args:["period_ms"].
+  Map<String, dynamic> _handleBleStartLiveLog(Map<String, dynamic> args) {
+    // 1. Parse did_list.
+    final didListRaw = args['did_list'];
+    if (didListRaw is! List) {
+      return _err('parse',
+          'did_list missing or not a list');
+    }
+
+    final didSpecs = <(String, String, String)>[];
+    for (var i = 0; i < didListRaw.length; i++) {
+      final item = didListRaw[i];
+      if (item is! Map) {
+        return _err('parse',
+            'did_list[$i] is not an object');
+      }
+      final tx = item['tx_ecu'];
+      final rx = item['rx_ecu'];
+      final did = item['did'];
+      if (tx is! String || rx is! String || did is! String) {
+        return _err('parse',
+            'did_list[$i] must have string tx_ecu/rx_ecu/did');
+      }
+      if (int.tryParse(did, radix: 16) == null) {
+        return _err('parse',
+            'did_list[$i].did "$did" not valid hex');
+      }
+      // Normalize to uppercase per agreed contract; pad DID to 4 hex.
+      didSpecs.add((
+        tx.toUpperCase(),
+        rx.toUpperCase(),
+        did.toUpperCase().padLeft(4, '0'),
+      ));
+    }
+
+    if (didSpecs.isEmpty) {
+      return _err('validation', 'did_list must contain at least 1 entry');
+    }
+    if (didSpecs.length > 7) {
+      return _err('validation',
+          'did_list must have at most 7 entries, got ${didSpecs.length}');
+    }
+
+    // 2. Parse duration_sec.
+    final durationRaw = args['duration_sec'];
+    if (durationRaw is! num) {
+      return _err('parse',
+          'duration_sec missing or not numeric');
+    }
+    final durationSec = durationRaw.toInt();
+    if (durationSec <= 0 || durationSec > 24 * 3600) {
+      return _err('validation',
+          'duration_sec must be in (0..86400], got $durationSec');
+    }
+
+    // 3. Track ignored args. period_ms is the known one; if recon
+    // sends other unknown args we silently accept them (not in
+    // contract — would be future-extensible field).
+    final ignored = <String>[];
+    if (args.containsKey('period_ms')) ignored.add('period_ms');
+
+    // 4. State pre-check.
+    if (!_svc.isBleConnected) {
+      return _err('not_connected',
+          'No live BLE link to ELM327; pair the adapter first');
+    }
+    if (_bleBusy) {
+      return _err('busy',
+          'Another BLE operation in progress '
+          '(sweep=${_svc.sweepRunning} '
+          'livelog=${_svc.liveLogRunning} '
+          'dtc=${_svc.dtcScanRunning})');
+    }
+
+    // 5. Fire-and-forget.
+    unawaited(_svc
+        .runLiveLog(
+      didSpecs: didSpecs,
+      maxDurationMs: durationSec * 1000,
+      notes: 'started via bridge command',
+    )
+        .then((sessionId) {
+      debugPrint('BridgeDiag: bleStartLiveLog finished, '
+          'session_id=$sessionId (null=cancelled or aborted)');
+    }).catchError((Object e, StackTrace st) {
+      debugPrint('BridgeDiag: bleStartLiveLog threw: $e\n$st');
+    }));
+
+    final result = <String, dynamic>{
+      'started': true,
+      'kind': 'livelog',
+    };
+    if (ignored.isNotEmpty) {
+      result['ignored_args'] = ignored;
+    }
+    return {'ok': true, 'result': result};
+  }
+
+  /// bleStopActiveOperation: synchronous. Cancels whichever BLE
+  /// operations are running and reports back. No args.
+  ///
+  /// Idempotent: stopping with nothing active returns
+  /// {ok:true, result:{stopped:[]}} — success, not an error.
+  ///
+  /// dtcScan is currently not exposed via Plane A (no startDtcScan
+  /// command kind), so we don't cancel it here. If recon Claude
+  /// needs to stop a DTC scan it goes through the UI or a future
+  /// command kind.
+  Map<String, dynamic> _handleBleStopActiveOperation(
+      Map<String, dynamic> args) {
+    final stopped = <String>[];
+    if (_svc.sweepRunning) {
+      _svc.cancelSweep();
+      stopped.add('sweep');
+    }
+    if (_svc.liveLogRunning) {
+      _svc.cancelLiveLog();
+      stopped.add('livelog');
+    }
+    debugPrint('BridgeDiag: bleStopActiveOperation cancelled: $stopped');
+    return {
+      'ok': true,
+      'result': {'stopped': stopped},
+    };
   }
 
   /// Post the command result. Failures here are non-fatal — server

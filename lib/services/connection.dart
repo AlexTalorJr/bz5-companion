@@ -449,6 +449,13 @@ class ConnectionService extends ChangeNotifier {
   String? get adapterAddress => _adapterAddress;
   int? get currentTripId => _currentTripId;
   bool get isPolling => _polling;
+
+  /// True iff a UDS-capable BLE client is currently live. Added v0.1.29+17
+  /// for BridgeDiagService Turn B to pre-check before dispatching BLE
+  /// commands — `adapterAddress` is set on first pairing and never cleared,
+  /// so it can't be used as a "connected right now" signal.
+  bool get isBleConnected => _client != null;
+
   PollMode get pollMode => _pollMode;
   Map<String, Map<String, DecodedValue>> get latestValues => _latestValues;
   List<int> get liveCells => _liveCells;
