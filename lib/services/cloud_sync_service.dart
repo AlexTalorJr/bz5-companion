@@ -916,8 +916,8 @@ class CloudSyncService extends ChangeNotifier {
     notifyListeners();
 
     // Pause periodic push while pull is in flight — avoids racing
-    // a (now stale-cursor) push against the pull. Restart at end.
-    final wasEnabled = _enabled;
+    // a (now stale-cursor) push against the pull. Restart at end if
+    // _enabled is true (see finally block).
     _periodicTimer?.cancel();
     _heartbeatTimer?.cancel();
 
@@ -1073,6 +1073,19 @@ class CloudSyncService extends ChangeNotifier {
           _kLastRestoreAt, _lastRestoreAt!.millisecondsSinceEpoch);
       await prefs.remove(_kLastRestoreError);
       _restoreError = null;
+
+      // v0.1.29+18: head-unit reinstall path — Restore was the
+      // entry point from a disconnected state (no prior Setup),
+      // so _enabled is still false and periodic sync wouldn't
+      // start. Flip it on; matches the post-Setup behaviour. If
+      // restore ran from an already-registered state (rare —
+      // someone wanting to merge histories), _enabled was true
+      // anyway and this is a no-op write.
+      _enabled = true;
+      await prefs.setBool(_kEnabled, true);
+      _lastError = null;
+      await prefs.remove(_kLastError);
+      _recomputeStatus();
     } catch (e) {
       _restoreError = e.toString();
       _restoreStatus = CloudRestoreStatus.error;
@@ -1084,7 +1097,13 @@ class CloudSyncService extends ChangeNotifier {
       }
     } finally {
       _restoreCancelRequested = false;
-      if (wasEnabled && isRegistered) {
+      // v0.1.29+18: was `wasEnabled && isRegistered` — after the
+      // success-path `_enabled = true` flip above, this is now the
+      // same condition used everywhere else (`isRegistered && _enabled`).
+      // On error / cancel from a previously-disconnected restore,
+      // _enabled was never flipped, so timers stay off — we don't
+      // chase a possibly-half-committed identity.
+      if (isRegistered && _enabled) {
         _restartTimers();
       }
       await _recomputeStats();

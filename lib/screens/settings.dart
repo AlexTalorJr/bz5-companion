@@ -200,22 +200,73 @@ class _SettingsScreenState extends State<SettingsScreen> {
       );
     }
     if (!cs.isRegistered) {
-      // Disconnected. Show a button to start setup.
+      // Disconnected. Two paths from here:
+      //   * Set up — fresh register-device (mints a new device_id;
+      //     used for first-ever cloud setup or after Disconnect).
+      //   * Restore — bring back history from a previous device by
+      //     swapping in its old client_token. This is the head-unit
+      //     reinstall path: the head unit can only be uninstalled +
+      //     reinstalled (no in-place updates), so Drift is wiped at
+      //     every app upgrade. Restore makes that recoverable in
+      //     one step instead of forcing a fresh setup + restore.
       return Padding(
         padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
         child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
           const Text(
             'Save trip history and BMS snapshots to the bz5-bridge so '
             'they survive head-unit reinstalls. Setup needs a token '
-            'from the bridge owner.',
+            'from the bridge owner; Restore needs the previous '
+            'device\'s client_token.',
             style: TextStyle(fontSize: 12, color: Colors.grey),
           ),
           const SizedBox(height: 8),
           ElevatedButton.icon(
             icon: const Icon(Icons.cloud_sync),
             label: const Text('Set up cloud backup'),
-            onPressed: () => _showCloudSetupDialog(context, cs),
+            onPressed: cs.isRestoring
+                ? null
+                : () => _showCloudSetupDialog(context, cs),
           ),
+          const SizedBox(height: 6),
+          OutlinedButton.icon(
+            icon: const Icon(Icons.cloud_download_outlined),
+            label: const Text('Restore from cloud'),
+            onPressed: cs.isRestoring
+                ? null
+                : () => _showRestoreDialog(context, cs),
+          ),
+          // v0.1.29+18: restore can run from disconnected state. Show
+          // progress / last-result here too so the user gets feedback
+          // before the card flips into the registered layout.
+          if (cs.isRestoring) ...[
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Colors.lightBlueAccent.withOpacity(0.12),
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: Text(
+                _restoreProgressLine(cs),
+                style: const TextStyle(
+                    fontSize: 12, color: Colors.lightBlueAccent),
+              ),
+            ),
+          ],
+          if (cs.restoreError != null && !cs.isRestoring) ...[
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Colors.orange.withOpacity(0.15),
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: Text(
+                'Last restore: ${cs.restoreError!}',
+                style: const TextStyle(fontSize: 12, color: Colors.orange),
+              ),
+            ),
+          ],
         ]),
       );
     }
@@ -1002,6 +1053,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
         },
       ),
     );
+
+    // v0.1.29+18: post-completion side effects (out of dialog so the
+    // dismiss animation isn't blocked). Plane A shares the secure-
+    // storage token with us; same pattern as _showCloudSetupDialog.
+    // Only run on success — cancelled/error leaves Plane A on its
+    // previous token (which may or may not still be valid).
+    if (!context.mounted) return;
+    if (cs.restoreStatus == CloudRestoreStatus.done) {
+      await context
+          .read<BridgeDiagService>()
+          .refreshTokenFromSharedStorage();
+      if (!context.mounted) return;
+      final p = cs.restoreProgress;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content: Text(
+                'Restore complete: ${p.tripsInserted} trips, '
+                '${p.snapshotsInserted} snapshots inserted. '
+                'Cloud sync resumed.')),
+      );
+    }
   }
 
   @override
