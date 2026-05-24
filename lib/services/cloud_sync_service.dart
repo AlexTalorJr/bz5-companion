@@ -92,6 +92,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io' show SocketException;
 
+import 'package:drift/drift.dart' show Value;
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
@@ -166,6 +167,50 @@ class CloudSyncStats {
       pendingTrips + pendingSnapshots + pendingSweeps + pendingLiveLogs;
 }
 
+/// v0.1.29+18: state machine for one restore operation (pull history
+/// from the bridge into local Drift after a reinstall). Independent of
+/// CloudSyncStatus — sync continues to push under the *new* identity
+/// once the restore advances the cursors at the end.
+enum CloudRestoreStatus {
+  /// Not started, or completed and acknowledged.
+  idle,
+
+  /// Validating the candidate client_token (probe GET).
+  preflight,
+
+  /// Paginating server data + inserting into Drift.
+  fetching,
+
+  /// Finished successfully.
+  done,
+
+  /// User pressed Cancel mid-loop. Already-inserted rows are kept;
+  /// re-running with the same token resumes via row-level dedup.
+  cancelled,
+
+  /// Network or HTTP error stopped the loop. Same resume semantics as
+  /// cancelled — retry is safe.
+  error,
+}
+
+/// v0.1.29+18: counters for the in-flight or last completed restore.
+/// `*Inserted` = `*Fetched` − duplicates already present locally.
+class CloudRestoreProgress {
+  /// 'trips' / 'snapshots' / 'done' / null
+  final String? phase;
+  final int tripsFetched;
+  final int tripsInserted;
+  final int snapshotsFetched;
+  final int snapshotsInserted;
+  const CloudRestoreProgress({
+    this.phase,
+    this.tripsFetched = 0,
+    this.tripsInserted = 0,
+    this.snapshotsFetched = 0,
+    this.snapshotsInserted = 0,
+  });
+}
+
 // ─── Service ───────────────────────────────────────────────────────
 
 class CloudSyncService extends ChangeNotifier {
@@ -186,6 +231,14 @@ class CloudSyncService extends ChangeNotifier {
   static const _kLastSuccessAt = 'cloud_sync_last_success_at';
   static const _kLastError = 'cloud_sync_last_error';
   static const _kSamplesRejectedAt = 'cloud_sync_samples_rejected_at';
+
+  // v0.1.29+18: persisted restore state. Status is non-persistent (in
+  // memory only — a restore in flight when the app is killed becomes
+  // 'idle' on next launch, and the user re-runs it; dedup makes that
+  // safe). The last-completion-time + last-error pair IS persisted so
+  // Settings can show "last restore N min ago" across launches.
+  static const _kLastRestoreAt = 'cloud_sync_last_restore_at';
+  static const _kLastRestoreError = 'cloud_sync_last_restore_error';
 
   // secure storage key for client_token only
   static const _kTokenKey = 'cloud_sync_client_token';
@@ -208,6 +261,15 @@ class CloudSyncService extends ChangeNotifier {
   DateTime? _lastSuccessAt;
   String? _lastError;
   DateTime? _samplesRejectedAt;
+
+  // v0.1.29+18: restore state. _restoreCancelRequested is a one-shot
+  // flag the fetch loops check between pages; cleared on each
+  // startRestore entry.
+  CloudRestoreStatus _restoreStatus = CloudRestoreStatus.idle;
+  CloudRestoreProgress _restoreProgress = const CloudRestoreProgress();
+  String? _restoreError;
+  bool _restoreCancelRequested = false;
+  DateTime? _lastRestoreAt;
 
   CloudSyncStatus _status = CloudSyncStatus.disconnected;
   CloudSyncStats _stats = const CloudSyncStats();
@@ -243,6 +305,15 @@ class CloudSyncService extends ChangeNotifier {
   CloudSyncStats get stats => _stats;
   bool get isInitialized => _initialized;
 
+  // v0.1.29+18: restore observables.
+  CloudRestoreStatus get restoreStatus => _restoreStatus;
+  CloudRestoreProgress get restoreProgress => _restoreProgress;
+  String? get restoreError => _restoreError;
+  DateTime? get lastRestoreAt => _lastRestoreAt;
+  bool get isRestoring =>
+      _restoreStatus == CloudRestoreStatus.preflight ||
+      _restoreStatus == CloudRestoreStatus.fetching;
+
   // ─── init / disposal ─────────────────────────────────────────────
 
   /// Load persisted state + start background timers if conditions met.
@@ -269,6 +340,14 @@ class CloudSyncService extends ChangeNotifier {
       _samplesRejectedAt =
           DateTime.fromMillisecondsSinceEpoch(samplesRej);
     }
+    // v0.1.29+18: restore — only the cross-launch fields. _restoreStatus
+    // stays idle on launch even if previous run was mid-fetch; user
+    // must explicitly re-press the button.
+    final lastRestoreTs = prefs.getInt(_kLastRestoreAt);
+    if (lastRestoreTs != null) {
+      _lastRestoreAt = DateTime.fromMillisecondsSinceEpoch(lastRestoreTs);
+    }
+    _restoreError = prefs.getString(_kLastRestoreError);
     try {
       _clientToken = await _secureStorage.read(key: _kTokenKey);
     } catch (e) {
@@ -718,6 +797,472 @@ class CloudSyncService extends ChangeNotifier {
     }
   }
 
+  // ─── Restore (Plane B pull) ──────────────────────────────────────
+  //
+  // After a reinstall, flutter_secure_storage is wiped → the next
+  // register-device call mints a fresh device_id and the cloud
+  // archive under the previous device_id becomes invisible to the
+  // app (client tokens are scoped to their own device_id per
+  // CLIENT_API.md §4). Restore recovers from this by accepting the
+  // previous device's client_token (out-of-band from the bridge
+  // owner) and pulling trips+snapshots back into local Drift.
+  //
+  // Strategy: re-arm this client as the previous device — write
+  // the old token to secure storage, set _deviceId to the value
+  // parsed from the token's <device_id>.<secret> prefix, then
+  // GET-paginate /v1/data/trips and /v1/data/snapshots through the
+  // standard scoped read endpoints (no server-side admin help
+  // required). Dedup at the row level by (started_at, distance_km)
+  // for trips and captured_at for snapshots — re-running with the
+  // same token after a partial restore safely resumes.
+  //
+  // Scope limitation (v0.1.29+18): sweeps and live-log sessions are
+  // NOT restored. They have nested children and rarer use cases;
+  // a follow-up patch can extend if needed. The cloud archive for
+  // those still exists under the old device — owner-side admin
+  // inspection works regardless.
+  //
+  // Local-id collision note: if the user accumulated trips locally
+  // BETWEEN reinstall and Restore (i.e. cloud sync was active under
+  // the NEW device_id for a while), those local trips occupy low
+  // autoincrement ids that may collide with the restored data's
+  // server-side (old_device_id, client_trip_id=1..N) keys when
+  // push resumes. The cursor advancement at the end of a successful
+  // restore (set to max local id) ensures we don't blindly re-push
+  // them; the pre-Restore local trips therefore remain in the app
+  // but are NOT synced under the restored identity. The UI dialog
+  // warns about this.
+
+  /// v0.1.29+18: validate a candidate client_token against the
+  /// server before committing to a restore. Hits GET /v1/data/trips
+  /// with limit=1 — cheapest read that exercises authorisation.
+  /// Returns the device_id parsed from the token's prefix (the
+  /// server expects <device_id>.<secret> per CLIENT_API.md §1).
+  ///
+  /// Throws _BridgeException on bad format, 401, or non-200.
+  Future<String> probeRestoreToken(String token) async {
+    final trimmed = token.trim();
+    if (!trimmed.contains('.')) {
+      throw const _BridgeException(
+          'Token format must be <device_id>.<secret>');
+    }
+    final deviceId = trimmed.split('.').first;
+    if (deviceId.isEmpty) {
+      throw const _BridgeException('Token has empty device_id prefix');
+    }
+    final uri = Uri.parse('$_baseUrl/v1/data/trips')
+        .replace(queryParameters: {'limit': '1'});
+    final resp = await _http.get(uri, headers: {
+      'Authorization': 'Bearer $trimmed',
+    }).timeout(const Duration(seconds: 15));
+    if (resp.statusCode == 401) {
+      throw const _BridgeException(
+          'Token rejected (HTTP 401) — check with the bridge owner');
+    }
+    if (resp.statusCode != 200) {
+      throw _BridgeException('Probe failed (HTTP ${resp.statusCode}): '
+          '${_briefBody(resp.body)}');
+    }
+    return deviceId;
+  }
+
+  /// v0.1.29+18: replace the active client_token with [oldClientToken]
+  /// and pull trips+snapshots from the server into local Drift with
+  /// row-level dedup. After successful completion the push cursors are
+  /// advanced past max local id so the next sync cycle doesn't replay
+  /// restored rows.
+  ///
+  /// All errors land in _restoreError + _restoreStatus = error; the
+  /// method itself never throws. Safe to retry with the same token —
+  /// already-inserted rows are skipped by dedup.
+  Future<void> startRestore({required String oldClientToken}) async {
+    if (isRestoring) return;
+
+    _restoreCancelRequested = false;
+    _restoreStatus = CloudRestoreStatus.preflight;
+    _restoreError = null;
+    _restoreProgress = const CloudRestoreProgress(phase: 'trips');
+    notifyListeners();
+
+    final trimmed = oldClientToken.trim();
+    final String newDeviceId;
+    try {
+      newDeviceId = await probeRestoreToken(trimmed);
+    } catch (e) {
+      _restoreError = e.toString();
+      _restoreStatus = CloudRestoreStatus.error;
+      notifyListeners();
+      return;
+    }
+
+    // Probe succeeded. Atomically replace credentials before entering
+    // the fetch loop, so a 401 inside _getJson can't happen mid-page
+    // with stale state.
+    try {
+      await _secureStorage.write(key: _kTokenKey, value: trimmed);
+    } catch (e) {
+      _restoreError = 'Secure storage write failed: $e';
+      _restoreStatus = CloudRestoreStatus.error;
+      notifyListeners();
+      return;
+    }
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kDeviceId, newDeviceId);
+    _clientToken = trimmed;
+    _deviceId = newDeviceId;
+    _consecutiveAuthFailures = 0;
+
+    _restoreStatus = CloudRestoreStatus.fetching;
+    notifyListeners();
+
+    // Pause periodic push while pull is in flight — avoids racing
+    // a (now stale-cursor) push against the pull. Restart at end.
+    final wasEnabled = _enabled;
+    _periodicTimer?.cancel();
+    _heartbeatTimer?.cancel();
+
+    var tripsFetched = 0, tripsInserted = 0;
+    var snapshotsFetched = 0, snapshotsInserted = 0;
+    final tripIdMap = <int, int>{}; // serverClientTripId → newLocalId
+
+    try {
+      // ── Phase 1: trips ──
+      String? cursor;
+      while (true) {
+        if (_restoreCancelRequested) {
+          _restoreStatus = CloudRestoreStatus.cancelled;
+          return;
+        }
+        final resp = await _getJson('/v1/data/trips', query: {
+          'limit': '100',
+          if (cursor != null) 'cursor': cursor,
+        });
+        final items = (resp['items'] as List?) ?? const [];
+        for (final raw in items) {
+          if (raw is! Map<String, dynamic>) continue;
+          tripsFetched++;
+          final clientTripId = raw['client_trip_id'];
+          if (clientTripId is! int) continue;
+          final startedAtStr = raw['started_at'];
+          if (startedAtStr is! String) continue;
+          final startedAt = DateTime.parse(startedAtStr).toLocal();
+          final distanceKm = (raw['distance_km'] as num?)?.toDouble();
+
+          // Dedup: (started_at, distance_km) is the contract from
+          // ROADMAP §P1.5 design. Treat null distance_km as a
+          // wildcard match against null in DB (Drift .isNull()).
+          final existing = await (_db.select(_db.trips)
+                ..where((t) {
+                  var cond = t.startedAt.equals(startedAt);
+                  if (distanceKm != null) {
+                    cond = cond & t.distanceKm.equals(distanceKm);
+                  } else {
+                    cond = cond & t.distanceKm.isNull();
+                  }
+                  return cond;
+                })
+                ..limit(1))
+              .getSingleOrNull();
+
+          if (existing != null) {
+            tripIdMap[clientTripId] = existing.id;
+            continue;
+          }
+
+          final newLocalId = await _db
+              .into(_db.trips)
+              .insert(_tripCompanionFromJson(raw));
+          tripIdMap[clientTripId] = newLocalId;
+          tripsInserted++;
+        }
+        _restoreProgress = CloudRestoreProgress(
+          phase: 'trips',
+          tripsFetched: tripsFetched,
+          tripsInserted: tripsInserted,
+        );
+        notifyListeners();
+
+        final nextCursor = resp['next_cursor'];
+        if (nextCursor is! String) break;
+        cursor = nextCursor;
+      }
+
+      // ── Phase 2: snapshots ──
+      _restoreProgress = CloudRestoreProgress(
+        phase: 'snapshots',
+        tripsFetched: tripsFetched,
+        tripsInserted: tripsInserted,
+      );
+      notifyListeners();
+
+      cursor = null;
+      while (true) {
+        if (_restoreCancelRequested) {
+          _restoreStatus = CloudRestoreStatus.cancelled;
+          return;
+        }
+        final resp = await _getJson('/v1/data/snapshots', query: {
+          'limit': '200',
+          if (cursor != null) 'cursor': cursor,
+        });
+        final items = (resp['items'] as List?) ?? const [];
+        for (final raw in items) {
+          if (raw is! Map<String, dynamic>) continue;
+          snapshotsFetched++;
+          final capturedAtStr = raw['captured_at'];
+          if (capturedAtStr is! String) continue;
+          final capturedAt = DateTime.parse(capturedAtStr).toLocal();
+
+          final existing = await (_db.select(_db.snapshots)
+                ..where((s) => s.capturedAt.equals(capturedAt))
+                ..limit(1))
+              .getSingleOrNull();
+          if (existing != null) continue;
+
+          final rawTripId = raw['client_trip_id'];
+          final mappedTripId =
+              rawTripId is int ? tripIdMap[rawTripId] : null;
+
+          await _db.into(_db.snapshots).insert(
+              _snapshotCompanionFromJson(raw, tripId: mappedTripId));
+          snapshotsInserted++;
+        }
+        _restoreProgress = CloudRestoreProgress(
+          phase: 'snapshots',
+          tripsFetched: tripsFetched,
+          tripsInserted: tripsInserted,
+          snapshotsFetched: snapshotsFetched,
+          snapshotsInserted: snapshotsInserted,
+        );
+        notifyListeners();
+
+        final nextCursor = resp['next_cursor'];
+        if (nextCursor is! String) break;
+        cursor = nextCursor;
+      }
+
+      // ── Cursor advancement ──
+      // After restore, push cursors must skip everything currently
+      // in Drift, including (a) newly inserted restored rows and
+      // (b) any pre-existing rows that were on this device before
+      // Restore. Otherwise the next push would replay them under
+      // the restored identity, and the server would dedupe most
+      // (old_device_id, client_*_id) collisions silently.
+      final allTrips = await _db.getAllTrips();
+      final allSnapsRecent = await _db.getRecentSnapshots(limit: 1);
+      final maxTripId = allTrips.isEmpty
+          ? 0
+          : allTrips.map((t) => t.id).reduce((a, b) => a > b ? a : b);
+      final maxSnapId =
+          allSnapsRecent.isEmpty ? 0 : allSnapsRecent.first.id;
+      _cursorTrip = maxTripId;
+      _cursorSnapshot = maxSnapId;
+      await prefs.setInt(_kCursorTrip, _cursorTrip);
+      await prefs.setInt(_kCursorSnapshot, _cursorSnapshot);
+
+      _restoreStatus = CloudRestoreStatus.done;
+      _restoreProgress = CloudRestoreProgress(
+        phase: 'done',
+        tripsFetched: tripsFetched,
+        tripsInserted: tripsInserted,
+        snapshotsFetched: snapshotsFetched,
+        snapshotsInserted: snapshotsInserted,
+      );
+      _lastRestoreAt = DateTime.now();
+      await prefs.setInt(
+          _kLastRestoreAt, _lastRestoreAt!.millisecondsSinceEpoch);
+      await prefs.remove(_kLastRestoreError);
+      _restoreError = null;
+    } catch (e) {
+      _restoreError = e.toString();
+      _restoreStatus = CloudRestoreStatus.error;
+      try {
+        await prefs.setString(_kLastRestoreError, _restoreError!);
+      } catch (_) {
+        // prefs write failure during error path — already bad, just log.
+        debugPrint('CloudSync: could not persist restore error');
+      }
+    } finally {
+      _restoreCancelRequested = false;
+      if (wasEnabled && isRegistered) {
+        _restartTimers();
+      }
+      await _recomputeStats();
+      notifyListeners();
+    }
+  }
+
+  /// v0.1.29+18: request cancellation of an in-flight restore. The
+  /// fetch loops check the flag between pages and exit cleanly.
+  /// Already-inserted rows are preserved (idempotent dedup makes
+  /// resume on the next Restore press safe).
+  void cancelRestore() {
+    if (!isRestoring) return;
+    _restoreCancelRequested = true;
+    notifyListeners();
+  }
+
+  /// v0.1.29+18: focused GET-with-retries helper. Smaller than
+  /// _postIngest because read endpoints have a tighter error surface
+  /// (no samples_disabled 403, no already_revoked 409), but follows
+  /// the same 401 / 408 / 429 / 5xx semantics from CLIENT_API.md §8.
+  /// Reuses _retryBackoff and _consecutiveAuthFailures for spec
+  /// consistency with the push side.
+  Future<Map<String, dynamic>> _getJson(
+    String path, {
+    Map<String, String>? query,
+  }) async {
+    final token = _clientToken;
+    if (token == null) {
+      throw const _AuthException();
+    }
+    final uri = Uri.parse('$_baseUrl$path').replace(queryParameters: query);
+    final headers = {'Authorization': 'Bearer $token'};
+
+    var attempt = 0;
+    while (true) {
+      attempt++;
+      http.Response resp;
+      try {
+        resp = await _http
+            .get(uri, headers: headers)
+            .timeout(const Duration(seconds: 30));
+      } on TimeoutException {
+        final delay = _retryBackoff[attempt - 1];
+        if (delay == null) {
+          throw const _RetryableException(408, 'client timeout');
+        }
+        await Future<void>.delayed(delay);
+        continue;
+      } on SocketException {
+        final delay = _retryBackoff[attempt - 1];
+        if (delay == null) rethrow;
+        await Future<void>.delayed(delay);
+        continue;
+      }
+
+      final code = resp.statusCode;
+      if (code >= 200 && code < 300) {
+        if (_consecutiveAuthFailures > 0) {
+          _consecutiveAuthFailures = 0;
+        }
+        if (resp.body.isEmpty) return const {};
+        try {
+          final decoded = jsonDecode(resp.body);
+          if (decoded is Map<String, dynamic>) return decoded;
+          throw _BridgeException(
+              'Unexpected JSON shape from $path: '
+              '${_briefBody(resp.body)}');
+        } on FormatException {
+          throw _BridgeException(
+              'Malformed JSON from $path: ${_briefBody(resp.body)}');
+        }
+      }
+      if (code == 401) {
+        _consecutiveAuthFailures++;
+        if (_consecutiveAuthFailures >= 3) {
+          throw const _AuthException();
+        }
+        throw _TransientAuthException(_consecutiveAuthFailures);
+      }
+      // 408 / 429 / 5xx → retry with backoff (same schedule as push).
+      if (code == 408 || code == 429 || code >= 500) {
+        final delay =
+            _retryAfterDelay(resp) ?? _retryBackoff[attempt - 1];
+        if (delay == null) {
+          throw _RetryableException(code, _briefBody(resp.body));
+        }
+        await Future<void>.delayed(delay);
+        continue;
+      }
+      // 400 / 403 / 404 / 409 / other 4xx → permanent client error.
+      throw _BridgeException(
+          'HTTP $code on $path: ${_briefBody(resp.body)}');
+    }
+  }
+
+  /// v0.1.29+18: build TripsCompanion from a server-returned JSON
+  /// item. Server JSON shape mirrors the POST upload shape
+  /// (snake_case) per CLIENT_API.md §3.1. Defensively typed —
+  /// missing or wrong-typed fields fall through to null / 0.
+  TripsCompanion _tripCompanionFromJson(Map<String, dynamic> j) {
+    DateTime parseDt(Object? v) =>
+        v is String ? DateTime.parse(v).toLocal() : DateTime.now();
+    Value<DateTime?> parseDtN(Object? v) => v is String
+        ? Value(DateTime.parse(v).toLocal())
+        : const Value(null);
+    Value<double?> parseRealN(Object? v) =>
+        v is num ? Value(v.toDouble()) : const Value(null);
+    Value<int?> parseIntN(Object? v) =>
+        v is int ? Value(v) : const Value(null);
+    Value<String?> parseStrN(Object? v) =>
+        v is String ? Value(v) : const Value(null);
+    return TripsCompanion(
+      startedAt: Value(parseDt(j['started_at'])),
+      endedAt: parseDtN(j['ended_at']),
+      startSoc: parseRealN(j['start_soc']),
+      endSoc: parseRealN(j['end_soc']),
+      startOdometer: parseRealN(j['start_odometer']),
+      endOdometer: parseRealN(j['end_odometer']),
+      sampleCount: j['sample_count'] is int
+          ? Value(j['sample_count'] as int)
+          : const Value(0),
+      notes: parseStrN(j['notes']),
+      distanceKm: parseRealN(j['distance_km']),
+      energyUsedKwh: parseRealN(j['energy_used_kwh']),
+      avgConsumptionKwh100km: parseRealN(j['avg_consumption_kwh_100km']),
+      minBatteryTempC: parseRealN(j['min_battery_temp_c']),
+      maxBatteryTempC: parseRealN(j['max_battery_temp_c']),
+      maxCellSpreadMv: parseRealN(j['max_cell_spread_mv']),
+      minSoc: parseRealN(j['min_soc']),
+      maxSoc: parseRealN(j['max_soc']),
+      peakSpeedKmh: parseRealN(j['peak_speed_kmh']),
+      peakPowerKw: parseRealN(j['peak_power_kw']),
+      peakRegenKw: parseRealN(j['peak_regen_kw']),
+      regenEnergyKwh: parseRealN(j['regen_energy_kwh']),
+      avgMovingSpeedKmh: parseRealN(j['avg_moving_speed_kmh']),
+      movingSeconds: parseIntN(j['moving_seconds']),
+      idleSeconds: parseIntN(j['idle_seconds']),
+      energyFromSocKwh: parseRealN(j['energy_from_soc_kwh']),
+    );
+  }
+
+  /// v0.1.29+18: build SnapshotsCompanion from a server JSON item.
+  /// tripId is supplied externally — the server's client_trip_id
+  /// references the OLD device's autoincrement, which the caller
+  /// has already remapped to a fresh local id via tripIdMap.
+  SnapshotsCompanion _snapshotCompanionFromJson(
+    Map<String, dynamic> j, {
+    int? tripId,
+  }) {
+    DateTime parseDt(Object? v) =>
+        v is String ? DateTime.parse(v).toLocal() : DateTime.now();
+    Value<double?> parseRealN(Object? v) =>
+        v is num ? Value(v.toDouble()) : const Value(null);
+    Value<int?> parseIntN(Object? v) =>
+        v is int ? Value(v) : const Value(null);
+    Value<bool?> parseBoolN(Object? v) =>
+        v is bool ? Value(v) : const Value(null);
+    return SnapshotsCompanion(
+      capturedAt: Value(parseDt(j['captured_at'])),
+      soc: parseRealN(j['soc']),
+      soh: parseRealN(j['soh']),
+      batteryTempC: parseRealN(j['battery_temp_c']),
+      cellVoltageMin: parseRealN(j['cell_voltage_min']),
+      cellVoltageMax: parseRealN(j['cell_voltage_max']),
+      cellSpread: parseRealN(j['cell_spread']),
+      odometer: parseRealN(j['odometer']),
+      tripId: Value(tripId),
+      packVoltageV: parseRealN(j['pack_voltage_v']),
+      hvBusV: parseRealN(j['hv_bus_v']),
+      gear: parseIntN(j['gear']),
+      pawlEngaged: parseBoolN(j['pawl_engaged']),
+      isCharging: parseBoolN(j['is_charging']),
+      chargingPowerKw: parseRealN(j['charging_power_kw']),
+      cycleCount: parseIntN(j['cycle_count']),
+    );
+  }
+
   // ─── HTTP wrapper ───────────────────────────────────────────────
 
   /// v0.1.29+9: backoff schedule from CLIENT_API.md §8 for retryable
@@ -1077,7 +1622,7 @@ class CloudSyncService extends ChangeNotifier {
   /// Read app version from the static value baked into the build.
   /// We don't have package_info_plus as a dep — pubspec-version is
   /// hardcoded here. Update when bumping. Off-by-one tolerated.
-  Future<String> _readAppVersion() async => '0.1.29+17';
+  Future<String> _readAppVersion() async => '0.1.29+18';
 }
 
 // ─── Internal exceptions ────────────────────────────────────────────
