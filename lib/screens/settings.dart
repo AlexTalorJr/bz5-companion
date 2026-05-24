@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:provider/provider.dart';
@@ -262,6 +264,45 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
               ),
             ],
+            // v0.1.29+18: restore status. Mutually exclusive surfaces —
+            // either an in-flight progress card OR a last-result line.
+            if (cs.isRestoring) ...[
+              const SizedBox(height: 6),
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.lightBlueAccent.withOpacity(0.12),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  _restoreProgressLine(cs),
+                  style: const TextStyle(
+                      fontSize: 12, color: Colors.lightBlueAccent),
+                ),
+              ),
+            ] else if (cs.lastRestoreAt != null) ...[
+              Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: Text(
+                  'Last restore: ${_relTime(cs.lastRestoreAt!)}',
+                  style: const TextStyle(fontSize: 12, color: Colors.grey),
+                ),
+              ),
+            ],
+            if (cs.restoreError != null && !cs.isRestoring) ...[
+              const SizedBox(height: 4),
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.orange.withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  'Last restore: ${cs.restoreError!}',
+                  style: const TextStyle(fontSize: 12, color: Colors.orange),
+                ),
+              ),
+            ],
           ]),
         ),
         Padding(
@@ -270,26 +311,55 @@ class _SettingsScreenState extends State<SettingsScreen> {
             OutlinedButton.icon(
               icon: const Icon(Icons.refresh, size: 18),
               label: const Text('Sync now'),
-              onPressed: cs.status == CloudSyncStatus.syncing
+              onPressed: cs.status == CloudSyncStatus.syncing || cs.isRestoring
                   ? null
                   : () => cs.syncOnce(reason: 'manual-button'),
             ),
             OutlinedButton.icon(
               icon: const Icon(Icons.replay, size: 18),
               label: const Text('Force full resync'),
-              onPressed: cs.status == CloudSyncStatus.syncing
+              onPressed: cs.status == CloudSyncStatus.syncing || cs.isRestoring
                   ? null
                   : () => _confirmAndForceResync(context, cs),
             ),
             OutlinedButton.icon(
+              icon: const Icon(Icons.cloud_download_outlined, size: 18),
+              label: const Text('Restore from cloud'),
+              onPressed: cs.status == CloudSyncStatus.syncing || cs.isRestoring
+                  ? null
+                  : () => _showRestoreDialog(context, cs),
+            ),
+            OutlinedButton.icon(
               icon: const Icon(Icons.link_off, size: 18),
               label: const Text('Disconnect'),
-              onPressed: () => _confirmAndDisconnect(context, cs),
+              onPressed:
+                  cs.isRestoring ? null : () => _confirmAndDisconnect(context, cs),
             ),
           ]),
         ),
       ]),
     );
+  }
+
+  /// v0.1.29+18: format the active restore progress for the inline
+  /// status card. Phase + counters; falls back to a "Starting…"
+  /// placeholder for the brief preflight window.
+  String _restoreProgressLine(CloudSyncService cs) {
+    final p = cs.restoreProgress;
+    if (cs.restoreStatus == CloudRestoreStatus.preflight) {
+      return 'Restoring: validating token…';
+    }
+    final phase = p.phase;
+    if (phase == 'trips') {
+      return 'Restoring trips: '
+          '${p.tripsInserted} new / ${p.tripsFetched} fetched';
+    }
+    if (phase == 'snapshots') {
+      return 'Restoring snapshots: '
+          '${p.snapshotsInserted} new / ${p.snapshotsFetched} fetched '
+          '(trips: ${p.tripsInserted})';
+    }
+    return 'Restoring…';
   }
 
   Color _cloudStatusColor(CloudSyncStatus s) {
@@ -699,6 +769,239 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (ok) {
       await cs.disconnect();
     }
+  }
+
+  /// v0.1.29+18: three-phase restore dialog.
+  ///   1. Collect old client_token (TextField).
+  ///   2. Probe + confirmation (token validated, warning shown).
+  ///   3. Progress dialog (Consumer<CloudSyncService>) — runs the
+  ///      fetch in the background while the user watches counters.
+  /// User can cancel any phase. After completion, snackbar summarises.
+  Future<void> _showRestoreDialog(
+      BuildContext context, CloudSyncService cs) async {
+    final tokenCtrl = TextEditingController();
+
+    // Phase 1: token entry.
+    final entered = await showDialog<String?>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Restore from cloud'),
+        content: SingleChildScrollView(
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            const Text(
+              'Paste the previous device\'s client_token. The bridge '
+              'owner can look this up server-side; it has the form '
+              '<device_id>.<secret>. This will REPLACE the current '
+              'cloud identity — pushes resume under the restored '
+              'device.',
+              style: TextStyle(fontSize: 12),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: tokenCtrl,
+              autofocus: true,
+              decoration: const InputDecoration(
+                labelText: 'Client token',
+                hintText: 'uuid.secret',
+              ),
+            ),
+          ]),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(null),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              final t = tokenCtrl.text.trim();
+              if (t.isEmpty) return;
+              Navigator.of(ctx).pop(t);
+            },
+            child: const Text('Continue'),
+          ),
+        ],
+      ),
+    );
+    if (entered == null) return;
+
+    // Phase 2a: probe (with loader).
+    if (!context.mounted) return;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const AlertDialog(
+        content: SizedBox(
+          height: 60,
+          child: Center(child: CircularProgressIndicator()),
+        ),
+      ),
+    );
+    String? probedDeviceId;
+    String? probeErr;
+    try {
+      probedDeviceId = await cs.probeRestoreToken(entered);
+    } catch (e) {
+      probeErr = e.toString();
+    }
+    if (!context.mounted) return;
+    Navigator.of(context, rootNavigator: true).pop();
+
+    if (probeErr != null) {
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Token rejected'),
+          content: Text(probeErr!),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text('OK')),
+          ],
+        ),
+      );
+      return;
+    }
+
+    // Phase 2b: confirm + warning.
+    if (!context.mounted) return;
+    final confirm = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('Replace cloud identity?'),
+            content: SingleChildScrollView(
+              child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Device: $probedDeviceId',
+                        style: const TextStyle(fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 8),
+                    const Text(
+                      'After confirmation:\n'
+                      '  • current token is replaced (current registration '
+                      'becomes an orphan on the server — ask owner to revoke '
+                      'if desired)\n'
+                      '  • trips + snapshots are pulled into local Drift '
+                      'with dedup\n'
+                      '  • push cursors advance past max local id so '
+                      'restored rows are not re-uploaded',
+                      style: TextStyle(fontSize: 12),
+                    ),
+                    const SizedBox(height: 8),
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: Colors.amber.withOpacity(0.15),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: const Text(
+                        'If you have driven any trips on this install '
+                        'since reinstalling the app, those local records '
+                        'will stay in the app but will NOT be uploaded '
+                        'under the restored identity. (To avoid this, '
+                        'restore immediately after reinstall.)',
+                        style:
+                            TextStyle(fontSize: 12, color: Colors.amber),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    const Text(
+                      'Sweeps and live-log sessions are NOT restored in '
+                      'this version — they remain accessible only via '
+                      'admin inspection on the bridge.',
+                      style: TextStyle(fontSize: 11, color: Colors.grey),
+                    ),
+                  ]),
+            ),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.of(ctx).pop(false),
+                  child: const Text('Cancel')),
+              ElevatedButton(
+                  onPressed: () => Navigator.of(ctx).pop(true),
+                  child: const Text('Restore')),
+            ],
+          ),
+        ) ??
+        false;
+    if (!confirm) return;
+
+    // Phase 3: launch + watch via Consumer in a dismiss-on-finish dialog.
+    // Fire-and-forget; the service updates its own state and notifies.
+    unawaited(cs.startRestore(oldClientToken: entered));
+    if (!context.mounted) return;
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => Consumer<CloudSyncService>(
+        builder: (_, watched, __) {
+          final p = watched.restoreProgress;
+          final st = watched.restoreStatus;
+          final isDone = st == CloudRestoreStatus.done ||
+              st == CloudRestoreStatus.cancelled ||
+              st == CloudRestoreStatus.error ||
+              st == CloudRestoreStatus.idle;
+          String header;
+          switch (st) {
+            case CloudRestoreStatus.preflight:
+              header = 'Validating token…';
+              break;
+            case CloudRestoreStatus.fetching:
+              header = p.phase == 'snapshots'
+                  ? 'Fetching snapshots…'
+                  : 'Fetching trips…';
+              break;
+            case CloudRestoreStatus.done:
+              header = 'Restore complete';
+              break;
+            case CloudRestoreStatus.cancelled:
+              header = 'Restore cancelled';
+              break;
+            case CloudRestoreStatus.error:
+              header = 'Restore failed';
+              break;
+            case CloudRestoreStatus.idle:
+              header = 'Restore finished';
+              break;
+          }
+          return AlertDialog(
+            title: Text(header),
+            content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (!isDone) const LinearProgressIndicator(),
+                  if (!isDone) const SizedBox(height: 12),
+                  Text(
+                      'Trips: ${p.tripsInserted} new / ${p.tripsFetched} fetched',
+                      style: const TextStyle(fontSize: 13)),
+                  Text(
+                      'Snapshots: ${p.snapshotsInserted} new / ${p.snapshotsFetched} fetched',
+                      style: const TextStyle(fontSize: 13)),
+                  if (watched.restoreError != null) ...[
+                    const SizedBox(height: 8),
+                    Text(watched.restoreError!,
+                        style: const TextStyle(
+                            fontSize: 12, color: Colors.redAccent)),
+                  ],
+                ]),
+            actions: [
+              if (!isDone)
+                TextButton(
+                  onPressed: () => watched.cancelRestore(),
+                  child: const Text('Cancel'),
+                )
+              else
+                TextButton(
+                  onPressed: () => Navigator.of(ctx).pop(),
+                  child: const Text('Close'),
+                ),
+            ],
+          );
+        },
+      ),
+    );
   }
 
   @override
