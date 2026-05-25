@@ -232,6 +232,18 @@ class CloudSyncService extends ChangeNotifier {
   static const _kLastError = 'cloud_sync_last_error';
   static const _kSamplesRejectedAt = 'cloud_sync_samples_rejected_at';
 
+  // v0.1.29+20: per-row push tracking for trips. Trip rows in Drift
+  // are MUTABLE (endTrip rewrites aggregates on close), unlike the
+  // append-only snapshots/sweeps/livelogs tables. The old
+  // `id > _cursorTrip` strategy pushed each trip exactly once at
+  // insert time (with endedAt=NULL, all aggregates NULL), so the
+  // server kept a half-baked row forever — fixed by paired changes:
+  // server now UPSERTs (§P5.2 in ROADMAP), client now pushes a trip
+  // only after it has been finalized (endedAt != null) AND remembers
+  // which trip ids it has already pushed (this set). _cursorTrip is
+  // retained for stats (pending count) but no longer gates push.
+  static const _kPushedTripIds = 'cloud_sync_pushed_trip_ids';
+
   // v0.1.29+18: persisted restore state. Status is non-persistent (in
   // memory only — a restore in flight when the app is killed becomes
   // 'idle' on next launch, and the user re-runs it; dedup makes that
@@ -257,6 +269,11 @@ class CloudSyncService extends ChangeNotifier {
   int _cursorSnapshot = 0;
   int _cursorSweep = 0;
   int _cursorLiveLog = 0;
+
+  // v0.1.29+20: tracks which trip ids have been successfully pushed
+  // since this device's registration. Loaded from SharedPrefs as a
+  // JSON int list. See _kPushedTripIds doc above for rationale.
+  final Set<int> _pushedTripIds = <int>{};
 
   DateTime? _lastSuccessAt;
   String? _lastError;
@@ -361,6 +378,53 @@ class CloudSyncService extends ChangeNotifier {
       _lastRestoreAt = DateTime.fromMillisecondsSinceEpoch(lastRestoreTs);
     }
     _restoreError = prefs.getString(_kLastRestoreError);
+
+    // v0.1.29+20: load pushed-trip-id set. Stored as JSON int list
+    // (SharedPreferences supports List<String> natively but ints get
+    // round-tripped through JSON to avoid String/int conversion noise).
+    //
+    // First-run migration: if the key is absent AND _cursorTrip > 0
+    // (i.e. this device has previously pushed trips under the broken
+    // +19 strategy), seed the set with ids of all locally-CLOSED trips
+    // (endedAt != null) up to _cursorTrip. Open trips that were
+    // pushed by +19 with endedAt=NULL get re-pushed on the next sync
+    // cycle so the server UPSERTs the finalized aggregates.
+    //
+    // After seeding, _cursorTrip becomes informational only (used for
+    // pending-count stats); push gating runs entirely on the set.
+    final pushedJson = prefs.getString(_kPushedTripIds);
+    if (pushedJson != null) {
+      try {
+        final decoded = jsonDecode(pushedJson);
+        if (decoded is List) {
+          for (final v in decoded) {
+            if (v is int) _pushedTripIds.add(v);
+          }
+        }
+      } on FormatException {
+        debugPrint('CloudSync: corrupted pushed-trip-ids json, ignoring');
+      }
+    } else if (_cursorTrip > 0) {
+      // Migration from +17/+18/+19 install. Seed with closed-only.
+      try {
+        final all = await _db.getAllTrips();
+        for (final t in all) {
+          if (t.id <= _cursorTrip && t.endedAt != null) {
+            _pushedTripIds.add(t.id);
+          }
+        }
+        await prefs.setString(_kPushedTripIds,
+            jsonEncode(_pushedTripIds.toList()));
+        debugPrint('CloudSync: migrated pushed-trip-ids from cursor, '
+            'seeded ${_pushedTripIds.length} closed trips up to '
+            'cursor=$_cursorTrip');
+      } catch (e) {
+        // If Drift read fails, leave set empty — first sync after this
+        // will push everything (server UPSERT de-dups on
+        // (device_id, client_trip_id) so this is safe, just wasteful).
+        debugPrint('CloudSync: pushed-trip-ids migration failed: $e');
+      }
+    }
     try {
       _clientToken = await _secureStorage.read(key: _kTokenKey);
     } catch (e) {
@@ -512,6 +576,9 @@ class CloudSyncService extends ChangeNotifier {
     await prefs.setInt(_kCursorSnapshot, 0);
     await prefs.setInt(_kCursorSweep, 0);
     await prefs.setInt(_kCursorLiveLog, 0);
+    // v0.1.29+20: pushed-trip-id set is identity-scoped; new device =
+    // empty set = all closed trips will re-upload.
+    await prefs.remove(_kPushedTripIds);
     await prefs.setBool(_kEnabled, true);
 
     _clientToken = token;
@@ -522,6 +589,7 @@ class CloudSyncService extends ChangeNotifier {
     _cursorSnapshot = 0;
     _cursorSweep = 0;
     _cursorLiveLog = 0;
+    _pushedTripIds.clear();
     _enabled = true;
     _lastError = null;
     _samplesRejectedAt = null;
@@ -552,6 +620,8 @@ class CloudSyncService extends ChangeNotifier {
     await prefs.remove(_kCursorSnapshot);
     await prefs.remove(_kCursorSweep);
     await prefs.remove(_kCursorLiveLog);
+    // v0.1.29+20: pushed-trip-id set is identity-scoped.
+    await prefs.remove(_kPushedTripIds);
     await prefs.remove(_kLastSuccessAt);
     await prefs.remove(_kLastError);
     await prefs.setBool(_kEnabled, false);
@@ -564,6 +634,7 @@ class CloudSyncService extends ChangeNotifier {
     _cursorSnapshot = 0;
     _cursorSweep = 0;
     _cursorLiveLog = 0;
+    _pushedTripIds.clear();
     _enabled = false;
     _lastSuccessAt = null;
     _lastError = null;
@@ -582,10 +653,14 @@ class CloudSyncService extends ChangeNotifier {
     await prefs.setInt(_kCursorSnapshot, 0);
     await prefs.setInt(_kCursorSweep, 0);
     await prefs.setInt(_kCursorLiveLog, 0);
+    // v0.1.29+20: "force full resync" means re-push everything; the
+    // pushed-trip-id set is the main gate on trip push now.
+    await prefs.remove(_kPushedTripIds);
     _cursorTrip = 0;
     _cursorSnapshot = 0;
     _cursorSweep = 0;
     _cursorLiveLog = 0;
+    _pushedTripIds.clear();
     notifyListeners();
     await syncOnce(reason: 'force-resync');
   }
@@ -687,14 +762,26 @@ class CloudSyncService extends ChangeNotifier {
   }
 
   Future<void> _syncTrips() async {
+    // v0.1.29+20: changed semantics from id-cursor to finalize-gated
+    // pushed-set. A Drift trip row is mutable (endTrip rewrites it on
+    // close), so the previous "push exactly once at id > _cursorTrip"
+    // strategy missed all finalize aggregates — server kept the open
+    // start-only snapshot forever.
+    //
+    // New rule: push a trip only when (endedAt != null) AND (id not in
+    // _pushedTripIds). After a successful batch POST, add the batched
+    // ids to the set and persist. Server-side UPSERT (§P5.2) absorbs
+    // any accidental re-push, so this is robust against partial
+    // failures: a crash between POST and persist replays the batch,
+    // and the server merges with no duplicate-row risk.
+    //
+    // _cursorTrip is still maintained as max(id seen) for the
+    // pending-count stat in Settings; it no longer gates push.
     while (true) {
-      // Pull a window of unsynced trips. We don't have getTripsAfterId
-      // in the DB API; use getAllTrips and filter — Trip rows are
-      // ~80 fields each but the table is small (~hundreds across the
-      // whole app history). For larger tables (Snapshots) we use a
-      // more targeted query below.
       final all = await _db.getAllTrips();
-      final pending = all.where((t) => t.id > _cursorTrip).toList()
+      final pending = all
+          .where((t) => t.endedAt != null && !_pushedTripIds.contains(t.id))
+          .toList()
         ..sort((a, b) => a.id.compareTo(b.id));
       if (pending.isEmpty) break;
       const batchSize = 50;
@@ -703,9 +790,23 @@ class CloudSyncService extends ChangeNotifier {
         'items': batch.map(_tripToJson).toList(),
       };
       await _postIngest('/v1/data/ingest/trips', body);
-      _cursorTrip = batch.last.id;
+      // Mark pushed only after POST succeeds. _postIngest throws on
+      // any non-2xx (and the server-side UPSERT, once deployed,
+      // guarantees a duplicate replay is a safe no-op).
+      _pushedTripIds.addAll(batch.map((t) => t.id));
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setInt(_kCursorTrip, _cursorTrip);
+      await prefs.setString(_kPushedTripIds,
+          jsonEncode(_pushedTripIds.toList()));
+      // Keep _cursorTrip in sync with max trip id for the pending-
+      // count stat. Use max(local trip id seen), not just batch.last —
+      // open trips are tracked too because they still represent
+      // "pending" work, just gated by their own finalize.
+      final maxAllId =
+          all.isEmpty ? 0 : all.map((t) => t.id).reduce((a, b) => a > b ? a : b);
+      if (maxAllId > _cursorTrip) {
+        _cursorTrip = maxAllId;
+        await prefs.setInt(_kCursorTrip, _cursorTrip);
+      }
       if (pending.length <= batchSize) break;
     }
   }
@@ -1077,6 +1178,21 @@ class CloudSyncService extends ChangeNotifier {
       _cursorSnapshot = maxSnapId;
       await prefs.setInt(_kCursorTrip, _cursorTrip);
       await prefs.setInt(_kCursorSnapshot, _cursorSnapshot);
+
+      // v0.1.29+20: restored trips with endedAt != null are already on
+      // the server (the restore loop fetched them from there) and
+      // would be duplicates if re-pushed. Add to the pushed set so
+      // _syncTrips skips them. Trips with endedAt == null are the
+      // half-finalized ones we WANT to re-push once the client
+      // recomputes aggregates (e.g. via _finalizeTripFromLastKnown);
+      // leaving them out of the set ensures that future re-push.
+      for (final t in allTrips) {
+        if (t.endedAt != null) {
+          _pushedTripIds.add(t.id);
+        }
+      }
+      await prefs.setString(_kPushedTripIds,
+          jsonEncode(_pushedTripIds.toList()));
 
       _restoreStatus = CloudRestoreStatus.done;
       _restoreProgress = CloudRestoreProgress(
@@ -1525,22 +1641,26 @@ class CloudSyncService extends ChangeNotifier {
   }
 
   Future<void> _recomputeStats() async {
-    // Approximate pending counts using max(id) - cursor. Drift gaps
-    // (deleted rows) would make this slightly overestimate; for the
-    // single-user app where deletes are rare, this is good enough.
+    // v0.1.29+20: trips pendingCount = closed (endedAt != null) trips
+    // not yet in _pushedTripIds. Open trips are intentionally not
+    // counted as pending — they're not eligible for push yet.
+    // snapshots/sweeps/livelogs are append-only and use the old
+    // max(id) - cursor approximation.
     try {
-      final trips = await _db.getRecentTrips(limit: 1);
+      final allTrips = await _db.getAllTrips();
       final snapshots = await _db.getRecentSnapshots(limit: 1);
       final sweeps = await _db.getAllSweepRuns();
       final logs = await _db.getAllLiveLogSessions();
-      final maxTrip = trips.isEmpty ? 0 : trips.first.id;
+      final pendingTrips = allTrips
+          .where((t) => t.endedAt != null && !_pushedTripIds.contains(t.id))
+          .length;
       final maxSnap = snapshots.isEmpty ? 0 : snapshots.first.id;
       final maxSweep =
           sweeps.isEmpty ? 0 : sweeps.map((s) => s.id).reduce((a, b) => a > b ? a : b);
       final maxLog =
           logs.isEmpty ? 0 : logs.map((s) => s.id).reduce((a, b) => a > b ? a : b);
       _stats = CloudSyncStats(
-        pendingTrips: (maxTrip - _cursorTrip).clamp(0, 1 << 30),
+        pendingTrips: pendingTrips,
         pendingSnapshots: (maxSnap - _cursorSnapshot).clamp(0, 1 << 30),
         pendingSweeps: (maxSweep - _cursorSweep).clamp(0, 1 << 30),
         pendingLiveLogs: (maxLog - _cursorLiveLog).clamp(0, 1 << 30),
@@ -1659,7 +1779,7 @@ class CloudSyncService extends ChangeNotifier {
   /// Read app version from the static value baked into the build.
   /// We don't have package_info_plus as a dep — pubspec-version is
   /// hardcoded here. Update when bumping. Off-by-one tolerated.
-  Future<String> _readAppVersion() async => '0.1.29+19';
+  Future<String> _readAppVersion() async => '0.1.29+20';
 }
 
 // ─── Internal exceptions ────────────────────────────────────────────
