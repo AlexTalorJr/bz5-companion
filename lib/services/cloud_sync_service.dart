@@ -383,15 +383,16 @@ class CloudSyncService extends ChangeNotifier {
     // (SharedPreferences supports List<String> natively but ints get
     // round-tripped through JSON to avoid String/int conversion noise).
     //
-    // First-run migration: if the key is absent AND _cursorTrip > 0
-    // (i.e. this device has previously pushed trips under the broken
-    // +19 strategy), seed the set with ids of all locally-CLOSED trips
-    // (endedAt != null) up to _cursorTrip. Open trips that were
-    // pushed by +19 with endedAt=NULL get re-pushed on the next sync
-    // cycle so the server UPSERTs the finalized aggregates.
-    //
-    // After seeding, _cursorTrip becomes informational only (used for
-    // pending-count stats); push gating runs entirely on the set.
+    // Note on first launch from a +17/+18/+19 upgrade: the key will be
+    // absent and the set stays empty, so the next syncOnce will push
+    // ALL locally-closed trips. Server-side UPSERT (§P5.2) absorbs
+    // those as `{received:N, inserted:0, duplicates:N}` no-op merges
+    // for trips already there, and as proper finalizes for trips that
+    // +19 pushed prematurely with endedAt=NULL. Total cost is N HTTP
+    // posts where N is the lifetime closed-trip count on this install
+    // — acceptable in our scale, and avoids a subtle bug where the
+    // migration would seed `pushed = closed-and-cursored` and then
+    // skip the very re-push the +20 fix exists to enable.
     final pushedJson = prefs.getString(_kPushedTripIds);
     if (pushedJson != null) {
       try {
@@ -403,26 +404,6 @@ class CloudSyncService extends ChangeNotifier {
         }
       } on FormatException {
         debugPrint('CloudSync: corrupted pushed-trip-ids json, ignoring');
-      }
-    } else if (_cursorTrip > 0) {
-      // Migration from +17/+18/+19 install. Seed with closed-only.
-      try {
-        final all = await _db.getAllTrips();
-        for (final t in all) {
-          if (t.id <= _cursorTrip && t.endedAt != null) {
-            _pushedTripIds.add(t.id);
-          }
-        }
-        await prefs.setString(_kPushedTripIds,
-            jsonEncode(_pushedTripIds.toList()));
-        debugPrint('CloudSync: migrated pushed-trip-ids from cursor, '
-            'seeded ${_pushedTripIds.length} closed trips up to '
-            'cursor=$_cursorTrip');
-      } catch (e) {
-        // If Drift read fails, leave set empty — first sync after this
-        // will push everything (server UPSERT de-dups on
-        // (device_id, client_trip_id) so this is safe, just wasteful).
-        debugPrint('CloudSync: pushed-trip-ids migration failed: $e');
       }
     }
     try {
