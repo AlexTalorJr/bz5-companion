@@ -2707,6 +2707,35 @@ class ConnectionService extends ChangeNotifier {
   int _sweepTotal = 0;
   String _sweepCurrentDid = '';
 
+  /// v0.1.29+24: hard-kill signal for the sweep loop. Same pattern as
+  /// [_liveLogKillSignal] (added in +22). Completed when the loop must
+  /// abort immediately (cancel command, watchdog stall, BLE drop).
+  /// Future.any races inside the loop body resolve the instant this
+  /// fires, regardless of whether the underlying op (readDid, insert,
+  /// delay) has completed. Cycle 9 (Motor1 sweep, 2026-05-25) proved
+  /// that sweep is vulnerable to the same flutter_blue_plus
+  /// _writeChar.write() platform-layer wedge that froze live-log in
+  /// Cycles 2/3 — observed twice on identical NRC streams ($01
+  /// GeneralReject), at probes 77 and 241 respectively.
+  Completer<void>? _sweepKillSignal;
+
+  /// v0.1.29+24: periodic watchdog mirroring [_liveLogWatchdogTimer].
+  /// Fires kill signal if no sweep_result row has been written for
+  /// 30+ seconds. Runs as a Timer.periodic, so it stays scheduled
+  /// even when the loop coroutine is wedged on a BLE await (the
+  /// failure mode we're defending against).
+  Timer? _sweepWatchdogTimer;
+
+  /// v0.1.29+24: wall-clock of last sweep_result successfully written.
+  /// Watchdog input; null between sweeps.
+  DateTime? _sweepLastProbeAt;
+
+  /// v0.1.29+24: last reason the sweep loop broke. Surfaces in
+  /// sweep_runs.notes for post-mortem (matches runLiveLog +21/+22
+  /// convention). One of: completed / cancelled / max_duration /
+  /// ble_dropped / watchdog_stall / loop_exception.
+  String? _sweepExitReason;
+
   bool get sweepRunning => _sweepRunning;
   int? get currentSweepRunId => _currentSweepRunId;
   int get sweepDone => _sweepDone;
@@ -2718,9 +2747,17 @@ class ConnectionService extends ChangeNotifier {
   /// Cancel an in-progress sweep. Safe to call even if no sweep is running.
   /// The sweep loop checks this flag between DIDs, so cancellation takes
   /// effect within ~one probe period (default 250ms).
+  ///
+  /// v0.1.29+24: also fires the kill signal so any in-flight await
+  /// inside the loop (readDid, DB insert, inter-probe delay) returns
+  /// immediately instead of waiting for its own timeout. Stop commands
+  /// against a wedged sweep now react in milliseconds rather than
+  /// staying stuck — the failure mode observed in Cycle 9.
   void cancelSweep() {
     if (_sweepRunning) {
       _sweepCancelled = true;
+      final ks = _sweepKillSignal;
+      if (ks != null && !ks.isCompleted) ks.complete();
     }
   }
 
@@ -2794,11 +2831,39 @@ class ConnectionService extends ChangeNotifier {
     int validCount = 0;
     int sequence = 0;
 
+    // v0.1.29+24: kill-signal infrastructure for the sweep loop. Mirrors
+    // the +22 livelog hardening — see [_sweepKillSignal] doc. The
+    // periodic watchdog timer fires the signal when no sweep_result has
+    // been written for 30+ seconds. The signal is raced against every
+    // awaited op inside the loop body via Future.any so a wedged op
+    // can't block exit.
+    _sweepLastProbeAt = DateTime.now();
+    _sweepExitReason = null;
+    final killSignal = Completer<void>();
+    _sweepKillSignal = killSignal;
+    _sweepWatchdogTimer?.cancel();
+    _sweepWatchdogTimer = Timer.periodic(const Duration(seconds: 5), (t) {
+      final last = _sweepLastProbeAt;
+      if (last == null) return;
+      final stallSec = DateTime.now().difference(last).inSeconds;
+      if (stallSec >= 30) {
+        _sweepExitReason ??= 'watchdog_stall';
+        debugPrint('runSweep: WATCHDOG_STALL fires kill signal after '
+            '${stallSec}s with no sweep_result writes '
+            '(done=$_sweepDone/$_sweepTotal at $_sweepCurrentDid)');
+        if (!killSignal.isCompleted) killSignal.complete();
+        t.cancel();
+      }
+    });
+
     try {
       for (int didInt = start; didInt <= end; didInt++) {
-        if (_sweepCancelled) break;
+        if (_sweepCancelled || killSignal.isCompleted) break;
         // BLE link check — abort if disconnected mid-sweep.
-        if (_ble != null && !_ble!.isConnected) break;
+        if (_ble != null && !_ble!.isConnected) {
+          _sweepExitReason = 'ble_dropped';
+          break;
+        }
 
         final didHex = didInt.toRadixString(16).toUpperCase().padLeft(4, '0');
         _sweepCurrentDid = didHex;
@@ -2810,11 +2875,34 @@ class ConnectionService extends ChangeNotifier {
           // v0.1.17: timeout: max(1500ms, periodMs*2). Matches _pollEcu's
           // empirical production value. Previous 1000ms floor was below
           // some ECUs' worst-case response latency on a loaded bus.
+          //
+          // v0.1.29+24: raced against killSignal via Future.any. The
+          // .timeout(...) below provides the FAST-path bound; the race
+          // provides the FAULT-path bound (in case the underlying
+          // _writeChar.write() in elm327_ble.dart is wedged at the
+          // platform layer — observed in Cycle 9 freezes).
           final timeoutMs = periodMs * 2 > 1500 ? periodMs * 2 : 1500;
-          final r = await _client!
+          final readFuture = _client!
               .readDid(didHex, tx: txEcu, rx: rxEcu)
               .timeout(Duration(milliseconds: timeoutMs));
-          if (r != null) {
+          // No-op error handler so an orphaned (kill-won) future doesn't
+          // surface as an unhandled async error if it later throws.
+          unawaited(readFuture.then((_) {}, onError: (Object _) {}));
+          final raceResult = await Future.any<Object?>([
+            readFuture.then<Object?>((v) => v),
+            killSignal.future.then<Object?>((_) => _killedSentinel),
+          ]);
+          if (identical(raceResult, _killedSentinel) ||
+              killSignal.isCompleted) {
+            break;
+          }
+          final r = raceResult as EcuResponse?;
+          if (r == null) {
+            // v0.1.29+24: readDid returned null (not threw). Previously
+            // this slipped through with no error code recorded; tag it
+            // so research data shows the failure mode.
+            errorCode = 'NULL_RESPONSE';
+          } else {
             // Positive responses start with 62XXXX, where XXXX is the DID.
             // Negative responses start with 7F (NRC).
             // v0.1.15 bug fix: previously an empty/garbage rawHex (e.g. when
@@ -2845,13 +2933,36 @@ class ConnectionService extends ChangeNotifier {
           errorCode = 'TIMEOUT';
         }
 
-        await db.insertSweepResult(SweepResultsCompanion(
-          sweepRunId: Value(runId),
-          did: Value(didHex),
-          rawHex: Value(rawHex),
-          errorCode: Value(errorCode),
-          sequence: Value(sequence++),
-        ));
+        // v0.1.29+24: bounded + raced insert. Drift's sqflite serializes
+        // writes; same hang surface as livelog's insertLiveLogEntry. 5s
+        // timeout is the fast-path bound, killSignal race is the
+        // fault-path bound.
+        try {
+          final insertFuture = db
+              .insertSweepResult(SweepResultsCompanion(
+                sweepRunId: Value(runId),
+                did: Value(didHex),
+                rawHex: Value(rawHex),
+                errorCode: Value(errorCode),
+                sequence: Value(sequence++),
+              ))
+              .timeout(const Duration(seconds: 5));
+          unawaited(insertFuture.then((_) {}, onError: (Object _) {}));
+          final raceResult = await Future.any<Object?>([
+            insertFuture.then<Object?>((v) => v),
+            killSignal.future.then<Object?>((_) => _killedSentinel),
+          ]);
+          if (identical(raceResult, _killedSentinel) ||
+              killSignal.isCompleted) {
+            break;
+          }
+          _sweepLastProbeAt = DateTime.now();
+        } on TimeoutException {
+          debugPrint('runSweep: insertSweepResult timeout for $didHex — '
+              'sequence ${sequence - 1} dropped');
+          // Intentionally do NOT update _sweepLastProbeAt so the
+          // watchdog can detect a sustained DB stall and break.
+        }
 
         _sweepDone++;
         onProgress?.call(_sweepDone, _sweepTotal, didHex);
@@ -2865,19 +2976,54 @@ class ConnectionService extends ChangeNotifier {
         // Spacing between probes (period) — short delay to let BLE breathe.
         // We don't add the full periodMs as a separate delay because readDid
         // itself takes a bit of time and we already throttled with timeout.
-        await Future.delayed(const Duration(milliseconds: 30));
+        //
+        // v0.1.29+24: raced against killSignal so a cancel/watchdog
+        // doesn't have to wait out the 30ms.
+        await Future.any<void>([
+          Future<void>.delayed(const Duration(milliseconds: 30)),
+          killSignal.future,
+        ]);
       }
+      _sweepExitReason ??=
+          _sweepCancelled ? 'cancelled' : 'completed';
+    } catch (e, st) {
+      // v0.1.29+24: top-level safety net so the finally always runs and
+      // restores polling, matching the +21 runLiveLog defense pattern.
+      debugPrint('runSweep: unhandled exception in loop: $e\n$st');
+      _sweepExitReason ??= 'loop_exception';
     } finally {
-      // Close out the SweepRun
-      await (db.update(db.sweepRuns)..where((s) => s.id.equals(runId))).write(
-        SweepRunsCompanion(
-          endedAt: Value(DateTime.now()),
-          validResponses: Value(validCount),
-        ),
-      );
+      // v0.1.29+24: tear down watchdog and kill-signal handle before
+      // the final DB write. Orphaned BLE/insert futures settle in the
+      // background.
+      _sweepWatchdogTimer?.cancel();
+      _sweepWatchdogTimer = null;
+      _sweepKillSignal = null;
+
+      // Close out the SweepRun — v0.1.29+24: bounded by timeout AND
+      // wrapped in try/catch so a Drift hang here can't stop the
+      // polling-restore below from running. Exit reason persisted into
+      // sweep_runs.notes for post-mortem (mirrors livelog convention).
+      try {
+        final exitTag = _sweepExitReason ?? 'unknown';
+        final finalNotes = notes != null
+            ? '$notes | exit=$exitTag'
+            : 'exit=$exitTag';
+        await (db.update(db.sweepRuns)..where((s) => s.id.equals(runId)))
+            .write(
+              SweepRunsCompanion(
+                endedAt: Value(DateTime.now()),
+                validResponses: Value(validCount),
+                notes: Value(finalNotes),
+              ),
+            )
+            .timeout(const Duration(seconds: 10));
+      } catch (e, st) {
+        debugPrint('runSweep: failed to write final run row: $e\n$st');
+      }
 
       _sweepRunning = false;
       _sweepCancelled = false;
+      _sweepLastProbeAt = null;
       // Don't clear _currentSweepRunId — UI may want to navigate to results.
       if (wasPolling) {
         _polling = true;
