@@ -840,6 +840,31 @@ class CloudSyncService extends ChangeNotifier {
       ..sort((a, b) => a.id.compareTo(b.id));
     if (pending.isEmpty) return;
     for (final session in pending) {
+      // v0.1.29+22: do NOT push live log sessions while they are still
+      // active (endedAt == null). Rationale and history:
+      //
+      // Cycle 3 (+21 verify, 2026-05-25): session id=3 froze mid-flight
+      // at cycle 13/000A after writing 90 entries. ~1.5s before the
+      // freeze, CloudSync's 60s tick had picked the session up here and
+      // POSTed all 90 entries as a snapshot of an "in-progress"
+      // session. The freeze happened immediately after. We could not
+      // disprove that the cloud push (which competes for HTTP and the
+      // sqflite isolate) was a contributing factor.
+      //
+      // Pushing partial sessions also has no functional value: bridge
+      // already has the session metadata via the next sync after the
+      // session ends, and partial-entries snapshots get rewritten
+      // anyway. Skipping active sessions removes CloudSync as a
+      // suspect for live-log freezes AND avoids re-pushing the same
+      // session repeatedly while it grows.
+      //
+      // We `return` (not `continue`) on the first active session so
+      // the cursor doesn't leapfrog past it. The next sync will pick
+      // up where we left off — sessions are processed strictly in
+      // id-order.
+      if (session.endedAt == null) {
+        return;
+      }
       final entries = await _db.getLiveLogEntries(session.id);
       // A session of 1196s × 7 DIDs ≈ 8400 entries which serializes to
       // ~700KB JSON. Bridge nginx caps at 25M, plus server caps items
@@ -1760,7 +1785,7 @@ class CloudSyncService extends ChangeNotifier {
   /// Read app version from the static value baked into the build.
   /// We don't have package_info_plus as a dep — pubspec-version is
   /// hardcoded here. Update when bumping. Off-by-one tolerated.
-  Future<String> _readAppVersion() async => '0.1.29+21';
+  Future<String> _readAppVersion() async => '0.1.29+22';
 }
 
 // ─── Internal exceptions ────────────────────────────────────────────
