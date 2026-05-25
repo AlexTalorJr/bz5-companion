@@ -19,6 +19,14 @@ enum PollMode { driving, charging, full }
 /// `identical(...)`.
 final Object _killedSentinel = Object();
 
+/// v0.1.29+23: SharedPreferences key for the monotonic
+/// `client_session_id` counter used when inserting LiveLogSession rows.
+/// Survives app restart and in-place APK updates (phone). Does NOT
+/// survive uninstall+install (head unit) — that's a known gap, see
+/// runLiveLog for rationale.
+const String _kLiveLogSessionIdNext =
+    'connection_live_log_session_id_next';
+
 /// === BZ5 Physical Model (v5) ===
 ///
 /// Калибровочные константы из реверс-инжиниринга 30 апреля - 1 мая 2026.
@@ -2964,6 +2972,63 @@ class ConnectionService extends ChangeNotifier {
     }
   }
 
+  /// v0.1.29+23: compute the next monotonic `client_session_id` for a
+  /// new LiveLogSession row. The returned value is used as the explicit
+  /// `id` column at insert time so that the value Bridge sees in
+  /// `_liveLogToJson` survives across:
+  ///
+  ///   - app process restart           (SharedPreferences persists)
+  ///   - in-place APK update on phone  (SharedPreferences persists)
+  ///
+  /// It does NOT survive uninstall+install on the head unit (which
+  /// wipes Drift / Keystore / SharedPreferences together) — that case
+  /// still risks a bridge-side UNIQUE collision on (device_id,
+  /// client_session_id) the first time the new install pushes session
+  /// id=1. Documented gap, requires a server-side change (or a UUID
+  /// migration) to close fully.
+  ///
+  /// Defence-in-depth: we take max(persisted_counter,
+  /// max_id_in_local_db) + 1 so that if the SharedPreferences key were
+  /// ever lost or rolled back independently of Drift, we still never
+  /// reuse a local id.
+  Future<int> _nextLiveLogSessionId() async {
+    final prefs = await SharedPreferences.getInstance();
+    final persisted = prefs.getInt(_kLiveLogSessionIdNext) ?? 0;
+
+    // Local DB max — cheap enough at ~hundreds of rows; no dedicated
+    // helper added to the protected database.dart for this.
+    int dbMax = 0;
+    try {
+      final all = await db.getAllLiveLogSessions();
+      for (final s in all) {
+        if (s.id > dbMax) dbMax = s.id;
+      }
+    } catch (e) {
+      debugPrint('_nextLiveLogSessionId: getAllLiveLogSessions failed: $e');
+      // Fall through with dbMax = 0; persisted counter alone will
+      // suffice unless it's also missing, in which case we get id=1
+      // which is fine for a fresh install.
+    }
+
+    final next = (persisted > dbMax ? persisted : dbMax) + 1;
+    return next;
+  }
+
+  /// v0.1.29+23: persist the just-assigned LiveLogSession id so the
+  /// next call to [_nextLiveLogSessionId] returns a higher value even
+  /// across an app restart. Best-effort: if SharedPreferences write
+  /// fails the session still has a valid local id; only the
+  /// persistence guarantee is weakened (next launch will fall back to
+  /// the dbMax safety check).
+  Future<void> _persistLiveLogSessionId(int id) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt(_kLiveLogSessionIdNext, id);
+    } catch (e) {
+      debugPrint('_persistLiveLogSessionId($id) failed: $e');
+    }
+  }
+
   /// Run a live-log session. [didSpecs] is a list of (txEcu, rxEcu, didHex)
   /// triples, max 7. Returns the LiveLogSession id created in DB.
   ///
@@ -3009,12 +3074,23 @@ class ConnectionService extends ChangeNotifier {
     // Create LiveLogSession row
     final didListStr =
         didSpecs.map((s) => '${s.$1}/${s.$3.toUpperCase()}').join(',');
+    // v0.1.29+23: assign client_session_id from a SharedPreferences-
+    // persisted monotonic counter so it survives app restart and
+    // in-place updates. See [_nextLiveLogSessionId] for the gap on
+    // head-unit uninstall+install. We pass the value as an explicit
+    // `id` so what bridge sees in `_liveLogToJson` (which uses
+    // `s.id`) matches the monotonic counter. The persist call is
+    // intentionally AFTER the insert so a failed insert doesn't
+    // burn an id.
+    final nextId = await _nextLiveLogSessionId();
     final sessionId = await db.insertLiveLogSession(LiveLogSessionsCompanion(
+      id: Value(nextId),
       startedAt: Value(DateTime.now()),
       didList: Value(didListStr),
       carState: Value(carState),
       notes: Value(notes),
     ));
+    await _persistLiveLogSessionId(sessionId);
     _currentLiveLogSessionId = sessionId;
     notifyListeners();
 
