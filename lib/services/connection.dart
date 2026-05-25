@@ -2895,10 +2895,29 @@ class ConnectionService extends ChangeNotifier {
   /// Useful for the UI to show the most-recent reading per DID.
   final Map<String, String?> _liveLogLastRaw = {};
 
+  /// v0.1.29+21: wall-clock of last DB row written for the active live-log
+  /// session. Used by the watchdog inside [runLiveLog] (and exposed to
+  /// the UI) so a "frozen" state can be detected even when the BLE link
+  /// looks fine. `null` between sessions.
+  DateTime? _liveLogLastEntryAt;
+
+  /// v0.1.29+21: monotonic count of entries written into the DB for the
+  /// active session (resets at session start). Differs from `entryCount`
+  /// in the returned id only by also being readable while running.
+  int _liveLogWrittenCount = 0;
+
+  /// v0.1.29+21: last reason the loop broke out of its main while-loop.
+  /// Surfaces in DB session.notes for post-mortem analysis.
+  /// One of: cancelled / max_duration / ble_dropped / watchdog_stall /
+  /// loop_exception / ble_dropped_mid_cycle / null (still running).
+  String? _liveLogExitReason;
+
   bool get liveLogRunning => _liveLogRunning;
   int? get currentLiveLogSessionId => _currentLiveLogSessionId;
   int get liveLogCycle => _liveLogCycle;
   Map<String, String?> get liveLogLastRaw => Map.unmodifiable(_liveLogLastRaw);
+  DateTime? get liveLogLastEntryAt => _liveLogLastEntryAt;
+  int get liveLogWrittenCount => _liveLogWrittenCount;
 
   /// Cancel an active live log. Loop exits at the end of the current cycle
   /// (worst case ~2s wait for 7 DIDs).
@@ -2932,6 +2951,10 @@ class ConnectionService extends ChangeNotifier {
     _liveLogCancelled = false;
     _liveLogCycle = 0;
     _liveLogLastRaw.clear();
+    // v0.1.29+21: reset watchdog observables.
+    _liveLogLastEntryAt = DateTime.now();
+    _liveLogWrittenCount = 0;
+    _liveLogExitReason = null;
 
     // Pause normal polling
     final wasPolling = _polling;
@@ -2964,11 +2987,37 @@ class ConnectionService extends ChangeNotifier {
     try {
       while (!_liveLogCancelled) {
         // BLE link check
-        if (_ble != null && !_ble!.isConnected) break;
+        if (_ble != null && !_ble!.isConnected) {
+          _liveLogExitReason = 'ble_dropped';
+          break;
+        }
 
         // Optional max duration cap
         if (maxDurationMs != null &&
             DateTime.now().difference(startTime).inMilliseconds >= maxDurationMs) {
+          _liveLogExitReason = 'max_duration';
+          break;
+        }
+
+        // v0.1.29+21: watchdog — if no DB entry has been written in the
+        // last 30s, something is stuck (Drift lock contention, BLE
+        // characteristic frozen mid-frame with the timeout race
+        // somehow missed, etc.). Bail out so finally restores polling
+        // and the trip detector can finalize the current trip
+        // normally — otherwise live-log freezes ALSO freeze trip
+        // aggregation, leaving dashes-everywhere rows in the UI.
+        //
+        // 30s threshold ≈ 2× worst-case healthy cycle:
+        //   7 DIDs × (1500ms read timeout + 150ms retry + 800ms cap)
+        //   = ~17s in 100%-timeout-but-still-progressing state.
+        // Real production cycles are 3-5s.
+        final lastEntry = _liveLogLastEntryAt;
+        if (lastEntry != null &&
+            DateTime.now().difference(lastEntry).inSeconds >= 30) {
+          _liveLogExitReason = 'watchdog_stall';
+          debugPrint('runLiveLog: WATCHDOG_STALL after '
+              '${DateTime.now().difference(lastEntry).inSeconds}s with no DB writes '
+              '(cycle=$_liveLogCycle written=$_liveLogWrittenCount)');
           break;
         }
 
@@ -2991,6 +3040,16 @@ class ConnectionService extends ChangeNotifier {
         int sameEcuRun = 0;
         for (final spec in didSpecs) {
           if (_liveLogCancelled) break;
+
+          // v0.1.29+21: BLE check INSIDE the inner loop too. Previously
+          // only at top of while — meant a mid-cycle BLE drop ground
+          // through the remaining DIDs all timing out, costing ~10s of
+          // wasted reads per cycle on a dead link.
+          if (_ble != null && !_ble!.isConnected) {
+            _liveLogExitReason = 'ble_dropped_mid_cycle';
+            break;
+          }
+
           final txEcu = spec.$1;
           final rxEcu = spec.$2;
           final did = spec.$3.toUpperCase();
@@ -3016,21 +3075,41 @@ class ConnectionService extends ChangeNotifier {
           String? rawHex;
           String? errorCode;
 
-          // v0.1.17: retry up to twice on EMPTY response. ELM327 BLE
-          // adapter under load (multi-DID polling) sometimes returns
-          // empty frames — the request reaches the bus but the response
-          // gets lost in the BLE characteristic queue. A short retry
-          // after a 150ms breather recovers ~50% of these cases without
-          // significantly impacting cycle time.
-          //
-          // Timeout 1500ms (was 1000ms) — matches _pollEcu's empirical
-          // value which has proven reliable in production polling.
-          for (int attempt = 0; attempt < 2; attempt++) {
-            try {
-              final r = await _client!
-                  .readDid(did, tx: txEcu, rx: rxEcu)
-                  .timeout(const Duration(milliseconds: 1500));
-              if (r != null) {
+          // v0.1.29+21: per-DID outer try/catch — a single bad iteration
+          // (unexpected exception from readDid wrapper, sanity helper,
+          // DB call, etc.) must not kill the whole session. Without
+          // this we relied on the per-call try/catch inside the read
+          // attempt loop, which doesn't cover the sanity helper or
+          // the insert.
+          try {
+            // v0.1.17: retry up to twice on EMPTY response. ELM327 BLE
+            // adapter under load (multi-DID polling) sometimes returns
+            // empty frames — the request reaches the bus but the response
+            // gets lost in the BLE characteristic queue. A short retry
+            // after a 150ms breather recovers ~50% of these cases without
+            // significantly impacting cycle time.
+            //
+            // Timeout 1500ms (was 1000ms) — matches _pollEcu's empirical
+            // value which has proven reliable in production polling.
+            for (int attempt = 0; attempt < 2; attempt++) {
+              try {
+                final r = await _client!
+                    .readDid(did, tx: txEcu, rx: rxEcu)
+                    .timeout(const Duration(milliseconds: 1500));
+                if (r == null) {
+                  // v0.1.29+21: readDid completed with null instead of
+                  // throwing. Previously the attempt loop fell through
+                  // silently leaving BOTH rawHex AND errorCode null →
+                  // the row was inserted with no signal of what
+                  // happened. Tag the failure mode so research data
+                  // surfaces it.
+                  errorCode = 'NULL_RESPONSE';
+                  if (attempt == 0) {
+                    await Future.delayed(const Duration(milliseconds: 150));
+                    continue;
+                  }
+                  break;
+                }
                 final raw = r.rawHex;
                 final rawUp = raw.toUpperCase();
                 if (rawUp.startsWith('7F')) {
@@ -3065,54 +3144,77 @@ class ConnectionService extends ChangeNotifier {
                   errorCode = 'MALFORMED:$raw';
                   break;
                 }
+              } catch (e) {
+                errorCode = 'TIMEOUT';
+                break;
               }
-            } catch (e) {
-              errorCode = 'TIMEOUT';
-              break;
             }
-          }
 
-          _liveLogLastRaw['$txEcu/$did'] = rawHex ?? errorCode;
+            _liveLogLastRaw['$txEcu/$did'] = rawHex ?? errorCode;
 
-          // v0.1.21: sanity-check raw value before recording. Two layers:
-          //
-          //   Layer 1 (per-DID): registry-driven sanity range. Catches
-          //   0xFFFF "data not available" from BMS under heavy load
-          //   (observed on 790/0x0015 during regen → 1638 V in graphs),
-          //   ELM frame misalignment producing wildly wrong values, and
-          //   garbled BLE responses that happen to parse as numbers.
-          //
-          //   Layer 2 (cell pair): cross-validation between 790/0x002B
-          //   and 790/0x002D in the SAME cycle. If max < min or
-          //   |spread| > 100 mV, both reads are flagged because we
-          //   can't tell which one was the ELM misalignment victim.
-          //   Without this, ~3.6% of driving samples leak negative
-          //   spreads into the DB (verified in session 13: 27 / 159
-          //   cycles).
-          //
-          // On guard hit we replace rawHex with null and set errorCode
-          // to 'SANITY:*'. The entry is still inserted (so the cycle's
-          // structure is preserved and you can see what was rejected),
-          // but downstream parsing (livelog_wide.csv, trip aggregation)
-          // treats it as missing data.
-          if (rawHex != null && errorCode == null) {
-            final guardError = _livelogSanityCheck(txEcu, did, rawHex);
-            if (guardError != null) {
-              errorCode = guardError;
-              rawHex = null;
+            // v0.1.21: sanity-check raw value before recording. Two layers:
+            //
+            //   Layer 1 (per-DID): registry-driven sanity range. Catches
+            //   0xFFFF "data not available" from BMS under heavy load
+            //   (observed on 790/0x0015 during regen → 1638 V in graphs),
+            //   ELM frame misalignment producing wildly wrong values, and
+            //   garbled BLE responses that happen to parse as numbers.
+            //
+            //   Layer 2 (cell pair): cross-validation between 790/0x002B
+            //   and 790/0x002D in the SAME cycle. If max < min or
+            //   |spread| > 100 mV, both reads are flagged because we
+            //   can't tell which one was the ELM misalignment victim.
+            //   Without this, ~3.6% of driving samples leak negative
+            //   spreads into the DB (verified in session 13: 27 / 159
+            //   cycles).
+            //
+            // On guard hit we replace rawHex with null and set errorCode
+            // to 'SANITY:*'. The entry is still inserted (so the cycle's
+            // structure is preserved and you can see what was rejected),
+            // but downstream parsing (livelog_wide.csv, trip aggregation)
+            // treats it as missing data.
+            if (rawHex != null && errorCode == null) {
+              final guardError = _livelogSanityCheck(txEcu, did, rawHex);
+              if (guardError != null) {
+                errorCode = guardError;
+                rawHex = null;
+              }
             }
-          }
 
-          await db.insertLiveLogEntry(LiveLogEntriesCompanion(
-            sessionId: Value(sessionId),
-            timestamp: Value(DateTime.now()),
-            ecuTx: Value(txEcu),
-            did: Value(did),
-            rawHex: Value(rawHex),
-            errorCode: Value(errorCode),
-            cycle: Value(_liveLogCycle),
-          ));
-          entryCount++;
+            // v0.1.29+21: hard timeout on the DB insert. Drift's sqflite
+            // serializes writes; if CloudSyncService holds the writer
+            // (or anything else deadlocks) we previously blocked here
+            // indefinitely with no recovery — observed as session 1
+            // freezing at cycle 5/004C on 2026-05-25 (33 entries then
+            // 31 minutes of silence). 5s is generous: a healthy insert
+            // is sub-millisecond on this device. Dropping a single
+            // entry is preferable to grinding the whole drive.
+            try {
+              await db
+                  .insertLiveLogEntry(LiveLogEntriesCompanion(
+                    sessionId: Value(sessionId),
+                    timestamp: Value(DateTime.now()),
+                    ecuTx: Value(txEcu),
+                    did: Value(did),
+                    rawHex: Value(rawHex),
+                    errorCode: Value(errorCode),
+                    cycle: Value(_liveLogCycle),
+                  ))
+                  .timeout(const Duration(seconds: 5));
+              entryCount++;
+              _liveLogWrittenCount = entryCount;
+              _liveLogLastEntryAt = DateTime.now();
+            } on TimeoutException {
+              debugPrint('runLiveLog: insertLiveLogEntry timeout for '
+                  '$txEcu/$did cycle=$_liveLogCycle — entry dropped');
+              // intentionally do NOT update _liveLogLastEntryAt so the
+              // watchdog can detect a sustained DB stall and break.
+            }
+          } catch (e, st) {
+            debugPrint('runLiveLog: per-DID block threw for $txEcu/$did: $e\n$st');
+            // continue to the next DID — one bad DID must not kill
+            // the whole session.
+          }
         }
 
         // v0.1.21: cell pair cross-validation, performed AFTER the
@@ -3120,7 +3222,17 @@ class ConnectionService extends ChangeNotifier {
         // we just wrote for 790/0x002B and 790/0x002D this cycle, and
         // if both passed Layer 1 but together fail the pair test,
         // post-update them to errorCode='SANITY:PAIR'.
-        await _livelogCellPairGuard(db, sessionId);
+        //
+        // v0.1.29+21: bounded by an outer timeout. The guard has its
+        // own try/catch but reads + updates Drift; if those calls
+        // deadlock the whole loop deadlocked. 5s is plenty for a
+        // cheap-query + at-most-2 updates path.
+        try {
+          await _livelogCellPairGuard(db, sessionId)
+              .timeout(const Duration(seconds: 5));
+        } catch (e) {
+          debugPrint('runLiveLog: cell pair guard timeout/error: $e');
+        }
 
         onCycle?.call(_liveLogCycle);
         notifyListeners();
@@ -3131,16 +3243,46 @@ class ConnectionService extends ChangeNotifier {
         // same-ECU vs different-ECU), so no post-DID gap needed here.
         await Future.delayed(const Duration(milliseconds: 200));
       }
+      // v0.1.29+21: if we exited via _liveLogCancelled (the stop
+      // command path) and no other reason was recorded, attribute it.
+      _liveLogExitReason ??= _liveLogCancelled ? 'cancelled' : 'unknown';
+    } catch (e, st) {
+      // v0.1.29+21: top-level safety net. If anything escapes the inner
+      // try/catches we still want the finally to run cleanly so polling
+      // resumes and the UI unsticks. Without this, an uncaught
+      // exception here would skip the finally's _polling=true reset
+      // and the user's dashboard would stay frozen.
+      debugPrint('runLiveLog: unhandled exception in main loop: $e\n$st');
+      _liveLogExitReason ??= 'loop_exception';
     } finally {
-      await (db.update(db.liveLogSessions)..where((s) => s.id.equals(sessionId)))
-          .write(LiveLogSessionsCompanion(
-        endedAt: Value(DateTime.now()),
-        cycleCount: Value(_liveLogCycle),
-        entryCount: Value(entryCount),
-      ));
+      // v0.1.29+21: finalize the session row defensively. Previously a
+      // Drift hang here would propagate out of runLiveLog and the
+      // .then() in BridgeDiagService would treat the session as
+      // crashed — but worse, _polling and _pollLoop() never resumed,
+      // so the trip detector and dashboard data stayed dead. Wrap in
+      // try/timeout so the polling restore below always happens.
+      try {
+        final exitTag = _liveLogExitReason ?? 'unknown';
+        final finalNotes = notes != null
+            ? '$notes | exit=$exitTag'
+            : 'exit=$exitTag';
+        await (db.update(db.liveLogSessions)
+              ..where((s) => s.id.equals(sessionId)))
+            .write(LiveLogSessionsCompanion(
+              endedAt: Value(DateTime.now()),
+              cycleCount: Value(_liveLogCycle),
+              entryCount: Value(entryCount),
+              notes: Value(finalNotes),
+            ))
+            .timeout(const Duration(seconds: 10));
+      } catch (e, st) {
+        debugPrint('runLiveLog: failed to write final session row: $e\n$st');
+        // Swallow — restoring polling below matters more than this row.
+      }
 
       _liveLogRunning = false;
       _liveLogCancelled = false;
+      _liveLogLastEntryAt = null;
       if (wasPolling) {
         _polling = true;
         _pollLoop();
