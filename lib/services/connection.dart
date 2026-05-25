@@ -12,6 +12,13 @@ import '../data/database.dart';
 enum ConnectionStatus { disconnected, scanning, connecting, connected, error }
 enum PollMode { driving, charging, full }
 
+/// v0.1.29+22: sentinel object used by `runLiveLog` to detect which arm
+/// of a `Future.any` race won. We can't rely on a typed null because
+/// `readDid` legitimately returns `EcuResponse?` and a null result has
+/// its own meaning; an `Object` instance disambiguates the kill arm via
+/// `identical(...)`.
+final Object _killedSentinel = Object();
+
 /// === BZ5 Physical Model (v5) ===
 ///
 /// Калибровочные константы из реверс-инжиниринга 30 апреля - 1 мая 2026.
@@ -2912,6 +2919,28 @@ class ConnectionService extends ChangeNotifier {
   /// loop_exception / ble_dropped_mid_cycle / null (still running).
   String? _liveLogExitReason;
 
+  /// v0.1.29+22: hard-kill signal for the live-log loop. Completed when
+  /// the loop must abort RIGHT NOW (cancel command, watchdog stall, BLE
+  /// drop). Every awaited operation inside the loop body races against
+  /// this completer; whichever fires first wins. The +21 attempt relied
+  /// on per-await `.timeout(...)` returning control to the top of the
+  /// while-loop where a watchdog could fire — but Cycle 3 showed that
+  /// some awaits inside `_writeChar.write(...)` (in protected
+  /// elm327_ble.dart) can hang indefinitely WITHOUT the outer `.timeout`
+  /// firing, leaving the loop stuck mid-cycle. This kill-signal pattern
+  /// works around that: even if the underlying BLE write Future never
+  /// completes, `Future.any([op, killSignal.future])` resolves the
+  /// moment the signal fires, and the loop can exit and run finally.
+  Completer<void>? _liveLogKillSignal;
+
+  /// v0.1.29+22: periodic watchdog that fires the kill signal when
+  /// `_liveLogLastEntryAt` is stale beyond a threshold. Runs as a
+  /// `Timer.periodic` independent of the loop coroutine; relies only on
+  /// the event-loop timer scheduler (which keeps working even when the
+  /// loop is hung on a BLE await, as proven by uninterrupted heartbeats
+  /// during the Cycle 2/3 freezes).
+  Timer? _liveLogWatchdogTimer;
+
   bool get liveLogRunning => _liveLogRunning;
   int? get currentLiveLogSessionId => _currentLiveLogSessionId;
   int get liveLogCycle => _liveLogCycle;
@@ -2921,9 +2950,17 @@ class ConnectionService extends ChangeNotifier {
 
   /// Cancel an active live log. Loop exits at the end of the current cycle
   /// (worst case ~2s wait for 7 DIDs).
+  ///
+  /// v0.1.29+22: also fires the kill signal so any in-flight await inside
+  /// the loop (BLE read, DB insert) returns immediately instead of
+  /// waiting for its own timeout/completion. This makes stop commands
+  /// react in milliseconds instead of seconds — and works even when the
+  /// underlying BLE write is wedged (which was the +21 unfixed case).
   void cancelLiveLog() {
     if (_liveLogRunning) {
       _liveLogCancelled = true;
+      final ks = _liveLogKillSignal;
+      if (ks != null && !ks.isCompleted) ks.complete();
     }
   }
 
@@ -2984,8 +3021,30 @@ class ConnectionService extends ChangeNotifier {
     int entryCount = 0;
     final startTime = DateTime.now();
 
+    // v0.1.29+22: kill signal infrastructure. The completer is what
+    // every awaited operation inside the loop races against. The Timer
+    // fires the signal when the loop has stalled (no DB writes for
+    // 30+ seconds), runs in its own event-loop tick, and therefore
+    // works even when the loop coroutine is wedged on a hung BLE await.
+    final killSignal = Completer<void>();
+    _liveLogKillSignal = killSignal;
+    _liveLogWatchdogTimer?.cancel();
+    _liveLogWatchdogTimer = Timer.periodic(const Duration(seconds: 5), (t) {
+      final last = _liveLogLastEntryAt;
+      if (last == null) return;
+      final stallSec = DateTime.now().difference(last).inSeconds;
+      if (stallSec >= 30) {
+        _liveLogExitReason ??= 'watchdog_stall';
+        debugPrint('runLiveLog: WATCHDOG_STALL fires kill signal after '
+            '${stallSec}s with no DB writes '
+            '(cycle=$_liveLogCycle written=$_liveLogWrittenCount)');
+        if (!killSignal.isCompleted) killSignal.complete();
+        t.cancel();
+      }
+    });
+
     try {
-      while (!_liveLogCancelled) {
+      while (!_liveLogCancelled && !killSignal.isCompleted) {
         // BLE link check
         if (_ble != null && !_ble!.isConnected) {
           _liveLogExitReason = 'ble_dropped';
@@ -3039,7 +3098,7 @@ class ConnectionService extends ChangeNotifier {
         String? prevEcu;
         int sameEcuRun = 0;
         for (final spec in didSpecs) {
-          if (_liveLogCancelled) break;
+          if (_liveLogCancelled || killSignal.isCompleted) break;
 
           // v0.1.29+21: BLE check INSIDE the inner loop too. Previously
           // only at top of while — meant a mid-cycle BLE drop ground
@@ -3068,7 +3127,13 @@ class ConnectionService extends ChangeNotifier {
                   ? sameEcuRun - 1
                   : schedule.length - 1];
             }
-            await Future.delayed(Duration(milliseconds: gapMs));
+            // v0.1.29+22: race the delay against kill signal so a cancel
+            // command doesn't have to wait out a full 800ms gap.
+            await Future.any<void>([
+              Future<void>.delayed(Duration(milliseconds: gapMs)),
+              killSignal.future,
+            ]);
+            if (killSignal.isCompleted) break;
           }
           prevEcu = txEcu;
 
@@ -3091,11 +3156,34 @@ class ConnectionService extends ChangeNotifier {
             //
             // Timeout 1500ms (was 1000ms) — matches _pollEcu's empirical
             // value which has proven reliable in production polling.
+            //
+            // v0.1.29+22: each readDid is also raced against killSignal
+            // via Future.any. Cycle 3 (+21) proved that the outer
+            // .timeout(1500ms) can fail to fire when the underlying
+            // flutter_blue_plus _writeChar.write(...) (no internal
+            // timeout, lives in protected elm327_ble.dart) is wedged at
+            // the platform layer. The killSignal race guarantees the
+            // await returns even in that case, so the loop can exit and
+            // finally can run (restoring polling, finalizing the trip).
             for (int attempt = 0; attempt < 2; attempt++) {
+              if (killSignal.isCompleted) break;
               try {
-                final r = await _client!
+                final readFuture = _client!
                     .readDid(did, tx: txEcu, rx: rxEcu)
                     .timeout(const Duration(milliseconds: 1500));
+                // Attach a no-op error handler so an orphaned (killed)
+                // future doesn't surface as an unhandled async error.
+                unawaited(
+                    readFuture.then((_) {}, onError: (Object _) {}));
+                final raceResult = await Future.any<Object?>([
+                  readFuture.then<Object?>((v) => v),
+                  killSignal.future.then<Object?>((_) => _killedSentinel),
+                ]);
+                if (identical(raceResult, _killedSentinel) ||
+                    killSignal.isCompleted) {
+                  break;
+                }
+                final r = raceResult as EcuResponse?;
                 if (r == null) {
                   // v0.1.29+21: readDid completed with null instead of
                   // throwing. Previously the attempt loop fell through
@@ -3105,7 +3193,11 @@ class ConnectionService extends ChangeNotifier {
                   // surfaces it.
                   errorCode = 'NULL_RESPONSE';
                   if (attempt == 0) {
-                    await Future.delayed(const Duration(milliseconds: 150));
+                    await Future.any<void>([
+                      Future<void>.delayed(const Duration(milliseconds: 150)),
+                      killSignal.future,
+                    ]);
+                    if (killSignal.isCompleted) break;
                     continue;
                   }
                   break;
@@ -3137,7 +3229,11 @@ class ConnectionService extends ChangeNotifier {
                   errorCode = 'EMPTY';
                   // Retry once after a short pause.
                   if (attempt == 0) {
-                    await Future.delayed(const Duration(milliseconds: 150));
+                    await Future.any<void>([
+                      Future<void>.delayed(const Duration(milliseconds: 150)),
+                      killSignal.future,
+                    ]);
+                    if (killSignal.isCompleted) break;
                     continue;
                   }
                 } else {
@@ -3189,8 +3285,14 @@ class ConnectionService extends ChangeNotifier {
             // 31 minutes of silence). 5s is generous: a healthy insert
             // is sub-millisecond on this device. Dropping a single
             // entry is preferable to grinding the whole drive.
+            //
+            // v0.1.29+22: also raced against killSignal so a watchdog
+            // stall / cancel command unblocks the await even if Drift
+            // is wedged. The insert future is allowed to settle in the
+            // background (no-op error handler attached); we don't need
+            // its result once the loop is exiting.
             try {
-              await db
+              final insertFuture = db
                   .insertLiveLogEntry(LiveLogEntriesCompanion(
                     sessionId: Value(sessionId),
                     timestamp: Value(DateTime.now()),
@@ -3201,6 +3303,18 @@ class ConnectionService extends ChangeNotifier {
                     cycle: Value(_liveLogCycle),
                   ))
                   .timeout(const Duration(seconds: 5));
+              unawaited(
+                  insertFuture.then((_) {}, onError: (Object _) {}));
+              final raceResult = await Future.any<Object?>([
+                insertFuture.then<Object?>((v) => v),
+                killSignal.future.then<Object?>((_) => _killedSentinel),
+              ]);
+              if (identical(raceResult, _killedSentinel) ||
+                  killSignal.isCompleted) {
+                // killed — break out of the per-DID loop; entry NOT
+                // counted, _liveLogLastEntryAt NOT updated.
+                break;
+              }
               entryCount++;
               _liveLogWrittenCount = entryCount;
               _liveLogLastEntryAt = DateTime.now();
@@ -3227,12 +3341,22 @@ class ConnectionService extends ChangeNotifier {
         // own try/catch but reads + updates Drift; if those calls
         // deadlock the whole loop deadlocked. 5s is plenty for a
         // cheap-query + at-most-2 updates path.
+        //
+        // v0.1.29+22: raced against killSignal so it can't outlast a
+        // watchdog/cancel.
         try {
-          await _livelogCellPairGuard(db, sessionId)
+          final guardFuture = _livelogCellPairGuard(db, sessionId)
               .timeout(const Duration(seconds: 5));
+          unawaited(
+              guardFuture.then((_) {}, onError: (Object _) {}));
+          await Future.any<void>([
+            guardFuture,
+            killSignal.future,
+          ]);
         } catch (e) {
           debugPrint('runLiveLog: cell pair guard timeout/error: $e');
         }
+        if (killSignal.isCompleted) break;
 
         onCycle?.call(_liveLogCycle);
         notifyListeners();
@@ -3241,11 +3365,21 @@ class ConnectionService extends ChangeNotifier {
         // the next round of DIDs hits the bus. NOTE: the per-DID gap
         // moved to the TOP of each iteration in v0.1.18 (adaptive on
         // same-ECU vs different-ECU), so no post-DID gap needed here.
-        await Future.delayed(const Duration(milliseconds: 200));
+        //
+        // v0.1.29+22: raced against killSignal so a cancel doesn't wait
+        // out the 200ms.
+        await Future.any<void>([
+          Future<void>.delayed(const Duration(milliseconds: 200)),
+          killSignal.future,
+        ]);
       }
       // v0.1.29+21: if we exited via _liveLogCancelled (the stop
       // command path) and no other reason was recorded, attribute it.
-      _liveLogExitReason ??= _liveLogCancelled ? 'cancelled' : 'unknown';
+      // v0.1.29+22: also handle killSignal-only exits (e.g., direct
+      // call to cancelLiveLog which fires both flag and signal, or
+      // watchdog_stall path which sets the reason itself).
+      _liveLogExitReason ??=
+          _liveLogCancelled ? 'cancelled' : 'unknown';
     } catch (e, st) {
       // v0.1.29+21: top-level safety net. If anything escapes the inner
       // try/catches we still want the finally to run cleanly so polling
@@ -3255,6 +3389,14 @@ class ConnectionService extends ChangeNotifier {
       debugPrint('runLiveLog: unhandled exception in main loop: $e\n$st');
       _liveLogExitReason ??= 'loop_exception';
     } finally {
+      // v0.1.29+22: stop the periodic watchdog and release the kill
+      // signal handle BEFORE the final DB write. The signal is no
+      // longer useful (we're already in cleanup) and any orphaned
+      // BLE/DB futures will be allowed to settle in the background.
+      _liveLogWatchdogTimer?.cancel();
+      _liveLogWatchdogTimer = null;
+      _liveLogKillSignal = null;
+
       // v0.1.29+21: finalize the session row defensively. Previously a
       // Drift hang here would propagate out of runLiveLog and the
       // .then() in BridgeDiagService would treat the session as
