@@ -3176,7 +3176,18 @@ class ConnectionService extends ChangeNotifier {
   }
 
   /// Run a live-log session. [didSpecs] is a list of (txEcu, rxEcu, didHex)
-  /// triples, max 7. Returns the LiveLogSession id created in DB.
+  /// triples, max 10. Returns the LiveLogSession id created in DB.
+  ///
+  /// v0.1.29+25: bumped from 7 to 10. Empirical cycle time data
+  /// (Cycles 4-11 production drives, 2026-05-25):
+  ///   - 7 DIDs mixed-ECU (C10/C11): ~2.1 s/cycle
+  ///   - 7 DIDs single-ECU (C4/C5):  ~4.2 s/cycle (adaptive same-ECU
+  ///     gap schedule kicks in: 200→350→550→800ms)
+  /// Adding 3 slots at mixed-ECU rate ≈ +1 s/cycle → ~3.1 s mixed,
+  /// ~7 s single-ECU worst case. Still fast enough for steady-state
+  /// signals (HV voltage, SOC, current averaged over 1s). Marginal
+  /// for sub-second transients (regen brake pulse) but research
+  /// focus is "what varies", not "instantaneous capture".
   ///
   /// Polling loops until [cancelLiveLog] is called, [maxDurationMs] elapses,
   /// or BLE disconnects. Each DID probed once per cycle; cycles repeat with
@@ -3193,7 +3204,7 @@ class ConnectionService extends ChangeNotifier {
     // v0.1.15: mutual exclusion with sweep — see runSweep for rationale.
     if (_sweepRunning) return null;
     if (_dtcScanRunning) return null;
-    if (didSpecs.isEmpty || didSpecs.length > 7) return null;
+    if (didSpecs.isEmpty || didSpecs.length > 10) return null;
 
     _liveLogRunning = true;
     _liveLogCancelled = false;

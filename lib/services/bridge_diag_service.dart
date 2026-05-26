@@ -550,7 +550,9 @@ class BridgeDiagService extends ChangeNotifier {
   ///               has no period parameter, the loop runs with
   ///               minimal spacing)}
   ///
-  /// max 7 DIDs (ConnectionService limit, see runLiveLog gate).
+  /// max 10 DIDs (ConnectionService limit, see runLiveLog gate).
+  /// v0.1.29+25: was 7, bumped to 10. See runLiveLog doc for cycle-time
+  /// trade-off rationale.
   /// If period_ms is present, response includes ignored_args:["period_ms"].
   Map<String, dynamic> _handleBleStartLiveLog(Map<String, dynamic> args) {
     // 1. Parse did_list.
@@ -589,9 +591,9 @@ class BridgeDiagService extends ChangeNotifier {
     if (didSpecs.isEmpty) {
       return _err('validation', 'did_list must contain at least 1 entry');
     }
-    if (didSpecs.length > 7) {
+    if (didSpecs.length > 10) {
       return _err('validation',
-          'did_list must have at most 7 entries, got ${didSpecs.length}');
+          'did_list must have at most 10 entries, got ${didSpecs.length}');
     }
 
     // 2. Parse duration_sec.
