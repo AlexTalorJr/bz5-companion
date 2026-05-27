@@ -1460,9 +1460,15 @@ class ConnectionService extends ChangeNotifier {
         for (final ecu in _ecusToPoll) {
           await _pollEcu(ecu);
           await _pollSpeedOnly();
+          // v0.1.29+26: pack voltage sub-poll, slotted same as speed.
+          // Pack V swings 25-30% under load on 136-cell BZ5; previous
+          // ~3s cadence missed regen/accel transients. See
+          // _pollPackVoltageOnly doc.
+          await _pollPackVoltageOnly();
         }
         if (cycle % 2 == 0) await _pollCells();
         await _pollSpeedOnly();
+        await _pollPackVoltageOnly();
         // v0.1.3: extra DIDs (pack V from 740, cell indices, pack config).
         // Каждый второй цикл — частоты обновления pack V раз в ~500 мс
         // достаточно, не надо мучить шину.
@@ -1481,6 +1487,65 @@ class ConnectionService extends ChangeNotifier {
       await Future.delayed(const Duration(milliseconds: 250));
     }
     _pollLoopActive = false;
+  }
+
+  /// v0.1.29+26: read just 790/0x0015 (HV pack voltage) and update
+  /// _latestValues. Slotted between heavier ECU polls in _pollLoop so
+  /// the dashboard pack voltage refreshes at the sub-poll cadence (~1
+  /// Hz) instead of waiting for a full cycle (~2-3 s).
+  ///
+  /// Mirrors [_pollSpeedOnly] in structure. Best-effort: any error is
+  /// swallowed and the next invocation will retry. Notifies listeners
+  /// on success so the UI rebuilds mid-cycle.
+  ///
+  /// Rationale: pack voltage swings 25-30% under load on this 136-cell
+  /// 450V-nominal pack (Cycles 12a/b: 371.5..467.8 V observed). At the
+  /// previous ~3 s cadence, regen-brake or hard-accel transients were
+  /// often missed entirely. 1 Hz matches typical EV dashboard refresh
+  /// and is well below the BLE channel's actual capacity (single
+  /// readDid is ~50-150 ms, leaving headroom for the rest of the poll
+  /// loop).
+  ///
+  /// Decode: u16 big-endian × 0.025 V (per registry / known_dids.md).
+  /// Sanity bound 360-480 V — outside that we skip the update (BZ5
+  /// pack physically can't be below 360 V even at 0% SOC and can't
+  /// exceed 480 V at 100% SOC + regen).
+  ///
+  /// Should NOT be called during sweep/livelog (which pause polling
+  /// anyway, so this is unreachable then).
+  Future<void> _pollPackVoltageOnly() async {
+    if (_client == null) return;
+    try {
+      final r = await _client!.readDid('0015', tx: '790', rx: '798')
+          .timeout(const Duration(milliseconds: 800));
+      final p = r?.payloadAfterUdsRead;
+      if (p == null || p.length < 2) return;
+      final raw = (p[0] << 8) | p[1];
+      final volts = raw * 0.025;
+      // Sanity: BZ5 pack is 360-480 V range. Anything outside is a
+      // misaligned frame or BLE corruption; skip silently.
+      if (volts < 360.0 || volts > 480.0) return;
+      _latestValues.putIfAbsent('790', () => {});
+      _latestValues['790']!['0015'] =
+          DecodedValue(numeric: volts, unit: 'V');
+      // Mirror _pollSpeedOnly: also save to samples DB so trip
+      // history retains the fast-cadence voltage readings instead
+      // of just the slower full-cycle samples.
+      if (_currentTripId != null) {
+        await db.insertSample(
+          tripId: _currentTripId,
+          ecuTx: '790',
+          did: '0015',
+          rawHex: r!.rawHex,
+          numeric: volts,
+          text: null,
+        );
+        _samplesInTrip++;
+      }
+      notifyListeners();
+    } catch (_) {
+      // Ignore — next sub-poll attempt will retry.
+    }
   }
 
   /// v0.1.24: read just 740/0x0008 (speed) and update _latestValues.
