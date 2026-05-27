@@ -2907,15 +2907,35 @@ class ConnectionService extends ChangeNotifier {
     final killSignal = Completer<void>();
     _sweepKillSignal = killSignal;
     _sweepWatchdogTimer?.cancel();
-    _sweepWatchdogTimer = Timer.periodic(const Duration(seconds: 5), (t) {
+    // v0.1.29+27: sweep watchdog stall threshold = 180 s (was 30 s).
+    //
+    // Why bumped: 30 s was inherited from the +24 livelog port, where
+    // it correctly bounds BLE wedge detection because healthy livelog
+    // cycles are 2-5 s (10× margin). For sweep the math is different:
+    // a sparse ECU returning NRC on every DID can take 200-400 ms per
+    // probe (slow ECU-internal lookup before vendor reject). At 300 ms
+    // worst-case, 30 s = ~100 probes, and the watchdog cuts large
+    // ranges mid-stream even though the loop is making real progress.
+    //
+    // Cycles 19/21/22 (2026-05-27) confirmed this: ranges of 1024 DIDs
+    // got truncated at 357/512/80 probes — all watchdog-stall, all
+    // healthy-but-slow rather than wedged. 180 s ≈ 600 probes at the
+    // 300 ms worst case, which covers a full 0x0001-0x00FF range plus
+    // headroom for re-syncs. For real freezes the price is 150 extra
+    // seconds before recovery — acceptable because (a) the loop is
+    // still doing nothing during a freeze either way, and (b) the
+    // owner can always cancelSweep() to force exit in ms.
+    const int sweepStallThresholdSec = 180;
+    _sweepWatchdogTimer = Timer.periodic(const Duration(seconds: 10), (t) {
       final last = _sweepLastProbeAt;
       if (last == null) return;
       final stallSec = DateTime.now().difference(last).inSeconds;
-      if (stallSec >= 30) {
+      if (stallSec >= sweepStallThresholdSec) {
         _sweepExitReason ??= 'watchdog_stall';
         debugPrint('runSweep: WATCHDOG_STALL fires kill signal after '
             '${stallSec}s with no sweep_result writes '
-            '(done=$_sweepDone/$_sweepTotal at $_sweepCurrentDid)');
+            '(done=$_sweepDone/$_sweepTotal valid=$validCount '
+            'at $_sweepCurrentDid; threshold=${sweepStallThresholdSec}s)');
         if (!killSignal.isCompleted) killSignal.complete();
         t.cancel();
       }
