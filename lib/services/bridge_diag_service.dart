@@ -395,6 +395,9 @@ class BridgeDiagService extends ChangeNotifier {
         case 'bleStartLiveLog':
           body = _handleBleStartLiveLog(args);
           break;
+        case 'bleStartCanMonitor':
+          body = _handleBleStartCanMonitor(args);
+          break;
         case 'bleStopActiveOperation':
           body = _handleBleStopActiveOperation(args);
           break;
@@ -402,7 +405,8 @@ class BridgeDiagService extends ChangeNotifier {
           body = _err('unsupported',
               'Command kind "$kind" not implemented in this client yet. '
               'BridgeDiagService Turn B supports BLE only '
-              '(bleStartSweep / bleStartLiveLog / bleStopActiveOperation). '
+              '(bleStartSweep / bleStartLiveLog / bleStartCanMonitor / '
+              'bleStopActiveOperation). '
               'Native handlers come in Turn C.');
       }
     } catch (e, st) {
@@ -435,8 +439,12 @@ class BridgeDiagService extends ChangeNotifier {
   /// Sweep/livelog/dtc-scan are mutually exclusive in ConnectionService
   /// (they share the single ELM327 BLE channel); from our perspective
   /// they're all "busy" for purposes of starting a new sweep/livelog.
+  /// v0.1.29+28: also includes canMonitor.
   bool get _bleBusy =>
-      _svc.sweepRunning || _svc.liveLogRunning || _svc.dtcScanRunning;
+      _svc.sweepRunning ||
+      _svc.liveLogRunning ||
+      _svc.dtcScanRunning ||
+      _svc.canMonitorRunning;
 
   /// bleStartSweep: fire-and-forget. Validates args, checks state,
   /// then kicks off ConnectionService.runSweep() WITHOUT awaiting —
@@ -651,6 +659,79 @@ class BridgeDiagService extends ChangeNotifier {
     return {'ok': true, 'result': result};
   }
 
+  /// bleStartCanMonitor: fire-and-forget. Validates args, checks state,
+  /// then kicks off ConnectionService.runCanMonitor() WITHOUT awaiting —
+  /// the session runs for [duration_sec] seconds (or until stopped via
+  /// bleStopActiveOperation). Recon Claude correlates the resulting
+  /// CanMonitorSession (visible via Plane B sync) by timestamp.
+  ///
+  /// v0.1.29+28: new command. Unlike sweep / livelog this does NOT
+  /// send UDS requests — it listens to broadcast frames on the bus
+  /// via `AT MA`. Primary purpose: discover CAN IDs that carry pack
+  /// current / voltage / motor data per VehicleData.conf, without
+  /// needing UDS DIDs.
+  ///
+  /// Args contract:
+  ///   {duration_sec: int 1..600}
+  ///   carState (optional string)
+  ///   notes (optional string)
+  ///
+  /// Returns:
+  ///   ok=true, result:{started:true, kind:"canmonitor"} on accept
+  ///   error_kind=busy if any BLE op is running
+  ///   error_kind=not_connected if BLE link is down
+  ///   error_kind=validation if duration_sec out of range
+  Map<String, dynamic> _handleBleStartCanMonitor(Map<String, dynamic> args) {
+    // 1. Parse duration.
+    final dur = args['duration_sec'];
+    if (dur is! int) {
+      return _err('parse', 'duration_sec required and must be int');
+    }
+    if (dur < 1 || dur > 600) {
+      return _err('validation',
+          'duration_sec must be in 1..600 (got $dur)');
+    }
+
+    // 2. State checks.
+    if (!_svc.isBleConnected) {
+      return _err('not_connected',
+          'BLE link to ELM327 is not active');
+    }
+    if (_bleBusy) {
+      return _err('busy',
+          'Another BLE operation is in progress '
+          '(sweep=${_svc.sweepRunning} livelog=${_svc.liveLogRunning} '
+          'dtc=${_svc.dtcScanRunning} canMonitor=${_svc.canMonitorRunning})');
+    }
+
+    // 3. Optional fields.
+    final carState = args['car_state'] is String
+        ? args['car_state'] as String
+        : null;
+    final notes = args['notes'] is String
+        ? args['notes'] as String
+        : null;
+
+    // 4. Fire-and-forget.
+    unawaited(_svc
+        .runCanMonitor(
+      durationSec: dur,
+      carState: carState,
+      notes: notes ?? 'started via bridge command',
+    )
+        .then((sessionId) {
+      debugPrint('BridgeDiag: bleStartCanMonitor finished, '
+          'session_id=$sessionId (null=rejected or aborted)');
+    }).catchError((Object e, StackTrace st) {
+      debugPrint('BridgeDiag: bleStartCanMonitor threw: $e\n$st');
+    }));
+
+    return {
+      'ok': true,
+      'result': {'started': true, 'kind': 'canmonitor'},
+    };
+  }
+
   /// bleStopActiveOperation: synchronous. Cancels whichever BLE
   /// operations are running and reports back. No args.
   ///
@@ -671,6 +752,11 @@ class BridgeDiagService extends ChangeNotifier {
     if (_svc.liveLogRunning) {
       _svc.cancelLiveLog();
       stopped.add('livelog');
+    }
+    // v0.1.29+28: also cancel CAN monitor.
+    if (_svc.canMonitorRunning) {
+      _svc.cancelCanMonitor();
+      stopped.add('canmonitor');
     }
     debugPrint('BridgeDiag: bleStopActiveOperation cancelled: $stopped');
     return {
