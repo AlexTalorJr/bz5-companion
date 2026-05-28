@@ -25,7 +25,9 @@ jobs:
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
-          distribution: 'zulu'
+          # v0.1.29+28 follow-up: temurin instead of zulu (Azul CDN 520).
+          # See build.yml for full rationale.
+          distribution: 'temurin'
           java-version: '17'
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
