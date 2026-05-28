@@ -156,16 +156,71 @@ class LiveLogEntries extends Table {
   IntColumn get cycle => integer()();
 }
 
+/// v0.1.29+28: header for a CAN monitor session.
+/// Passive CAN bus sniff via ELM327 `AT MA` (Monitor All). Unlike sweep or
+/// livelog (UDS request/response on specific DIDs), this captures **all
+/// broadcast frames** the adapter sees on the OBD-II bus segment over a
+/// fixed time window. Primary use case: hunting CAN IDs documented in
+/// BydDataCollect's VehicleData.conf (0x43D pack voltage, 0x444 pack
+/// current/SOC, 0x46C MCU currents, 0x45B MCU voltage, 0x121 speed)
+/// without needing UDS DIDs.
+///
+/// Independence: this is gated by its own [_canMonitorRunning] mutex
+/// (mutually exclusive with sweep / live-log / DTC scan, same way they
+/// guard each other). Has its own kill-signal / watchdog infrastructure
+/// mirroring the +22/+24 livelog/sweep hardening; does not touch any
+/// existing data path.
+@DataClassName('CanMonitorSession')
+class CanMonitorSessions extends Table {
+  IntColumn get id => integer().autoIncrement()();
+  DateTimeColumn get startedAt => dateTime()();
+  DateTimeColumn get endedAt => dateTime().nullable()();
+  /// CAN bus protocol used. ELM327 protocols: "6" = ISO 15765-4 CAN
+  /// 11-bit 500kbps (the default we send via AT SP 6). Recorded so we
+  /// can replay the bus configuration when re-analysing data.
+  TextColumn get protocol => text().withDefault(const Constant('6'))();
+  /// Requested duration in seconds (server-side cap).
+  IntColumn get durationSec => integer()();
+  TextColumn get carState => text().nullable()();
+  TextColumn get notes => text().nullable()();
+  /// Frames captured before the session ended (cancel / duration / BLE
+  /// drop / watchdog).
+  IntColumn get frameCount => integer().withDefault(const Constant(0))();
+  /// Number of distinct CAN IDs seen. Single most useful number for
+  /// answering "is the OBD-II gateway open or whitelist-only?" — a
+  /// whitelist gateway will show 1-3 IDs (UDS traffic only), an open
+  /// one will show 50+.
+  IntColumn get uniqueCanIds => integer().withDefault(const Constant(0))();
+}
+
+/// v0.1.29+28: one row per CAN broadcast frame captured.
+@DataClassName('CanFrame')
+class CanFrames extends Table {
+  IntColumn get id => integer().autoIncrement()();
+  IntColumn get monitorSessionId =>
+      integer().references(CanMonitorSessions, #id)();
+  /// Monotonic count within the session — 0..N-1, set client-side at
+  /// capture time. Cheaper than indexing on timestamp for replay.
+  IntColumn get sequence => integer()();
+  /// Wall-clock at capture (client device clock). Millisecond resolution.
+  DateTimeColumn get tsMs => dateTime()();
+  /// 3-hex-char (11-bit) or 8-hex-char (29-bit) CAN identifier, uppercase.
+  TextColumn get canId => text()();
+  /// Payload bytes as uppercase hex, no separators (e.g. "0102030405060708").
+  TextColumn get payloadHex => text().withDefault(const Constant(''))();
+}
+
 @DriftDatabase(tables: [
   Samples, Trips, Snapshots,
   SweepRuns, SweepResults,
   LiveLogSessions, LiveLogEntries,
+  CanMonitorSessions, CanFrames,
 ])
 class AppDatabase extends _$AppDatabase {
   AppDatabase() : super(_openConnection());
 
   @override
-  int get schemaVersion => 5;
+  int get schemaVersion => 6;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -214,6 +269,12 @@ class AppDatabase extends _$AppDatabase {
             await m.addColumn(trips, trips.movingSeconds);
             await m.addColumn(trips, trips.idleSeconds);
             await m.addColumn(trips, trips.energyFromSocKwh);
+          }
+          // v5 → v6 (v0.1.29+28): CAN passive-monitor tables.
+          // Additive only — pre-existing tables untouched.
+          if (from < 6) {
+            await m.createTable(canMonitorSessions);
+            await m.createTable(canFrames);
           }
         },
       );
@@ -567,6 +628,40 @@ class AppDatabase extends _$AppDatabase {
     final entriesDeleted = await delete(liveLogEntries).go();
     final sessionsDeleted = await delete(liveLogSessions).go();
     return (sessionsDeleted, entriesDeleted);
+  }
+
+  // ───────────────────── CAN monitor DAO (v0.1.29+28) ─────────────────
+
+  Future<int> insertCanMonitorSession(CanMonitorSessionsCompanion data) =>
+      into(canMonitorSessions).insert(data);
+
+  Future<int> insertCanFrame(CanFramesCompanion data) =>
+      into(canFrames).insert(data);
+
+  Future<List<CanMonitorSession>> getAllCanMonitorSessions() {
+    return (select(canMonitorSessions)
+          ..orderBy([
+            (s) => OrderingTerm(expression: s.startedAt, mode: OrderingMode.desc)
+          ]))
+        .get();
+  }
+
+  Future<CanMonitorSession?> getCanMonitorSession(int id) {
+    return (select(canMonitorSessions)..where((s) => s.id.equals(id)))
+        .getSingleOrNull();
+  }
+
+  Future<List<CanFrame>> getCanFrames(int sessionId) {
+    return (select(canFrames)
+          ..where((f) => f.monitorSessionId.equals(sessionId))
+          ..orderBy([(f) => OrderingTerm(expression: f.sequence)]))
+        .get();
+  }
+
+  Future<(int, int)> clearAllCanMonitors() async {
+    final framesDeleted = await delete(canFrames).go();
+    final sessionsDeleted = await delete(canMonitorSessions).go();
+    return (sessionsDeleted, framesDeleted);
   }
 }
 

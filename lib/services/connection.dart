@@ -2809,6 +2809,41 @@ class ConnectionService extends ChangeNotifier {
   double get sweepProgress =>
       _sweepTotal > 0 ? _sweepDone / _sweepTotal : 0.0;
 
+  // ────── v0.1.29+28: CAN passive-monitor state ──────
+  //
+  // Mutually exclusive with sweep / livelog / DTC scan (single BLE channel).
+  // Independent of all three otherwise: own kill-signal, own watchdog, own
+  // DB tables. Failure modes are different from UDS modes — there's no
+  // probe-by-probe progress, just a stream of frames over a fixed duration.
+  // Watchdog here detects "adapter went silent" (no frames for N seconds
+  // in a row) rather than "no DB writes".
+  bool _canMonitorRunning = false;
+  bool _canMonitorCancelled = false;
+  int? _currentCanMonitorSessionId;
+  int _canFrameCount = 0;
+  final Set<String> _canSeenIds = {};
+  DateTime? _canMonitorLastFrameAt;
+  String? _canMonitorExitReason;
+  Completer<void>? _canMonitorKillSignal;
+  Timer? _canMonitorWatchdogTimer;
+
+  bool get canMonitorRunning => _canMonitorRunning;
+  int? get currentCanMonitorSessionId => _currentCanMonitorSessionId;
+  int get canFrameCount => _canFrameCount;
+  int get canUniqueIdCount => _canSeenIds.length;
+
+  /// Cancel the active CAN monitor session. Loop exits at next event
+  /// boundary (typically <100ms after this call). Fires kill signal so
+  /// the duration-sleep and any in-flight BLE await return immediately,
+  /// mirroring +22/+24 livelog/sweep cancel semantics.
+  void cancelCanMonitor() {
+    if (_canMonitorRunning) {
+      _canMonitorCancelled = true;
+      final ks = _canMonitorKillSignal;
+      if (ks != null && !ks.isCompleted) ks.complete();
+    }
+  }
+
   /// Cancel an in-progress sweep. Safe to call even if no sweep is running.
   /// The sweep loop checks this flag between DIDs, so cancellation takes
   /// effect within ~one probe period (default 250ms).
@@ -2852,6 +2887,8 @@ class ConnectionService extends ChangeNotifier {
     if (_liveLogRunning) return null;
     // Also exclude DTC scan for the same reason.
     if (_dtcScanRunning) return null;
+    // v0.1.29+28: also exclude CAN passive monitor.
+    if (_canMonitorRunning) return null;
 
     final start = int.tryParse(startDidHex, radix: 16);
     final end = int.tryParse(endDidHex, radix: 16);
@@ -3120,6 +3157,316 @@ class ConnectionService extends ChangeNotifier {
     return runId;
   }
 
+  // ─────────────────── v0.1.29+28: CAN passive monitor ───────────────────
+  //
+  // Listens to ALL CAN broadcast frames the adapter sees via `AT MA`.
+  // Unlike runSweep / runLiveLog (UDS request/response), no DIDs are
+  // probed — we just sniff. Primary use case: hunting for the CAN IDs
+  // documented in BydDataCollect's VehicleData.conf (0x43D pack voltage,
+  // 0x444 pack current+SOC, 0x46C MCU currents, 0x45B MCU voltage,
+  // 0x121 vehicle speed) which are broadcast continuously rather than
+  // exposed as UDS DIDs.
+  //
+  // First experiment goal: count unique CAN IDs observed in a parked
+  // 30 sec window. If >50 unique IDs, OBD-II gateway is open and we can
+  // directly decode pack current per VehicleData.conf. If 1-3, gateway
+  // is whitelist-only and we need a different attack (head-unit-side
+  // helper app).
+  //
+  // Safety: own mutex (_canMonitorRunning), exits cleanly via finally
+  // even on BLE wedge (kill-signal + watchdog mirroring +22/+24 pattern).
+  // Restores polling on exit.
+  //
+  // Caller: bridge_diag_service `bleStartCanMonitor` command.
+
+  /// Run a CAN passive-monitor session for [durationSec] seconds.
+  /// Returns the new CanMonitorSession id, or null if pre-conditions
+  /// fail (no BLE, another op active, bad args).
+  ///
+  /// Frames are pushed to the can_frames table as they arrive. After the
+  /// session ends, summary counts are written to can_monitor_sessions.
+  Future<int?> runCanMonitor({
+    required int durationSec,
+    String? carState,
+    String? notes,
+  }) async {
+    if (_client == null || _ble == null) return null;
+    if (_canMonitorRunning) return null;
+    // Mutually exclusive with all other BLE-channel users.
+    if (_sweepRunning) return null;
+    if (_liveLogRunning) return null;
+    if (_dtcScanRunning) return null;
+    if (durationSec < 1 || durationSec > 600) return null;
+    if (!_ble!.isConnected) return null;
+
+    _canMonitorRunning = true;
+    _canMonitorCancelled = false;
+    _canFrameCount = 0;
+    _canSeenIds.clear();
+    _canMonitorLastFrameAt = DateTime.now();
+    _canMonitorExitReason = null;
+
+    // Pause normal polling so the BLE channel is ours alone.
+    final wasPolling = _polling;
+    if (wasPolling) _polling = false;
+
+    final sessionId = await db.insertCanMonitorSession(
+      CanMonitorSessionsCompanion(
+        startedAt: Value(DateTime.now()),
+        durationSec: Value(durationSec),
+        carState: Value(carState),
+        notes: Value(notes),
+      ),
+    );
+    _currentCanMonitorSessionId = sessionId;
+    notifyListeners();
+
+    // Kill-signal + watchdog mirroring +22 (livelog) / +24 (sweep).
+    // Watchdog threshold here is "no frame received for 15 s" — typical
+    // broadcast traffic on an open gateway produces dozens of frames/sec,
+    // so 15 s of silence means the adapter wedged or the gateway closed
+    // the bus. On a whitelist gateway we'll see 0 frames the whole
+    // session and the watchdog will fire at 15 s — that's a valid
+    // result, not a bug (it tells us gateway state).
+    final killSignal = Completer<void>();
+    _canMonitorKillSignal = killSignal;
+    _canMonitorWatchdogTimer?.cancel();
+    _canMonitorWatchdogTimer =
+        Timer.periodic(const Duration(seconds: 5), (t) {
+      final last = _canMonitorLastFrameAt;
+      if (last == null) return;
+      final silentSec = DateTime.now().difference(last).inSeconds;
+      // No frame in 15s while in monitor mode = adapter silent. Could
+      // be: gateway whitelist (legitimate), bus quiet (Ready OFF),
+      // adapter wedge. Either way, no point waiting longer.
+      if (silentSec >= 15 && _canFrameCount == 0) {
+        _canMonitorExitReason ??= 'no_frames_15s';
+        debugPrint('runCanMonitor: no frames in ${silentSec}s — bus silent '
+            'or gateway whitelist. Exiting.');
+        if (!killSignal.isCompleted) killSignal.complete();
+        t.cancel();
+      } else if (silentSec >= 30 && _canFrameCount > 0) {
+        // Was receiving frames, now silent for 30s. Adapter wedged
+        // mid-stream — defensive exit.
+        _canMonitorExitReason ??= 'watchdog_stall';
+        debugPrint('runCanMonitor: frame stream stalled after '
+            '$_canFrameCount frames (${silentSec}s silent). Exiting.');
+        if (!killSignal.isCompleted) killSignal.complete();
+        t.cancel();
+      }
+    });
+
+    StreamSubscription<String>? lineSub;
+
+    try {
+      // Step 1: prepare adapter for raw CAN monitoring.
+      // AT SP 6 = ISO 15765-4 CAN 11-bit ID, 500 kbps. Matches the IDs
+      // we expect from VehicleData.conf (3-hex-digit, e.g. 0x444). If
+      // the bus is 29-bit somewhere, those frames will show up with
+      // 8-hex IDs — we record verbatim and sort it out offline.
+      // AT H1 = include header (CAN ID) in monitor output.
+      // AT S0 = no spaces (more compact lines).
+      // AT L0 = no linefeeds (one frame per CR).
+      //
+      // Each command via standard sendRaw so we get prompt confirmation
+      // — this is still request/response mode at this point.
+      try {
+        await _ble!.sendRaw('AT SP 6',
+            timeout: const Duration(seconds: 3));
+        await _ble!.sendRaw('AT H1', timeout: const Duration(seconds: 2));
+        await _ble!.sendRaw('AT S0', timeout: const Duration(seconds: 2));
+      } catch (e) {
+        debugPrint('runCanMonitor: setup commands failed: $e');
+        _canMonitorExitReason = 'setup_failed';
+        return sessionId;
+      }
+
+      // Step 2: enter monitor mode on the Dart side and subscribe to
+      // the line stream BEFORE sending AT MA. Order matters: if AT MA
+      // starts streaming before we're listening, we lose the first
+      // frames.
+      _ble!.enterMonitorMode();
+      final startedAt = DateTime.now();
+      lineSub = _ble!.monitorLines.listen((line) async {
+        // Filter out adapter status lines (the only non-frame output
+        // expected during AT MA is 'STOPPED' on ESC, or noise from a
+        // mis-tuned bus). A CAN frame line looks like:
+        //   "444 01 02 03 04 05 06 07 08"   (11-bit, with AT H1+S0
+        //                                      it's "44401020304...")
+        // With AT S0 (no spaces) the line is one long hex blob with
+        // the first 3 chars being the ID. We accept any line that's
+        // at least 3 hex chars and parses entirely as hex.
+        final clean = line.replaceAll(RegExp(r'\s+'), '');
+        if (clean.length < 3) return;
+        // Quick hex validity check
+        if (!RegExp(r'^[0-9A-Fa-f]+$').hasMatch(clean)) return;
+        // Split ID and payload. 11-bit IDs are 3 hex chars; 29-bit are
+        // 8. Heuristic: if first char is 0-7 and length is 3+even, treat
+        // as 11-bit. Otherwise 29-bit.
+        String canId;
+        String payload;
+        if (clean.length >= 11 &&
+            clean.length % 2 == 0 &&
+            int.tryParse(clean.substring(0, 8), radix: 16) != null &&
+            // 29-bit IDs in ELM327 output are usually padded — if first
+            // 5 chars are zeros it's almost certainly 29-bit.
+            clean.startsWith('00')) {
+          canId = clean.substring(0, 8).toUpperCase();
+          payload = clean.substring(8).toUpperCase();
+        } else {
+          // 11-bit
+          canId = clean.substring(0, 3).toUpperCase();
+          payload = clean.substring(3).toUpperCase();
+        }
+
+        _canFrameCount++;
+        _canSeenIds.add(canId);
+        _canMonitorLastFrameAt = DateTime.now();
+
+        try {
+          await db
+              .insertCanFrame(CanFramesCompanion(
+                monitorSessionId: Value(sessionId),
+                sequence: Value(_canFrameCount - 1),
+                tsMs: Value(DateTime.now()),
+                canId: Value(canId),
+                payloadHex: Value(payload),
+              ))
+              .timeout(const Duration(seconds: 5));
+        } on TimeoutException {
+          // Don't try to recover here — if Drift's stalling, the
+          // watchdog will pick it up. Drop the frame.
+          debugPrint('runCanMonitor: insert timeout, frame dropped '
+              '(id=$canId)');
+        } catch (e) {
+          debugPrint('runCanMonitor: insert error: $e');
+        }
+
+        // Notify UI every 32 frames — avoids hammering rebuilds at
+        // 200+ frames/sec on a busy bus.
+        if (_canFrameCount % 32 == 0) {
+          notifyListeners();
+        }
+      }, onError: (Object e) {
+        debugPrint('runCanMonitor: line stream error: $e');
+      });
+
+      // Step 3: send AT MA with no-wait. The adapter will now stream
+      // until ESC.
+      await _ble!.sendRawNoWait('AT MA\r');
+
+      // Step 4: wait for whichever ends first:
+      //   - the requested duration elapses
+      //   - cancelCanMonitor() is called (killSignal completes)
+      //   - watchdog fires (killSignal completes)
+      //   - BLE drops
+      final deadline = startedAt.add(Duration(seconds: durationSec));
+      while (true) {
+        if (_canMonitorCancelled) {
+          _canMonitorExitReason ??= 'cancelled';
+          break;
+        }
+        if (killSignal.isCompleted) {
+          // exit reason already set by watchdog
+          break;
+        }
+        if (_ble != null && !_ble!.isConnected) {
+          _canMonitorExitReason ??= 'ble_dropped';
+          break;
+        }
+        if (DateTime.now().isAfter(deadline)) {
+          _canMonitorExitReason ??= 'completed';
+          break;
+        }
+
+        // Sleep in small slices, raced against killSignal so cancel
+        // reacts in <500ms.
+        await Future.any<void>([
+          Future<void>.delayed(const Duration(milliseconds: 500)),
+          killSignal.future,
+        ]);
+      }
+    } catch (e, st) {
+      debugPrint('runCanMonitor: unhandled exception: $e\n$st');
+      _canMonitorExitReason ??= 'loop_exception';
+    } finally {
+      // Step 5: stop the adapter cleanly. Send ESC to terminate
+      // AT MA. Don't wait for a prompt — some clones don't emit one
+      // after ESC. The exitMonitorMode() call discards any partial
+      // line buffered, after which sendRaw works normally again.
+      try {
+        await _ble?.sendEsc();
+      } catch (_) {}
+      // Give the adapter a moment to settle and drain any straggling
+      // frames before we tear down. 200ms is generous for ELM327.
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      try {
+        await lineSub?.cancel();
+      } catch (_) {}
+      try {
+        _ble?.exitMonitorMode();
+      } catch (_) {}
+
+      // v0.1.29+28: restore adapter to the configuration runLiveLog /
+      // runSweep expect. We changed AT H1 (headers on) and AT S0 (no
+      // spaces) when entering monitor; existing readDid parsing assumes
+      // AT H0 (no headers) and AT S1 (spaces, the ELM327 default).
+      // Without restoring, the next poll cycle would see header bytes
+      // in front of every response and would misparse them as DID
+      // mismatch ("MISALIGNED:XXXX≠YYYY"). Defensive try/catch — if
+      // the link is dead, restore is moot anyway.
+      try {
+        await _ble?.sendRaw('AT H0',
+            timeout: const Duration(seconds: 2));
+        await _ble?.sendRaw('AT S1',
+            timeout: const Duration(seconds: 2));
+      } catch (e) {
+        debugPrint('runCanMonitor: adapter restore failed: $e — next '
+            'poll cycle may see misaligned responses until reconnect');
+      }
+
+      // Cancel watchdog and clear handles.
+      _canMonitorWatchdogTimer?.cancel();
+      _canMonitorWatchdogTimer = null;
+      _canMonitorKillSignal = null;
+
+      // Finalize session row. Bounded by timeout so a stuck Drift
+      // can't block the polling restart below.
+      try {
+        final exitTag = _canMonitorExitReason ?? 'unknown';
+        final finalNotes = notes != null
+            ? '$notes | exit=$exitTag'
+            : 'exit=$exitTag';
+        await (db.update(db.canMonitorSessions)
+              ..where((s) => s.id.equals(sessionId)))
+            .write(CanMonitorSessionsCompanion(
+              endedAt: Value(DateTime.now()),
+              frameCount: Value(_canFrameCount),
+              uniqueCanIds: Value(_canSeenIds.length),
+              notes: Value(finalNotes),
+            ))
+            .timeout(const Duration(seconds: 10));
+      } catch (e, st) {
+        debugPrint(
+            'runCanMonitor: failed to write final session row: $e\n$st');
+      }
+
+      _canMonitorRunning = false;
+      _canMonitorCancelled = false;
+      _canMonitorLastFrameAt = null;
+      // Note: _canSeenIds NOT cleared so getter still reports the final
+      // count to the UI until the next session starts.
+
+      if (wasPolling) {
+        _polling = true;
+        _pollLoop();
+      }
+      notifyListeners();
+    }
+
+    return sessionId;
+  }
+
   // ─────────────────────── v0.1.15: Live Log ─────────────────────────
   //
   // Time-series polling of up to 7 user-selected DIDs over a fixed duration
@@ -3289,6 +3636,8 @@ class ConnectionService extends ChangeNotifier {
     // v0.1.15: mutual exclusion with sweep — see runSweep for rationale.
     if (_sweepRunning) return null;
     if (_dtcScanRunning) return null;
+    // v0.1.29+28: also exclude CAN passive monitor.
+    if (_canMonitorRunning) return null;
     if (didSpecs.isEmpty || didSpecs.length > 10) return null;
 
     _liveLogRunning = true;
@@ -3783,6 +4132,10 @@ class ConnectionService extends ChangeNotifier {
     // or liveLog active. Returns empty list rather than null because
     // method signature is non-nullable.
     if (_sweepRunning || _liveLogRunning) {
+      return [];
+    }
+    // v0.1.29+28: also exclude CAN passive monitor.
+    if (_canMonitorRunning) {
       return [];
     }
     _dtcScanRunning = true;
