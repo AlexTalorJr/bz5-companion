@@ -18,7 +18,13 @@ jobs:
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
-          distribution: 'zulu'
+          # v0.1.29+28 follow-up: switched 'zulu' → 'temurin' (Eclipse
+          # Adoptium) because Azul's CDN was returning Cloudflare 520
+          # errors and blocking all builds. Temurin is a different
+          # distribution mirror (GitHub-side cache). Both provide a
+          # JDK 17 compatible with Kotlin 2.1.0 + AGP, so no other
+          # change needed downstream.
+          distribution: 'temurin'
           java-version: '17'
 
       - name: Setup Flutter
