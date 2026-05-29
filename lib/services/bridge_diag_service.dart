@@ -675,6 +675,19 @@ class BridgeDiagService extends ChangeNotifier {
   ///   {duration_sec: int 1..600}
   ///   carState (optional string)
   ///   notes (optional string)
+  ///   protocol (optional string, v0.1.29+32): ELM327 CAN protocol for
+  ///     AT SP. "6" 11-bit 500k (default), "7" 29-bit 500k, "8" 11-bit
+  ///     250k, "9" 29-bit 250k, "0" auto. Lets Recon Claude sweep the
+  ///     unexplored buses (C28 tried only "6").
+  ///   filter_commands (optional list of strings, v0.1.29+32): extra
+  ///     AT/ST setup lines sent verbatim before AT MA, e.g.
+  ///     ["AT CAF0","AT CM 000","AT CF 000"] to drop receive filtering,
+  ///     or ["ST I"] to probe for an STN chip. Sanitised client-side
+  ///     (A-Z0-9 space only, ≤16 chars each, ≤8 commands).
+  ///
+  /// v0.1.29+32: ALL captured lines (parsed frames AND unrecognised
+  /// lines) are persisted to can_raw_lines so a format the parser
+  /// doesn't understand is recoverable offline.
   ///
   /// Returns:
   ///   ok=true, result:{started:true, kind:"canmonitor"} on accept
@@ -711,6 +724,17 @@ class BridgeDiagService extends ChangeNotifier {
     final notes = args['notes'] is String
         ? args['notes'] as String
         : null;
+    // v0.1.29+32: protocol + filter overrides. Validation/sanitisation
+    // is also enforced in runCanMonitor; we just shuttle them through.
+    final protocol = args['protocol'] is String
+        ? args['protocol'] as String
+        : null;
+    List<String>? filterCommands;
+    final fcRaw = args['filter_commands'];
+    if (fcRaw is List) {
+      filterCommands =
+          fcRaw.whereType<String>().toList(growable: false);
+    }
 
     // 4. Fire-and-forget.
     unawaited(_svc
@@ -718,6 +742,8 @@ class BridgeDiagService extends ChangeNotifier {
       durationSec: dur,
       carState: carState,
       notes: notes ?? 'started via bridge command',
+      protocol: protocol,
+      filterCommands: filterCommands,
     )
         .then((sessionId) {
       debugPrint('BridgeDiag: bleStartCanMonitor finished, '

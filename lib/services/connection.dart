@@ -3374,6 +3374,8 @@ class ConnectionService extends ChangeNotifier {
     required int durationSec,
     String? carState,
     String? notes,
+    String? protocol,
+    List<String>? filterCommands,
   }) async {
     if (_client == null || _ble == null) return null;
     if (_canMonitorRunning) return null;
@@ -3383,6 +3385,42 @@ class ConnectionService extends ChangeNotifier {
     if (_dtcScanRunning) return null;
     if (durationSec < 1 || durationSec > 600) return null;
     if (!_ble!.isConnected) return null;
+
+    // v0.1.29+32: protocol + filter overrides for Path-A exploration.
+    // C28 Phase A used only AT SP 6 (CAN 11-bit 500k) and saw 2 unique
+    // IDs (mostly diagnostic 620 = UDS responses), which we tentatively
+    // read as "gateway whitelist". But that's one config out of many.
+    // BZ5 likely has multiple CAN buses on different OBD-II pins at
+    // different bit-widths/speeds; broadcast frames on a 29-bit or 250k
+    // bus would be invisible to SP 6. These params let Друг 2 sweep the
+    // unexplored configs manually:
+    //   protocol "6" 11-bit 500k (default, what C28 used)
+    //   protocol "7" 29-bit 500k  ← powertrain broadcast often here
+    //   protocol "8" 11-bit 250k  ← body/comfort CAN
+    //   protocol "9" 29-bit 250k
+    //   protocol "0" auto-detect  ← let the adapter decide
+    // filterCommands: extra AT/ST setup lines sent verbatim BEFORE
+    // AT MA, e.g. ["AT CAF0", "AT CM 000", "AT CF 000"] to drop receive
+    // filtering, or ["ST I"] to probe for an STN chip. Each is sent via
+    // sendRaw (prompt-mode) and its response logged to debugPrint.
+    // Sanitised: only [A-Z0-9 ] allowed, max 16 chars, max 8 commands —
+    // these are typed by a trusted operator but we still bound them so
+    // a bad value can't wedge the adapter in an unexpected mode.
+    final spArg = (protocol != null &&
+            RegExp(r'^[0-9A]$').hasMatch(protocol.toUpperCase()))
+        ? protocol.toUpperCase()
+        : '6';
+    final safeFilters = <String>[];
+    if (filterCommands != null) {
+      for (final c in filterCommands.take(8)) {
+        final up = c.trim().toUpperCase();
+        if (up.isNotEmpty &&
+            up.length <= 16 &&
+            RegExp(r'^[A-Z0-9 ]+$').hasMatch(up)) {
+          safeFilters.add(up);
+        }
+      }
+    }
 
     _canMonitorRunning = true;
     _canMonitorCancelled = false;
@@ -3409,6 +3447,9 @@ class ConnectionService extends ChangeNotifier {
         durationSec: Value(durationSec),
         carState: Value(carState),
         notes: Value(notes),
+        // v0.1.29+32: record which CAN protocol this session used so
+        // offline analysis can correlate "0 frames" vs protocol.
+        protocol: Value(spArg),
       ),
     );
     await _persistCanMonitorSessionId(sessionId);
@@ -3454,21 +3495,34 @@ class ConnectionService extends ChangeNotifier {
 
     try {
       // Step 1: prepare adapter for raw CAN monitoring.
-      // AT SP 6 = ISO 15765-4 CAN 11-bit ID, 500 kbps. Matches the IDs
-      // we expect from VehicleData.conf (3-hex-digit, e.g. 0x444). If
-      // the bus is 29-bit somewhere, those frames will show up with
-      // 8-hex IDs — we record verbatim and sort it out offline.
+      // v0.1.29+32: protocol now selectable (default "6" = ISO 15765-4
+      // CAN 11-bit 500 kbps, what C28 used). See param doc for the full
+      // menu. 29-bit protocols (7/9) produce 8-hex-digit IDs; our line
+      // parser already handles both widths.
       // AT H1 = include header (CAN ID) in monitor output.
       // AT S0 = no spaces (more compact lines).
-      // AT L0 = no linefeeds (one frame per CR).
       //
       // Each command via standard sendRaw so we get prompt confirmation
       // — this is still request/response mode at this point.
       try {
-        await _ble!.sendRaw('AT SP 6',
+        final spResp = await _ble!.sendRaw('AT SP $spArg',
             timeout: const Duration(seconds: 3));
+        debugPrint('runCanMonitor: AT SP $spArg → $spResp');
         await _ble!.sendRaw('AT H1', timeout: const Duration(seconds: 2));
         await _ble!.sendRaw('AT S0', timeout: const Duration(seconds: 2));
+        // v0.1.29+32: operator-supplied filter/setup commands, sent
+        // verbatim after the base config and before AT MA. Used to drop
+        // receive filtering (AT CAF0 / AT CM 000 / AT CF 000) or probe
+        // the chip (ST I). Responses logged for offline review.
+        for (final fc in safeFilters) {
+          try {
+            final resp = await _ble!
+                .sendRaw(fc, timeout: const Duration(seconds: 2));
+            debugPrint('runCanMonitor: filter "$fc" → $resp');
+          } catch (e) {
+            debugPrint('runCanMonitor: filter "$fc" failed: $e');
+          }
+        }
       } catch (e) {
         debugPrint('runCanMonitor: setup commands failed: $e');
         _canMonitorExitReason = 'setup_failed';
@@ -3481,7 +3535,21 @@ class ConnectionService extends ChangeNotifier {
       // frames.
       _ble!.enterMonitorMode();
       final startedAt = DateTime.now();
+      // v0.1.29+32: monotonic counter for raw-line rows, independent of
+      // the frame counter (raw includes lines the parser rejects).
+      int rawSeq = 0;
       lineSub = _ble!.monitorLines.listen((line) async {
+        // v0.1.29+32: capture the RAW line FIRST, before any trimming,
+        // whitespace-stripping, hex-validation or splitting. This is the
+        // safety net for Path-A exploration: if a protocol/filter combo
+        // returns data in a format the frame parser doesn't recognise
+        // (STN timestamps, status strings, odd delimiters), it's still
+        // recoverable offline from can_raw_lines. We decide `parsed`
+        // below and record it so analysis can filter WHERE parsed = 0.
+        final rawSnapshot = line;
+        final thisRawSeq = rawSeq++;
+        bool parsedOk = false;
+
         // Filter out adapter status lines (the only non-frame output
         // expected during AT MA is 'STOPPED' on ESC, or noise from a
         // mis-tuned bus). A CAN frame line looks like:
@@ -3491,49 +3559,79 @@ class ConnectionService extends ChangeNotifier {
         // the first 3 chars being the ID. We accept any line that's
         // at least 3 hex chars and parses entirely as hex.
         final clean = line.replaceAll(RegExp(r'\s+'), '');
-        if (clean.length < 3) return;
-        // Quick hex validity check
-        if (!RegExp(r'^[0-9A-Fa-f]+$').hasMatch(clean)) return;
-        // Split ID and payload. 11-bit IDs are 3 hex chars; 29-bit are
-        // 8. Heuristic: if first char is 0-7 and length is 3+even, treat
-        // as 11-bit. Otherwise 29-bit.
-        String canId;
-        String payload;
-        if (clean.length >= 11 &&
-            clean.length % 2 == 0 &&
-            int.tryParse(clean.substring(0, 8), radix: 16) != null &&
-            // 29-bit IDs in ELM327 output are usually padded — if first
-            // 5 chars are zeros it's almost certainly 29-bit.
-            clean.startsWith('00')) {
-          canId = clean.substring(0, 8).toUpperCase();
-          payload = clean.substring(8).toUpperCase();
+        if (clean.length >= 3 &&
+            RegExp(r'^[0-9A-Fa-f]+$').hasMatch(clean)) {
+          // Split ID and payload. 11-bit IDs are 3 hex chars; 29-bit are
+          // 8. Heuristic: if first char is 0-7 and length is 3+even,
+          // treat as 11-bit. Otherwise 29-bit.
+          String canId;
+          String payload;
+          if (clean.length >= 11 &&
+              clean.length % 2 == 0 &&
+              int.tryParse(clean.substring(0, 8), radix: 16) != null &&
+              // 29-bit IDs in ELM327 output are usually padded — if first
+              // 5 chars are zeros it's almost certainly 29-bit.
+              clean.startsWith('00')) {
+            canId = clean.substring(0, 8).toUpperCase();
+            payload = clean.substring(8).toUpperCase();
+          } else {
+            // 11-bit
+            canId = clean.substring(0, 3).toUpperCase();
+            payload = clean.substring(3).toUpperCase();
+          }
+
+          _canFrameCount++;
+          _canSeenIds.add(canId);
+          _canMonitorLastFrameAt = DateTime.now();
+          parsedOk = true;
+
+          try {
+            await db
+                .insertCanFrame(CanFramesCompanion(
+                  monitorSessionId: Value(sessionId),
+                  sequence: Value(_canFrameCount - 1),
+                  tsMs: Value(DateTime.now()),
+                  canId: Value(canId),
+                  payloadHex: Value(payload),
+                ))
+                .timeout(const Duration(seconds: 5));
+          } on TimeoutException {
+            // Don't try to recover here — if Drift's stalling, the
+            // watchdog will pick it up. Drop the frame.
+            debugPrint('runCanMonitor: insert timeout, frame dropped '
+                '(id=$canId)');
+          } catch (e) {
+            debugPrint('runCanMonitor: insert error: $e');
+          }
         } else {
-          // 11-bit
-          canId = clean.substring(0, 3).toUpperCase();
-          payload = clean.substring(3).toUpperCase();
+          // Unparsed line — still counts as adapter activity so the
+          // watchdog doesn't think the bus went silent while real (just
+          // unrecognised) data is flowing.
+          _canMonitorLastFrameAt = DateTime.now();
         }
 
-        _canFrameCount++;
-        _canSeenIds.add(canId);
-        _canMonitorLastFrameAt = DateTime.now();
-
+        // v0.1.29+32: persist the raw line regardless of parse outcome.
+        // Length-guarded so a runaway line can't bloat a row; 512 chars
+        // is far beyond any real ELM327/STN line (longest is ~30 with a
+        // 29-bit ID + 8 payload bytes + timestamp prefix).
+        final guarded = rawSnapshot.length > 512
+            ? rawSnapshot.substring(0, 512)
+            : rawSnapshot;
         try {
           await db
-              .insertCanFrame(CanFramesCompanion(
+              .insertCanRawLine(CanRawLinesCompanion(
                 monitorSessionId: Value(sessionId),
-                sequence: Value(_canFrameCount - 1),
+                sequence: Value(thisRawSeq),
                 tsMs: Value(DateTime.now()),
-                canId: Value(canId),
-                payloadHex: Value(payload),
+                rawLine: Value(guarded),
+                parsed: Value(parsedOk),
               ))
               .timeout(const Duration(seconds: 5));
         } on TimeoutException {
-          // Don't try to recover here — if Drift's stalling, the
-          // watchdog will pick it up. Drop the frame.
-          debugPrint('runCanMonitor: insert timeout, frame dropped '
-              '(id=$canId)');
+          debugPrint('runCanMonitor: raw-line insert timeout, dropped '
+              '(seq=$thisRawSeq)');
         } catch (e) {
-          debugPrint('runCanMonitor: insert error: $e');
+          debugPrint('runCanMonitor: raw-line insert error: $e');
         }
 
         // Notify UI every 32 frames — avoids hammering rebuilds at

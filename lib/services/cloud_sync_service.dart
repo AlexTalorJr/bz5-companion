@@ -965,8 +965,12 @@ class CloudSyncService extends ChangeNotifier {
         return;
       }
       final frames = await _db.getCanFrames(session.id);
+      // v0.1.29+32: also ship the raw (pre-parse) line capture so
+      // offline analysis can recover frames in formats the on-device
+      // parser didn't recognise.
+      final rawLines = await _db.getCanRawLines(session.id);
       final body = {
-        'items': [_canMonitorToJson(session, frames)]
+        'items': [_canMonitorToJson(session, frames, rawLines)]
       };
       await _postIngest('/v1/data/ingest/canmonitor', body);
       _cursorCanMonitor = session.id;
@@ -1883,7 +1887,7 @@ class CloudSyncService extends ChangeNotifier {
   /// at insert time from the SharedPreferences-backed monotonic
   /// counter (see ConnectionService._nextCanMonitorSessionId).
   Map<String, dynamic> _canMonitorToJson(
-      CanMonitorSession s, List<CanFrame> frames) {
+      CanMonitorSession s, List<CanFrame> frames, List<CanRawLine> rawLines) {
     final startMs = s.startedAt.millisecondsSinceEpoch;
     return {
       'client_session_id': s.id,
@@ -1892,6 +1896,8 @@ class CloudSyncService extends ChangeNotifier {
       'duration_sec': s.durationSec,
       'car_state': s.carState,
       'notes': s.notes,
+      // v0.1.29+32: which CAN protocol this session used (AT SP arg).
+      'protocol': s.protocol,
       'frame_count': s.frameCount,
       'unique_can_ids': s.uniqueCanIds,
       'frames': frames
@@ -1902,13 +1908,26 @@ class CloudSyncService extends ChangeNotifier {
                 'payload_hex': f.payloadHex,
               })
           .toList(),
+      // v0.1.29+32: raw pre-parse line capture. Bridge may not have a
+      // column for these yet — that's fine, an unknown field is ignored
+      // by the ingest endpoint (additive contract). When the bridge
+      // adds storage, this data is already flowing. `parsed=false` rows
+      // are the interesting ones (formats the device parser rejected).
+      'raw_lines': rawLines
+          .map((r) => {
+                'sequence': r.sequence,
+                'ts_ms': r.tsMs.millisecondsSinceEpoch - startMs,
+                'raw': r.rawLine,
+                'parsed': r.parsed,
+              })
+          .toList(),
     };
   }
 
   /// Read app version from the static value baked into the build.
   /// We don't have package_info_plus as a dep — pubspec-version is
   /// hardcoded here. Update when bumping. Off-by-one tolerated.
-  Future<String> _readAppVersion() async => '0.1.29+31';
+  Future<String> _readAppVersion() async => '0.1.29+32';
 }
 
 // ─── Internal exceptions ────────────────────────────────────────────
