@@ -641,6 +641,23 @@ class SpeedHistogramCardState extends State<SpeedHistogramCard> {
     return db.getSamplesForTrip(widget.tripId, ecuTx: '740', did: '0008');
   }
 
+  /// v0.1.29+30: when there are no 740/0008 speed samples, load a
+  /// breakdown of what DID samples DID get recorded for this trip, so
+  /// "No speed data" tells us WHY: was the whole trip un-sampled (then
+  /// all counts are 0 → trip detection / polling issue), or just the
+  /// PDU/740 path silent (then 790/* counts are non-zero but 740 is 0
+  /// → PDU read path issue). Loaded lazily only on the empty branch.
+  Future<Map<String, int>> _loadSampleBreakdown() async {
+    final db = Provider.of<ConnectionService>(context, listen: false).db;
+    final all = await db.getSamplesForTrip(widget.tripId);
+    final byKey = <String, int>{};
+    for (final s in all) {
+      final key = '${s.ecuTx}/${s.did}';
+      byKey[key] = (byKey[key] ?? 0) + 1;
+    }
+    return byKey;
+  }
+
   @override
   Widget build(BuildContext context) {
     return Card(
@@ -663,10 +680,41 @@ class SpeedHistogramCardState extends State<SpeedHistogramCard> {
                   }
                   final samples = snap.data!;
                   if (samples.isEmpty) {
-                    return const Center(
-                      child: Text(
-                        'No speed data for this trip',
-                        style: TextStyle(color: Colors.grey),
+                    // v0.1.29+30: instead of a bare "No speed data",
+                    // show which DIDs DID record, to diagnose whether
+                    // the whole trip went un-sampled or just 740 was
+                    // silent.
+                    return Center(
+                      child: FutureBuilder<Map<String, int>>(
+                        future: _loadSampleBreakdown(),
+                        builder: (c, bSnap) {
+                          if (!bSnap.hasData) {
+                            return const Text('No speed data for this trip',
+                                style: TextStyle(color: Colors.grey));
+                          }
+                          final bd = bSnap.data!;
+                          if (bd.isEmpty) {
+                            return const Text(
+                                'No samples recorded for this trip at all\n'
+                                '(trip detection or polling was inactive)',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(color: Colors.grey));
+                          }
+                          final has740 = bd.keys.any((k) => k.startsWith('740/'));
+                          final lines = (bd.entries.toList()
+                                ..sort((a, b) => b.value.compareTo(a.value)))
+                              .take(6)
+                              .map((e) => '${e.key}: ${e.value}')
+                              .join('\n');
+                          return Text(
+                            'No 740/0008 speed samples'
+                            '${has740 ? "" : " (PDU 740 silent all trip)"}.\n'
+                            'Recorded DIDs:\n$lines',
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                                color: Colors.grey, fontSize: 11),
+                          );
+                        },
                       ),
                     );
                   }
