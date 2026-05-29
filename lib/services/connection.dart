@@ -3584,39 +3584,43 @@ class ConnectionService extends ChangeNotifier {
       debugPrint('runCanMonitor: unhandled exception: $e\n$st');
       _canMonitorExitReason ??= 'loop_exception';
     } finally {
-      // Step 5: stop the adapter cleanly. Send ESC to terminate
-      // AT MA. Don't wait for a prompt — some clones don't emit one
-      // after ESC. The exitMonitorMode() call discards any partial
-      // line buffered, after which sendRaw works normally again.
-      try {
-        await _ble?.sendEsc();
-      } catch (_) {}
-      // Give the adapter a moment to settle and drain any straggling
-      // frames before we tear down. 200ms is generous for ELM327.
-      await Future<void>.delayed(const Duration(milliseconds: 200));
+      // Step 5: robustly exit AT MA and confirm the adapter is back in
+      // prompt mode. v0.1.29+31: the old teardown (single ESC +
+      // exitMonitorMode + blind AT H0/S1) left the adapter stuck in MA
+      // in the field — every subsequent UDS read failed until a manual
+      // BLE reconnect. exitMonitorModeAndResync sends repeated ESC,
+      // verifies a prompt returns, THEN restores AT H0/S1. Returns
+      // false if it can't get the adapter back.
       try {
         await lineSub?.cancel();
       } catch (_) {}
-      try {
-        _ble?.exitMonitorMode();
-      } catch (_) {}
 
-      // v0.1.29+28: restore adapter to the configuration runLiveLog /
-      // runSweep expect. We changed AT H1 (headers on) and AT S0 (no
-      // spaces) when entering monitor; existing readDid parsing assumes
-      // AT H0 (no headers) and AT S1 (spaces, the ELM327 default).
-      // Without restoring, the next poll cycle would see header bytes
-      // in front of every response and would misparse them as DID
-      // mismatch ("MISALIGNED:XXXX≠YYYY"). Defensive try/catch — if
-      // the link is dead, restore is moot anyway.
+      bool resynced = false;
       try {
-        await _ble?.sendRaw('AT H0',
-            timeout: const Duration(seconds: 2));
-        await _ble?.sendRaw('AT S1',
-            timeout: const Duration(seconds: 2));
+        resynced = await _ble
+                ?.exitMonitorModeAndResync()
+                .timeout(const Duration(seconds: 8)) ??
+            false;
       } catch (e) {
-        debugPrint('runCanMonitor: adapter restore failed: $e — next '
-            'poll cycle may see misaligned responses until reconnect');
+        debugPrint('runCanMonitor: exitMonitorModeAndResync threw: $e');
+        resynced = false;
+      }
+
+      if (!resynced) {
+        // Adapter is wedged in AT MA. A physical BLE reconnect is the
+        // only reliable recovery (confirmed in C28). Force it so the
+        // next poll/sweep/livelog starts from a clean adapter instead
+        // of silently returning 0% valid responses.
+        debugPrint('runCanMonitor: adapter did NOT resync after AT MA — '
+            'forcing BLE reconnect to clear stuck monitor state.');
+        _canMonitorExitReason =
+            '${_canMonitorExitReason ?? "completed"}+stuck_reconnect';
+        try {
+          // Best-effort: tear down and let the existing reconnect path
+          // bring it back. _handleBleDisconnect triggers the normal
+          // auto-reconnect flow.
+          await _ble?.disconnect();
+        } catch (_) {}
       }
 
       // Cancel watchdog and clear handles.
@@ -3651,7 +3655,13 @@ class ConnectionService extends ChangeNotifier {
       // Note: _canSeenIds NOT cleared so getter still reports the final
       // count to the UI until the next session starts.
 
-      if (wasPolling) {
+      // v0.1.29+31: only restart polling if the adapter is still
+      // connected. If we forced a disconnect above (stuck-in-MA
+      // recovery), the auto-reconnect path will re-establish polling on
+      // its own — restarting it here against a dead link would just
+      // spin _pollLoop against isConnected==false until reconnect.
+      final stillConnected = _ble?.isConnected ?? false;
+      if (wasPolling && stillConnected) {
         _polling = true;
         _pollLoop();
       }
