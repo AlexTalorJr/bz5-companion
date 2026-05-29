@@ -339,4 +339,79 @@ class Elm327Ble {
   /// Send a single ESC byte (0x1B). Convenience wrapper for terminating
   /// `AT MA` / `STM` style streaming commands.
   Future<void> sendEsc() => sendRawNoWait('\x1B');
+
+  /// v0.1.29+31: robustly exit `AT MA` monitor mode and confirm the
+  /// adapter is back in prompt (request/response) state.
+  ///
+  /// Background: in +28 the teardown was sendEsc() → exitMonitorMode()
+  /// → sendRaw('AT H0'). Field result (C28 Phase B): the adapter stayed
+  /// stuck in AT MA and every subsequent UDS read returned 0/2898 valid
+  /// until a physical BLE reconnect. Root cause: a single ESC over a
+  /// chunked BLE write isn't reliably consumed while the adapter is
+  /// busy streaming, and the follow-up sendRaw('AT H0') then times out
+  /// against the never-appearing prompt — so headers/spaces are never
+  /// restored either.
+  ///
+  /// This method fixes the teardown to be self-verifying:
+  ///   1. Leave monitor-line parsing ON briefly so we can still see the
+  ///      adapter's output while we break it out of MA.
+  ///   2. Send ESC, then a CR, repeatedly (up to [maxAttempts]), each
+  ///      time waiting a short window for a prompt `>` to appear. A
+  ///      prompt means the adapter has left MA and is listening again.
+  ///   3. Once a prompt is seen, flip _monitorMode off and issue the
+  ///      AT H0 / AT S1 restore via normal sendRaw (now safe — prompts
+  ///      are flowing).
+  ///   4. Return true on confirmed resync, false if the adapter never
+  ///      prompted (caller should then force a BLE reconnect).
+  ///
+  /// All existing methods are untouched; this is purely additive.
+  Future<bool> exitMonitorModeAndResync({int maxAttempts = 5}) async {
+    if (_disconnected || _writeChar == null) return false;
+
+    bool prompted = false;
+    for (int attempt = 0; attempt < maxAttempts && !prompted; attempt++) {
+      // Clear prompt latch + buffer so we detect a FRESH prompt caused
+      // by this attempt, not a stale one.
+      _hasPrompt = false;
+      _rxBuffer.clear();
+
+      // ESC (0x1B) breaks AT MA on a genuine ELM327; some clones want
+      // a CR too. Send both. Several ESCs in a row improve odds that at
+      // least one lands during a gap in the adapter's TX.
+      try {
+        await sendRawNoWait('\x1B\x1B\r');
+      } catch (_) {
+        return false; // link gone
+      }
+
+      // Wait up to 700ms for a prompt to show up.
+      try {
+        await _waitForPrompt(const Duration(milliseconds: 700));
+        prompted = _hasPrompt;
+      } on TimeoutException {
+        prompted = false;
+      }
+    }
+
+    // Stop parsing monitor lines regardless of outcome.
+    _monitorMode = false;
+    _monitorPartialLine.clear();
+
+    if (!prompted) {
+      // Adapter never came back to prompt — caller must reconnect.
+      return false;
+    }
+
+    // Adapter is prompting again. Restore the config that the normal
+    // poll loop / sweep / livelog expect (no headers, spaces on).
+    try {
+      await sendRaw('AT H0', timeout: const Duration(seconds: 2));
+      await sendRaw('AT S1', timeout: const Duration(seconds: 2));
+    } catch (_) {
+      // If restore fails despite a prompt, report not-clean so the
+      // caller can decide to reconnect rather than risk misparsing.
+      return false;
+    }
+    return true;
+  }
 }
