@@ -402,6 +402,49 @@ class ConnectionService extends ChangeNotifier {
   int? _packCellCount;               // 790/0x0B03
   int? _packModuleCount;             // 790/0x0A07
 
+  /// v0.1.29+30: fast-cadence pack voltage estimate derived from a
+  /// min/max-cell sub-poll, in volts. Updated ~1 Hz by
+  /// [_pollCellExtremesOnly] (slotted in _pollLoop alongside the speed
+  /// and HV-bus sub-polls). This is a STALE-GAP FILLER: the primary
+  /// user-facing pack voltage is [packVoltageFromCells] (full 20-value
+  /// module average), but that only refreshes every ~6 s because
+  /// _pollCells runs on cycle%2. Between those full refreshes the
+  /// dashboard had a frozen number; this gives it a live value computed
+  /// from (min+max)/2 × cellCount, which tracks load transients without
+  /// the per-module read cost.
+  ///
+  /// Null until the first successful extremes sub-poll. The getter
+  /// [packVoltageFromCells] prefers the full-cell average when the cell
+  /// snapshot is fresh and only falls back to this between refreshes.
+  double? _subPollPackV;
+  DateTime? _subPollPackVAt;
+
+  /// v0.1.29+30: speed sub-poll diagnostics. The owner observed a trip
+  /// with zero 740/0008 speed samples ("No speed data for this trip")
+  /// while BMS signals (SOC, temp) recorded normally — pointing at the
+  /// PDU (740) read path, not a global polling stall. These counters
+  /// classify WHY a _pollSpeedOnly invocation didn't produce a stored
+  /// sample, so a screenshot of the diagnostic panel pinpoints the
+  /// cause instead of guessing. Reset at each BLE-session start.
+  ///   - _spdOk:          read succeeded AND a sample was stored
+  ///   - _spdOkNoTrip:    read succeeded but _currentTripId == null
+  ///                      (value updated for UI, but NOT persisted —
+  ///                      this is the prime suspect for empty history)
+  ///   - _spdNullPayload: ECU returned null/short (timeout / EMPTY /
+  ///                      negative response)
+  ///   - _spdSanity:      raw > 3000 (decode produced impossible speed)
+  ///   - _spdException:   readDid threw (timeout or BLE error)
+  int _spdOk = 0;
+  int _spdOkNoTrip = 0;
+  int _spdNullPayload = 0;
+  int _spdSanity = 0;
+  int _spdException = 0;
+
+  /// v0.1.29+30: expose speed sub-poll diagnostics for the on-screen
+  /// _LayoutDiagnostic panel. Format: "ok/noTrip/null/sanity/exc".
+  String get speedSubPollDiag =>
+      '$_spdOk/$_spdOkNoTrip/$_spdNullPayload/$_spdSanity/$_spdException';
+
   // v0.1.21 NOTE: precise SOC (790/0x1FFD) and vehicle speed (740/0x0008)
   // do NOT need separate private fields — they flow through the normal
   // registry polling path into _latestValues and are read by the
@@ -653,6 +696,39 @@ class ConnectionService extends ChangeNotifier {
   /// snapshot DB column (historical preservation) and for diagnostic
   /// purposes, but not as the primary user-facing number.
   double? get packVoltageFromCells {
+    // v0.1.29+30: prefer the full 20-value module average when we have
+    // a cell snapshot; this is the most accurate number. But _liveCells
+    // only refreshes every ~6 s (_pollCells runs on cycle%2), so between
+    // refreshes we fall through to the fast min/max-cell sub-poll
+    // estimate [_subPollPackV] (updated ~1 Hz by _pollCellExtremesOnly).
+    // This keeps the dashboard pack-voltage number live under load
+    // instead of frozen for 6 s at a time — the original 1 Hz request
+    // from the owner that +26 addressed for the wrong signal (hvBusV).
+    final fromFull = _packVoltageFromFullCells();
+    if (fromFull != null) {
+      // If the full-cell snapshot is fresh (< 3 s old via _pollCells)
+      // it's authoritative. We can't cheaply timestamp _liveCells here,
+      // so the heuristic is: when both exist, the full average wins
+      // EXCEPT the sub-poll value is newer than ~1.5 s — meaning a
+      // sub-poll has happened since the last full refresh and better
+      // reflects the current instant. This biases toward freshness
+      // under load while keeping full-average accuracy at rest.
+      final subAt = _subPollPackVAt;
+      if (_subPollPackV != null &&
+          subAt != null &&
+          DateTime.now().difference(subAt).inMilliseconds < 1500) {
+        return _subPollPackV;
+      }
+      return fromFull;
+    }
+    // No full-cell snapshot yet — use sub-poll estimate if present.
+    return _subPollPackV;
+  }
+
+  /// Full 20-value module-average pack voltage. Extracted from the old
+  /// [packVoltageFromCells] body so the getter can choose between this
+  /// and the fast sub-poll estimate. Returns null if no cell snapshot.
+  double? _packVoltageFromFullCells() {
     if (_liveCells.isEmpty) return null;
     // Defensive: filter out clearly-broken readings before averaging.
     // LFP single-cell physical envelope ≈ 2000-3700 mV; anything outside
@@ -1267,6 +1343,15 @@ class ConnectionService extends ChangeNotifier {
     // v0.1.6:
     _globalMinCellMv = null;
     _globalMaxCellMv = null;
+    // v0.1.29+30: reset fast pack-voltage sub-poll estimate.
+    _subPollPackV = null;
+    _subPollPackVAt = null;
+    // v0.1.29+30: reset speed sub-poll diagnostic counters.
+    _spdOk = 0;
+    _spdOkNoTrip = 0;
+    _spdNullPayload = 0;
+    _spdSanity = 0;
+    _spdException = 0;
     // v0.1.20: reset cell-pair sanity drop counter for new session
     _cellPairDropCount = 0;
     // v0.1.9: reset trip aggregates and snapshot timer.
@@ -1474,10 +1559,17 @@ class ConnectionService extends ChangeNotifier {
           // ~3s cadence missed regen/accel transients. See
           // _pollPackVoltageOnly doc.
           await _pollPackVoltageOnly();
+          // v0.1.29+30: fast min/max-cell sub-poll → _subPollPackV.
+          // This is what actually drives the dashboard pack-voltage
+          // number between full _pollCells refreshes (the UI primary is
+          // packVoltageFromCells, NOT hvBusV which +26 sped up). See
+          // _pollCellExtremesOnly doc.
+          await _pollCellExtremesOnly();
         }
         if (cycle % 2 == 0) await _pollCells();
         await _pollSpeedOnly();
         await _pollPackVoltageOnly();
+        await _pollCellExtremesOnly();
         // v0.1.3: extra DIDs (pack V from 740, cell indices, pack config).
         // Каждый второй цикл — частоты обновления pack V раз в ~500 мс
         // достаточно, не надо мучить шину.
@@ -1557,6 +1649,72 @@ class ConnectionService extends ChangeNotifier {
     }
   }
 
+  /// v0.1.29+30: fast min/max-cell sub-poll feeding [_subPollPackV].
+  ///
+  /// Reads 790/0x002B (global min cell mV) and 790/0x002D (global max
+  /// cell mV) — two cheap single reads — and derives a pack voltage
+  /// estimate as (min+max)/2 × cellCount. This is the fast-cadence
+  /// stand-in for [packVoltageFromCells] between the slower full
+  /// _pollCells refreshes, so the dashboard pack-voltage number tracks
+  /// load transients at ~1 Hz instead of freezing for ~6 s.
+  ///
+  /// Why (min+max)/2 rather than a true average: on a healthy LFP pack
+  /// the cell spread is <50 mV, so the midpoint of the extremes is
+  /// within ~25 mV of the true mean — ×136 cells that's ~3.4 V of
+  /// worst-case bias, well under the load-transient swings (25-30 V)
+  /// we're trying to capture. When the full _pollCells refresh lands,
+  /// [packVoltageFromCells] switches back to the exact average. Net:
+  /// accurate at rest, responsive under load.
+  ///
+  /// Mirrors [_pollPackVoltageOnly] / [_pollSpeedOnly]: 800 ms timeout
+  /// per read, all errors swallowed, listeners notified on success.
+  /// Also updates the existing _globalMinCellMv / _globalMaxCellMv so
+  /// the Pack Extremes UI refreshes at sub-poll cadence too (bonus —
+  /// previously those only updated on cycle%2 via _pollExtraDids).
+  Future<void> _pollCellExtremesOnly() async {
+    if (_client == null) return;
+    int? minMv;
+    int? maxMv;
+    try {
+      final rMin = await _client!.readDid('002B', tx: '790', rx: '798')
+          .timeout(const Duration(milliseconds: 800));
+      final pMin = rMin?.payloadAfterUdsRead;
+      if (pMin != null && pMin.length >= 2) {
+        final mv = (pMin[0] << 8) | pMin[1];
+        if (mv >= 2000 && mv <= 3700) minMv = mv;
+      }
+    } catch (_) {}
+    try {
+      final rMax = await _client!.readDid('002D', tx: '790', rx: '798')
+          .timeout(const Duration(milliseconds: 800));
+      final pMax = rMax?.payloadAfterUdsRead;
+      if (pMax != null && pMax.length >= 2) {
+        final mv = (pMax[0] << 8) | pMax[1];
+        if (mv >= 2000 && mv <= 3700) maxMv = mv;
+      }
+    } catch (_) {}
+
+    // Same pair-level guard as _pollExtraDids: only derive a voltage if
+    // both came back and the spread is physically sane. Update the
+    // individual extremes opportunistically (half a sample beats none).
+    if (minMv != null) _globalMinCellMv = minMv;
+    if (maxMv != null) _globalMaxCellMv = maxMv;
+
+    if (minMv != null && maxMv != null) {
+      final spread = maxMv - minMv;
+      if (spread >= 0 && spread <= 100) {
+        final midMv = (minMv + maxMv) / 2.0;
+        final seriesCells = _packCellCount ?? 136;
+        final packV = midMv * seriesCells / 1000.0;
+        if (packV >= 200 && packV <= 500) {
+          _subPollPackV = packV;
+          _subPollPackVAt = DateTime.now();
+          notifyListeners();
+        }
+      }
+    }
+  }
+
   /// v0.1.24: read just 740/0x0008 (speed) and update _latestValues.
   ///
   /// Slotted between heavier ECU polls in _pollLoop so the dashboard
@@ -1573,11 +1731,20 @@ class ConnectionService extends ChangeNotifier {
       final r = await _client!.readDid('0008', tx: '740', rx: '748')
           .timeout(const Duration(milliseconds: 800));
       final p = r?.payloadAfterUdsRead;
-      if (p == null || p.length < 2) return;
+      if (p == null || p.length < 2) {
+        // v0.1.29+30: PDU didn't answer (timeout / EMPTY / NRC). This
+        // is the path that produces "No speed data" if 740 is silent
+        // for a whole trip while BMS still answers.
+        _spdNullPayload++;
+        return;
+      }
       // Decode locally rather than via registry to avoid round-trip;
       // 740/0x0008 is u16 big-endian, scale 0.07097.
       final raw = (p[0] << 8) | p[1];
-      if (raw > 3000) return; // sanity: >213 km/h impossible for BZ5
+      if (raw > 3000) {
+        _spdSanity++; // v0.1.29+30
+        return; // sanity: >213 km/h impossible for BZ5
+      }
       final kmh = raw * 0.07097;
       // Write into _latestValues so the existing vehicleSpeedKmh getter
       // and the trip aggregator see the fresh value. We synthesise a
@@ -1602,9 +1769,18 @@ class ConnectionService extends ChangeNotifier {
           text: null,
         );
         _samplesInTrip++;
+        _spdOk++; // v0.1.29+30
+      } else {
+        // v0.1.29+30: read OK but no active trip → value shown live on
+        // the dashboard but NOT persisted to trip history. If this
+        // counter is high for a trip that "should" have been active,
+        // the bug is in trip detection (_maybeStartTrip / _currentTripId
+        // lifecycle), not in the PDU read path.
+        _spdOkNoTrip++;
       }
       notifyListeners();
     } catch (_) {
+      _spdException++; // v0.1.29+30: timeout or BLE error
       // Ignore — next sub-poll attempt will retry.
     }
   }
