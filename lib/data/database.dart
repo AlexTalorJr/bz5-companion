@@ -210,17 +210,51 @@ class CanFrames extends Table {
   TextColumn get payloadHex => text().withDefault(const Constant(''))();
 }
 
+/// v0.1.29+32: one row per RAW line emitted by the adapter during a
+/// monitor session, captured BEFORE any parsing/filtering.
+///
+/// Why this exists: the [CanFrames] parser only stores lines it can
+/// recognise as hex CAN frames (≥3 hex chars, all-hex). Anything else —
+/// STN timestamp-prefixed frames, status strings ("BUFFER FULL",
+/// "CAN ERROR"), odd delimiters, mixed formats from an unexpected
+/// protocol — is silently dropped. During Path-A exploration (+32) we
+/// don't yet know what format each protocol/filter combo will produce,
+/// so we persist the unmodified line stream here for offline analysis.
+/// If a config that looked like "0 frames" actually returned data in a
+/// shape we didn't parse, it's recoverable from this table postfactum.
+///
+/// This is capture-everything-verbatim: do NOT filter on write. Bounded
+/// only by the session duration and a per-line length guard applied at
+/// the call site.
+@DataClassName('CanRawLine')
+class CanRawLines extends Table {
+  IntColumn get id => integer().autoIncrement()();
+  IntColumn get monitorSessionId =>
+      integer().references(CanMonitorSessions, #id)();
+  /// Monotonic count within the session — 0..N-1, set client-side.
+  IntColumn get sequence => integer()();
+  /// Wall-clock at capture (client device clock). Millisecond resolution.
+  DateTimeColumn get tsMs => dateTime()();
+  /// The line EXACTLY as received from monitorLines, before trimming,
+  /// whitespace-stripping, hex-validation, or ID/payload splitting.
+  TextColumn get rawLine => text()();
+  /// True if the parser accepted this line as a CAN frame (so it also
+  /// produced a CanFrames row). Lets offline analysis quickly isolate
+  /// the lines we DIDN'T understand: `WHERE parsed = 0`.
+  BoolColumn get parsed => boolean().withDefault(const Constant(false))();
+}
+
 @DriftDatabase(tables: [
   Samples, Trips, Snapshots,
   SweepRuns, SweepResults,
   LiveLogSessions, LiveLogEntries,
-  CanMonitorSessions, CanFrames,
+  CanMonitorSessions, CanFrames, CanRawLines,
 ])
 class AppDatabase extends _$AppDatabase {
   AppDatabase() : super(_openConnection());
 
   @override
-  int get schemaVersion => 6;
+  int get schemaVersion => 7;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -275,6 +309,11 @@ class AppDatabase extends _$AppDatabase {
           if (from < 6) {
             await m.createTable(canMonitorSessions);
             await m.createTable(canFrames);
+          }
+          // v6 → v7 (v0.1.29+32): raw monitor-line capture table for
+          // Path-A exploration. Additive only.
+          if (from < 7) {
+            await m.createTable(canRawLines);
           }
         },
       );
@@ -658,10 +697,22 @@ class AppDatabase extends _$AppDatabase {
         .get();
   }
 
-  Future<(int, int)> clearAllCanMonitors() async {
+  // v0.1.29+32: raw monitor-line capture.
+  Future<int> insertCanRawLine(CanRawLinesCompanion data) =>
+      into(canRawLines).insert(data);
+
+  Future<List<CanRawLine>> getCanRawLines(int sessionId) {
+    return (select(canRawLines)
+          ..where((r) => r.monitorSessionId.equals(sessionId))
+          ..orderBy([(r) => OrderingTerm(expression: r.sequence)]))
+        .get();
+  }
+
+  Future<(int, int, int)> clearAllCanMonitors() async {
+    final rawDeleted = await delete(canRawLines).go();
     final framesDeleted = await delete(canFrames).go();
     final sessionsDeleted = await delete(canMonitorSessions).go();
-    return (sessionsDeleted, framesDeleted);
+    return (sessionsDeleted, framesDeleted, rawDeleted);
   }
 }
 
