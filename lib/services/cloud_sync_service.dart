@@ -157,14 +157,21 @@ class CloudSyncStats {
   final int pendingSnapshots;
   final int pendingSweeps;
   final int pendingLiveLogs;
+  /// v0.1.29+29: pending CAN monitor sessions awaiting upload.
+  final int pendingCanMonitors;
   const CloudSyncStats({
     this.pendingTrips = 0,
     this.pendingSnapshots = 0,
     this.pendingSweeps = 0,
     this.pendingLiveLogs = 0,
+    this.pendingCanMonitors = 0,
   });
   int get totalPending =>
-      pendingTrips + pendingSnapshots + pendingSweeps + pendingLiveLogs;
+      pendingTrips +
+      pendingSnapshots +
+      pendingSweeps +
+      pendingLiveLogs +
+      pendingCanMonitors;
 }
 
 /// v0.1.29+18: state machine for one restore operation (pull history
@@ -228,6 +235,9 @@ class CloudSyncService extends ChangeNotifier {
   static const _kCursorSnapshot = 'cloud_sync_cursor_snapshot';
   static const _kCursorSweep = 'cloud_sync_cursor_sweep';
   static const _kCursorLiveLog = 'cloud_sync_cursor_livelog';
+  /// v0.1.29+29: cursor for `/v1/data/ingest/canmonitor` uploads.
+  /// Strictly id-ordered, same semantics as livelog cursor.
+  static const _kCursorCanMonitor = 'cloud_sync_cursor_canmonitor';
   static const _kLastSuccessAt = 'cloud_sync_last_success_at';
   static const _kLastError = 'cloud_sync_last_error';
   static const _kSamplesRejectedAt = 'cloud_sync_samples_rejected_at';
@@ -269,6 +279,9 @@ class CloudSyncService extends ChangeNotifier {
   int _cursorSnapshot = 0;
   int _cursorSweep = 0;
   int _cursorLiveLog = 0;
+  /// v0.1.29+29: cursor for CAN monitor session uploads. Same semantics
+  /// as [_cursorLiveLog].
+  int _cursorCanMonitor = 0;
 
   // v0.1.29+20: tracks which trip ids have been successfully pushed
   // since this device's registration. Loaded from SharedPrefs as a
@@ -360,6 +373,7 @@ class CloudSyncService extends ChangeNotifier {
     _cursorSnapshot = prefs.getInt(_kCursorSnapshot) ?? 0;
     _cursorSweep = prefs.getInt(_kCursorSweep) ?? 0;
     _cursorLiveLog = prefs.getInt(_kCursorLiveLog) ?? 0;
+    _cursorCanMonitor = prefs.getInt(_kCursorCanMonitor) ?? 0;
     final lastTs = prefs.getInt(_kLastSuccessAt);
     if (lastTs != null) {
       _lastSuccessAt = DateTime.fromMillisecondsSinceEpoch(lastTs);
@@ -557,6 +571,7 @@ class CloudSyncService extends ChangeNotifier {
     await prefs.setInt(_kCursorSnapshot, 0);
     await prefs.setInt(_kCursorSweep, 0);
     await prefs.setInt(_kCursorLiveLog, 0);
+    await prefs.setInt(_kCursorCanMonitor, 0);  // v0.1.29+29
     // v0.1.29+20: pushed-trip-id set is identity-scoped; new device =
     // empty set = all closed trips will re-upload.
     await prefs.remove(_kPushedTripIds);
@@ -570,6 +585,7 @@ class CloudSyncService extends ChangeNotifier {
     _cursorSnapshot = 0;
     _cursorSweep = 0;
     _cursorLiveLog = 0;
+    _cursorCanMonitor = 0;  // v0.1.29+29
     _pushedTripIds.clear();
     _enabled = true;
     _lastError = null;
@@ -601,6 +617,7 @@ class CloudSyncService extends ChangeNotifier {
     await prefs.remove(_kCursorSnapshot);
     await prefs.remove(_kCursorSweep);
     await prefs.remove(_kCursorLiveLog);
+    await prefs.remove(_kCursorCanMonitor);  // v0.1.29+29
     // v0.1.29+20: pushed-trip-id set is identity-scoped.
     await prefs.remove(_kPushedTripIds);
     await prefs.remove(_kLastSuccessAt);
@@ -615,6 +632,7 @@ class CloudSyncService extends ChangeNotifier {
     _cursorSnapshot = 0;
     _cursorSweep = 0;
     _cursorLiveLog = 0;
+    _cursorCanMonitor = 0;  // v0.1.29+29
     _pushedTripIds.clear();
     _enabled = false;
     _lastSuccessAt = null;
@@ -634,6 +652,7 @@ class CloudSyncService extends ChangeNotifier {
     await prefs.setInt(_kCursorSnapshot, 0);
     await prefs.setInt(_kCursorSweep, 0);
     await prefs.setInt(_kCursorLiveLog, 0);
+    await prefs.setInt(_kCursorCanMonitor, 0);  // v0.1.29+29
     // v0.1.29+20: "force full resync" means re-push everything; the
     // pushed-trip-id set is the main gate on trip push now.
     await prefs.remove(_kPushedTripIds);
@@ -641,6 +660,7 @@ class CloudSyncService extends ChangeNotifier {
     _cursorSnapshot = 0;
     _cursorSweep = 0;
     _cursorLiveLog = 0;
+    _cursorCanMonitor = 0;  // v0.1.29+29
     _pushedTripIds.clear();
     notifyListeners();
     await syncOnce(reason: 'force-resync');
@@ -663,6 +683,12 @@ class CloudSyncService extends ChangeNotifier {
       await _syncSnapshots();
       await _syncSweeps();
       await _syncLiveLogs();
+      // v0.1.29+29: CAN passive monitor sessions (+ child frames).
+      // Ordered last so a heavy sweep / livelog push doesn't starve
+      // the bus monitor data, and so the bridge sees them after the
+      // related livelog (rarely co-located on the same drive, but
+      // we keep the convention).
+      await _syncCanMonitors();
       _lastSuccessAt = DateTime.now();
       _lastError = null;
       final prefs = await SharedPreferences.getInstance();
@@ -899,6 +925,53 @@ class CloudSyncService extends ChangeNotifier {
       _cursorLiveLog = session.id;
       final prefs = await SharedPreferences.getInstance();
       await prefs.setInt(_kCursorLiveLog, _cursorLiveLog);
+    }
+  }
+
+  /// v0.1.29+29: push CAN monitor sessions (+ child frames) to bridge.
+  ///
+  /// Wire contract per bridge-changes-for-drug1.md (bridge commit c73f0fb):
+  ///   - Endpoint: POST /v1/data/ingest/canmonitor
+  ///   - Envelope: `{items: [<session>]}` — same as livelog
+  ///   - Idempotency: bridge uses UNIQUE(device_id, client_session_id);
+  ///     re-uploading the same session is a no-op with
+  ///     `inserted=0, duplicates=1` in the response
+  ///   - Empty frames array is valid (e.g. exit=no_frames_15s)
+  ///
+  /// Mirrors _syncLiveLogs' behaviour exactly:
+  ///   - Don't push active sessions (endedAt == null) — bridge cursor
+  ///     advances strictly in id order, so an active session in the
+  ///     middle would block later finished sessions. Wait for the
+  ///     finally-block in runCanMonitor to stamp endedAt + counts
+  ///     before we push.
+  ///   - Cursor-based: `_cursorCanMonitor` tracks the highest pushed
+  ///     session id, persisted to SharedPreferences after each
+  ///     successful POST.
+  ///   - Single-POST per session: a 30s monitor at ~50 fps gives
+  ///     ~1500 frames, JSON-encodes to ~150KB — well under bridge's
+  ///     25M nginx cap. We don't yet split. If we ever hit a session
+  ///     with 10000+ frames (e.g. extended drive sniff after Path A
+  ///     proven open), revisit chunking analogous to the livelog
+  ///     5000-entry guard.
+  Future<void> _syncCanMonitors() async {
+    final all = await _db.getAllCanMonitorSessions();
+    final pending = all.where((s) => s.id > _cursorCanMonitor).toList()
+      ..sort((a, b) => a.id.compareTo(b.id));
+    if (pending.isEmpty) return;
+    for (final session in pending) {
+      // Skip sessions still running. Same reasoning as livelog (see
+      // _syncLiveLogs cycle-3 note).
+      if (session.endedAt == null) {
+        return;
+      }
+      final frames = await _db.getCanFrames(session.id);
+      final body = {
+        'items': [_canMonitorToJson(session, frames)]
+      };
+      await _postIngest('/v1/data/ingest/canmonitor', body);
+      _cursorCanMonitor = session.id;
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt(_kCursorCanMonitor, _cursorCanMonitor);
     }
   }
 
@@ -1657,6 +1730,7 @@ class CloudSyncService extends ChangeNotifier {
       final snapshots = await _db.getRecentSnapshots(limit: 1);
       final sweeps = await _db.getAllSweepRuns();
       final logs = await _db.getAllLiveLogSessions();
+      final canMonitors = await _db.getAllCanMonitorSessions();
       final pendingTrips = allTrips
           .where((t) => t.endedAt != null && !_pushedTripIds.contains(t.id))
           .length;
@@ -1665,11 +1739,17 @@ class CloudSyncService extends ChangeNotifier {
           sweeps.isEmpty ? 0 : sweeps.map((s) => s.id).reduce((a, b) => a > b ? a : b);
       final maxLog =
           logs.isEmpty ? 0 : logs.map((s) => s.id).reduce((a, b) => a > b ? a : b);
+      // v0.1.29+29: same max-id approximation as livelog.
+      final maxCanMon = canMonitors.isEmpty
+          ? 0
+          : canMonitors.map((s) => s.id).reduce((a, b) => a > b ? a : b);
       _stats = CloudSyncStats(
         pendingTrips: pendingTrips,
         pendingSnapshots: (maxSnap - _cursorSnapshot).clamp(0, 1 << 30),
         pendingSweeps: (maxSweep - _cursorSweep).clamp(0, 1 << 30),
         pendingLiveLogs: (maxLog - _cursorLiveLog).clamp(0, 1 << 30),
+        pendingCanMonitors:
+            (maxCanMon - _cursorCanMonitor).clamp(0, 1 << 30),
       );
     } catch (e) {
       debugPrint('CloudSync: recomputeStats failed: $e');
@@ -1782,10 +1862,53 @@ class CloudSyncService extends ChangeNotifier {
     };
   }
 
+  /// v0.1.29+29: serialize a CAN monitor session for the bridge.
+  ///
+  /// Schema per bridge-changes-for-drug1.md §"Ingest request shape":
+  ///
+  ///   {
+  ///     client_session_id, started_at, ended_at, duration_sec,
+  ///     car_state, notes, frame_count, unique_can_ids,
+  ///     frames: [{sequence, ts_ms, can_id, payload_hex}, ...]
+  ///   }
+  ///
+  /// `ts_ms` is **milliseconds since the session's started_at** (per
+  /// the bridge example showing `ts_ms: 0` for the first frame), not
+  /// a Unix epoch ms. We compute it client-side from the absolute
+  /// DateTime stored in [CanFrame.tsMs]. This keeps the wire
+  /// representation compact (BIGINT ~ low millions, not 13-digit
+  /// epochs) and matches the bridge ingest expectation.
+  ///
+  /// `client_session_id` is the Drift row id, which was set explicitly
+  /// at insert time from the SharedPreferences-backed monotonic
+  /// counter (see ConnectionService._nextCanMonitorSessionId).
+  Map<String, dynamic> _canMonitorToJson(
+      CanMonitorSession s, List<CanFrame> frames) {
+    final startMs = s.startedAt.millisecondsSinceEpoch;
+    return {
+      'client_session_id': s.id,
+      'started_at': s.startedAt.toUtc().toIso8601String(),
+      'ended_at': s.endedAt?.toUtc().toIso8601String(),
+      'duration_sec': s.durationSec,
+      'car_state': s.carState,
+      'notes': s.notes,
+      'frame_count': s.frameCount,
+      'unique_can_ids': s.uniqueCanIds,
+      'frames': frames
+          .map((f) => {
+                'sequence': f.sequence,
+                'ts_ms': f.tsMs.millisecondsSinceEpoch - startMs,
+                'can_id': f.canId,
+                'payload_hex': f.payloadHex,
+              })
+          .toList(),
+    };
+  }
+
   /// Read app version from the static value baked into the build.
   /// We don't have package_info_plus as a dep — pubspec-version is
   /// hardcoded here. Update when bumping. Off-by-one tolerated.
-  Future<String> _readAppVersion() async => '0.1.29+28';
+  Future<String> _readAppVersion() async => '0.1.29+29';
 }
 
 // ─── Internal exceptions ────────────────────────────────────────────
