@@ -27,6 +27,15 @@ final Object _killedSentinel = Object();
 const String _kLiveLogSessionIdNext =
     'connection_live_log_session_id_next';
 
+/// v0.1.29+29: same idea for CanMonitorSession rows. Separate namespace
+/// from live-log: the bridge enforces UNIQUE(device_id,
+/// client_session_id) PER TABLE (livelog vs canmonitor are different
+/// tables), so the two counters can coexist without collision. Carrying
+/// a distinct key makes the intent explicit and avoids any accidental
+/// cross-tail growth between the two streams.
+const String _kCanMonitorSessionIdNext =
+    'connection_can_monitor_session_id_next';
+
 /// === BZ5 Physical Model (v5) ===
 ///
 /// Калибровочные константы из реверс-инжиниринга 30 апреля - 1 мая 2026.
@@ -3210,14 +3219,23 @@ class ConnectionService extends ChangeNotifier {
     final wasPolling = _polling;
     if (wasPolling) _polling = false;
 
+    // v0.1.29+29: assign client_session_id from SharedPreferences-
+    // persisted monotonic counter, same pattern as runLiveLog. Bridge
+    // requires this for UNIQUE(device_id, client_session_id) idempotency
+    // on the can_monitor_sessions table (per
+    // bridge-changes-for-drug1.md, commit c73f0fb). Persist AFTER the
+    // insert so a failed insert doesn't burn an id.
+    final nextId = await _nextCanMonitorSessionId();
     final sessionId = await db.insertCanMonitorSession(
       CanMonitorSessionsCompanion(
+        id: Value(nextId),
         startedAt: Value(DateTime.now()),
         durationSec: Value(durationSec),
         carState: Value(carState),
         notes: Value(notes),
       ),
     );
+    await _persistCanMonitorSessionId(sessionId);
     _currentCanMonitorSessionId = sessionId;
     notifyListeners();
 
@@ -3604,6 +3622,39 @@ class ConnectionService extends ChangeNotifier {
       await prefs.setInt(_kLiveLogSessionIdNext, id);
     } catch (e) {
       debugPrint('_persistLiveLogSessionId($id) failed: $e');
+    }
+  }
+
+  /// v0.1.29+29: same pattern as [_nextLiveLogSessionId], for CAN
+  /// monitor sessions. The bridge enforces UNIQUE(device_id,
+  /// client_session_id) on `can_monitor_sessions`, so the row insert
+  /// must carry a per-runtime monotonic value that survives app
+  /// restart. dbMax safety check guards against a SharedPreferences
+  /// rollback (e.g. user clears app data manually).
+  Future<int> _nextCanMonitorSessionId() async {
+    final prefs = await SharedPreferences.getInstance();
+    final persisted = prefs.getInt(_kCanMonitorSessionIdNext) ?? 0;
+
+    int dbMax = 0;
+    try {
+      final all = await db.getAllCanMonitorSessions();
+      for (final s in all) {
+        if (s.id > dbMax) dbMax = s.id;
+      }
+    } catch (e) {
+      debugPrint('_nextCanMonitorSessionId: getAllCanMonitorSessions '
+          'failed: $e');
+    }
+
+    return (persisted > dbMax ? persisted : dbMax) + 1;
+  }
+
+  Future<void> _persistCanMonitorSessionId(int id) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt(_kCanMonitorSessionIdNext, id);
+    } catch (e) {
+      debugPrint('_persistCanMonitorSessionId($id) failed: $e');
     }
   }
 
