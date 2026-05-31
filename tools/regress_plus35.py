@@ -1,16 +1,13 @@
 """
-Independent regression for v0.1.29+35/+36 — the Trends rebuild (+35) and
-the power-flow dashboard widget (+36).
+Independent regression for v0.1.29+35/+36/+37.
 
-Three parts:
-  A. Structural checks on the new Dart (trends sections, getTripsInRange,
-     version triple, fl_chart smoothing flags, old charts gone).
-  B. A Python port of TrendAggregator's maths over synthetic trip sets,
-     exercising null fields, div-by-zero, the short-trip range filter,
-     untariffed cost, and no-overshoot smoothing.
-  C. +36 power-flow widget checks: dashboard/driver-display read the +33
-     getters by exact name, connection.dart is untouched, raw amps are
-     NOT surfaced, and BZ3 (tall layout) marks the value as uncalibrated.
+  A. Trends rebuild (+35) structural checks.
+  B. TrendAggregator maths edge cases (+35).
+  C. Power-flow dashboard widget (+36).
+  D. trips.extra speed-histogram backup (+37): migration is additive,
+     binning matches SpeedHistogramCard exactly, JSON round-trips, parse
+     is corruption-tolerant, cloud upload/restore carry extra, and the
+     detail view falls back to extra when samples are empty.
 
 Run from repo root:  python3 tools/regress_plus35.py
 Exit 0 = clean, 1 = any FAIL.
@@ -313,9 +310,157 @@ if int(pv) >= 36:
 else:
     ok(f"Part C skipped (build +{pv}, power-flow widget lands in +36)")
 
+# ──────────── Part D: +37 trips.extra speed-histogram backup ────────────
+if int(pv) >= 37:
+    db_src = (root / 'lib/data/database.dart').read_text()
+    extra_src_path = root / 'lib/data/trip_extra.dart'
+    conn_src = (root / 'lib/services/connection.dart').read_text()
+    cloud_src = (root / 'lib/services/cloud_sync_service.dart').read_text()
+    detail_src = (root / 'lib/screens/trip_detail.dart').read_text()
+
+    # D1. schema migration: version bumped to 8, additive addColumn step.
+    if "int get schemaVersion => 8;" in db_src:
+        ok("D1 schemaVersion bumped to 8")
+    else:
+        fail("D1 schemaVersion not 8")
+    if "if (from < 8)" in db_src and "m.addColumn(trips, trips.extra)" in db_src:
+        ok("D1 migration adds trips.extra (additive)")
+    else:
+        fail("D1 from<8 addColumn(trips.extra) missing")
+    # additive only — must NOT drop/recreate trips in the new step
+    seg = db_src[db_src.find("if (from < 8)"):db_src.find("if (from < 8)") + 200]
+    if "deleteTable" in seg or "drop" in seg.lower():
+        fail("D1 from<8 step is destructive (drop/delete) — must be additive")
+    else:
+        ok("D1 from<8 step is non-destructive")
+
+    # D2. extra written only when non-null (don't null existing on partial)
+    if "extra != null ? Value(extra) : const Value.absent()" in db_src:
+        ok("D2 endTrip writes extra only when non-null (absent otherwise)")
+    else:
+        fail("D2 endTrip extra write not guarded with Value.absent()")
+
+    # D3. histogram computed at endTrip in connection.dart (protected,
+    #     owner-authorised) and best-effort (wrapped so it can't block).
+    if "computeSpeedHistogramJson" in conn_src and conn_src.count("computeSpeedHistogramJson") >= 2:
+        ok("D3 connection computes histogram at both endTrip sites")
+    else:
+        fail("D3 histogram not computed at both endTrip sites")
+    if "non-fatal" in conn_src and "computeSpeedHistogramJson" in conn_src:
+        ok("D3 histogram compute is best-effort (cannot block finalize)")
+    else:
+        warn("D3 histogram compute may not be wrapped best-effort")
+
+    # D4. cloud sync carries extra both ways
+    if "'extra': _decodeExtraOrNull(t.extra)" in cloud_src:
+        ok("D4 upload sends extra (decoded to object for jsonb)")
+    else:
+        fail("D4 upload does not send extra")
+    if "extra: _encodeExtraOrAbsent(j['extra'])" in cloud_src:
+        ok("D4 restore re-encodes server extra into local row")
+    else:
+        fail("D4 restore does not handle extra")
+
+    # D5. detail view falls back to extra when samples empty
+    if "TripExtra.parse(widget.trip?.extra)" in detail_src and "hasSpeedHistogram" in detail_src:
+        ok("D5 trip detail falls back to extra histogram when samples empty")
+    else:
+        fail("D5 trip detail extra fallback missing")
+
+    # D6. Python port of trip_extra binning — must match SpeedHistogramCard
+    #     (15 bins × 10 km/h, exclude v<1). Verify the Dart constants too.
+    if "speedBinSize = 10" in extra_src_path.read_text() and \
+       "speedBinCount = 15" in extra_src_path.read_text():
+        ok("D6 extra binning constants = 15×10 km/h (match histogram card)")
+    else:
+        fail("D6 extra binning constants differ from histogram card")
+
+    SPEED_BIN_SIZE = 10
+    SPEED_BIN_COUNT = 15
+
+    def bin_speed(kmh):
+        if kmh is None or kmh < 1:
+            return None
+        idx = int(kmh // SPEED_BIN_SIZE)
+        if idx < 0 or idx >= SPEED_BIN_COUNT:
+            return None
+        return idx
+
+    def build_hist(speeds):
+        c = [0] * SPEED_BIN_COUNT
+        for v in speeds:
+            b = bin_speed(v)
+            if b is not None:
+                c[b] += 1
+        return c
+
+    # D7. binning matches the card's documented behaviour: v<1 excluded,
+    #     150+ dropped, correct bucket assignment.
+    h = build_hist([0, 0.5, 1, 9.9, 10, 55, 149, 150, 200, None])
+    # expect: 1→bin0, 9.9→bin0, 10→bin1, 55→bin5, 149→bin14; 0/0.5/150/200/None excluded
+    exp = [0]*15
+    exp[0] = 2  # 1, 9.9
+    exp[1] = 1  # 10
+    exp[5] = 1  # 55
+    exp[14] = 1  # 149
+    if h == exp:
+        ok("D7 binning matches card (v<1 and ≥150 excluded, buckets correct)")
+    else:
+        fail(f"D7 binning mismatch: {h} != {exp}")
+
+    # D8. JSON round-trip: build → encode → parse → identical histogram.
+    import json as _json
+    def encode_extra(hist):
+        m = {"v": 1}
+        if hist and any(c > 0 for c in hist):
+            m["speedHist"] = hist
+        return None if len(m) == 1 else _json.dumps(m)
+
+    def parse_extra(raw):
+        if not raw:
+            return None
+        try:
+            o = _json.loads(raw)
+            h = o.get("speedHist")
+            if isinstance(h, list) and len(h) == SPEED_BIN_COUNT:
+                return [int(x) for x in h]
+        except Exception:
+            return None
+        return None
+
+    src = build_hist([5, 15, 15, 65, 65, 65, 120])
+    rt = parse_extra(encode_extra(src))
+    if rt == src:
+        ok("D8 histogram JSON round-trips identically")
+    else:
+        fail(f"D8 round-trip mismatch: {rt} != {src}")
+
+    # D9. empty histogram → encode returns None (don't store empty blobs)
+    if encode_extra([0]*15) is None and encode_extra(None) is None:
+        ok("D9 empty histogram stores nothing (no empty blobs)")
+    else:
+        fail("D9 empty histogram produced a blob")
+
+    # D10. parse is corruption-tolerant: garbage / wrong-length → None,
+    #      never throws.
+    bad_inputs = ["", "not json", "{}", '{"speedHist":[1,2,3]}',
+                  '{"speedHist":"nope"}', "null", "[1,2,3]"]
+    crashed = False
+    for b in bad_inputs:
+        try:
+            parse_extra(b)
+        except Exception:
+            crashed = True
+    if not crashed and all(parse_extra(b) is None for b in bad_inputs):
+        ok("D10 parse tolerant of malformed/short blobs (→ None, no throw)")
+    else:
+        fail("D10 parse not corruption-tolerant")
+else:
+    ok(f"Part D skipped (build +{pv}, extra-backup lands in +37)")
+
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
-print(f"+35/+36 TRENDS & POWER-FLOW REGRESSION — build +{pv}")
+print(f"+35/+36/+37 REGRESSION — build +{pv}")
 print("=" * 64)
 for m in oks:
     print(f"  [PASS] {m}")

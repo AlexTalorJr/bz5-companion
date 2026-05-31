@@ -1297,6 +1297,17 @@ class ConnectionService extends ChangeNotifier {
     }
 
     try {
+      // v0.1.29+37: freeze the speed-distribution histogram onto the trip
+      // row so it survives a DB wipe + cloud restore (samples aren't
+      // uploaded). Computed from the just-recorded 740/0008 samples;
+      // null if none were captured (then extra stays absent). Best-effort
+      // — a failure here must not block trip finalization.
+      String? extraJson;
+      try {
+        extraJson = await db.computeSpeedHistogramJson(tripId);
+      } catch (e) {
+        debugPrint('Speed-histogram extra compute failed (non-fatal): $e');
+      }
       await db.endTrip(
         tripId,
         endSoc: endSoc,
@@ -1318,6 +1329,7 @@ class ConnectionService extends ChangeNotifier {
         movingSeconds: _tripMovingSec > 0 ? _tripMovingSec : null,
         idleSeconds: _tripIdleSec > 0 ? _tripIdleSec : null,
         energyFromSocKwh: energyFromSoc,
+        extra: extraJson,
       );
       debugPrint('Trip #$tripId finalized on disconnect '
           '(distance=$distanceKm km, energy=$energyUsedKwh kWh)');
@@ -1510,6 +1522,15 @@ class ConnectionService extends ChangeNotifier {
                 100.0;
       }
 
+      // v0.1.29+37: freeze speed-distribution histogram (see disconnect
+      // path for rationale). Best-effort; never blocks finalization.
+      String? extraJson;
+      try {
+        extraJson = await db.computeSpeedHistogramJson(_currentTripId!);
+      } catch (e) {
+        debugPrint('Speed-histogram extra compute failed (non-fatal): $e');
+      }
+
       await db.endTrip(
         _currentTripId!,
         endSoc: endSoc,
@@ -1532,6 +1553,7 @@ class ConnectionService extends ChangeNotifier {
         movingSeconds: _tripMovingSec > 0 ? _tripMovingSec : null,
         idleSeconds: _tripIdleSec > 0 ? _tripIdleSec : null,
         energyFromSocKwh: energyFromSoc,
+        extra: extraJson,
       );
       _currentTripId = null;
       _tripStartedAt = null;

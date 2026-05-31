@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
 import '../data/database.dart';
+import '../data/trip_extra.dart';
 import '../services/connection.dart';
 import '../services/cost_settings.dart';
 
@@ -84,7 +85,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
               const SizedBox(height: 12),
               MovingIdleDonutCard(trip: trip),
               const SizedBox(height: 12),
-              SpeedHistogramCard(tripId: trip.id),
+              SpeedHistogramCard(tripId: trip.id, trip: trip),
               const SizedBox(height: 12),
               // v0.1.24: SOC chart switched from integer 0x0005 (which
               // steps in 1% chunks and looks jagged on short trips) to
@@ -181,7 +182,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
           MovingIdleDonutCard(trip: trip),
         ),
         const SizedBox(height: 12),
-        SpeedHistogramCard(tripId: trip.id),
+        SpeedHistogramCard(tripId: trip.id, trip: trip),
         const SizedBox(height: 12),
         _ChartCard(
           title: 'SOC vs time',
@@ -605,7 +606,13 @@ class MovingIdleDonutCard extends StatelessWidget {
 /// Excluded: speed = 0 (stopped/idle) — those are in the donut card.
 class SpeedHistogramCard extends StatefulWidget {
   final int tripId;
-  const SpeedHistogramCard({required this.tripId});
+  // v0.1.29+37: the trip row, when available, carries `extra` — a
+  // precomputed speed histogram used as a fallback when raw samples are
+  // gone (e.g. after a cloud restore). Optional so existing call sites
+  // that only have a tripId keep compiling; without it the card behaves
+  // exactly as before (samples-only).
+  final Trip? trip;
+  const SpeedHistogramCard({required this.tripId, this.trip});
 
   @override
   State<SpeedHistogramCard> createState() => SpeedHistogramCardState();
@@ -679,11 +686,29 @@ class SpeedHistogramCardState extends State<SpeedHistogramCard> {
                     return const Center(child: CircularProgressIndicator());
                   }
                   final samples = snap.data!;
-                  if (samples.isEmpty) {
-                    // v0.1.29+30: instead of a bare "No speed data",
-                    // show which DIDs DID record, to diagnose whether
-                    // the whole trip went un-sampled or just 740 was
-                    // silent.
+
+                  // v0.1.29+37: resolve the histogram counts from raw
+                  // samples when present, else fall back to the
+                  // precomputed histogram in trip.extra (survives a
+                  // cloud restore where samples are gone). Same 15×10km/h
+                  // bins either way (shared binSpeed), so the chart is
+                  // visually identical regardless of source.
+                  const binSize = speedBinSize;
+                  const binCount = speedBinCount;
+                  List<int>? counts;
+                  if (samples.isNotEmpty) {
+                    counts = buildSpeedHistogram(
+                        samples.map((s) => s.numericValue));
+                  } else {
+                    final ex = TripExtra.parse(widget.trip?.extra);
+                    if (ex.hasSpeedHistogram) {
+                      counts = ex.speedHist;
+                    }
+                  }
+
+                  if (counts == null) {
+                    // No raw samples AND no restorable histogram → show
+                    // the diagnostic breakdown (why is it empty?).
                     return Center(
                       child: FutureBuilder<Map<String, int>>(
                         future: _loadSampleBreakdown(),
@@ -719,20 +744,11 @@ class SpeedHistogramCardState extends State<SpeedHistogramCard> {
                     );
                   }
 
-                  // Bin into 10 km/h buckets, skip zero bucket (stopped)
-                  // and cap at 150 km/h (very few samples above).
-                  const binSize = 10;
-                  const binCount = 15; // 0..149
-                  final counts = List<int>.filled(binCount, 0);
-                  for (final s in samples) {
-                    final v = s.numericValue;
-                    if (v == null || v < 1) continue; // exclude stopped
-                    final binIdx = (v / binSize).floor();
-                    if (binIdx >= 0 && binIdx < binCount) {
-                      counts[binIdx]++;
-                    }
-                  }
                   final total = counts.fold<int>(0, (a, b) => a + b);
+                  // Non-nullable alias: counts is proven non-null above,
+                  // but Dart won't promote a nullable through the closures
+                  // below (getTitlesWidget / barGroups), so bind it here.
+                  final List<int> bins = counts;
                   if (total == 0) {
                     return const Center(
                       child: Text(
@@ -743,14 +759,14 @@ class SpeedHistogramCardState extends State<SpeedHistogramCard> {
                   }
 
                   // Identify max bin and second-max for color hierarchy.
-                  final maxCount = counts.reduce((a, b) => a > b ? a : b);
+                  final maxCount = bins.reduce((a, b) => a > b ? a : b);
                   final percents =
-                      counts.map((c) => 100.0 * c / total).toList();
+                      bins.map((c) => 100.0 * c / total).toList();
 
                   // Find rightmost non-zero bin for clipping the X-axis
                   int rightmost = 0;
                   for (int i = 0; i < binCount; i++) {
-                    if (counts[i] > 0) rightmost = i;
+                    if (bins[i] > 0) rightmost = i;
                   }
                   // At least show 0..70 km/h to keep chart proportions
                   // stable on short trips that never exceed urban speeds.
@@ -796,9 +812,9 @@ class SpeedHistogramCardState extends State<SpeedHistogramCard> {
                               // value stays visually attached to its bar
                               // without an arrow / leader line.
                               Color labelColor;
-                              if (counts[idx] >= maxCount * 0.8) {
+                              if (bins[idx] >= maxCount * 0.8) {
                                 labelColor = Colors.redAccent;
-                              } else if (counts[idx] >= maxCount * 0.5) {
+                              } else if (bins[idx] >= maxCount * 0.5) {
                                 labelColor = Colors.yellowAccent.shade700;
                               } else {
                                 labelColor = Colors.greenAccent.shade400;
@@ -845,9 +861,9 @@ class SpeedHistogramCardState extends State<SpeedHistogramCard> {
                         // Color hierarchy: dominant (>= 80% of max) red,
                         // strong (>= 50%) yellow, anything else green.
                         Color barColor;
-                        if (counts[i] >= maxCount * 0.8) {
+                        if (bins[i] >= maxCount * 0.8) {
                           barColor = Colors.redAccent;
-                        } else if (counts[i] >= maxCount * 0.5) {
+                        } else if (bins[i] >= maxCount * 0.5) {
                           barColor = Colors.yellowAccent.shade700;
                         } else {
                           barColor = Colors.greenAccent.shade400;
