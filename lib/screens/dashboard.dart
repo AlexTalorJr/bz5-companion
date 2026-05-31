@@ -89,6 +89,15 @@ class _Connected extends StatelessWidget {
     final pduTemp1 = svc.readNumeric('740', '0010'); // PDU heatsink 1
     final pduTemp2 = svc.readNumeric('740', '0011'); // PDU heatsink 2
 
+    // v0.1.29+36: surface the +33 power-flow data layer on the dashboard.
+    // These are READ-ONLY getters from connection.dart (P = V×I, flow sign,
+    // Wh/km) — no protocol logic touched. Magnitude inherits the
+    // PROVISIONAL current scale, so we show power/flow/consumption (which
+    // are scale-proportional and sign-exact) and deliberately NOT raw amps.
+    final powerKw = svc.instantPowerKw;             // discharge +, regen −
+    final flowDir = svc.powerFlowDirection;         // 1 / −1 / 0 (sign exact)
+    final consWhKm = svc.instantConsumptionWhKm;    // null below 3 km/h
+
     // v0.1.29: detect "tall portrait" head units (BZ3 in particular).
     //
     // Field measurement 2026-05-23 (BZ3 owner's screenshot of in-app
@@ -267,6 +276,39 @@ class _Connected extends StatelessWidget {
                 label: 'Speed',
                 value: '${vehicleSpeed.toStringAsFixed(0)} km/h',
               ),
+            // v0.1.29+36: live pack power (+33 data layer). Discharge is
+            // shown blue (energy leaving), regen green (energy returning),
+            // near-zero grey. Magnitude is provisional-scale, so we show
+            // kW (proportional, sign-exact) — not raw amps. Hidden when
+            // current is stale/unavailable (getter returns null).
+            //
+            // BZ3 caveat: 790/0009 is NOT verified on BZ3 (different BMS
+            // mapping — see handoff). On tall layout we mark the value '*'
+            // and label it a candidate so it's never mistaken for a
+            // confirmed reading. BZ5/phone read off the verified BZ5 pack.
+            if (powerKw != null)
+              _MetricCard(
+                icon: flowDir == -1
+                    ? Icons.battery_charging_full
+                    : Icons.bolt,
+                color: _flowColor(flowDir),
+                label: useTallLayout
+                    ? (flowDir == -1 ? 'Regen?' : 'Power?')
+                    : (flowDir == -1 ? 'Regen' : 'Power'),
+                value: '${powerKw.abs().toStringAsFixed(1)} kW'
+                    '${useTallLayout ? '*' : ''}',
+              ),
+            // v0.1.29+36: instantaneous consumption while moving (Wh/km).
+            // Getter is null below ~3 km/h, so this cell simply disappears
+            // at a standstill instead of showing a blown-up number.
+            if (consWhKm != null)
+              _MetricCard(
+                icon: Icons.eco,
+                color: consWhKm < 0 ? Colors.green : Colors.tealAccent,
+                label: useTallLayout ? 'Consumption?' : 'Consumption',
+                value: '${consWhKm.abs().toStringAsFixed(0)} Wh/km'
+                    '${useTallLayout ? '*' : ''}',
+              ),
             // v0.1.22: PDU heatsink temps (live, 740/0x0010 + 0x0011).
             // Yesterday's hottest values were ~58°C after spirited
             // driving; idle baseline 30-35°C.
@@ -350,6 +392,15 @@ class _Connected extends StatelessWidget {
     if (t < 55) return Colors.yellowAccent;
     if (t < 65) return Colors.orangeAccent;
     return Colors.redAccent;
+  }
+
+  // v0.1.29+36: power-flow direction → colour. Regen (energy into pack)
+  // green, discharge (energy out) blue, near-zero deadband grey. Matches
+  // the +33 powerFlowDirection contract (1 / −1 / 0).
+  Color _flowColor(int? dir) {
+    if (dir == -1) return Colors.greenAccent;
+    if (dir == 1) return Colors.lightBlueAccent;
+    return Colors.grey;
   }
 }
 
@@ -869,7 +920,7 @@ class _LayoutDiagnostic extends StatelessWidget {
 
 /// Bump when changing the diagnostic format — helps cross-reference
 /// screenshots to specific app versions while iterating.
-const String _kDiagVersion = 'v0.1.29+35';
+const String _kDiagVersion = 'v0.1.29+36';
 
 class _GridCards extends StatelessWidget {
   final List<Widget> children;

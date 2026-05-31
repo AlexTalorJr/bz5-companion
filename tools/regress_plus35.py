@@ -1,15 +1,16 @@
 """
-Independent regression for v0.1.29+35 — the Trends rebuild.
+Independent regression for v0.1.29+35/+36 — the Trends rebuild (+35) and
+the power-flow dashboard widget (+36).
 
-Two parts:
-  A. Structural checks on the new Dart (does trends.dart wire the three
-     sections, does database.dart expose getTripsInRange, version triple,
-     fl_chart smoothing flags present, old snapshot-only charts gone).
-  B. A Python port of TrendAggregator's maths run against synthetic trip
-     sets, exercising the edge cases that were called out as the main
-     bug surface: null fields on historic trips, division by zero, the
-     short-trip range filter, money with an unconfigured tariff, and the
-     moving-average never overshooting the data range.
+Three parts:
+  A. Structural checks on the new Dart (trends sections, getTripsInRange,
+     version triple, fl_chart smoothing flags, old charts gone).
+  B. A Python port of TrendAggregator's maths over synthetic trip sets,
+     exercising null fields, div-by-zero, the short-trip range filter,
+     untariffed cost, and no-overshoot smoothing.
+  C. +36 power-flow widget checks: dashboard/driver-display read the +33
+     getters by exact name, connection.dart is untouched, raw amps are
+     NOT surfaced, and BZ3 (tall layout) marks the value as uncalibrated.
 
 Run from repo root:  python3 tools/regress_plus35.py
 Exit 0 = clean, 1 = any FAIL.
@@ -34,8 +35,8 @@ agg_src = (root / 'lib/services/trend_aggregator.dart').read_text()
 pv = re.search(r"version:\s*0\.1\.29\+(\d+)", (root / 'pubspec.yaml').read_text()).group(1)
 diag = re.search(r"_kDiagVersion = 'v0\.1\.29\+(\d+)'", (root / 'lib/screens/dashboard.dart').read_text())
 cloud = re.search(r"_readAppVersion\(\) async => '0\.1\.29\+(\d+)'", (root / 'lib/services/cloud_sync_service.dart').read_text())
-if pv == "35" and diag and diag.group(1) == "35" and cloud and cloud.group(1) == "35":
-    ok("version triple-sync = +35")
+if pv == diag.group(1) and pv == cloud.group(1) and int(pv) >= 35:
+    ok(f"version triple-sync = +{pv}")
 else:
     fail(f"version triple mismatch: pubspec={pv} diag={diag and diag.group(1)} cloud={cloud and cloud.group(1)}")
 
@@ -254,9 +255,67 @@ if ys == sorted(ys):
 else:
     fail(f"B10 cumulative not monotone: {ys}")
 
+# ──────────── Part C: +36 power-flow dashboard widget ────────────
+# Only meaningful once +36 is applied; on a pure +35 tree these are
+# skipped (the version gate tells us which we're on).
+if int(pv) >= 36:
+    dash = (root / 'lib/screens/dashboard.dart').read_text()
+    driver = (root / 'lib/screens/wide/driver_view_wide.dart').read_text()
+    conn = (root / 'lib/services/connection.dart').read_text()
+
+    # C1. widgets read the +33 getters by EXACT name (typo → CI compile fail)
+    for getter in ["instantPowerKw", "powerFlowDirection"]:
+        if getter in dash and getter in conn:
+            ok(f"C1 dashboard reads svc.{getter}")
+        else:
+            fail(f"C1 dashboard missing/!exists getter {getter}")
+    if "instantConsumptionWhKm" in dash:
+        ok("C1 dashboard reads svc.instantConsumptionWhKm")
+    else:
+        fail("C1 dashboard missing instantConsumptionWhKm")
+    if "instantPowerKw" in driver:
+        ok("C1 driver display reads svc.instantPowerKw")
+    else:
+        fail("C1 driver display missing instantPowerKw")
+
+    # C2. connection.dart MUST be untouched by +36 (protected file).
+    #     The +33 getters must still be present and unchanged in shape.
+    for sig in ["double? get instantPowerKw {",
+                "int? get powerFlowDirection {",
+                "double? get instantConsumptionWhKm {"]:
+        if sig in conn:
+            ok(f"C2 protected getter intact: {sig.split('get ')[1].split(' ')[0]}")
+        else:
+            fail(f"C2 protected getter altered/missing: {sig}")
+
+    # C3. raw amps NOT surfaced on the dashboard (owner's call: provisional
+    #     scale → show kW/flow, never a hard 'X A' figure). We allow the
+    #     getter packCurrentA to exist in connection.dart, but the UI files
+    #     must not render an ampere unit.
+    amp_ui = (" A'" in dash) or (" A\"" in dash) or ("packCurrentA" in dash) or \
+             (" A'" in driver) or ("packCurrentA" in driver)
+    if not amp_ui:
+        ok("C3 no raw-ampere readout in dashboard/driver UI")
+    else:
+        fail("C3 raw amps surfaced in UI — owner said power/flow only")
+
+    # C4. BZ3 (tall layout) marks power as uncalibrated candidate.
+    if "useTallLayout ? 'Regen?'" in dash or "Power?'" in dash:
+        ok("C4 BZ3 marks power as candidate (790/0009 unverified there)")
+    else:
+        fail("C4 BZ3 power not marked candidate — risks false confirmed reading")
+
+    # C5. flow colour helper present and maps 1/-1/0
+    if "_flowColor" in dash:
+        ok("C5 _flowColor helper present")
+    else:
+        fail("C5 _flowColor helper missing")
+else:
+    ok(f"Part C skipped (build +{pv}, power-flow widget lands in +36)")
+
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
-print(f"+35 TRENDS REGRESSION — build +{pv}")
+print(f"+35/+36 TRENDS & POWER-FLOW REGRESSION — build +{pv}")
 print("=" * 64)
 for m in oks:
     print(f"  [PASS] {m}")

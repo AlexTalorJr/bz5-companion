@@ -279,6 +279,21 @@ class _BottomStatusStrip extends StatelessWidget {
         ? svc.globalMaxCellMv! - svc.globalMinCellMv!
         : null;
 
+    // v0.1.29+36: live power flow on the driver display (+33 data layer,
+    // read-only). Discharge blue / regen green / near-zero grey; we show
+    // kW magnitude (provisional scale, sign-exact) not raw amps. Falls
+    // back to a dash when current is stale.
+    final powerKw = svc.instantPowerKw;
+    final flowDir = svc.powerFlowDirection;
+    final Color powerColor = flowDir == -1
+        ? Colors.greenAccent
+        : flowDir == 1
+            ? Colors.lightBlueAccent
+            : Colors.white70;
+    final String powerStr = powerKw != null
+        ? '${flowDir == -1 ? 'Regen' : 'Power'} ${powerKw.abs().toStringAsFixed(1)} kW'
+        : 'Power —';
+
     // Battery temp: trip range if active, single value if idle.
     final hasTrip = svc.currentTripId != null;
     final batTempStr = (() {
@@ -306,6 +321,8 @@ class _BottomStatusStrip extends StatelessWidget {
         child: Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
+            Text(powerStr, style: TextStyle(color: powerColor)),
+            const _Sep(),
             Text(soh != null ? 'SOH ${soh.toInt()} %' : 'SOH —'),
             const _Sep(),
             Text(batTempStr),
