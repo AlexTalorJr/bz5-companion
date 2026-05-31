@@ -107,7 +107,13 @@ const bmsEcu = EcuSpec(
     // BMS returns under sustained heavy regen — observed 7 cycles in
     // livelog session 13 (2026-05-19 10:09:34-09:51).
     DidSpec(did: '0015', name: 'HV bus voltage', unit: 'V', scale: 0.025, expectedBytes: 2, category: DidCategory.packVoltage, sanityRawMin: 8000, sanityRawMax: 24000),
-    DidSpec(did: '0009', name: 'Energy counter', category: DidCategory.counter),
+    // v0.1.29+33: 790/0009 is PACK CURRENT (offset-signed), not an
+    // energy counter — corrected after C31 (4-ECU cross-validation on
+    // AC charging, ~7-9 A agreement) and C32 (bidirectional on drive,
+    // r≈0.83 vs VCU current 791/0039). Decode is handled specially in
+    // the fast-lane sub-poll (offset-signed, provisional scale); no
+    // simple linear `scale` applies here because of the zero-offset.
+    DidSpec(did: '0009', name: 'Pack current (offset-signed)', unit: 'A', category: DidCategory.drive),
     DidSpec(did: '000A', name: 'Counter A', category: DidCategory.counter),
     DidSpec(did: '0B00', name: 'Total energy 1', category: DidCategory.counter),
     DidSpec(did: '0B01', name: 'Total energy 2', category: DidCategory.counter),

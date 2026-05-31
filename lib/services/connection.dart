@@ -419,6 +419,40 @@ class ConnectionService extends ChangeNotifier {
   double? _subPollPackV;
   DateTime? _subPollPackVAt;
 
+  /// v0.1.29+33: fast-cadence pack current (amps), read from 790/0009 in
+  /// the SAME sub-poll as pack voltage (790/0015) so V and I are sampled
+  /// ~one read apart — close enough to treat as simultaneous for an
+  /// instantaneous P = V × I. Updated at the fast-lane cadence (~2 Hz),
+  /// same as voltage and speed.
+  ///
+  /// Sign convention (confirmed C31/C32, runs 3+4): offset-encoded, the
+  /// raw value is ALWAYS positive and sits around a zero-point; values
+  /// above zero = discharge (current OUT of pack), below = charge/regen
+  /// (current INTO pack). We store amps with discharge POSITIVE.
+  ///
+  /// CALIBRATION — PROVISIONAL. Cross-validated across 4 ECUs on AC
+  /// charging (C31: ~7-9 A all agreeing) and bidirectional on drive
+  /// (C32: regen<charge<cruise<accel ordering, 790/0009↔791/0039
+  /// r≈0.83). But the exact zero-point and amps-per-LSB are bracketed,
+  /// not pinned — they need one DC-charge anchor point (known station
+  /// current) to fix precisely. Until then we DO NOT surface a hard
+  /// ampere figure in the UI; we use this only for power (V×I, where a
+  /// scale error is a proportional, not catastrophic, bias) and for
+  /// flow DIRECTION (sign is exact regardless of scale). See
+  /// _kPackCurrentZeroRaw / _kPackCurrentAmpsPerLsb.
+  double? _packCurrentA;
+  DateTime? _packCurrentAt;
+
+  /// v0.1.29+33: PROVISIONAL decode constants for 790/0009 pack current.
+  /// raw is u16 big-endian. amps = (raw - zero) * ampsPerLsb, discharge
+  /// positive. Zero ~4800 and ~0.05 A/LSB are physics-bracketed mid-
+  /// points from C32 (accel peak raw ~9953 ↔ a few-hundred-amp
+  /// discharge; regen min raw ~3346 ↔ tens-of-amps charge). REPLACE
+  /// both with the values from a DC-charge anchor cycle when available;
+  /// this is a single-line change by design.
+  static const double _kPackCurrentZeroRaw = 4800.0;
+  static const double _kPackCurrentAmpsPerLsb = 0.05;
+
   /// v0.1.29+30: speed sub-poll diagnostics. The owner observed a trip
   /// with zero 740/0008 speed samples ("No speed data for this trip")
   /// while BMS signals (SOC, temp) recorded normally — pointing at the
@@ -928,6 +962,78 @@ class ConnectionService extends ChangeNotifier {
 
     // Fallback: nominal constant (Bz5Model.avgConsumptionWhKm = 144 Wh/km)
     return remainingKwh * 1000 / Bz5Model.avgConsumptionWhKm;
+  }
+
+  /// v0.1.29+33: live pack current in amps, discharge POSITIVE, charge/
+  /// regen NEGATIVE. Sourced from the fast-lane 790/0009 sub-poll
+  /// ([_pollPackVoltageOnly] reads it right after voltage). Null until
+  /// the first successful read, or if the last read is stale (>2 s).
+  ///
+  /// NOTE — PROVISIONAL magnitude. The sign is exact; the absolute amps
+  /// depend on [_kPackCurrentZeroRaw]/[_kPackCurrentAmpsPerLsb] which are
+  /// physics-bracketed, not anchor-calibrated. The UI deliberately does
+  /// NOT show a hard ampere number from this yet (see dashboard). Use it
+  /// for [instantPowerKw] and [powerFlowDirection], not for a precise
+  /// "X amps" readout.
+  double? get packCurrentA {
+    final t = _packCurrentAt;
+    if (_packCurrentA == null || t == null) return null;
+    if (DateTime.now().difference(t).inMilliseconds > 2000) return null;
+    return _packCurrentA;
+  }
+
+  /// v0.1.29+33: instantaneous pack power in kW, computed P = V × I from
+  /// the fast-lane voltage and current (sampled ~one read apart, so
+  /// effectively simultaneous). Discharge POSITIVE (energy leaving the
+  /// pack), regen/charge NEGATIVE.
+  ///
+  /// Voltage source priority mirrors the dashboard's own pack-voltage
+  /// number: [packVoltageFromCells] (the user-facing live V). Returns
+  /// null if either input is missing/stale.
+  ///
+  /// Magnitude inherits the PROVISIONAL current scale, so treat it as a
+  /// good-but-not-yet-anchor-calibrated figure. The error is
+  /// proportional (a scale factor), so trends, sign, and relative
+  /// comparisons are trustworthy even pre-calibration.
+  double? get instantPowerKw {
+    final i = packCurrentA;
+    final v = packVoltageFromCells;
+    if (i == null || v == null) return null;
+    return v * i / 1000.0;
+  }
+
+  /// v0.1.29+33: flow direction as a small enum-like int for the UI.
+  ///   1  = discharging (power leaving pack — accel/cruise)
+  ///  -1  = charging/regen (power into pack — regen brake or plugged in)
+  ///   0  = near zero (within a small deadband)
+  /// Null if current is unavailable. The sign is EXACT regardless of the
+  /// provisional scale, so this is the safest current-derived signal to
+  /// surface.
+  int? get powerFlowDirection {
+    final i = packCurrentA;
+    if (i == null) return null;
+    // Deadband ~1 kW-equivalent: with provisional scale ~0.05 A/LSB and
+    // a ~2 A floor of decode noise, treat |I| < 3 A as "near zero".
+    if (i > 3.0) return 1;
+    if (i < -3.0) return -1;
+    return 0;
+  }
+
+  /// v0.1.29+33: instantaneous consumption in Wh/km, the driver-facing
+  /// "how hard am I drawing right now" number. = instantaneous power (W)
+  /// / speed (km/h). Negative when regenerating (energy returning).
+  ///
+  /// Only meaningful while moving; returns null below ~3 km/h (the
+  /// number blows up toward infinity as speed → 0, which is not useful
+  /// on the dashboard — at a standstill there's no "per km" to speak of).
+  /// Inherits the provisional power scale (proportional bias).
+  double? get instantConsumptionWhKm {
+    final p = instantPowerKw;
+    final spd = vehicleSpeedKmh;
+    if (p == null || spd == null) return null;
+    if (spd < 3.0) return null;
+    // P[kW] * 1000 = W; W / (km/h) = Wh/km.
+    return p * 1000.0 / spd;
   }
 
   /// v0.1.26+11: trip-side energy delivered (positive = charged, negative = consumed).
@@ -1644,6 +1750,49 @@ class ConnectionService extends ChangeNotifier {
         _samplesInTrip++;
       }
       notifyListeners();
+    } catch (_) {
+      // Ignore — next sub-poll attempt will retry.
+    }
+
+    // v0.1.29+33: read pack CURRENT (790/0009) right after voltage, in
+    // the same sub-poll, so V and I are one read apart (~110 ms) — close
+    // enough to treat as simultaneous for instantaneous power. This adds
+    // a SECOND read to 790 per fast-lane iteration; combined with the
+    // separate _pollCellExtremesOnly (002B + 002D) that's up to 4 reads
+    // to 790 across the iteration, but they are not all consecutive
+    // (voltage+current here, then a different ECU via _pollEcu, then
+    // extremes), so we stay clear of the "5th consecutive same-ECU read
+    // returns EMPTY" adapter quirk (see runLiveLog notes).
+    try {
+      final rI = await _client!.readDid('0009', tx: '790', rx: '798')
+          .timeout(const Duration(milliseconds: 800));
+      final pI = rI?.payloadAfterUdsRead;
+      if (pI != null && pI.length >= 2) {
+        final raw = (pI[0] << 8) | pI[1];
+        // Offset-signed decode, discharge positive (C31/C32). PROVISIONAL
+        // scale — see _kPackCurrentZeroRaw / _kPackCurrentAmpsPerLsb.
+        final amps =
+            (raw - _kPackCurrentZeroRaw) * _kPackCurrentAmpsPerLsb;
+        // Sanity: BZ5 peak ~200 kW / ~400 V ≈ 500 A discharge; regen
+        // peak well under that. Bound generously and skip outliers
+        // (misaligned frame / BLE corruption).
+        if (amps >= -600.0 && amps <= 600.0) {
+          _packCurrentA = amps;
+          _packCurrentAt = DateTime.now();
+          if (_currentTripId != null) {
+            await db.insertSample(
+              tripId: _currentTripId,
+              ecuTx: '790',
+              did: '0009',
+              rawHex: rI!.rawHex,
+              numeric: amps,
+              text: null,
+            );
+            _samplesInTrip++;
+          }
+          notifyListeners();
+        }
+      }
     } catch (_) {
       // Ignore — next sub-poll attempt will retry.
     }
