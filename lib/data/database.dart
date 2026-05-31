@@ -454,6 +454,19 @@ class AppDatabase extends _$AppDatabase {
     return (select(trips)..where((t) => t.id.equals(id))).getSingleOrNull();
   }
 
+  /// v0.1.29+35: trips whose startedAt falls in [from, to], oldest first.
+  /// Backs the Trends period aggregation (cumulative + per-period charts).
+  /// Ordered ascending so the aggregator can walk them chronologically
+  /// without re-sorting.
+  Future<List<Trip>> getTripsInRange(DateTime from, DateTime to) {
+    return (select(trips)
+          ..where((t) =>
+              t.startedAt.isBiggerOrEqualValue(from) &
+              t.startedAt.isSmallerOrEqualValue(to))
+          ..orderBy([(t) => OrderingTerm(expression: t.startedAt)]))
+        .get();
+  }
+
   // ─────────────────────────── Samples ───────────────────────────
 
   Future<int> insertSample({
