@@ -2,6 +2,8 @@ import 'package:drift/drift.dart';
 import 'package:drift_flutter/drift_flutter.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'trip_extra.dart';
+
 part 'database.g.dart';
 
 /// Schema history:
@@ -63,6 +65,16 @@ class Trips extends Table {
   // unit as energyUsedKwh but computed from precise SOC rather than
   // power×time integration. Useful as a sanity check on the integrator.
   RealColumn get energyFromSocKwh => real().nullable()();
+
+  // v0.1.29+37: JSON blob for compact derived aggregates that should
+  // survive a DB wipe / reinstall via cloud backup (samples are NOT
+  // uploaded — server rejects them 403 samples_disabled — so anything
+  // we want restorable must live on the trip row). Currently holds the
+  // speed-distribution histogram so a restored trip can still render its
+  // Speed Distribution chart without the raw sample series. Nullable;
+  // mirrors the server-side trips.extra jsonb that the bridge already
+  // accepts. Schema-versioned inside the JSON ("v":1), not by column.
+  TextColumn get extra => text().nullable()();
 }
 
 @DataClassName('Snapshot')
@@ -254,7 +266,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase() : super(_openConnection());
 
   @override
-  int get schemaVersion => 7;
+  int get schemaVersion => 8;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -314,6 +326,13 @@ class AppDatabase extends _$AppDatabase {
           // Path-A exploration. Additive only.
           if (from < 7) {
             await m.createTable(canRawLines);
+          }
+          // v7 → v8 (v0.1.29+37): trips.extra JSON blob for restorable
+          // derived aggregates (speed-distribution histogram). Additive,
+          // nullable — existing trip rows get NULL and behave exactly as
+          // before (the UI falls back to raw samples when extra is null).
+          if (from < 8) {
+            await m.addColumn(trips, trips.extra);
           }
         },
       );
@@ -406,6 +425,8 @@ class AppDatabase extends _$AppDatabase {
     int? movingSeconds,
     int? idleSeconds,
     double? energyFromSocKwh,
+    // v0.1.29+37: precomputed restorable aggregates (speed histogram).
+    String? extra,
   }) {
     return (update(trips)..where((t) => t.id.equals(id))).write(
       TripsCompanion(
@@ -431,8 +452,27 @@ class AppDatabase extends _$AppDatabase {
         movingSeconds: Value(movingSeconds),
         idleSeconds: Value(idleSeconds),
         energyFromSocKwh: Value(energyFromSocKwh),
+        // v0.1.29+37: only write extra when non-null, so a caller that
+        // didn't compute it (or recomputed nothing) leaves any existing
+        // value untouched rather than nulling it.
+        extra: extra != null ? Value(extra) : const Value.absent(),
       ),
     );
+  }
+
+  /// v0.1.29+37: compute the speed-distribution histogram for a trip
+  /// directly from its stored 740/0008 speed samples, returning the
+  /// canonical extra-JSON string (or null if there are no usable speed
+  /// samples). Called at endTrip so the histogram is frozen onto the
+  /// trip row and survives a later DB wipe + cloud restore. Uses the
+  /// shared [buildSpeedHistogram] so the result matches what
+  /// SpeedHistogramCard would draw from the raw samples.
+  Future<String?> computeSpeedHistogramJson(int tripId) async {
+    final speedSamples =
+        await getSamplesForTrip(tripId, ecuTx: '740', did: '0008');
+    if (speedSamples.isEmpty) return null;
+    final hist = buildSpeedHistogram(speedSamples.map((s) => s.numericValue));
+    return TripExtra.encode(speedHist: hist);
   }
 
   Future<List<Trip>> getRecentTrips({int limit = 50}) {

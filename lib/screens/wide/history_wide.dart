@@ -344,7 +344,7 @@ class _SelectedTripDetail extends StatelessWidget {
           MovingIdleDonutCard(trip: trip),
         ),
         const SizedBox(height: 12),
-        SpeedHistogramCard(tripId: trip.id),
+        SpeedHistogramCard(tripId: trip.id, trip: trip),
         const SizedBox(height: 12),
         SizedBox(
           height: 240,

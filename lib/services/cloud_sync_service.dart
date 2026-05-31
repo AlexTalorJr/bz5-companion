@@ -1460,7 +1460,24 @@ class CloudSyncService extends ChangeNotifier {
       movingSeconds: parseIntN(j['moving_seconds']),
       idleSeconds: parseIntN(j['idle_seconds']),
       energyFromSocKwh: parseRealN(j['energy_from_soc_kwh']),
+      // v0.1.29+37: server stores extra as jsonb (object). Re-encode to
+      // the local string column. This is the whole point — on a restore
+      // after a wipe, the speed histogram comes back so the Speed
+      // Distribution chart renders even though raw samples are gone.
+      extra: _encodeExtraOrAbsent(j['extra']),
     );
+  }
+
+  /// v0.1.29+37: server's jsonb extra (a Map/List) → local string column.
+  /// Absent value leaves the column untouched; anything present is
+  /// re-serialized verbatim.
+  Value<String?> _encodeExtraOrAbsent(dynamic serverExtra) {
+    if (serverExtra == null) return const Value.absent();
+    try {
+      return Value(jsonEncode(serverExtra));
+    } catch (_) {
+      return const Value.absent();
+    }
   }
 
   /// v0.1.29+18: build SnapshotsCompanion from a server JSON item.
@@ -1792,7 +1809,23 @@ class CloudSyncService extends ChangeNotifier {
       'moving_seconds': t.movingSeconds,
       'idle_seconds': t.idleSeconds,
       'energy_from_soc_kwh': t.energyFromSocKwh,
+      // v0.1.29+37: derived aggregates (speed histogram). Stored locally
+      // as a JSON string; the bridge column is jsonb, so decode to an
+      // object here. Guard against a malformed local blob — on any parse
+      // failure send null rather than a broken string.
+      'extra': _decodeExtraOrNull(t.extra),
     };
+  }
+
+  /// v0.1.29+37: turn the locally-stored extra JSON string into an object
+  /// for the jsonb column, or null if absent/malformed.
+  dynamic _decodeExtraOrNull(String? raw) {
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      return jsonDecode(raw);
+    } catch (_) {
+      return null;
+    }
   }
 
   Map<String, dynamic> _snapshotToJson(Snapshot s) {
@@ -1927,7 +1960,7 @@ class CloudSyncService extends ChangeNotifier {
   /// Read app version from the static value baked into the build.
   /// We don't have package_info_plus as a dep — pubspec-version is
   /// hardcoded here. Update when bumping. Off-by-one tolerated.
-  Future<String> _readAppVersion() async => '0.1.29+36';
+  Future<String> _readAppVersion() async => '0.1.29+37';
 }
 
 // ─── Internal exceptions ────────────────────────────────────────────
