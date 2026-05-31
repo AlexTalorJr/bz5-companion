@@ -289,6 +289,7 @@ class _TotalsGrid extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isWide = LayoutBreakpoints.useHeadUnitLayout(context);
     final cards = <Widget>[
       _metric(Icons.route, 'Пробег',
           '${_fmt(agg.totalDistanceKm)} км'),
@@ -300,11 +301,24 @@ class _TotalsGrid extends StatelessWidget {
       _metric(Icons.eco_outlined, 'Рекуперировано',
           '${_fmt(agg.totalRegenKwh)} кВт·ч'),
     ];
+    // v0.1.29+36: totals were a tall 2×2 grid with a lot of dead vertical
+    // space (owner feedback). On head unit lay them out in ONE row; on
+    // phone keep two columns but make the cells much flatter.
+    if (isWide) {
+      return Row(
+        children: [
+          for (var i = 0; i < cards.length; i++) ...[
+            Expanded(child: SizedBox(height: 58, child: cards[i])),
+            if (i != cards.length - 1) const SizedBox(width: 10),
+          ],
+        ],
+      );
+    }
     return GridView.count(
       crossAxisCount: 2,
       shrinkWrap: true,
       physics: const NeverScrollableScrollPhysics(),
-      childAspectRatio: 2.6,
+      childAspectRatio: 3.4,
       mainAxisSpacing: 10,
       crossAxisSpacing: 10,
       children: cards,
