@@ -1665,6 +1665,17 @@ class ConnectionService extends ChangeNotifier {
           // ~3s cadence missed regen/accel transients. See
           // _pollPackVoltageOnly doc.
           await _pollPackVoltageOnly();
+          // v0.1.29+34: speed sub-poll wedged between the pack V+I block
+          // (790/0015 + 790/0009) and the cell-extremes block (790/002B
+          // + 790/002D). +33 added current to the V sub-poll, which made
+          // the consecutive-790 run 4 reads long (0015,0009,002B,002D) —
+          // one short of the documented "5th consecutive same-ECU read
+          // returns EMPTY" adapter quirk (see runLiveLog notes). This
+          // 740 read resets the ELM327's same-ECU counter, capping each
+          // 790 run at 2. Bonus: speed refreshes one extra time per
+          // iteration. _pollSpeedOnly is cheap (~50-150 ms) and swallows
+          // its own errors, so it can't break the loop if 740 is slow.
+          await _pollSpeedOnly();
           // v0.1.29+30: fast min/max-cell sub-poll → _subPollPackV.
           // This is what actually drives the dashboard pack-voltage
           // number between full _pollCells refreshes (the UI primary is
@@ -1675,6 +1686,8 @@ class ConnectionService extends ChangeNotifier {
         if (cycle % 2 == 0) await _pollCells();
         await _pollSpeedOnly();
         await _pollPackVoltageOnly();
+        // v0.1.29+34: same 790-chain break as inside the for-ecu loop.
+        await _pollSpeedOnly();
         await _pollCellExtremesOnly();
         // v0.1.3: extra DIDs (pack V from 740, cell indices, pack config).
         // Каждый второй цикл — частоты обновления pack V раз в ~500 мс
