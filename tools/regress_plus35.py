@@ -584,9 +584,44 @@ if int(pv) >= 39:
 else:
     ok(f"Part F skipped (build +{pv}, current fixes land in +39)")
 
+# ──────────── Part G: +40 dashboard grid stability ────────────
+if int(pv) >= 40:
+    dash = (root / 'lib/screens/dashboard.dart').read_text()
+
+    # G1. Power/Consumption/PDU cards must NOT be conditional anymore —
+    #     a conditional card drops out of the grid when its value is null
+    #     and shifts every later card (BZ3 owner: tiles jump at a stop).
+    bad = []
+    for guard in ["if (powerKw != null)", "if (consWhKm != null)",
+                  "if (pduTemp1 != null)", "if (pduTemp2 != null)"]:
+        if guard in dash:
+            bad.append(guard)
+    if not bad:
+        ok("G1 no conditional metric cards (grid can't reflow on null)")
+    else:
+        fail(f"G1 conditional cards still present (will reflow): {bad}")
+
+    # G2. cards show a dash placeholder when their value is null, so the
+    #     cell stays but reads '—'.
+    if ": '—'" in dash and "consWhKm != null" in dash and "powerKw != null" in dash:
+        ok("G2 cards show '—' placeholder when value null (cell persists)")
+    else:
+        fail("G2 null placeholder wiring missing")
+
+    # G3. consumption must NOT fabricate 0 at standstill — undefined →
+    #     dash, not a misleading zero.
+    idx = dash.find("'Consumption?' : 'Consumption'")
+    cons_seg = dash[idx: idx + 250] if idx >= 0 else ""
+    if "consWhKm != null" in cons_seg and "'—'" in cons_seg:
+        ok("G3 consumption shows '—' at standstill (no fake 0 Wh/km)")
+    else:
+        warn("G3 could not confirm consumption dash-at-standstill")
+else:
+    ok(f"Part G skipped (build +{pv}, grid stability lands in +40)")
+
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
-print(f"+35→+39 REGRESSION — build +{pv}")
+print(f"+35→+40 REGRESSION — build +{pv}")
 print("=" * 64)
 for m in oks:
     print(f"  [PASS] {m}")

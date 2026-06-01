@@ -286,46 +286,60 @@ class _Connected extends StatelessWidget {
             // mapping — see handoff). On tall layout we mark the value '*'
             // and label it a candidate so it's never mistaken for a
             // confirmed reading. BZ5/phone read off the verified BZ5 pack.
-            if (powerKw != null)
-              _MetricCard(
-                icon: flowDir == -1
-                    ? Icons.battery_charging_full
-                    : Icons.bolt,
-                color: _flowColor(flowDir),
-                label: useTallLayout
-                    ? (flowDir == -1 ? 'Regen?' : 'Power?')
-                    : (flowDir == -1 ? 'Regen' : 'Power'),
-                value: '${powerKw.abs().toStringAsFixed(1)} kW'
-                    '${useTallLayout ? '*' : ''}',
-              ),
-            // v0.1.29+36: instantaneous consumption while moving (Wh/km).
-            // Getter is null below ~3 km/h, so this cell simply disappears
-            // at a standstill instead of showing a blown-up number.
-            if (consWhKm != null)
-              _MetricCard(
-                icon: Icons.eco,
-                color: consWhKm < 0 ? Colors.green : Colors.tealAccent,
-                label: useTallLayout ? 'Consumption?' : 'Consumption',
-                value: '${consWhKm.abs().toStringAsFixed(0)} Wh/km'
-                    '${useTallLayout ? '*' : ''}',
-              ),
+            //
+            // v0.1.29+40: these cards are ALWAYS present (no `if`), even
+            // when their value is null. Previously they were conditional,
+            // so on a stop instantConsumptionWhKm went null → the card
+            // dropped out of the grid → every card after it shifted into
+            // the gap (BZ3 owner: "consumption disappears at a stop and
+            // the other tiles jump around"). Keeping the cells in place
+            // and showing '—' holds the layout stable; the figure returns
+            // when moving again without anything reflowing.
+            _MetricCard(
+              icon: flowDir == -1
+                  ? Icons.battery_charging_full
+                  : Icons.bolt,
+              color: _flowColor(flowDir),
+              label: useTallLayout
+                  ? (flowDir == -1 ? 'Regen?' : 'Power?')
+                  : (flowDir == -1 ? 'Regen' : 'Power'),
+              value: powerKw != null
+                  ? '${powerKw.abs().toStringAsFixed(1)} kW'
+                      '${useTallLayout ? '*' : ''}'
+                  : '—',
+            ),
+            // Consumption is undefined at a standstill (Wh per km with no
+            // km), so show '—' rather than a fabricated 0 — but keep the
+            // cell so nothing shifts.
+            _MetricCard(
+              icon: Icons.eco,
+              color: (consWhKm != null && consWhKm < 0)
+                  ? Colors.green
+                  : Colors.tealAccent,
+              label: useTallLayout ? 'Consumption?' : 'Consumption',
+              value: consWhKm != null
+                  ? '${consWhKm.abs().toStringAsFixed(0)} Wh/km'
+                      '${useTallLayout ? '*' : ''}'
+                  : '—',
+            ),
             // v0.1.22: PDU heatsink temps (live, 740/0x0010 + 0x0011).
             // Yesterday's hottest values were ~58°C after spirited
             // driving; idle baseline 30-35°C.
-            if (pduTemp1 != null)
-              _MetricCard(
-                icon: Icons.device_thermostat,
-                color: _pduTempColor(pduTemp1),
-                label: 'PDU T1',
-                value: '${pduTemp1.toInt()}°C',
-              ),
-            if (pduTemp2 != null)
-              _MetricCard(
-                icon: Icons.device_thermostat,
-                color: _pduTempColor(pduTemp2),
-                label: 'PDU T2',
-                value: '${pduTemp2.toInt()}°C',
-              ),
+            // v0.1.29+40: also made persistent (show '—' when absent) so
+            // the grid tail can't reflow either — same fix as Power/
+            // Consumption above.
+            _MetricCard(
+              icon: Icons.device_thermostat,
+              color: pduTemp1 != null ? _pduTempColor(pduTemp1) : Colors.grey,
+              label: 'PDU T1',
+              value: pduTemp1 != null ? '${pduTemp1.toInt()}°C' : '—',
+            ),
+            _MetricCard(
+              icon: Icons.device_thermostat,
+              color: pduTemp2 != null ? _pduTempColor(pduTemp2) : Colors.grey,
+              label: 'PDU T2',
+              value: pduTemp2 != null ? '${pduTemp2.toInt()}°C' : '—',
+            ),
           ],
         ),
         const SizedBox(height: 12),
@@ -920,7 +934,7 @@ class _LayoutDiagnostic extends StatelessWidget {
 
 /// Bump when changing the diagnostic format — helps cross-reference
 /// screenshots to specific app versions while iterating.
-const String _kDiagVersion = 'v0.1.29+39';
+const String _kDiagVersion = 'v0.1.29+40';
 
 class _GridCards extends StatelessWidget {
   final List<Widget> children;
