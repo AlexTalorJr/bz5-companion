@@ -1451,7 +1451,8 @@ class ConnectionService extends ChangeNotifier {
     try {
       final orphans = await db.getOrphanedTrips();
       for (final t in orphans) {
-        final endTs = await db.forceCloseTrip(t.id);
+        final endTs = await db.forceCloseTrip(t.id,
+            batteryCapacityKwh: Bz5Model.batteryCapacityKwh);
         debugPrint('Closed orphaned Trip #${t.id} (started '
             '${t.startedAt}) → endedAt=$endTs');
       }

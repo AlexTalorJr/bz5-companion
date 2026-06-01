@@ -375,9 +375,20 @@ class AppDatabase extends _$AppDatabase {
   /// "Orphaned" here means: trip row exists, started in the past, but was
   /// never properly closed because the app crashed, BLE dropped without
   /// the fix path firing, or the user force-killed the app.
+  /// v0.1.29+41: trips that need (re)finalization. Two cases:
+  ///   1. endedAt IS NULL — classic orphan (never finalized).
+  ///   2. endedAt set but distanceKm IS NULL — closed by the OLD
+  ///      forceCloseTrip (or a finalize that ran with a stale cache)
+  ///      that left summary fields empty even though samples exist.
+  ///      Re-running forceCloseTrip on these backfills the aggregates
+  ///      from the sample series (fixes the already-empty #1/#13/#15…
+  ///      trips on the next app start, not just future ones).
+  /// forceCloseTrip is idempotent (it only writes derived values), so
+  /// re-closing an already-good trip is harmless — but we exclude trips
+  /// that already have a distance to avoid needless work.
   Future<List<Trip>> getOrphanedTrips() {
     return (select(trips)
-          ..where((t) => t.endedAt.isNull())
+          ..where((t) => t.endedAt.isNull() | t.distanceKm.isNull())
           ..orderBy([(t) => OrderingTerm.asc(t.startedAt)]))
         .get();
   }
@@ -388,8 +399,23 @@ class AppDatabase extends _$AppDatabase {
   /// open forever — UI can show it as "(closed on recovery)".
   ///
   /// Returns the timestamp used.
-  Future<DateTime> forceCloseTrip(int tripId) async {
-    // Find latest sample for this trip
+  /// v0.1.29+41: force-close an orphaned trip. PREVIOUSLY this only set
+  /// endedAt and left every summary field null — so an orphan (a trip the
+  /// app never cleanly finalized: process killed, BLE drop down a path
+  /// that skipped stopPolling/_finalizeTripFromLastKnown) showed up in
+  /// history with samples present but distance/energy/sample_count all
+  /// NULL. That was the actual cause of "trips empty in history, but the
+  /// speed/SOC graphs render" — +38 only fixed the two interactive
+  /// finalize paths and missed THIS one (orphan cleanup at session start).
+  ///
+  /// Now it recovers what it can straight from the sample series, which is
+  /// intact even for an orphan: first/last odometer → distance, first/last
+  /// SOC → energy (ΔSOC × capacity) → avg consumption, plus sample_count.
+  /// [batteryCapacityKwh] is passed in so the DB layer stays free of any
+  /// vehicle-model dependency. Best-effort: any field that can't be
+  /// derived stays null (no fabricated values).
+  Future<DateTime> forceCloseTrip(int tripId,
+      {double? batteryCapacityKwh}) async {
     final lastSample = await (select(samples)
           ..where((s) => s.tripId.equals(tripId))
           ..orderBy([(s) => OrderingTerm.desc(s.timestamp)])
@@ -397,9 +423,62 @@ class AppDatabase extends _$AppDatabase {
         .getSingleOrNull();
     final trip = await getTrip(tripId);
     final endTs = lastSample?.timestamp ??
-        (trip != null ? trip.startedAt.add(const Duration(seconds: 1)) : DateTime.now());
-    await (update(trips)..where((t) => t.id.equals(tripId)))
-        .write(TripsCompanion(endedAt: Value(endTs)));
+        (trip != null
+            ? trip.startedAt.add(const Duration(seconds: 1))
+            : DateTime.now());
+
+    // Recover start/end odometer (791/0026) and SOC (790/0005) from the
+    // sample series and derive the summary fields the live paths would
+    // have computed.
+    final startOdo = await firstNumericSampleForTrip(tripId, '791', '0026');
+    final endOdo = await lastNumericSampleForTrip(tripId, '791', '0026');
+    final startSoc = await firstNumericSampleForTrip(tripId, '790', '0005');
+    final endSoc = await lastNumericSampleForTrip(tripId, '790', '0005');
+
+    double? distanceKm;
+    if (startOdo != null && endOdo != null && endOdo > startOdo) {
+      distanceKm = endOdo - startOdo;
+    }
+    double? energyUsedKwh;
+    if (batteryCapacityKwh != null &&
+        startSoc != null &&
+        endSoc != null &&
+        startSoc > endSoc) {
+      energyUsedKwh = (startSoc - endSoc) * batteryCapacityKwh / 100.0;
+    }
+    double? avgConsumption;
+    if (distanceKm != null && energyUsedKwh != null && distanceKm > 0.1) {
+      avgConsumption = (energyUsedKwh / distanceKm) * 100.0;
+    }
+    final sampleCount = await countSamplesForTrip(tripId);
+
+    // Speed histogram too, so a recovered orphan also backs up its
+    // distribution (mirrors the live endTrip path, +37).
+    String? extraJson;
+    try {
+      extraJson = await computeSpeedHistogramJson(tripId);
+    } catch (_) {}
+
+    await (update(trips)..where((t) => t.id.equals(tripId))).write(
+      TripsCompanion(
+        endedAt: Value(endTs),
+        startOdometer:
+            startOdo != null ? Value(startOdo) : const Value.absent(),
+        endOdometer: endOdo != null ? Value(endOdo) : const Value.absent(),
+        startSoc: startSoc != null ? Value(startSoc) : const Value.absent(),
+        endSoc: endSoc != null ? Value(endSoc) : const Value.absent(),
+        distanceKm:
+            distanceKm != null ? Value(distanceKm) : const Value.absent(),
+        energyUsedKwh: energyUsedKwh != null
+            ? Value(energyUsedKwh)
+            : const Value.absent(),
+        avgConsumptionKwh100km: avgConsumption != null
+            ? Value(avgConsumption)
+            : const Value.absent(),
+        sampleCount: Value(sampleCount),
+        extra: extraJson != null ? Value(extraJson) : const Value.absent(),
+      ),
+    );
     return endTs;
   }
 
@@ -554,6 +633,26 @@ class AppDatabase extends _$AppDatabase {
           ..orderBy([
             (s) => OrderingTerm(
                 expression: s.timestamp, mode: OrderingMode.desc)
+          ])
+          ..limit(1))
+        .getSingleOrNull();
+    return row?.numericValue;
+  }
+
+  /// v0.1.29+41: mirror of lastNumericSampleForTrip but the EARLIEST
+  /// non-null sample — used to recover a trip's start odometer/SOC when
+  /// force-closing an orphan whose in-memory start values are long gone.
+  Future<double?> firstNumericSampleForTrip(
+      int tripId, String ecuTx, String did) async {
+    final row = await (select(samples)
+          ..where((s) =>
+              s.tripId.equals(tripId) &
+              s.ecuTx.equals(ecuTx) &
+              s.did.equals(did) &
+              s.numericValue.isNotNull())
+          ..orderBy([
+            (s) => OrderingTerm(
+                expression: s.timestamp, mode: OrderingMode.asc)
           ])
           ..limit(1))
         .getSingleOrNull();
