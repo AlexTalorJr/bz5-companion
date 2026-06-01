@@ -445,12 +445,28 @@ class ConnectionService extends ChangeNotifier {
 
   /// v0.1.29+33: PROVISIONAL decode constants for 790/0009 pack current.
   /// raw is u16 big-endian. amps = (raw - zero) * ampsPerLsb, discharge
-  /// positive. Zero ~4800 and ~0.05 A/LSB are physics-bracketed mid-
-  /// points from C32 (accel peak raw ~9953 ↔ a few-hundred-amp
-  /// discharge; regen min raw ~3346 ↔ tens-of-amps charge). REPLACE
-  /// both with the values from a DC-charge anchor cycle when available;
-  /// this is a single-line change by design.
-  static const double _kPackCurrentZeroRaw = 4800.0;
+  /// positive.
+  ///
+  /// v0.1.29+39: ZERO refined from 4800 → 5024. The export of 2026-06-01
+  /// gave hundreds of pack-current samples captured at a standstill
+  /// (speed < 1 km/h, true current ≈ 0): raw clustered tightly at
+  /// median 5021-5028 (range 5010-5051) across two trips. The old 4800
+  /// zero made a parked car read ~+11 A → ~5 kW of phantom discharge
+  /// (the owner's "4.9 kW standing still, barely changes with A/C"); the
+  /// 0.2 kW A/C on/off delta confirmed it was an offset, not real load.
+  /// 5024 is the measured zero. The car-off true zero may differ
+  /// slightly, but this kills the standstill phantom.
+  ///
+  /// ampsPerLsb (0.05) is STILL PROVISIONAL and deliberately unchanged:
+  /// the same export could not pin it down — at the only moments we knew
+  /// real power (factory 791/0038 hitting ~200 kW) our 2 Hz current poll
+  /// had missed the instantaneous peak, so the factory/ours ratio scattered
+  /// 4.5-13.6× rather than landing on a constant. Calibrating scale needs
+  /// a STEADY-STATE point (DC charge at a known station current, or
+  /// constant-speed cruise) where both signals agree — not transient
+  /// peaks. Until then, magnitude is proportional-but-uncalibrated; sign
+  /// and trend are trustworthy. Single-line change when that data exists.
+  static const double _kPackCurrentZeroRaw = 5024.0;
   static const double _kPackCurrentAmpsPerLsb = 0.05;
 
   /// v0.1.29+30: speed sub-poll diagnostics. The owner observed a trip
@@ -2524,6 +2540,20 @@ class ConnectionService extends ChangeNotifier {
       // non-zero values. Letting only _pollSpeedOnly own 0008 cuts
       // the contention and makes trip_aggregates see real speed.
       if (ecu.txId == '740' && spec.did == '0008') continue;
+
+      // v0.1.29+39: skip 790/0x0009 (pack current) here for the SAME
+      // reason as 740/0008 above. It's read by the fast-lane current
+      // sub-poll (_pollFastLane) with the proper offset-signed decode
+      // ((raw - zeroRaw) * ampsPerLsb → real amps). The generic path
+      // here decodes it via the registry DidSpec, which has no scale/
+      // offset, so it writes the RAW counts (~5023) into the same
+      // 790/0009 sample stream as if they were amps. Export 2026-06-01
+      // showed ~15% of 790/0009 samples were these raw values (5010-6700)
+      // mixed in with real amps (~11) — the source of the dashboard
+      // flicker/dashes and the absurd multi-thousand-kW power spikes.
+      // Let the fast-lane own 0009 exclusively, exactly as _pollSpeedOnly
+      // owns 0008.
+      if (ecu.txId == '790' && spec.did == '0009') continue;
 
       try {
         final r = await _client!.readDid(spec.did, tx: ecu.txId, rx: ecu.rxId)

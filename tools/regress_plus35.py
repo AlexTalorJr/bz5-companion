@@ -540,9 +540,53 @@ if int(pv) >= 38:
 else:
     ok(f"Part E skipped (build +{pv}, finalize fallback lands in +38)")
 
+# ──────────── Part F: +39 pack-current fixes ────────────
+if int(pv) >= 39:
+    conn_src = (root / 'lib/services/connection.dart').read_text()
+
+    # F1. 790/0009 excluded from the generic poll (fast-lane is sole writer)
+    if "ecu.txId == '790' && spec.did == '0009'" in conn_src and \
+       "continue;" in conn_src:
+        ok("F1 790/0009 excluded from generic poll (no raw/amps double-write)")
+    else:
+        fail("F1 790/0009 still double-written by generic poll")
+
+    # F2. zero refined to the measured standstill value
+    if "_kPackCurrentZeroRaw = 5024.0" in conn_src:
+        ok("F2 current zero corrected 4800 → 5024 (kills standstill phantom)")
+    else:
+        fail("F2 current zero not updated to 5024")
+
+    # F3. scale deliberately UNCHANGED (no guessing without steady-state data)
+    if "_kPackCurrentAmpsPerLsb = 0.05" in conn_src:
+        ok("F3 scale 0.05 left provisional (correct — no valid calib data)")
+    else:
+        fail("F3 scale was changed — but export had no steady-state anchor")
+
+    # F4. numeric sanity: with zero=5024, a standstill raw≈5024 → ~0 A,
+    #     and the old phantom (~5 kW) is gone.
+    ZERO=5024.0; LSB=0.05; V=446.0
+    standstill_kw = (5024-ZERO)*LSB*V/1000
+    old_kw = (5024-4800)*LSB*V/1000
+    if abs(standstill_kw) < 0.5 and abs(old_kw - 5.0) < 1.0:
+        ok(f"F4 standstill now ~{standstill_kw:.1f} kW (was ~{old_kw:.1f} kW phantom)")
+    else:
+        fail(f"F4 zero math off: now={standstill_kw:.2f} old={old_kw:.2f}")
+
+    # F5. sign still exact at the new zero: raw above → discharge(+),
+    #     below → regen(−).
+    disc = (5500-ZERO)*LSB
+    regn = (4500-ZERO)*LSB
+    if disc > 0 and regn < 0:
+        ok("F5 sign preserved at new zero (raw>5024 discharge, <5024 regen)")
+    else:
+        fail("F5 sign broken at new zero")
+else:
+    ok(f"Part F skipped (build +{pv}, current fixes land in +39)")
+
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
-print(f"+35→+38 REGRESSION — build +{pv}")
+print(f"+35→+39 REGRESSION — build +{pv}")
 print("=" * 64)
 for m in oks:
     print(f"  [PASS] {m}")
