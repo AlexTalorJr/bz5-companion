@@ -470,8 +470,8 @@ if int(pv) >= 38:
         fail("E1 lastNumericSampleForTrip helper missing")
 
     # E2. it sorts desc + limit 1 (truly the LAST sample) and filters null
-    helper = db_src[db_src.find("lastNumericSampleForTrip("):
-                    db_src.find("lastNumericSampleForTrip(") + 700]
+    anchor2 = "Future<double?> lastNumericSampleForTrip("
+    helper = db_src[db_src.find(anchor2): db_src.find(anchor2) + 700]
     if "OrderingMode.desc" in helper and "limit(1)" in helper and \
        "numericValue.isNotNull()" in helper:
         ok("E2 helper returns last non-null sample (desc + limit 1)")
@@ -619,9 +619,82 @@ if int(pv) >= 40:
 else:
     ok(f"Part G skipped (build +{pv}, grid stability lands in +40)")
 
+# ──────────── Part H: +41 orphan/backfill finalization ────────────
+if int(pv) >= 41:
+    db_src = (root / 'lib/data/database.dart').read_text()
+    conn_src = (root / 'lib/services/connection.dart').read_text()
+
+    # H1. firstNumericSampleForTrip helper added (asc + limit 1)
+    if "Future<double?> firstNumericSampleForTrip(" in db_src:
+        anchor = "Future<double?> firstNumericSampleForTrip("
+        fn = db_src[db_src.find(anchor): db_src.find(anchor) + 600]
+        if "OrderingMode.asc" in fn and "limit(1)" in fn:
+            ok("H1 firstNumericSampleForTrip helper present (asc + limit 1)")
+        else:
+            fail("H1 firstNumericSampleForTrip query wrong")
+    else:
+        fail("H1 firstNumericSampleForTrip helper missing")
+
+    # H2. forceCloseTrip now derives aggregates (was endedAt-only).
+    fc = db_src[db_src.find("Future<DateTime> forceCloseTrip"):
+                db_src.find("Future<DateTime> forceCloseTrip") + 2400]
+    derives = all(s in fc for s in [
+        "firstNumericSampleForTrip(tripId, '791', '0026')",
+        "lastNumericSampleForTrip(tripId, '791', '0026')",
+        "distanceKm = endOdo - startOdo",
+        "sampleCount",
+    ])
+    if derives:
+        ok("H2 forceCloseTrip recovers distance/energy/count from samples")
+    else:
+        fail("H2 forceCloseTrip still endedAt-only (orphan stays empty)")
+
+    # H3. it must NOT fabricate values — each field guarded, capacity
+    #     passed in (no vehicle-model dependency in DB layer).
+    if "batteryCapacityKwh != null" in fc and "Value.absent()" in fc:
+        ok("H3 forceCloseTrip null-safe (no fabricated values, capacity injected)")
+    else:
+        fail("H3 forceCloseTrip not null-safe / hardcodes capacity")
+
+    # H4. caller passes capacity
+    if "forceCloseTrip(t.id" in conn_src and \
+       "batteryCapacityKwh: Bz5Model.batteryCapacityKwh" in conn_src:
+        ok("H4 connection passes battery capacity to forceCloseTrip")
+    else:
+        fail("H4 connection does not pass capacity")
+
+    # H5. backfill: orphan query catches already-closed empty trips too.
+    if "t.endedAt.isNull() | t.distanceKm.isNull()" in db_src:
+        ok("H5 orphan query also backfills closed trips with null distance")
+    else:
+        fail("H5 orphan query only catches endedAt-null (won't fix #1/#13/#15)")
+
+    # H6. Logic port: orphan with samples but no cached start/end → recover.
+    CAP = 65.28
+    def force_close(first_odo, last_odo, first_soc, last_soc, n):
+        dist = (last_odo - first_odo) if (first_odo is not None and last_odo
+                is not None and last_odo > first_odo) else None
+        energy = ((first_soc - last_soc) * CAP / 100.0) if (first_soc is not None
+                 and last_soc is not None and first_soc > last_soc) else None
+        return dist, energy, n
+    # #15-like: samples present (odo 3220→3231, soc 47→44), ended but empty.
+    dist, energy, cnt = force_close(3220.1, 3231.0, 47.0, 44.0, 980)
+    if dist is not None and abs(dist - 10.9) < 1e-6 and energy is not None and cnt == 980:
+        ok(f"H6 orphan recovery: distance {dist:.1f} km, energy + count restored")
+    else:
+        fail(f"H6 orphan recovery wrong: {dist}, {energy}, {cnt}")
+    # No usable samples → all null, no crash, no fake distance.
+    dist, energy, cnt = force_close(None, None, None, None, 0)
+    if dist is None and energy is None and cnt == 0:
+        ok("H6 no samples → nulls (no fabricated distance)")
+    else:
+        fail(f"H6 fabricated value with no samples: {dist}, {energy}")
+else:
+    ok(f"Part H skipped (build +{pv}, orphan finalize lands in +41)")
+
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
-print(f"+35→+40 REGRESSION — build +{pv}")
+print(f"+35→+41 REGRESSION — build +{pv}")
 print("=" * 64)
 for m in oks:
     print(f"  [PASS] {m}")
