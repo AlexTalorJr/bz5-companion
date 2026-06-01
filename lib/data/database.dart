@@ -537,6 +537,29 @@ class AppDatabase extends _$AppDatabase {
     return query.get();
   }
 
+  /// v0.1.29+38: the most recent numeric sample value for a given DID in
+  /// a trip, or null if none. Used at trip finalization as a fallback for
+  /// end_odometer / end_soc when the in-memory _latestValues cache is
+  /// stale/empty (791/0026 in particular times out once the car is moving,
+  /// so the cache often lacks a fresh odometer at trip end — but the
+  /// sample series in this table still has the last good reading).
+  Future<double?> lastNumericSampleForTrip(
+      int tripId, String ecuTx, String did) async {
+    final row = await (select(samples)
+          ..where((s) =>
+              s.tripId.equals(tripId) &
+              s.ecuTx.equals(ecuTx) &
+              s.did.equals(did) &
+              s.numericValue.isNotNull())
+          ..orderBy([
+            (s) => OrderingTerm(
+                expression: s.timestamp, mode: OrderingMode.desc)
+          ])
+          ..limit(1))
+        .getSingleOrNull();
+    return row?.numericValue;
+  }
+
   /// v0.1.11: all samples for export (no filter). Use sparingly — can be huge.
   Future<List<Sample>> getAllSamples({int? limit}) {
     final q = select(samples)

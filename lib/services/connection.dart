@@ -1266,8 +1266,16 @@ class ConnectionService extends ChangeNotifier {
     if (_currentTripId == null) return;
     final tripId = _currentTripId!;
 
-    final endSoc = _latestValues['790']?['0005']?.numeric;
-    final endOdo = _latestValues['791']?['0026']?.numeric;
+    // v0.1.29+38: end values come from the _latestValues cache, but
+    // 791/0026 (odometer) and sometimes 790/0005 (SOC) are missing from
+    // it at trip end (791 times out once moving). Fall back to the last
+    // numeric sample recorded in the DB for that DID, which is present
+    // even when the cache is stale — otherwise end_odo/end_soc land NULL
+    // and distance/energy never compute (observed trips #1/#13).
+    var endSoc = _latestValues['790']?['0005']?.numeric;
+    var endOdo = _latestValues['791']?['0026']?.numeric;
+    endSoc ??= await db.lastNumericSampleForTrip(tripId, '790', '0005');
+    endOdo ??= await db.lastNumericSampleForTrip(tripId, '791', '0026');
 
     double? distanceKm;
     if (_tripStartOdo != null && endOdo != null && endOdo > _tripStartOdo!) {
@@ -1485,8 +1493,10 @@ class ConnectionService extends ChangeNotifier {
   Future<void> stopPolling() async {
     _polling = false;
     if (_currentTripId != null) {
-      final endSoc = _latestValues['790']?['0005']?.numeric;
-      final endOdo = _latestValues['791']?['0026']?.numeric;
+      final endSoc = _latestValues['790']?['0005']?.numeric ??
+          await db.lastNumericSampleForTrip(_currentTripId!, '790', '0005');
+      final endOdo = _latestValues['791']?['0026']?.numeric ??
+          await db.lastNumericSampleForTrip(_currentTripId!, '791', '0026');
 
       // v0.1.9: compute final derived metrics from rolling state.
       double? distanceKm;

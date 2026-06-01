@@ -458,9 +458,91 @@ if int(pv) >= 37:
 else:
     ok(f"Part D skipped (build +{pv}, extra-backup lands in +37)")
 
+# ──────────── Part E: +38 trip-finalization end-value fallback ────────────
+if int(pv) >= 38:
+    conn_src = (root / 'lib/services/connection.dart').read_text()
+    db_src = (root / 'lib/data/database.dart').read_text()
+
+    # E1. DB helper exists
+    if "Future<double?> lastNumericSampleForTrip(" in db_src:
+        ok("E1 lastNumericSampleForTrip helper present")
+    else:
+        fail("E1 lastNumericSampleForTrip helper missing")
+
+    # E2. it sorts desc + limit 1 (truly the LAST sample) and filters null
+    helper = db_src[db_src.find("lastNumericSampleForTrip("):
+                    db_src.find("lastNumericSampleForTrip(") + 700]
+    if "OrderingMode.desc" in helper and "limit(1)" in helper and \
+       "numericValue.isNotNull()" in helper:
+        ok("E2 helper returns last non-null sample (desc + limit 1)")
+    else:
+        fail("E2 helper query not correct (desc/limit/notnull)")
+
+    # E3. BOTH finalize paths fall back to the DB for end odo + soc.
+    # disconnect path uses ??= ; stopPolling path uses ?? inline.
+    disc_ok = ("endSoc ??= await db.lastNumericSampleForTrip(tripId, '790', '0005')"
+               in conn_src and
+               "endOdo ??= await db.lastNumericSampleForTrip(tripId, '791', '0026')"
+               in conn_src)
+    stop_ok = ("await db.lastNumericSampleForTrip(_currentTripId!, '790', '0005')"
+               in conn_src and
+               "await db.lastNumericSampleForTrip(_currentTripId!, '791', '0026')"
+               in conn_src)
+    if disc_ok:
+        ok("E3 disconnect-finalize falls back to DB for end odo/soc")
+    else:
+        fail("E3 disconnect-finalize missing DB fallback")
+    if stop_ok:
+        ok("E3 stopPolling-finalize falls back to DB for end odo/soc")
+    else:
+        fail("E3 stopPolling-finalize missing DB fallback")
+
+    # E4. Logic port: distance/energy compute correctly once end values
+    #     are recovered from the DB (the trips #1/#13 scenario).
+    CAP = 80.0  # stand-in battery capacity kWh for the ratio check
+
+    def finalize(start_odo, end_odo_cache, end_odo_db,
+                 start_soc, end_soc_cache, end_soc_db):
+        # mirror connection.dart: cache first, DB fallback
+        end_odo = end_odo_cache if end_odo_cache is not None else end_odo_db
+        end_soc = end_soc_cache if end_soc_cache is not None else end_soc_db
+        dist = None
+        if start_odo is not None and end_odo is not None and end_odo > start_odo:
+            dist = end_odo - start_odo
+        energy = None
+        if start_soc is not None and end_soc is not None and start_soc > end_soc:
+            energy = (start_soc - end_soc) * CAP / 100.0
+        return dist, energy
+
+    # Scenario A: cache empty (the bug) → DB fallback recovers it.
+    # trip #13 numbers: odo 3209.2→3220.1, soc 50→47.
+    dist, energy = finalize(3209.2, None, 3220.1, 50.0, None, 47.0)
+    if dist is not None and abs(dist - 10.9) < 1e-6 and energy is not None:
+        ok(f"E4 cache-empty → DB fallback recovers distance ({dist:.1f} km) + energy")
+    else:
+        fail(f"E4 fallback did not recover distance/energy: {dist}, {energy}")
+
+    # Scenario B: cache present → cache wins (no behaviour change for the
+    # happy path; DB value ignored).
+    dist, _ = finalize(100.0, 150.0, 999.0, 80.0, 70.0, 10.0)
+    if dist == 50.0:
+        ok("E4 cache-present → cache value used (happy path unchanged)")
+    else:
+        fail(f"E4 cache no longer preferred when present: {dist}")
+
+    # Scenario C: neither cache nor DB → distance stays null (no crash,
+    # no bogus value).
+    dist, energy = finalize(100.0, None, None, 80.0, None, None)
+    if dist is None and energy is None:
+        ok("E4 neither source → null (no crash, no fabricated distance)")
+    else:
+        fail(f"E4 produced value with no source: {dist}, {energy}")
+else:
+    ok(f"Part E skipped (build +{pv}, finalize fallback lands in +38)")
+
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
-print(f"+35/+36/+37 REGRESSION — build +{pv}")
+print(f"+35→+38 REGRESSION — build +{pv}")
 print("=" * 64)
 for m in oks:
     print(f"  [PASS] {m}")
