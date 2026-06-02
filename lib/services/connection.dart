@@ -259,6 +259,26 @@ class ConnectionService extends ChangeNotifier {
 
   int? _currentTripId;
   DateTime? _tripStartedAt;          // v0.1.9 in-memory for duration getter
+
+  // v0.1.29+43: trip segmentation by parking. A drive ends when the car
+  // sits in P for longer than _kParkCloseThreshold; the next shift into D
+  // starts a fresh trip (via the existing _maybeStartTrip). Without this,
+  // every drive folded into one ever-growing trip because a new trip was
+  // only created on a new poll session, not on park/stop (Друг 2: all
+  // drives accreted into client_trip_id=1).
+  //
+  // Robustness: 791/0009 (gear) can misread momentarily, so P must hold
+  // for _kParkConfirmDuration of wall-clock time before the park clock
+  // starts — a single spurious P frame won't arm it. Time-based (not
+  // cycle-count) because poll-cycle length varies with bus load. The
+  // actual close reuses _finalizeTripFromLastKnown (the same path as a
+  // clean end), so aggregates are computed identically and the existing
+  // null-guards make a later BLE-drop finalize a harmless no-op (no
+  // double close).
+  DateTime? _parkConfirmStart;       // first P read of the current P streak
+  DateTime? _parkedSince;            // when P was confirmed stable
+  static const Duration _kParkConfirmDuration = Duration(seconds: 30);
+  static const Duration _kParkCloseThreshold = Duration(minutes: 10);
   int _samplesInTrip = 0;
   double? _tripStartSoc;
   double? _tripStartOdo;
@@ -1744,6 +1764,10 @@ class ConnectionService extends ChangeNotifier {
         if (cycle % 2 == 1) await _pollExtraDids();
         _updatePowerCalculations();
         await _maybeStartTrip();
+        // v0.1.29+43: end a trip after a long park, so the next drive is
+        // a separate trip (runs after _maybeStartTrip so a freshly-created
+        // trip isn't immediately evaluated for closing).
+        await _maybeSegmentTripOnPark();
         // v0.1.9: rolling trip aggregates + periodic snapshot to DB.
         _updateTripAggregates();
         await _maybeWriteSnapshot();
@@ -2007,6 +2031,60 @@ class ConnectionService extends ChangeNotifier {
     final deadline = DateTime.now().add(Duration(milliseconds: maxMs));
     while (_pollLoopActive && DateTime.now().isBefore(deadline)) {
       await Future.delayed(const Duration(milliseconds: 100));
+    }
+  }
+
+  /// v0.1.29+43: end the current trip when the car has been parked (gear
+  /// P) for longer than _kParkCloseThreshold, so the next shift into D
+  /// begins a fresh trip. See the _parkedSince field comment for the full
+  /// rationale. Called each poll cycle while a trip is active.
+  ///
+  /// Guards, in order:
+  ///  - no active trip, or charging → do nothing (charging legitimately
+  ///    sits in P for a long time and must NOT be read as end-of-trip).
+  ///  - gear != P → not parked; reset the P debounce and clock, the trip
+  ///    continues (a sub-10-min stop never splits a drive).
+  ///  - gear == P but not yet held for _kParkConfirmDuration → still
+  ///    debouncing a possibly-spurious P read; don't arm the clock.
+  ///  - P confirmed and held past _kParkCloseThreshold → finalize via the
+  ///    SAME path as a clean end (_finalizeTripFromLastKnown), then re-arm
+  ///    _wantTripCreation so _maybeStartTrip makes a new trip on the next
+  ///    D. The finalize path nulls _currentTripId, which makes any later
+  ///    BLE-drop finalize a no-op (its own _currentTripId==null guard) —
+  ///    so this never collides with the leave-the-car close path.
+  Future<void> _maybeSegmentTripOnPark() async {
+    if (_currentTripId == null || isCharging) {
+      _parkConfirmStart = null;
+      _parkedSince = null;
+      return;
+    }
+    final gear = readNumeric('791', '0009');
+    final inPark = gear != null && gear.toInt() == 1; // 1 = P
+
+    if (!inPark) {
+      // Moving / in D-R-N — trip continues; clear all park state.
+      _parkConfirmStart = null;
+      _parkedSince = null;
+      return;
+    }
+
+    final now = DateTime.now();
+    // Debounce: P must hold continuously before we trust it.
+    _parkConfirmStart ??= now;
+    if (now.difference(_parkConfirmStart!) < _kParkConfirmDuration) {
+      return; // still confirming a stable P
+    }
+    // P confirmed stable — start (or continue) the park clock.
+    _parkedSince ??= now;
+
+    if (now.difference(_parkedSince!) >= _kParkCloseThreshold) {
+      debugPrint('Trip #$_currentTripId: parked > '
+          '${_kParkCloseThreshold.inMinutes} min → segmenting (close + arm new).');
+      await _finalizeTripFromLastKnown(); // same path as a clean end
+      // Re-arm so the next shift into D creates a fresh trip.
+      _wantTripCreation = true;
+      _parkConfirmStart = null;
+      _parkedSince = null;
     }
   }
 
