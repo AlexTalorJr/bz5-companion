@@ -651,7 +651,9 @@ if int(pv) >= 41:
 
     # H3. it must NOT fabricate values — each field guarded, capacity
     #     passed in (no vehicle-model dependency in DB layer).
-    if "batteryCapacityKwh != null" in fc and "Value.absent()" in fc:
+    fc_full = db_src[db_src.find("Future<DateTime> forceCloseTrip"):
+                     db_src.find("Future<DateTime> forceCloseTrip") + 4500]
+    if "batteryCapacityKwh != null" in fc_full and "Value.absent()" in fc_full:
         ok("H3 forceCloseTrip null-safe (no fabricated values, capacity injected)")
     else:
         fail("H3 forceCloseTrip not null-safe / hardcodes capacity")
@@ -692,9 +694,82 @@ if int(pv) >= 41:
 else:
     ok(f"Part H skipped (build +{pv}, orphan finalize lands in +41)")
 
+# ──────────── Part I: +42 heavy aggregate recovery ────────────
+if int(pv) >= 42:
+    db_src = (root / 'lib/data/database.dart').read_text()
+
+    # I1. recoverHeavyAggregates method exists
+    if "Future<TripsCompanion> recoverHeavyAggregates(" in db_src:
+        ok("I1 recoverHeavyAggregates method present")
+    else:
+        fail("I1 recoverHeavyAggregates missing")
+
+    rha = db_src[db_src.find("recoverHeavyAggregates(int"):
+                 db_src.find("recoverHeavyAggregates(int") + 4000] \
+        if "recoverHeavyAggregates(int" in db_src else ""
+
+    # I2. recovers every field the screen showed blank
+    fields = ["peakSpeedKmh", "avgMovingSpeedKmh", "movingSeconds",
+              "idleSeconds", "minBatteryTempC", "maxBatteryTempC",
+              "minSoc", "maxSoc", "maxCellSpreadMv"]
+    missing = [f for f in fields if f not in rha]
+    if not missing:
+        ok("I2 recovers all heavy fields (peak/moving/idle/temp/soc/spread)")
+    else:
+        fail(f"I2 heavy recovery missing fields: {missing}")
+
+    # I3. reads the right DIDs (speed 740/0008, temp 790/002F, soc 790/0005,
+    #     cells 790/002D & 002B)
+    dids_ok = all(d in rha for d in
+                  ["'740'", "'0008'", "'790'", "'002F'", "'0005'",
+                   "'002D'", "'002B'"])
+    if dids_ok:
+        ok("I3 reads correct DIDs for each aggregate")
+    else:
+        fail("I3 wrong/missing DIDs in heavy recovery")
+
+    # I4. forceCloseTrip merges heavy via copyWith (not separate write)
+    fc = db_src[db_src.find("Future<DateTime> forceCloseTrip"):
+                db_src.find("Future<DateTime> forceCloseTrip") + 3000]
+    if "recoverHeavyAggregates(tripId)" in fc and "heavy.copyWith(" in fc:
+        ok("I4 forceCloseTrip merges heavy aggregates via copyWith")
+    else:
+        fail("I4 forceCloseTrip does not merge heavy aggregates")
+
+    # I5. Logic port: peak speed comes from samples, not a stale scalar
+    #     (Друг 2 diagnosis: peak_speed=3.3 while histogram had 60-70).
+    def heavy(speeds):
+        if not speeds:
+            return None, None, 0, 0
+        peak = max(speeds)
+        moving = [s for s in speeds if s >= 1.0]
+        idle_n = len([s for s in speeds if s < 1.0])
+        avg_mov = sum(moving) / len(moving) if moving else None
+        return peak, avg_mov, len(moving), idle_n
+    # samples reaching 67 km/h must yield peak 67, not 3.3
+    peak, avg_mov, mv, idl = heavy([0, 3.3, 20, 45, 67, 50, 0, 0])
+    if peak == 67 and avg_mov is not None and mv == 5 and idl == 3:
+        ok(f"I5 peak from samples = {peak} (fixes stale-scalar 3.3 bug)")
+    else:
+        fail(f"I5 heavy speed calc wrong: peak={peak} avg={avg_mov} mv={mv} idl={idl}")
+
+    # I6. cell spread = max(002D) − min(002B), guarded
+    def spread(hi_list, lo_list):
+        if not hi_list or not lo_list:
+            return None
+        hi, lo = max(hi_list), min(lo_list)
+        return (hi - lo) if hi >= lo else None
+    if spread([3712, 3720, 3715], [3650, 3648, 3655]) == 72 and \
+       spread([], [1]) is None:
+        ok("I6 cell spread = max(002D)−min(002B), null-guarded")
+    else:
+        fail("I6 cell spread calc wrong")
+else:
+    ok(f"Part I skipped (build +{pv}, heavy recovery lands in +42)")
+
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
-print(f"+35→+41 REGRESSION — build +{pv}")
+print(f"+35→+42 REGRESSION — build +{pv}")
 print("=" * 64)
 for m in oks:
     print(f"  [PASS] {m}")
