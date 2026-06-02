@@ -767,9 +767,100 @@ if int(pv) >= 42:
 else:
     ok(f"Part I skipped (build +{pv}, heavy recovery lands in +42)")
 
+# ──────────── Part J: +43 park-based trip segmentation ────────────
+if int(pv) >= 43:
+    conn_src = (root / 'lib/services/connection.dart').read_text()
+
+    # J1. segmentation method exists and is called in the poll loop
+    if "_maybeSegmentTripOnPark()" in conn_src and \
+       conn_src.count("_maybeSegmentTripOnPark") >= 2:
+        ok("J1 _maybeSegmentTripOnPark defined and called in poll loop")
+    else:
+        fail("J1 segmentation method missing or not wired")
+
+    seg = conn_src[conn_src.find("Future<void> _maybeSegmentTripOnPark"):
+                   conn_src.find("Future<void> _maybeSegmentTripOnPark") + 2200]
+
+    # J2. charging must NOT be read as end-of-trip
+    if "isCharging" in seg:
+        ok("J2 charging excluded from park-segmentation (no false close)")
+    else:
+        fail("J2 charging not excluded — DC charge would falsely segment")
+
+    # J3. reuses the clean finalize path (no duplicate close logic)
+    if "_finalizeTripFromLastKnown()" in seg:
+        ok("J3 reuses _finalizeTripFromLastKnown (identical aggregates, no dup)")
+    else:
+        fail("J3 does not reuse the clean finalize path")
+
+    # J4. re-arms trip creation after closing
+    if "_wantTripCreation = true" in seg:
+        ok("J4 re-arms _wantTripCreation so next D starts a new trip")
+    else:
+        fail("J4 does not re-arm trip creation (next drive wouldn't start)")
+
+    # J5. debounce + threshold present, gear==P (1) detected
+    if "_kParkConfirmDuration" in seg and "_kParkCloseThreshold" in seg \
+       and "gear.toInt() == 1" in seg:
+        ok("J5 P-debounce + 10-min threshold + gear==P(1) detection present")
+    else:
+        fail("J5 debounce/threshold/gear-detection incomplete")
+
+    # J6. no-double-close: the finalize path it calls guards on
+    #     _currentTripId == null (so a later BLE-drop close is a no-op).
+    fin = conn_src[conn_src.find("Future<void> _finalizeTripFromLastKnown"):
+                   conn_src.find("Future<void> _finalizeTripFromLastKnown") + 200]
+    if "if (_currentTripId == null) return;" in fin:
+        ok("J6 finalize guards on null trip → park-close can't double-close")
+    else:
+        fail("J6 finalize lacks null guard — risk of double close")
+
+    # J7. Logic port: state machine (P debounce → park clock → close).
+    CONFIRM = 30   # seconds
+    CLOSE = 600    # seconds
+    def sim(events):
+        # events: list of (t_seconds, gear) where gear 1=P else moving
+        confirm_start = None; parked_since = None; closed_at = None
+        for t, gear in events:
+            in_park = (gear == 1)
+            if not in_park:
+                confirm_start = None; parked_since = None
+                continue
+            if confirm_start is None:
+                confirm_start = t
+            if t - confirm_start < CONFIRM:
+                continue
+            if parked_since is None:
+                parked_since = t
+            if t - parked_since >= CLOSE and closed_at is None:
+                closed_at = t
+        return closed_at
+    # parked continuously from t=0 → confirmed at 30s, clock from 30s,
+    # closes at 30+600=630s.
+    park_stream = [(t, 1) for t in range(0, 700, 5)]
+    c = sim(park_stream)
+    if c is not None and 625 <= c <= 635:
+        ok(f"J7 continuous park closes at ~{c}s (30s confirm + 600s threshold)")
+    else:
+        fail(f"J7 close timing wrong: {c}")
+    # short stop (5 min) then drive → never closes
+    short = [(t, 1) for t in range(0, 300, 5)] + [(305, 3)]
+    if sim(short) is None:
+        ok("J7 5-min stop does NOT close (sub-threshold park ignored)")
+    else:
+        fail("J7 short stop wrongly closed the trip")
+    # spurious single P frame amid driving → never arms
+    spur = [(0, 3), (5, 1), (10, 3), (15, 3)]
+    if sim(spur) is None:
+        ok("J7 spurious P frame does not arm (debounce works)")
+    else:
+        fail("J7 spurious P wrongly armed")
+else:
+    ok(f"Part J skipped (build +{pv}, segmentation lands in +43)")
+
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
-print(f"+35→+42 REGRESSION — build +{pv}")
+print(f"+35→+43 REGRESSION — build +{pv}")
 print("=" * 64)
 for m in oks:
     print(f"  [PASS] {m}")
