@@ -919,17 +919,26 @@ if int(pv) >= 44:
     else:
         fail("K6 SOH block still uses relative-to-t0 offset → dates would be 1970")
 
-    # K7. Cost tooltip rounds to one decimal via toStringAsFixed(1).
-    #     The bug we're fixing is fl_chart's default toString() printing
-    #     `10.64064000000003`; the fix must be a toStringAsFixed(1) call
-    #     inside getTooltipItem of a BarTouchTooltipData on the cost card.
-    if "barTouchData: BarTouchData(" in bar_card and \
-       "BarTouchTooltipData(" in bar_card and \
-       "getTooltipItem:" in bar_card and \
-       "rod.toY.toStringAsFixed(1)" in bar_card:
-        ok("K7 cost tooltip uses rod.toY.toStringAsFixed(1) — no IEEE-754 garbage")
+    # K7. Cost rounding to one decimal. In +44 this lived inside a
+    #     custom BarTouchTooltipData on the bar card — which turned out
+    #     to be exactly the API surface that blanked the chart on the
+    #     BZ5 head unit (see L2). The +45 redesign moves the rounding
+    #     into the cost footer composed in _buildSections, and removes
+    #     the tooltip altogether. From +45 the test looks at the footer
+    #     formula instead; pre-+45 it still checks the tooltip path.
+    if int(pv) >= 45:
+        if "costTotal.toStringAsFixed(1)" in trends:
+            ok("K7 cost rounded to one decimal in footer (+45 redesign path)")
+        else:
+            fail("K7 cost footer not rounded to one decimal")
     else:
-        fail("K7 cost tooltip missing or doesn't round (would show 10.64064000000003)")
+        if "barTouchData: BarTouchData(" in bar_card and \
+           "BarTouchTooltipData(" in bar_card and \
+           "getTooltipItem:" in bar_card and \
+           "rod.toY.toStringAsFixed(1)" in bar_card:
+            ok("K7 cost tooltip uses rod.toY.toStringAsFixed(1) — no IEEE-754 garbage")
+        else:
+            fail("K7 cost tooltip missing or doesn't round (would show 10.64064000000003)")
 
     # K8. Date-format ladder: three branches for span (30d / 1y / all).
     #     A regression would be a single hardcoded format that misreads
@@ -976,9 +985,149 @@ if int(pv) >= 44:
 else:
     ok(f"Part K skipped (build +{pv}, trends UI fixes land in +44)")
 
+# ──────────── Part L: +45 trends clean-slate redesign ────────────
+if int(pv) >= 45:
+    # L1. Default window is now 30d (was 1y). One-character change, but
+    #     the regression catches a future "improvement" that defaults
+    #     back to 1y and surprises a new user with a blank 30d-only
+    #     history.
+    if "_Window _window = _Window.d30;" in trends:
+        ok("L1 default window is 30d")
+    else:
+        fail("L1 default window not d30 — would show 1y for new users")
+
+    # L2. No barTouchData / BarTouchTooltipData CALL anywhere in
+    #     trends.dart. This is the root cause of the blank white bar
+    #     card on the BZ5 in v44: the fl_chart 0.68 tooltip API trips
+    #     release-mode rendering. The +45 redesign removes it entirely;
+    #     per-bar value moves to the footer. Historical mentions in
+    #     doc-comments are kept on purpose (so the next contributor
+    #     understands why we don't use this API) — match the open paren
+    #     to detect a real call, not a comment.
+    if "BarTouchTooltipData(" not in trends and \
+       "BarTooltipItem(" not in trends and \
+       "getTooltipItem:" not in trends:
+        ok("L2 no BarTouchTooltipData/BarTooltipItem/getTooltipItem CALLS in trends")
+    else:
+        fail("L2 fl_chart tooltip API leaked back into trends — same risk as +44")
+
+    # L3. Bar card disables touch outright (no chance of any touch path
+    #     activating the same code surface that blanked v44).
+    if "BarTouchData(enabled: false)" in trends:
+        ok("L3 bar chart touch disabled outright")
+    else:
+        fail("L3 bar chart touch not disabled — would still expose tooltip surface")
+
+    # L4. Bar card has a text fallback for <3 months (one bar is not a
+    #     chart). Match the method name AND the boundary.
+    if "_textFallback()" in trends and "bars.length < 3" in trends:
+        ok("L4 bar card text fallback engages at <3 months")
+    else:
+        fail("L4 bar card missing text fallback for <3 months")
+
+    # L5. _LineCard accepts forcedMinY/forcedMaxY for SOH-style fixed
+    #     bounds. The signature must include the optional doubles.
+    if "final double? forcedMinY;" in trends and \
+       "final double? forcedMaxY;" in trends:
+        ok("L5 _LineCard supports forced Y bounds")
+    else:
+        fail("L5 _LineCard missing forced Y bound parameters")
+
+    # L6. SOH bound logic must be adaptive: floor at min(measured, 95),
+    #     ceiling at max(measured, 100). Match the expressions.
+    if "measuredMin < 95.0 ? measuredMin - 0.5 : 95.0" in trends and \
+       "measuredMax > 100.0 ? measuredMax + 0.5 : 100.0" in trends:
+        ok("L6 SOH bounds are adaptive (95-100% baseline, extends with data)")
+    else:
+        fail("L6 SOH bounds not adaptive — hard-coded or missing")
+
+    # L7. Real-range filter now uses kMinDistForRangeKm in the
+    #     aggregator. Verify both the constant declaration and the
+    #     conditional that uses it.
+    if "kMinDistForRangeKm = 3.0" in agg_src and \
+       "dist >= kMinDistForRangeKm" in agg_src:
+        ok("L7 real-range short-trip filter (≥3 km) added to aggregator")
+    else:
+        fail("L7 real-range distance filter missing — would leak 2.4-km anomalies")
+
+    # L8. Every card type now requires a `footer` parameter — the
+    #     caller composes the meaningful string. Verify the required
+    #     keyword shows up in each class.
+    line_def = trends[trends.find("class _LineCard"):trends.find("class _ScatterTrendCard")]
+    scatter_def = trends[trends.find("class _ScatterTrendCard"):trends.find("class _BarCard")]
+    bar_def = trends[trends.find("class _BarCard"):trends.find("// ── shared chart helpers ──")]
+    if "required this.footer," in line_def and \
+       "required this.footer," in scatter_def and \
+       "required this.footer," in bar_def:
+        ok("L8 all three card classes require an explicit footer parameter")
+    else:
+        fail("L8 footer parameter missing from at least one card class")
+
+    # L9. _buildSections must wire all six footers explicitly. Check
+    #     each composition string fragment shows up.
+    footer_fragments = [
+        "cumFooter",
+        "costFooter",
+        "consFooter",
+        "regenFooter",
+        "sohFooter",
+        "rangeFooter",
+    ]
+    missing = [f for f in footer_fragments if f not in trends]
+    if not missing:
+        ok("L9 _buildSections composes all six footers (cum/cost/cons/regen/soh/range)")
+    else:
+        fail(f"L9 missing footer composition: {missing}")
+
+    # L10. Logic port: weighted-average consumption is total energy /
+    #      total distance × 100 (not per-trip average). Verify the
+    #      formula explicitly.
+    if "agg.totalEnergyKwh / agg.totalDistanceKm * 100" in trends:
+        ok("L10 average consumption is weighted (energy/distance), not per-trip mean")
+    else:
+        fail("L10 average consumption formula wrong — would skew with short trips")
+
+    # L11. Logic port (Python): SOH adaptive-bound formula.
+    def soh_bounds(samples):
+        if not samples: return (None, None)
+        m, M = min(samples), max(samples)
+        lo = m - 0.5 if m < 95.0 else 95.0
+        hi = M + 0.5 if M > 100.0 else 100.0
+        return (lo, hi)
+    cases = [
+        ([], (None, None)),
+        ([97.0, 98.0], (95.0, 100.0)),       # healthy → fixed window
+        ([93.0, 94.5], (92.5, 100.0)),       # worn → floor extends
+        ([99.0, 100.5], (95.0, 101.0)),      # over-100 (rare) → ceiling extends
+    ]
+    if all(soh_bounds(s) == expected for s, expected in cases):
+        ok("L11 SOH adaptive bounds: healthy=fixed, worn=floor-extends, over=ceiling-extends")
+    else:
+        fail("L11 SOH bound formula diverged from Dart")
+
+    # L12. Logic port: range filter rejects short trips even with
+    #      adequate ΔSOC.
+    def range_pt(dist_km, soc_delta):
+        if dist_km is None or dist_km < 3.0: return None
+        if soc_delta < 5.0: return None
+        return dist_km / soc_delta * 100
+    cases = [
+        ((1.0, 50.0), None),    # 1 km × 50% ΔSOC → 2 km/100% — rejected
+        ((0.24, 10.0), None),   # tiny hop, even with 10% — rejected
+        ((3.0, 5.0), 60.0),     # threshold case — kept (60 km/100%)
+        ((30.0, 10.0), 300.0),  # normal trip — kept (300 km/100%)
+    ]
+    if all(range_pt(*args) == expected for args, expected in cases):
+        ok("L12 range-point filter rejects <3 km hops regardless of ΔSOC")
+    else:
+        fail("L12 range-point filter formula diverged from Dart")
+
+else:
+    ok(f"Part L skipped (build +{pv}, clean-slate trends redesign lands in +45)")
+
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
-print(f"+35→+44 REGRESSION — build +{pv}")
+print(f"+35→+45 REGRESSION — build +{pv}")
 print("=" * 64)
 for m in oks:
     print(f"  [PASS] {m}")
