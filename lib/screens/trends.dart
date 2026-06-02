@@ -148,14 +148,17 @@ class _TrendsScreenState extends State<TrendsScreen> {
     final isWide = LayoutBreakpoints.useHeadUnitLayout(context);
 
     // SOH curve straight off snapshots (the one metric with no Trips home).
+    // v0.1.29+44: keep x as absolute epoch-ms (was: subtracted t0 offset).
+    // The date axis on bottomTitles below needs real wall-clock x values to
+    // format as dates; the previous t0-relative offset would have produced
+    // ms-since-first-snapshot, which formats as "1970-01-01" forever.
     final sohPoints = <FlSpot>[];
     if (snapshots.isNotEmpty) {
-      final t0 = snapshots.first.capturedAt.millisecondsSinceEpoch.toDouble();
       for (final s in snapshots) {
         final v = s.soh;
         if (v == null) continue;
         sohPoints
-            .add(FlSpot(s.capturedAt.millisecondsSinceEpoch.toDouble() - t0, v));
+            .add(FlSpot(s.capturedAt.millisecondsSinceEpoch.toDouble(), v));
       }
     }
 
@@ -466,7 +469,12 @@ class _LineCard extends StatelessWidget {
                 minY: minY - (maxY - minY).abs() * 0.05 - 0.1,
                 maxY: maxY + (maxY - minY).abs() * 0.05 + 0.1,
                 gridData: const FlGridData(show: false),
-                titlesData: _leftOnlyTitles(),
+                titlesData: _chartTitles(
+                  bottom: _timeSideTitles(
+                    minX: spots.first.x,
+                    maxX: spots.last.x,
+                  ),
+                ),
                 borderData: FlBorderData(show: false),
                 lineBarsData: [
                   LineChartBarData(
@@ -537,7 +545,12 @@ class _ScatterTrendCard extends StatelessWidget {
                 minY: minY - (maxY - minY).abs() * 0.08 - 0.1,
                 maxY: maxY + (maxY - minY).abs() * 0.08 + 0.1,
                 gridData: const FlGridData(show: false),
-                titlesData: _leftOnlyTitles(),
+                titlesData: _chartTitles(
+                  bottom: _timeSideTitles(
+                    minX: dotSpots.first.x,
+                    maxX: dotSpots.last.x,
+                  ),
+                ),
                 borderData: FlBorderData(show: false),
                 lineBarsData: [
                   // Dots: invisible line, visible points.
@@ -610,8 +623,26 @@ class _BarCard extends StatelessWidget {
               BarChartData(
                 maxY: maxV * 1.1 + 0.1,
                 gridData: const FlGridData(show: false),
-                titlesData: _leftOnlyTitles(),
+                titlesData: _chartTitles(
+                  bottom: _monthBarSideTitles(bars),
+                ),
                 borderData: FlBorderData(show: false),
+                // v0.1.29+44: round the cost tooltip to one decimal. The
+                // default fl_chart tooltip prints rod.toY as full IEEE-754
+                // (e.g. "10.64064000000003") which looks like garbage on
+                // top of a Br-denominated bar.
+                barTouchData: BarTouchData(
+                  touchTooltipData: BarTouchTooltipData(
+                    getTooltipItem: (group, _, rod, __) => BarTooltipItem(
+                      '$currency ${rod.toY.toStringAsFixed(1)}',
+                      const TextStyle(
+                        color: Colors.white,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ),
                 barGroups: [
                   for (var i = 0; i < bars.length; i++)
                     BarChartGroupData(x: i, barRods: [
@@ -632,12 +663,16 @@ class _BarCard extends StatelessWidget {
 
 // ── shared chart helpers ──
 
-FlTitlesData _leftOnlyTitles() => FlTitlesData(
+/// v0.1.29+44: was `_leftOnlyTitles` — now optionally accepts a bottom
+/// axis. Bottom defaults to hidden (preserves the old behaviour for any
+/// caller that doesn't have a meaningful x-axis to draw).
+FlTitlesData _chartTitles({SideTitles? bottom}) => FlTitlesData(
       rightTitles:
           const AxisTitles(sideTitles: SideTitles(showTitles: false)),
       topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-      bottomTitles:
-          const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+      bottomTitles: AxisTitles(
+        sideTitles: bottom ?? const SideTitles(showTitles: false),
+      ),
       leftTitles: AxisTitles(
         sideTitles: SideTitles(
           showTitles: true,
@@ -649,6 +684,95 @@ FlTitlesData _leftOnlyTitles() => FlTitlesData(
         ),
       ),
     );
+
+/// v0.1.29+44: date labels for a continuous time axis (x = epoch ms).
+///
+/// Picks ~3 evenly-spaced ticks across the visible range. We skip ticks
+/// too close to the edges so they don't collide with the y-axis label
+/// strip on the left or run past the right card edge. The label format
+/// adapts to the span:
+///   • ≤45 days  → "dd.MM"   (30-day window, individual days readable)
+///   • ≤400 days → "MMM"     (year window, month name in ru locale)
+///   • else      → "MM.yy"   (all-time, compact month+year)
+///
+/// Returns a no-label SideTitles when the span is degenerate (single
+/// point or all-identical x); the chart still renders, just without
+/// dates underneath — better than an interval of 0 crashing fl_chart.
+SideTitles _timeSideTitles({required double minX, required double maxX}) {
+  final span = maxX - minX;
+  if (span <= 0) return const SideTitles(showTitles: false);
+  // 3 interior ticks ⇒ partition into 4 segments. Step is the chart x
+  // unit (epoch-ms) between consecutive ticks; fl_chart uses it for
+  // `interval` directly.
+  const ticks = 3;
+  final step = span / (ticks + 1);
+  // Choose format by visible span.
+  final spanDays = span / 86400000.0;
+  final DateFormat fmt;
+  if (spanDays <= 45) {
+    fmt = DateFormat('dd.MM');
+  } else if (spanDays <= 400) {
+    fmt = DateFormat.MMM('ru');
+  } else {
+    fmt = DateFormat('MM.yy');
+  }
+  return SideTitles(
+    showTitles: true,
+    reservedSize: 20,
+    interval: step,
+    getTitlesWidget: (v, meta) {
+      // Drop ticks that hug the extremes — those collide with the y-axis
+      // numbers on the left and overflow the card on the right.
+      if (v <= minX + step * 0.4 || v >= maxX - step * 0.4) {
+        return const SizedBox.shrink();
+      }
+      final dt = DateTime.fromMillisecondsSinceEpoch(v.toInt());
+      return SideTitleWidget(
+        axisSide: meta.axisSide,
+        space: 2,
+        child: Text(
+          fmt.format(dt),
+          style: const TextStyle(fontSize: 9, color: Colors.grey),
+        ),
+      );
+    },
+  );
+}
+
+/// v0.1.29+44: month labels for the per-month bar chart. x is bucket
+/// index (0..bars.length-1), so we look up `bars[i].start` to get the
+/// real DateTime. Stride = ceil(n / 4) keeps the count of labels low
+/// enough to fit on the narrow head-unit width without overlap; for
+/// n ≤ 12 (year window) we still cap at 4 labels (March/June/Sep/Dec
+/// pattern on a 12-bucket axis). Format adapts to multi-year ranges.
+SideTitles _monthBarSideTitles(List<PeriodBar> bars) {
+  if (bars.isEmpty) return const SideTitles(showTitles: false);
+  final n = bars.length;
+  final step = ((n + 3) / 4).floor().clamp(1, n);
+  // If the bars span more than one calendar year, drop the year in too.
+  final firstY = bars.first.start.year;
+  final lastY = bars.last.start.year;
+  final fmt =
+      (firstY == lastY) ? DateFormat.MMM('ru') : DateFormat('MM.yy');
+  return SideTitles(
+    showTitles: true,
+    reservedSize: 20,
+    interval: 1.0,
+    getTitlesWidget: (v, meta) {
+      final i = v.round();
+      if (i < 0 || i >= bars.length) return const SizedBox.shrink();
+      if (i % step != 0) return const SizedBox.shrink();
+      return SideTitleWidget(
+        axisSide: meta.axisSide,
+        space: 2,
+        child: Text(
+          fmt.format(bars[i].start),
+          style: const TextStyle(fontSize: 9, color: Colors.grey),
+        ),
+      );
+    },
+  );
+}
 
 Widget _notEnough(int n) => Center(
       child: Text(

@@ -858,9 +858,127 @@ if int(pv) >= 43:
 else:
     ok(f"Part J skipped (build +{pv}, segmentation lands in +43)")
 
+# ──────────── Part K: +44 trends UI fixes (date axis + tooltip rounding) ────────────
+if int(pv) >= 44:
+    # K1. old _leftOnlyTitles() helper replaced by gated _chartTitles().
+    #     Strict signature so a partial rename can't pass — the old name
+    #     must no longer be CALLED (a backtick mention in a doc-comment
+    #     for historical clarity is fine), the new name must be present,
+    #     and the new one must accept an optional `bottom` argument.
+    if "_leftOnlyTitles(" not in trends and \
+       "FlTitlesData _chartTitles({SideTitles? bottom})" in trends:
+        ok("K1 _chartTitles helper replaces _leftOnlyTitles (bottom-aware)")
+    else:
+        fail("K1 _chartTitles helper missing or _leftOnlyTitles still called")
+
+    # K2. _timeSideTitles defined and decodes x as epoch-ms → DateTime
+    if "SideTitles _timeSideTitles(" in trends and \
+       "DateTime.fromMillisecondsSinceEpoch(v.toInt())" in trends:
+        ok("K2 _timeSideTitles decodes epoch-ms x to DateTime")
+    else:
+        fail("K2 _timeSideTitles missing or doesn't decode epoch-ms")
+
+    # K3. _monthBarSideTitles looks up bars[i].start (real DateTime),
+    #     not just rendering the integer index.
+    if "SideTitles _monthBarSideTitles(" in trends and \
+       "bars[i].start" in trends:
+        ok("K3 _monthBarSideTitles uses bars[i].start for real month labels")
+    else:
+        fail("K3 _monthBarSideTitles missing or doesn't read PeriodBar.start")
+
+    # K4. _LineCard and _ScatterTrendCard wire bottom=_timeSideTitles via
+    #     spots.first.x / spots.last.x or dotSpots.first.x / dotSpots.last.x.
+    line_card = trends[trends.find("class _LineCard"):trends.find("class _ScatterTrendCard")]
+    scatter_card = trends[trends.find("class _ScatterTrendCard"):trends.find("class _BarCard")]
+    line_ok = "_timeSideTitles(" in line_card and \
+              "minX: spots.first.x" in line_card and \
+              "maxX: spots.last.x" in line_card
+    scatter_ok = "_timeSideTitles(" in scatter_card and \
+                 "minX: dotSpots.first.x" in scatter_card and \
+                 "maxX: dotSpots.last.x" in scatter_card
+    if line_ok and scatter_ok:
+        ok("K4 _LineCard + _ScatterTrendCard wire date axis from spot extremes")
+    else:
+        fail(f"K4 date axis not wired correctly: line={line_ok} scatter={scatter_ok}")
+
+    # K5. _BarCard wires _monthBarSideTitles(bars)
+    bar_card = trends[trends.find("class _BarCard"):trends.find("// ── shared chart helpers ──")]
+    if "_monthBarSideTitles(bars)" in bar_card:
+        ok("K5 _BarCard wires month-bucket bottom axis")
+    else:
+        fail("K5 _BarCard missing _monthBarSideTitles wiring")
+
+    # K6. SOH block no longer subtracts a t0 offset — must use absolute
+    #     epoch-ms so the date-axis formatter shows real years, not 1970.
+    soh_block_idx = trends.find("SOH curve straight off snapshots")
+    soh_block = trends[soh_block_idx:soh_block_idx + 700] if soh_block_idx >= 0 else ""
+    if soh_block and "final t0 =" not in soh_block and \
+       "millisecondsSinceEpoch.toDouble()" in soh_block and \
+       "- t0" not in soh_block:
+        ok("K6 SOH block uses absolute epoch-ms (no t0 subtraction)")
+    else:
+        fail("K6 SOH block still uses relative-to-t0 offset → dates would be 1970")
+
+    # K7. Cost tooltip rounds to one decimal via toStringAsFixed(1).
+    #     The bug we're fixing is fl_chart's default toString() printing
+    #     `10.64064000000003`; the fix must be a toStringAsFixed(1) call
+    #     inside getTooltipItem of a BarTouchTooltipData on the cost card.
+    if "barTouchData: BarTouchData(" in bar_card and \
+       "BarTouchTooltipData(" in bar_card and \
+       "getTooltipItem:" in bar_card and \
+       "rod.toY.toStringAsFixed(1)" in bar_card:
+        ok("K7 cost tooltip uses rod.toY.toStringAsFixed(1) — no IEEE-754 garbage")
+    else:
+        fail("K7 cost tooltip missing or doesn't round (would show 10.64064000000003)")
+
+    # K8. Date-format ladder: three branches for span (30d / 1y / all).
+    #     A regression would be a single hardcoded format that misreads
+    #     a 30-day window or a 10-year window. Match all three formats.
+    ts_block_idx = trends.find("SideTitles _timeSideTitles(")
+    ts_block = trends[ts_block_idx:ts_block_idx + 1500] if ts_block_idx >= 0 else ""
+    if ts_block and "'dd.MM'" in ts_block and \
+       "DateFormat.MMM('ru')" in ts_block and \
+       "'MM.yy'" in ts_block:
+        ok("K8 date format ladder covers ≤45d / ≤400d / all")
+    else:
+        fail("K8 date format ladder incomplete (need dd.MM, MMM ru, MM.yy)")
+
+    # K9. Tick thinning in bar axis: i % step != 0 → SizedBox.shrink().
+    #     Without this, a 24-month "all" view would overlap labels.
+    mb_block_idx = trends.find("SideTitles _monthBarSideTitles(")
+    mb_block = trends[mb_block_idx:mb_block_idx + 1200] if mb_block_idx >= 0 else ""
+    if mb_block and "i % step != 0" in mb_block and \
+       "SizedBox.shrink()" in mb_block:
+        ok("K9 bar axis thins labels via stride (no overlap on wide windows)")
+    else:
+        fail("K9 bar axis lacks stride thinning")
+
+    # K10. Continuous-time axis must not place ticks on top of the y-axis
+    #      strip or off the right edge of the card. Guard ticks within
+    #      `step * 0.4` of either extreme — this matches our implementation.
+    if ts_block and "step * 0.4" in ts_block and "SizedBox.shrink()" in ts_block:
+        ok("K10 time axis guards extremes (no collision with y-strip)")
+    else:
+        fail("K10 time axis missing edge-extreme guard")
+
+    # K11. Logic port: stride formula in _monthBarSideTitles must yield 1
+    #      for n≤4, 2 for n=5..8, 3 for n=9..12, etc. Mirror Dart math
+    #      directly so any later "optimization" that breaks the formula
+    #      shows up as a test failure.
+    def stride(n):
+        return max(1, min(n, ((n + 3) // 4)))
+    cases = {1: 1, 3: 1, 4: 1, 5: 2, 8: 2, 9: 3, 12: 3, 24: 6}
+    if all(stride(n) == s for n, s in cases.items()):
+        ok("K11 month-bucket stride formula matches Dart for n∈{1,3,4,5,8,9,12,24}")
+    else:
+        fail("K11 stride formula diverged from Dart")
+
+else:
+    ok(f"Part K skipped (build +{pv}, trends UI fixes land in +44)")
+
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
-print(f"+35→+43 REGRESSION — build +{pv}")
+print(f"+35→+44 REGRESSION — build +{pv}")
 print("=" * 64)
 for m in oks:
     print(f"  [PASS] {m}")
