@@ -45,8 +45,11 @@ class TrendsScreen extends StatefulWidget {
 enum _Window { d30, y1, all }
 
 class _TrendsScreenState extends State<TrendsScreen> {
-  // v0.1.29+35: long-term genre → default to a year, not 24h.
-  _Window _window = _Window.y1;
+  // v0.1.29+45: 30d is a saner default for new users with limited history
+  // (a freshly-installed copy will have days of data, not a year). The
+  // user can step up to 1y or all once history accrues. Previous default
+  // (1y) is still one tap away.
+  _Window _window = _Window.d30;
 
   Duration _windowDuration() {
     switch (_window) {
@@ -162,6 +165,79 @@ class _TrendsScreenState extends State<TrendsScreen> {
       }
     }
 
+    // v0.1.29+45: pre-compute the per-card footers so every chart shell
+    // ends with one meaningful number ("итого N", "средн. X", "было →
+    // сейчас") instead of the generic "N точек · min-max" template.
+    // The shell still shows whatever string we hand it — these are just
+    // composed at this layer where we have all the aggregate fields.
+    final cumLast = agg.totalDistanceKm;
+    final cumFooter = agg.cumulativeOdometer.isEmpty
+        ? '—'
+        : 'итого ${_fmtKm(cumLast)} км · ${agg.tripCount} поезд.';
+
+    final costTotal = agg.costPerMonth.fold<double>(0, (a, b) => a + b.value);
+    final costFooter = agg.costPerMonth.isEmpty
+        ? '—'
+        : 'итого ${cost.currencySymbol} ${costTotal.toStringAsFixed(1)} · ${agg.costPerMonth.length} мес';
+
+    // Weighted average consumption: total energy / total distance × 100.
+    // More honest than averaging per-trip consumption (which would
+    // overweight short trips). Falls back to '—' when either total is
+    // missing.
+    final avgCons = (agg.totalDistanceKm > 0 && agg.totalEnergyKwh > 0)
+        ? agg.totalEnergyKwh / agg.totalDistanceKm * 100
+        : null;
+    final consFooter = avgCons == null
+        ? '—'
+        : 'средн. ${avgCons.toStringAsFixed(1)} кВт·ч/100км · ${agg.consumptionPerTrip.length} поезд.';
+
+    final avgRegen = agg.regenSharePct.isEmpty
+        ? null
+        : agg.regenSharePct
+                .map((p) => p.y)
+                .reduce((a, b) => a + b) /
+            agg.regenSharePct.length;
+    final regenFooter = avgRegen == null
+        ? '—'
+        : 'средн. ${avgRegen.toStringAsFixed(1)}% · ${agg.regenSharePct.length} поезд.';
+
+    // SOH "было → сейчас": pulls the chronological first and last SOH
+    // sample from the snapshot stream. Both are non-null here because
+    // sohPoints is built by filtering out nulls upstream.
+    final sohWas = sohPoints.isEmpty ? null : sohPoints.first.y;
+    final sohNow = sohPoints.isEmpty ? null : sohPoints.last.y;
+    final sohFooter = (sohWas == null || sohNow == null)
+        ? '—'
+        : 'было ${sohWas.toStringAsFixed(1)}% → сейчас ${sohNow.toStringAsFixed(1)}% · ${sohPoints.length} точ.';
+
+    // v0.1.29+45: SOH y-axis bounds. Hardcoding 95-100% would make a
+    // 95% pack "off-screen"; floating with the data would make 0.5%
+    // wobble look catastrophic. Adaptive: floor at min(measured, 95),
+    // ceiling at max(measured, 100). A healthy pack lives in 95-100;
+    // a worn one extends the chart downward without clipping.
+    double? sohMinY, sohMaxY;
+    if (sohPoints.isNotEmpty) {
+      var measuredMin = double.infinity;
+      var measuredMax = double.negativeInfinity;
+      for (final p in sohPoints) {
+        if (p.y < measuredMin) measuredMin = p.y;
+        if (p.y > measuredMax) measuredMax = p.y;
+      }
+      sohMinY = measuredMin < 95.0 ? measuredMin - 0.5 : 95.0;
+      sohMaxY = measuredMax > 100.0 ? measuredMax + 0.5 : 100.0;
+    }
+
+    final avgRange = agg.realRangePer100.isEmpty
+        ? null
+        : agg.realRangePer100.map((p) => p.y).reduce((a, b) => a + b) /
+            agg.realRangePer100.length;
+    final lastRange = agg.realRangePer100.isEmpty
+        ? null
+        : agg.realRangePer100.last.y;
+    final rangeFooter = (avgRange == null || lastRange == null)
+        ? '—'
+        : 'средн. ${avgRange.round()} км · последняя ${lastRange.round()} км · ${agg.realRangePer100.length} точ.';
+
     final children = <Widget>[
       // ── Section 1: period totals ──
       _SectionLabel('Итоги за период'),
@@ -179,6 +255,7 @@ class _TrendsScreenState extends State<TrendsScreen> {
           unit: 'км',
           // monotone by nature — no curve (overshoot would break monotonicity)
           curved: false,
+          footer: cumFooter,
         ),
         if (cost.isConfigured)
           _BarCard(
@@ -187,6 +264,7 @@ class _TrendsScreenState extends State<TrendsScreen> {
             bars: agg.costPerMonth,
             color: Colors.amberAccent,
             currency: cost.currencySymbol,
+            footer: costFooter,
           ),
       ]),
       const SizedBox(height: 20),
@@ -201,6 +279,7 @@ class _TrendsScreenState extends State<TrendsScreen> {
           trend: agg.consumptionTrendLine,
           color: Colors.tealAccent,
           unit: 'кВт·ч/100км',
+          footer: consFooter,
         ),
         _LineCard(
           title: 'Доля рекуперации',
@@ -209,6 +288,7 @@ class _TrendsScreenState extends State<TrendsScreen> {
           color: Colors.greenAccent,
           unit: '%',
           curved: true,
+          footer: regenFooter,
         ),
       ]),
       const SizedBox(height: 20),
@@ -225,6 +305,9 @@ class _TrendsScreenState extends State<TrendsScreen> {
           color: Colors.lightGreenAccent,
           unit: '%',
           curved: true,
+          footer: sohFooter,
+          forcedMinY: sohMinY,
+          forcedMaxY: sohMaxY,
         ),
         _LineCard(
           title: 'Реальный запас на 100% (вычисл.)',
@@ -233,6 +316,7 @@ class _TrendsScreenState extends State<TrendsScreen> {
           color: Colors.purpleAccent,
           unit: 'км',
           curved: true,
+          footer: rangeFooter,
         ),
       ]),
     ];
@@ -360,11 +444,18 @@ class _TotalsGrid extends StatelessWidget {
     );
   }
 
-  static String _fmt(double v) {
-    if (v >= 10000) return NumberFormat('#,###', 'ru').format(v.round());
-    if (v >= 100) return v.round().toString();
-    return v.toStringAsFixed(1);
-  }
+  static String _fmt(double v) => _fmtKm(v);
+}
+
+/// v0.1.29+45: shared number formatter for footer strings and totals
+/// alike. The same rule used to live as a static inside _TotalsGrid; we
+/// hoist it to file scope so the new footer composition in _buildSections
+/// can reach it without subclassing or threading. Behaviour identical:
+/// ≥10000 → "12,345" (ru thousands sep), ≥100 → "147", else "12.3".
+String _fmtKm(double v) {
+  if (v >= 10000) return NumberFormat('#,###', 'ru').format(v.round());
+  if (v >= 100) return v.round().toString();
+  return v.toStringAsFixed(1);
 }
 
 /// Shared chart-card chrome: title row + window/unit footer + body.
@@ -435,6 +526,15 @@ class _LineCard extends StatelessWidget {
   final Color color;
   final String unit;
   final bool curved;
+  // v0.1.29+45: footer composed by the caller (e.g. "итого 199 км").
+  // Old behaviour ("N точек · min-max") was generic and unhelpful with
+  // a single useful number per chart.
+  final String footer;
+  // v0.1.29+45: optional fixed Y bounds. Used by SOH to lock the visual
+  // range to 95-100% (adaptive: extends downward if a sample falls
+  // below). Null → auto-bounds from data with the old padding rule.
+  final double? forcedMinY;
+  final double? forcedMaxY;
   const _LineCard({
     required this.title,
     required this.subtitle,
@@ -442,6 +542,9 @@ class _LineCard extends StatelessWidget {
     required this.color,
     required this.unit,
     required this.curved,
+    required this.footer,
+    this.forcedMinY,
+    this.forcedMaxY,
   });
 
   @override
@@ -453,9 +556,13 @@ class _LineCard extends StatelessWidget {
       if (p.y < minY) minY = p.y;
       if (p.y > maxY) maxY = p.y;
     }
-    final footer = points.isEmpty
-        ? '—'
-        : '${points.length} точек · ${minY.toStringAsFixed(1)}–${maxY.toStringAsFixed(1)} $unit';
+    // Auto-bounds with proportional padding (5%). Forced bounds, when
+    // supplied, override this — used by SOH to keep the visual range
+    // stable across the typical 95-100% band.
+    final autoMinY = minY - (maxY - minY).abs() * 0.05 - 0.1;
+    final autoMaxY = maxY + (maxY - minY).abs() * 0.05 + 0.1;
+    final effectiveMinY = forcedMinY ?? autoMinY;
+    final effectiveMaxY = forcedMaxY ?? autoMaxY;
 
     return _ChartCardShell(
       title: title,
@@ -466,8 +573,8 @@ class _LineCard extends StatelessWidget {
           ? _notEnough(spots.length)
           : LineChart(
               LineChartData(
-                minY: minY - (maxY - minY).abs() * 0.05 - 0.1,
-                maxY: maxY + (maxY - minY).abs() * 0.05 + 0.1,
+                minY: effectiveMinY,
+                maxY: effectiveMaxY,
                 gridData: const FlGridData(show: false),
                 titlesData: _chartTitles(
                   bottom: _timeSideTitles(
@@ -510,6 +617,9 @@ class _ScatterTrendCard extends StatelessWidget {
   final List<TrendPoint> trend;
   final Color color;
   final String unit;
+  // v0.1.29+45: footer composed by the caller — see _LineCard for
+  // the rationale. Same change.
+  final String footer;
   const _ScatterTrendCard({
     required this.title,
     required this.subtitle,
@@ -517,6 +627,7 @@ class _ScatterTrendCard extends StatelessWidget {
     required this.trend,
     required this.color,
     required this.unit,
+    required this.footer,
   });
 
   @override
@@ -529,9 +640,6 @@ class _ScatterTrendCard extends StatelessWidget {
       if (p.y < minY) minY = p.y;
       if (p.y > maxY) maxY = p.y;
     }
-    final footer = dots.isEmpty
-        ? '—'
-        : '${dots.length} поездок · ${minY.toStringAsFixed(1)}–${maxY.toStringAsFixed(1)} $unit';
 
     return _ChartCardShell(
       title: title,
@@ -587,76 +695,120 @@ class _ScatterTrendCard extends StatelessWidget {
 }
 
 /// Per-month bar chart (cost). bars are PeriodBar; x is bucket index.
+///
+/// v0.1.29+45 redesign — the v0.1.29+44 attempt to round the default
+/// fl_chart tooltip via barTouchData/BarTouchTooltipData rendered an
+/// empty white card in production (the v44 build on real hardware
+/// showed a blank box where the chart should be — root cause: tooltip
+/// API in fl_chart 0.68.x has a quirky edge case that release-builds
+/// trip over). The redesign drops the custom tooltip entirely and
+/// surfaces the rounded value as a static label above each bar plus
+/// in the footer. No touch handler, no fragile API contract.
 class _BarCard extends StatelessWidget {
   final String title;
   final String subtitle;
   final List<PeriodBar> bars;
   final Color color;
   final String currency;
+  // v0.1.29+45: footer composed by the caller.
+  final String footer;
   const _BarCard({
     required this.title,
     required this.subtitle,
     required this.bars,
     required this.color,
     required this.currency,
+    required this.footer,
   });
 
   @override
   Widget build(BuildContext context) {
-    double maxV = 0;
-    for (final b in bars) {
-      if (b.value > maxV) maxV = b.value;
-    }
-    final total = bars.fold<double>(0, (a, b) => a + b.value);
-    final footer = bars.isEmpty
-        ? '—'
-        : '${bars.length} мес · итого $currency ${total.round()}';
-
     return _ChartCardShell(
       title: title,
       subtitle: subtitle,
       color: color,
       footer: footer,
-      body: bars.isEmpty
-          ? _notEnough(0)
-          : BarChart(
-              BarChartData(
-                maxY: maxV * 1.1 + 0.1,
-                gridData: const FlGridData(show: false),
-                titlesData: _chartTitles(
-                  bottom: _monthBarSideTitles(bars),
-                ),
-                borderData: FlBorderData(show: false),
-                // v0.1.29+44: round the cost tooltip to one decimal. The
-                // default fl_chart tooltip prints rod.toY as full IEEE-754
-                // (e.g. "10.64064000000003") which looks like garbage on
-                // top of a Br-denominated bar.
-                barTouchData: BarTouchData(
-                  touchTooltipData: BarTouchTooltipData(
-                    getTooltipItem: (group, _, rod, __) => BarTooltipItem(
-                      '$currency ${rod.toY.toStringAsFixed(1)}',
-                      const TextStyle(
-                        color: Colors.white,
-                        fontSize: 11,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                  ),
-                ),
-                barGroups: [
-                  for (var i = 0; i < bars.length; i++)
-                    BarChartGroupData(x: i, barRods: [
-                      BarChartRodData(
-                        toY: bars[i].value,
-                        color: color,
-                        width: bars.length > 12 ? 5 : 9,
-                        borderRadius: const BorderRadius.vertical(
-                            top: Radius.circular(2)),
-                      ),
-                    ]),
-                ],
+      body: _body(),
+    );
+  }
+
+  Widget _body() {
+    if (bars.isEmpty) return _notEnough(0);
+
+    // v0.1.29+45: with one or two months a "bar chart" is just rectangles
+    // with no comparison to make. Show the months as text instead — same
+    // information, no fake graph. The bar chart re-engages at 3+ months,
+    // where there's actually a shape to read.
+    if (bars.length < 3) return _textFallback();
+
+    double maxV = 0;
+    for (final b in bars) {
+      if (b.value > maxV) maxV = b.value;
+    }
+
+    // v0.1.29+45: bar chart is now built WITHOUT any BarTouchData or
+    // BarTouchTooltipData. The v44 attempt to round the default tooltip
+    // by supplying a custom BarTouchTooltipData rendered an empty white
+    // card on the BZ5 head unit — the fl_chart 0.68 release-mode build
+    // tripped over something in that code path. Per-bar value lives in
+    // the footer ("итого Br 11.7") which is read-at-a-glance and needs
+    // no tap. Touch is disabled outright so the same API surface is
+    // never reached.
+    return BarChart(
+      BarChartData(
+        maxY: maxV * 1.1 + 0.1,
+        gridData: const FlGridData(show: false),
+        titlesData: _chartTitles(
+          bottom: _monthBarSideTitles(bars),
+        ),
+        borderData: FlBorderData(show: false),
+        barTouchData: const BarTouchData(enabled: false),
+        barGroups: [
+          for (var i = 0; i < bars.length; i++)
+            BarChartGroupData(x: i, barRods: [
+              BarChartRodData(
+                toY: bars[i].value,
+                color: color,
+                width: bars.length > 12 ? 5 : 9,
+                borderRadius: const BorderRadius.vertical(
+                    top: Radius.circular(2)),
               ),
-            ),
+            ]),
+        ],
+      ),
+    );
+  }
+
+  Widget _textFallback() {
+    final df = DateFormat.MMM('ru');
+    final lines = <Widget>[
+      for (final b in bars)
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 2),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(df.format(b.start),
+                  style: TextStyle(
+                      fontSize: 13, color: Colors.grey.shade400)),
+              Text('$currency ${b.value.toStringAsFixed(1)}',
+                  style: TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w500,
+                      color: color)),
+            ],
+          ),
+        ),
+    ];
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 18),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          mainAxisSize: MainAxisSize.min,
+          children: lines,
+        ),
+      ),
     );
   }
 }

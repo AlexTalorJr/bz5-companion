@@ -108,6 +108,16 @@ class TrendAggregate {
 /// period *totals*, which are robust to it.
 const double kMinSocDeltaForRange = 5.0;
 
+/// v0.1.29+45: companion floor on raw distance for the real-range curve.
+/// The SOC-delta filter alone lets through trips with a real short
+/// distance and a real moderate ΔSOC (e.g. a 1 km hop that happened to
+/// straddle a 5% tick at the start), which yields plausibly-looking but
+/// wildly low km/100% values (saw 2.4 km/100% in the field on a 7-day
+/// window). 3 km is the smallest distance that still produces a number
+/// whose noise floor is below the signal — short of that, BMS SOC
+/// quantization dominates the answer.
+const double kMinDistForRangeKm = 3.0;
+
 /// Window over which the consumption trend line is smoothed, in trips.
 /// Centered moving average; odd number keeps it symmetric.
 const int kConsumptionSmoothingWindow = 5;
@@ -181,12 +191,15 @@ class TrendAggregator {
       }
 
       // ── Health: real range per 100% SOC ──
-      // km / |ΔSOC| × 100, only for trips that moved enough SOC to be
-      // meaningful (see kMinSocDeltaForRange).
+      // km / |ΔSOC| × 100, only for trips that moved enough SOC AND
+      // enough distance to be meaningful (see kMinSocDeltaForRange and
+      // kMinDistForRangeKm). v0.1.29+45 added the distance floor — the
+      // SOC-delta gate alone was letting short hops with real ΔSOC
+      // through (e.g. a 1 km hop straddling a SOC tick → 2.4 km/100%).
       final startSoc = t.startSoc;
       final endSoc = t.endSoc;
       if (dist != null &&
-          dist > 0 &&
+          dist >= kMinDistForRangeKm &&
           startSoc != null &&
           endSoc != null) {
         final socDelta = (startSoc - endSoc).abs();
