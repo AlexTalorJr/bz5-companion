@@ -459,8 +459,16 @@ class AppDatabase extends _$AppDatabase {
       extraJson = await computeSpeedHistogramJson(tripId);
     } catch (_) {}
 
+    // v0.1.29+42: also recover the heavy aggregates (peak speed, temp/SOC
+    // range, moving/idle, cell spread) from samples and merge them in, so
+    // a force-closed trip isn't left with those columns blank (the screen
+    // showed peak_speed=3.3 and empty temp/spread while the histogram had
+    // real 60-70 km/h data). copyWith layers the light fields below on top
+    // of the heavy companion.
+    final heavy = await recoverHeavyAggregates(tripId);
+
     await (update(trips)..where((t) => t.id.equals(tripId))).write(
-      TripsCompanion(
+      heavy.copyWith(
         endedAt: Value(endTs),
         startOdometer:
             startOdo != null ? Value(startOdo) : const Value.absent(),
@@ -657,6 +665,129 @@ class AppDatabase extends _$AppDatabase {
           ..limit(1))
         .getSingleOrNull();
     return row?.numericValue;
+  }
+
+  /// v0.1.29+42: recover the "heavy" trip aggregates that +41 left null —
+  /// peak speed, moving/idle split, avg moving speed, battery-temp range,
+  /// SOC range, and max cell spread — by scanning the trip's sample
+  /// series. These normally accumulate in connection.dart runtime state
+  /// during a live trip; an orphaned/force-closed trip has no such state,
+  /// so we derive them from the stored samples instead (which are intact —
+  /// the screen showed the speed histogram fine while these scalars were
+  /// blank). Returns a companion with only the recoverable fields set
+  /// (Value.absent for anything with no samples), so callers can merge it
+  /// without clobbering good values.
+  ///
+  /// Speed bookkeeping mirrors the live path: samples ≥ 1 km/h count as
+  /// "moving", below as "idle"; seconds are estimated from the sample
+  /// cadence (count × median inter-sample gap) since samples are the only
+  /// time reference we have post-hoc.
+  Future<TripsCompanion> recoverHeavyAggregates(int tripId) async {
+    Future<List<double>> vals(String tx, String did) async {
+      final rows = await (select(samples)
+            ..where((s) =>
+                s.tripId.equals(tripId) &
+                s.ecuTx.equals(tx) &
+                s.did.equals(did) &
+                s.numericValue.isNotNull())
+            ..orderBy([(s) => OrderingTerm(expression: s.timestamp)]))
+          .get();
+      return rows.map((r) => r.numericValue!).toList();
+    }
+
+    // Speed (740/0008): peak, avg-moving, moving/idle seconds.
+    final speedRows = await (select(samples)
+          ..where((s) =>
+              s.tripId.equals(tripId) &
+              s.ecuTx.equals('740') &
+              s.did.equals('0008') &
+              s.numericValue.isNotNull())
+          ..orderBy([(s) => OrderingTerm(expression: s.timestamp)]))
+        .get();
+
+    double? peakSpeed;
+    double? avgMoving;
+    int? movingSec;
+    int? idleSec;
+    if (speedRows.isNotEmpty) {
+      double maxS = 0, movingSum = 0;
+      int movingN = 0, idleN = 0;
+      for (final r in speedRows) {
+        final v = r.numericValue!;
+        if (v > maxS) maxS = v;
+        if (v >= 1.0) {
+          movingSum += v;
+          movingN++;
+        } else {
+          idleN++;
+        }
+      }
+      peakSpeed = maxS;
+      if (movingN > 0) avgMoving = movingSum / movingN;
+      // Estimate seconds from median inter-sample gap (robust to outliers).
+      final gaps = <int>[];
+      for (var i = 1; i < speedRows.length; i++) {
+        gaps.add(speedRows[i].timestamp.millisecondsSinceEpoch -
+            speedRows[i - 1].timestamp.millisecondsSinceEpoch);
+      }
+      double gapMs = 1000; // fallback 1s if only one sample
+      if (gaps.isNotEmpty) {
+        gaps.sort();
+        gapMs = gaps[gaps.length ~/ 2].toDouble();
+        if (gapMs <= 0 || gapMs > 10000) gapMs = 1000; // sanity
+      }
+      movingSec = (movingN * gapMs / 1000).round();
+      idleSec = (idleN * gapMs / 1000).round();
+    }
+
+    // Battery temp (790/002F): min/max.
+    final temps = await vals('790', '002F');
+    double? minTemp, maxTemp;
+    if (temps.isNotEmpty) {
+      minTemp = temps.reduce((a, b) => a < b ? a : b);
+      maxTemp = temps.reduce((a, b) => a > b ? a : b);
+    }
+
+    // SOC (790/0005): min/max.
+    final socs = await vals('790', '0005');
+    double? minSoc, maxSoc;
+    if (socs.isNotEmpty) {
+      minSoc = socs.reduce((a, b) => a < b ? a : b);
+      maxSoc = socs.reduce((a, b) => a > b ? a : b);
+    }
+
+    // Cell spread: max over the trip of (maxCell 002D − minCell 002B).
+    // Pair them by nearest timestamp would be ideal, but for a robust
+    // post-hoc max-spread it's enough to take (max of 002D) − (min of
+    // 002B) as an upper-bound estimate, then also the per-sample max if
+    // both streams are dense. We use the simple bound: the largest 002D
+    // minus the smallest 002B is the worst spread seen.
+    final maxCells = await vals('790', '002D');
+    final minCells = await vals('790', '002B');
+    double? maxSpread;
+    if (maxCells.isNotEmpty && minCells.isNotEmpty) {
+      final hi = maxCells.reduce((a, b) => a > b ? a : b);
+      final lo = minCells.reduce((a, b) => a < b ? a : b);
+      if (hi >= lo) maxSpread = hi - lo;
+    }
+
+    return TripsCompanion(
+      peakSpeedKmh:
+          peakSpeed != null ? Value(peakSpeed) : const Value.absent(),
+      avgMovingSpeedKmh:
+          avgMoving != null ? Value(avgMoving) : const Value.absent(),
+      movingSeconds:
+          movingSec != null ? Value(movingSec) : const Value.absent(),
+      idleSeconds: idleSec != null ? Value(idleSec) : const Value.absent(),
+      minBatteryTempC:
+          minTemp != null ? Value(minTemp) : const Value.absent(),
+      maxBatteryTempC:
+          maxTemp != null ? Value(maxTemp) : const Value.absent(),
+      minSoc: minSoc != null ? Value(minSoc) : const Value.absent(),
+      maxSoc: maxSoc != null ? Value(maxSoc) : const Value.absent(),
+      maxCellSpreadMv:
+          maxSpread != null ? Value(maxSpread) : const Value.absent(),
+    );
   }
 
   /// v0.1.11: all samples for export (no filter). Use sparingly — can be huge.
