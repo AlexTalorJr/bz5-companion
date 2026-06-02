@@ -762,7 +762,12 @@ class _BarCard extends StatelessWidget {
           bottom: _monthBarSideTitles(bars),
         ),
         borderData: FlBorderData(show: false),
-        barTouchData: const BarTouchData(enabled: false),
+        // v0.1.29+46: BarTouchData in fl_chart 0.68 has no const ctor —
+        // CI release-build catches this where local analyze may not.
+        // The instance is still effectively constant (no state), just
+        // not literal-const. Leave 'enabled: false' as the only field
+        // for the same reason as +45: never reach the tooltip API.
+        barTouchData: BarTouchData(enabled: false),
         barGroups: [
           for (var i = 0; i < bars.length; i++)
             BarChartGroupData(x: i, barRods: [
