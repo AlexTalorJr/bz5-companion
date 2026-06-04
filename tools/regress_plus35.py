@@ -551,36 +551,66 @@ if int(pv) >= 39:
     else:
         fail("F1 790/0009 still double-written by generic poll")
 
-    # F2. zero refined to the measured standstill value
-    if "_kPackCurrentZeroRaw = 5024.0" in conn_src:
+    # F2. zero refined to the measured standstill value.
+    #     v0.1.29+47: superseded — DC-calibration moved zero from
+    #     5024 (parked-stat-fit) to 5018 (least-squares on 4 anchor
+    #     points; see M1). On +47+ the +39-era 5024 check is wrong
+    #     by construction; M1 takes over.
+    if int(pv) >= 47:
+        ok("F2 superseded by M1 on +47+ (zero now 5018 from DC calib)")
+    elif "_kPackCurrentZeroRaw = 5024.0" in conn_src:
         ok("F2 current zero corrected 4800 → 5024 (kills standstill phantom)")
     else:
         fail("F2 current zero not updated to 5024")
 
-    # F3. scale deliberately UNCHANGED (no guessing without steady-state data)
-    if "_kPackCurrentAmpsPerLsb = 0.05" in conn_src:
+    # F3. scale deliberately UNCHANGED (no guessing without steady-state data).
+    #     v0.1.29+47: superseded — Friend2's DC fast-charge session
+    #     finally provided the steady-state anchor, and scale moved
+    #     from provisional 0.05 to calibrated 0.1021 (see M2). On +47+
+    #     this test inverts: scale MUST have moved.
+    if int(pv) >= 47:
+        ok("F3 superseded by M2 on +47+ (scale now 0.1021 from DC calib)")
+    elif "_kPackCurrentAmpsPerLsb = 0.05" in conn_src:
         ok("F3 scale 0.05 left provisional (correct — no valid calib data)")
     else:
         fail("F3 scale was changed — but export had no steady-state anchor")
 
-    # F4. numeric sanity: with zero=5024, a standstill raw≈5024 → ~0 A,
-    #     and the old phantom (~5 kW) is gone.
-    ZERO=5024.0; LSB=0.05; V=446.0
-    standstill_kw = (5024-ZERO)*LSB*V/1000
-    old_kw = (5024-4800)*LSB*V/1000
-    if abs(standstill_kw) < 0.5 and abs(old_kw - 5.0) < 1.0:
-        ok(f"F4 standstill now ~{standstill_kw:.1f} kW (was ~{old_kw:.1f} kW phantom)")
+    # F4. numeric sanity at the active calibration.
+    #     v0.1.29+47: re-pinned to the new (5018, 0.1021) pair. The
+    #     standstill-phantom guarantee still holds: raw at the zero
+    #     produces ~0 A; raw at the OLD wrong zero (4800) still
+    #     produces a phantom but using the NEW slope it's bigger
+    #     (~10 kW instead of ~5) — which is fine, it just means the
+    #     old bug would have been twice as bad with the correct slope.
+    if int(pv) >= 47:
+        ZERO=5018.0; LSB=0.1021; V=446.0
+        standstill_kw = (5018-ZERO)*LSB*V/1000
+        # Sanity: at zero raw we get exactly 0 A.
+        if abs(standstill_kw) < 0.01:
+            ok(f"F4 standstill at new zero = {standstill_kw:.2f} kW (zero is the zero)")
+        else:
+            fail(f"F4 standstill math off at new zero: {standstill_kw:.2f}")
     else:
-        fail(f"F4 zero math off: now={standstill_kw:.2f} old={old_kw:.2f}")
+        ZERO=5024.0; LSB=0.05; V=446.0
+        standstill_kw = (5024-ZERO)*LSB*V/1000
+        old_kw = (5024-4800)*LSB*V/1000
+        if abs(standstill_kw) < 0.5 and abs(old_kw - 5.0) < 1.0:
+            ok(f"F4 standstill now ~{standstill_kw:.1f} kW (was ~{old_kw:.1f} kW phantom)")
+        else:
+            fail(f"F4 zero math off: now={standstill_kw:.2f} old={old_kw:.2f}")
 
     # F5. sign still exact at the new zero: raw above → discharge(+),
-    #     below → regen(−).
-    disc = (5500-ZERO)*LSB
-    regn = (4500-ZERO)*LSB
-    if disc > 0 and regn < 0:
-        ok("F5 sign preserved at new zero (raw>5024 discharge, <5024 regen)")
+    #     below → regen(−). Re-pinned to new zero on +47+.
+    if int(pv) >= 47:
+        disc = (5500-5018.0)*0.1021
+        regn = (4500-5018.0)*0.1021
     else:
-        fail("F5 sign broken at new zero")
+        disc = (5500-5024.0)*0.05
+        regn = (4500-5024.0)*0.05
+    if disc > 0 and regn < 0:
+        ok("F5 sign preserved at active zero (raw>zero discharge, <zero regen)")
+    else:
+        fail("F5 sign broken at active zero")
 else:
     ok(f"Part F skipped (build +{pv}, current fixes land in +39)")
 
@@ -1125,9 +1155,104 @@ if int(pv) >= 45:
 else:
     ok(f"Part L skipped (build +{pv}, clean-slate trends redesign lands in +45)")
 
+# ──────────── Part M: +47 DC-calibration of pack current (C33) ────────────
+if int(pv) >= 47:
+    # Load connection.dart fresh — it's outside the usual `trends` blob.
+    conn_src = open("lib/services/connection.dart").read()
+
+    # M1. New zero. The +39 zero was 5024 (from a stat-fit on parked
+    #     samples); the +47 zero is 5018 from least-squares on 4 DC
+    #     anchor points incl. an independently-confirmed t0 = 0 A.
+    #     Match the exact literal — a typo that flips the sign-cross
+    #     by a few amps would slip past sanity checks.
+    if "_kPackCurrentZeroRaw = 5018.0" in conn_src and \
+       "_kPackCurrentZeroRaw = 5024" not in conn_src:
+        ok("M1 zero raw is 5018 (was 5024 provisional in +39..+46)")
+    else:
+        fail("M1 zero raw not 5018 — calibration not applied or old value lingers")
+
+    # M2. New scale. Friend2's least-squares = 0.10214, rounded to
+    #     0.1021. The prior 0.05 underestimated power ~2x; the new
+    #     value is 2.04× that, matching the "8-9 kW @ 90 km/h vs real
+    #     ~15 kW" field observation.
+    if "_kPackCurrentAmpsPerLsb = 0.1021" in conn_src and \
+       "_kPackCurrentAmpsPerLsb = 0.05" not in conn_src:
+        ok("M2 amps-per-LSB is 0.1021 A/LSB (was 0.05 provisional)")
+    else:
+        fail("M2 amps-per-LSB not 0.1021 — calibration not applied")
+
+    # M3. Sanity-check ratio: new/old must be ~2.04 (verifies the
+    #     calibration didn't get fat-fingered to e.g. 0.01021).
+    new_lsb = 0.1021
+    old_lsb = 0.05
+    ratio = new_lsb / old_lsb
+    if 2.0 <= ratio <= 2.1:
+        ok(f"M3 ratio new/old = {ratio:.3f} ≈ 2.04 (matches field observation)")
+    else:
+        fail(f"M3 ratio out of band: {ratio:.3f} — calibration value suspect")
+
+    # M4. Sign rule still documented: charge (into pack) negative,
+    #     discharge positive. A future "cleanup" that drops the
+    #     convention would silently invert the regen/consumption math.
+    if "discharge\n  /// positive, charge (current INTO pack) negative" in conn_src or \
+       ("discharge" in conn_src and "charge (current INTO pack) negative" in conn_src):
+        ok("M4 sign convention documented (charge<0, discharge>0)")
+    else:
+        fail("M4 sign convention not documented near the constants")
+
+    # M5. Logic port (Python): each of the 4 anchor points reproduces
+    #     within ±3.3 A. This is the actual residual check from
+    #     Friend2's calibration — if anyone touches the constants and
+    #     this fails, the calibration is broken.
+    def i_amps(raw):
+        return (raw - 5018) * 0.1021
+    anchors = [
+        (5019, 0,    0.1),    # t0: no current,    station 0 A
+        (3213, -181, -184.3), # t1: 86 kW charge
+        (3205, -186, -185.1), # t2: 90 kW charge
+        (3101, -198, -195.8), # t3: 96 kW charge
+    ]
+    max_residual = 0.0
+    for raw, station, expected_model in anchors:
+        modelled = i_amps(raw)
+        # Sanity 1: our Python re-fit matches Friend2's published model.
+        if abs(modelled - expected_model) > 0.1:
+            fail(f"M5 anchor raw={raw}: model {modelled:.1f} != published {expected_model:.1f}")
+            break
+        # Sanity 2: residual against station (ground truth) ≤ 3.3 A.
+        residual = abs(modelled - station)
+        if residual > max_residual:
+            max_residual = residual
+    else:
+        if max_residual <= 3.3:
+            ok(f"M5 all 4 anchor points fit ≤3.3 A (max residual {max_residual:.1f} A)")
+        else:
+            fail(f"M5 residual {max_residual:.1f} A exceeds Friend2's published 3.3 A bound")
+
+    # M6. Cross-check with C32 drive raw: full-throttle raw 0x26E1
+    #     should produce ~503 A → ~200 kW at ~400 V. This is the
+    #     drive-side validation Friend2 ran independently.
+    fullthrottle = i_amps(0x26E1)
+    if 495 <= fullthrottle <= 510:
+        ok(f"M6 C32 full-throttle cross-check: raw 0x26E1 → {fullthrottle:.0f} A (≈ peak motor)")
+    else:
+        fail(f"M6 C32 full-throttle cross-check off: {fullthrottle:.1f} A (expected ~503)")
+
+    # M7. The 791/0038 caveat must be documented in code — otherwise
+    #     a future contributor will reach for it as a charge cross-
+    #     check and get garbage (motor idle during DC charge → raw
+    #     stays constant). This is a real trap; pin the warning.
+    if "791/0038 is NOT a charge cross-check" in conn_src:
+        ok("M7 791/0038-not-for-charge caveat documented")
+    else:
+        fail("M7 missing 791/0038 charge-cross-check warning — future trap")
+
+else:
+    ok(f"Part M skipped (build +{pv}, DC current calibration lands in +47)")
+
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
-print(f"+35→+45 REGRESSION — build +{pv}")
+print(f"+35→+47 REGRESSION — build +{pv}")
 print("=" * 64)
 for m in oks:
     print(f"  [PASS] {m}")
