@@ -463,31 +463,41 @@ class ConnectionService extends ChangeNotifier {
   double? _packCurrentA;
   DateTime? _packCurrentAt;
 
-  /// v0.1.29+33: PROVISIONAL decode constants for 790/0009 pack current.
+  /// v0.1.29+33: decode constants for 790/0009 pack current.
   /// raw is u16 big-endian. amps = (raw - zero) * ampsPerLsb, discharge
-  /// positive.
+  /// positive, charge (current INTO pack) negative.
   ///
-  /// v0.1.29+39: ZERO refined from 4800 → 5024. The export of 2026-06-01
-  /// gave hundreds of pack-current samples captured at a standstill
-  /// (speed < 1 km/h, true current ≈ 0): raw clustered tightly at
-  /// median 5021-5028 (range 5010-5051) across two trips. The old 4800
-  /// zero made a parked car read ~+11 A → ~5 kW of phantom discharge
-  /// (the owner's "4.9 kW standing still, barely changes with A/C"); the
-  /// 0.2 kW A/C on/off delta confirmed it was an offset, not real load.
-  /// 5024 is the measured zero. The car-off true zero may differ
-  /// slightly, but this kills the standstill phantom.
+  /// v0.1.29+39: ZERO was refined from 4800 → 5024 from a parked-car
+  /// stat-fit. See git history for the standstill-phantom explanation.
   ///
-  /// ampsPerLsb (0.05) is STILL PROVISIONAL and deliberately unchanged:
-  /// the same export could not pin it down — at the only moments we knew
-  /// real power (factory 791/0038 hitting ~200 kW) our 2 Hz current poll
-  /// had missed the instantaneous peak, so the factory/ours ratio scattered
-  /// 4.5-13.6× rather than landing on a constant. Calibrating scale needs
-  /// a STEADY-STATE point (DC charge at a known station current, or
-  /// constant-speed cruise) where both signals agree — not transient
-  /// peaks. Until then, magnitude is proportional-but-uncalibrated; sign
-  /// and trend are trustworthy. Single-line change when that data exists.
-  static const double _kPackCurrentZeroRaw = 5024.0;
-  static const double _kPackCurrentAmpsPerLsb = 0.05;
+  /// v0.1.29+47: BOTH constants now calibrated from a real DC fast-charge
+  /// session — research repo C33 (cycles/033-dc-charge-calibration).
+  /// LiveLog with 790/0009 + 790/0015 + 791/0038 during charge from
+  /// 10.7% SOC; station current/voltage at three timestamps used as
+  /// ground truth. Least-squares over 4 anchor points (incl. t0 = 0 A,
+  /// independently confirmed by flat raw 5019 before current flowed):
+  ///
+  ///   t0 (no current)   raw 5019  →   +0.1 A  (vs station   0 A; Δ=+0.1)
+  ///   t1 (-181 A / 86 kW) raw 3213 → -184.3 A  (vs station -181;  Δ=-3.3)
+  ///   t2 (-186 A / 90 kW) raw 3205 → -185.1 A  (vs station -186;  Δ=+0.9)
+  ///   t3 (-198 A / 96 kW) raw 3101 → -195.8 A  (vs station -198;  Δ=+2.2)
+  ///
+  /// Residuals ≤ 3.3 A across 0–198 A. The new 0.1021 A/LSB is 2.04×
+  /// the prior provisional 0.05 — exactly matching the field
+  /// observation "90 km/h shows 8-9 kW vs real ~15 kW".
+  ///
+  /// Cross-check against C32 drive-raw archive: full-throttle raw
+  /// 0x26E1 = 9953 → (9953-5018) × 0.1021 ≈ 503 A → ≈ 200 kW at the
+  /// measured ~400 V bus. Physically sane for BZ5 peak; cruise and
+  /// regen raws straddle the zero coherently with the C32 sign rule
+  /// (discharge raw > zero, regen/charge raw < zero).
+  ///
+  /// 791/0038 is NOT a charge cross-check — it's VCU/motor power and
+  /// the motor is idle during DC charge (raw sat constant at 806 the
+  /// whole session). It's fine on drive; on charge the only meaningful
+  /// cross-check is the station readout.
+  static const double _kPackCurrentZeroRaw = 5018.0;
+  static const double _kPackCurrentAmpsPerLsb = 0.1021;
 
   /// v0.1.29+30: speed sub-poll diagnostics. The owner observed a trip
   /// with zero 740/0008 speed samples ("No speed data for this trip")

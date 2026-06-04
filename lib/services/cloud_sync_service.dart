@@ -1960,7 +1960,7 @@ class CloudSyncService extends ChangeNotifier {
   /// Read app version from the static value baked into the build.
   /// We don't have package_info_plus as a dep — pubspec-version is
   /// hardcoded here. Update when bumping. Off-by-one tolerated.
-  Future<String> _readAppVersion() async => '0.1.29+46';
+  Future<String> _readAppVersion() async => '0.1.29+47';
 }
 
 // ─── Internal exceptions ────────────────────────────────────────────
