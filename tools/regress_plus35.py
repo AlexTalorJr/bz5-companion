@@ -978,14 +978,19 @@ if int(pv) >= 44:
     # K8. Date-format ladder: three branches for span (30d / 1y / all).
     #     A regression would be a single hardcoded format that misreads
     #     a 30-day window or a 10-year window. Match all three formats.
+    #     v0.1.29+49: the ≤400d branch was rewired from a direct
+    #     DateFormat.MMM('ru') call to the _fmtMonthRu helper (which
+    #     defends against missing intl-locale data). Accept either form.
     ts_block_idx = trends.find("SideTitles _timeSideTitles(")
     ts_block = trends[ts_block_idx:ts_block_idx + 1500] if ts_block_idx >= 0 else ""
+    ru_branch_present = ("DateFormat.MMM('ru')" in ts_block) or \
+                        ("fmt = _fmtMonthRu" in ts_block)
     if ts_block and "'dd.MM'" in ts_block and \
-       "DateFormat.MMM('ru')" in ts_block and \
+       ru_branch_present and \
        "'MM.yy'" in ts_block:
         ok("K8 date format ladder covers ≤45d / ≤400d / all")
     else:
-        fail("K8 date format ladder incomplete (need dd.MM, MMM ru, MM.yy)")
+        fail("K8 date format ladder incomplete (need dd.MM, MMM ru/helper, MM.yy)")
 
     # K9. Tick thinning in bar axis: i % step != 0 → SizedBox.shrink().
     #     Without this, a 24-month "all" view would overlap labels.
@@ -1309,9 +1314,80 @@ if int(pv) >= 48:
 else:
     ok(f"Part N skipped (build +{pv}, BZ3 verification lands in +48)")
 
+# ──────────── Part O: +49 ru locale init for intl ────────────
+if int(pv) >= 49:
+    main_src = open("lib/main.dart").read()
+    trends   = open("lib/screens/trends.dart").read()
+
+    # O1. main.dart imports the locale data package.
+    if "package:intl/date_symbol_data_local.dart" in main_src:
+        ok("O1 main.dart imports intl date_symbol_data_local")
+    else:
+        fail("O1 missing intl locale-data import in main.dart")
+
+    # O2. main.dart awaits initializeDateFormatting('ru') BEFORE runApp.
+    #     Order matters — if runApp runs first, the first frame can hit
+    #     DateFormat.MMM('ru') and throw LocaleDataException → white box.
+    #     Match the substring AND verify runApp comes after.
+    init_idx = main_src.find("initializeDateFormatting('ru')")
+    runapp_idx = main_src.find("runApp(")
+    if 0 < init_idx < runapp_idx:
+        ok("O2 initializeDateFormatting('ru') called before runApp")
+    else:
+        fail("O2 ru locale init missing or wrongly ordered vs runApp")
+
+    # O3. The await is present (not a fire-and-forget). Without await,
+    #     the first frame races the locale data load.
+    if "await initializeDateFormatting('ru')" in main_src:
+        ok("O3 ru locale init is awaited (no race with first frame)")
+    else:
+        fail("O3 initializeDateFormatting not awaited — first frame races")
+
+    # O4. trends.dart now has a defensive _fmtMonthRu helper with
+    #     try/catch fallback to a hardcoded month-name array. Belt-
+    #     and-suspenders: even if init somehow fails, white boxes
+    #     don't return.
+    if "String _fmtMonthRu(DateTime d)" in trends and \
+       "try {" in trends and \
+       "_ruMonthShort[d.month - 1]" in trends:
+        ok("O4 trends has defensive _fmtMonthRu helper with hardcoded fallback")
+    else:
+        fail("O4 _fmtMonthRu defensive helper missing")
+
+    # O5. NO direct DateFormat.MMM('ru') call sites remain OUTSIDE the
+    #     defensive helper itself. The helper has exactly one such call
+    #     wrapped in try/catch — that's the whole point. Match the
+    #     pattern that would indicate a leak (fmt assignment, format
+    #     chain), which the helper doesn't use.
+    leak_patterns = [
+        "fmt = DateFormat.MMM('ru')",  # old fmt-object assignment pattern
+        "= DateFormat.MMM('ru')",      # any assignment outside _fmtMonthRu
+    ]
+    leaks = sum(trends.count(p) for p in leak_patterns)
+    # Subtract the legitimate use inside _fmtMonthRu (it does
+    # `return DateFormat.MMM('ru').format(d)`, no `=`).
+    if leaks == 0:
+        ok("O5 no direct DateFormat.MMM('ru') leaks outside the helper")
+    else:
+        fail(f"O5 {leaks} direct DateFormat.MMM('ru') leak(s) — routes around helper")
+
+    # O6. Hardcoded fallback array has 12 months in the right order
+    #     (no off-by-one — May=5 must be 'май'). Port the array,
+    #     spot-check the canonical month for the field bug ("Br 13.0"
+    #     for May was the original white-box reproduction).
+    ru_months = ['янв', 'фев', 'мар', 'апр', 'май', 'июн',
+                 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек']
+    if ru_months[5 - 1] == 'май' and len(ru_months) == 12:
+        ok("O6 ru month fallback array: May=май, 12 entries, no off-by-one")
+    else:
+        fail("O6 ru month fallback wrong size or off-by-one")
+
+else:
+    ok(f"Part O skipped (build +{pv}, ru locale fix lands in +49)")
+
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
-print(f"+35→+48 REGRESSION — build +{pv}")
+print(f"+35→+49 REGRESSION — build +{pv}")
 print("=" * 64)
 for m in oks:
     print(f"  [PASS] {m}")

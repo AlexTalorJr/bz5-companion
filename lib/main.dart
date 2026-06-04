@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:intl/date_symbol_data_local.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
 
@@ -11,6 +12,19 @@ import 'screens/home.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // v0.1.29+49: initialize the ru locale for intl BEFORE any DateFormat
+  // call. Without this, `DateFormat.MMM('ru').format(...)` throws a
+  // LocaleDataException at the first render. In debug that surfaces as
+  // a red error widget; in release Flutter swallows the throw and the
+  // failing widget renders as a BLANK WHITE BOX with the slot's
+  // dimensions — exactly the "белый прямоугольник" the owner saw on
+  // the Trends cost card. Three sites in trends.dart use MMM('ru'):
+  // _textFallback for <3-month cost card (the one that blanked), the
+  // ≤400d branch of _timeSideTitles, and _monthBarSideTitles for ≥3
+  // months with a single calendar year. All three depended on this
+  // initializer existing — it never did. await before runApp so the
+  // first frame is safe.
+  await initializeDateFormatting('ru');
   await _requestPermissions();
   final db = AppDatabase();
   final svc = ConnectionService(db);

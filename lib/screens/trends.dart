@@ -785,7 +785,6 @@ class _BarCard extends StatelessWidget {
   }
 
   Widget _textFallback() {
-    final df = DateFormat.MMM('ru');
     final lines = <Widget>[
       for (final b in bars)
         Padding(
@@ -793,7 +792,7 @@ class _BarCard extends StatelessWidget {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(df.format(b.start),
+              Text(_fmtMonthRu(b.start),
                   style: TextStyle(
                       fontSize: 13, color: Colors.grey.shade400)),
               Text('$currency ${b.value.toStringAsFixed(1)}',
@@ -815,6 +814,25 @@ class _BarCard extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+/// v0.1.29+49: belt-and-suspenders short month name in Russian.
+/// main.dart initializes the 'ru' locale before runApp, so the intl
+/// path is the normal one. But if a future change drops that init or
+/// the intl data file is missing on some build flavour, the cost
+/// card and year-window axis labels would silently render as blank
+/// white boxes (LocaleDataException → release-mode ErrorWidget). The
+/// try/catch with a hardcoded fallback guarantees a glyph either way.
+const _ruMonthShort = [
+  'янв', 'фев', 'мар', 'апр', 'май', 'июн',
+  'июл', 'авг', 'сен', 'окт', 'ноя', 'дек',
+];
+String _fmtMonthRu(DateTime d) {
+  try {
+    return DateFormat.MMM('ru').format(d);
+  } catch (_) {
+    return _ruMonthShort[d.month - 1];
   }
 }
 
@@ -865,13 +883,15 @@ SideTitles _timeSideTitles({required double minX, required double maxX}) {
   final step = span / (ticks + 1);
   // Choose format by visible span.
   final spanDays = span / 86400000.0;
-  final DateFormat fmt;
+  final String Function(DateTime) fmt;
   if (spanDays <= 45) {
-    fmt = DateFormat('dd.MM');
+    final f = DateFormat('dd.MM');
+    fmt = f.format;
   } else if (spanDays <= 400) {
-    fmt = DateFormat.MMM('ru');
+    fmt = _fmtMonthRu;
   } else {
-    fmt = DateFormat('MM.yy');
+    final f = DateFormat('MM.yy');
+    fmt = f.format;
   }
   return SideTitles(
     showTitles: true,
@@ -888,7 +908,7 @@ SideTitles _timeSideTitles({required double minX, required double maxX}) {
         axisSide: meta.axisSide,
         space: 2,
         child: Text(
-          fmt.format(dt),
+          fmt(dt),
           style: const TextStyle(fontSize: 9, color: Colors.grey),
         ),
       );
@@ -909,8 +929,13 @@ SideTitles _monthBarSideTitles(List<PeriodBar> bars) {
   // If the bars span more than one calendar year, drop the year in too.
   final firstY = bars.first.start.year;
   final lastY = bars.last.start.year;
-  final fmt =
-      (firstY == lastY) ? DateFormat.MMM('ru') : DateFormat('MM.yy');
+  final String Function(DateTime) fmt;
+  if (firstY == lastY) {
+    fmt = _fmtMonthRu;
+  } else {
+    final f = DateFormat('MM.yy');
+    fmt = f.format;
+  }
   return SideTitles(
     showTitles: true,
     reservedSize: 20,
@@ -923,7 +948,7 @@ SideTitles _monthBarSideTitles(List<PeriodBar> bars) {
         axisSide: meta.axisSide,
         space: 2,
         child: Text(
-          fmt.format(bars[i].start),
+          fmt(bars[i].start),
           style: const TextStyle(fontSize: 9, color: Colors.grey),
         ),
       );
