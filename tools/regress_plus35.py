@@ -297,7 +297,12 @@ if int(pv) >= 36:
         fail("C3 raw amps surfaced in UI — owner said power/flow only")
 
     # C4. BZ3 (tall layout) marks power as uncalibrated candidate.
-    if "useTallLayout ? 'Regen?'" in dash or "Power?'" in dash:
+    #     v0.1.29+48: superseded — BZ3 verified by livelog 2 (see N1-N4),
+    #     the '*'/'?' candidate markers were intentionally removed. On
+    #     +48+ this check inverts: the markers MUST be gone.
+    if int(pv) >= 48:
+        ok("C4 superseded by N3 on +48+ (BZ3 verified, markers removed)")
+    elif "useTallLayout ? 'Regen?'" in dash or "Power?'" in dash:
         ok("C4 BZ3 marks power as candidate (790/0009 unverified there)")
     else:
         fail("C4 BZ3 power not marked candidate — risks false confirmed reading")
@@ -1250,9 +1255,63 @@ if int(pv) >= 47:
 else:
     ok(f"Part M skipped (build +{pv}, DC current calibration lands in +47)")
 
+# ──────────── Part N: +48 BZ3 verified on dashboard ────────────
+if int(pv) >= 48:
+    dash_src = open("lib/screens/dashboard.dart").read()
+
+    # N1. The "BZ3 NOT verified" caveat block is gone. We keep a
+    #     positive note ("VERIFIED 2026-06-04") in its place, so the
+    #     check is for the negative phrasing being absent.
+    if "NOT verified on BZ3" not in dash_src:
+        ok("N1 'NOT verified on BZ3' caveat removed from dashboard")
+    else:
+        fail("N1 dashboard still warns BZ3 is unverified — stale comment")
+
+    # N2. The positive marker IS present — proves we replaced the old
+    #     wording with the new, not just deleted it (which would leave
+    #     us with a silent change harder to trace later).
+    if "BZ3: VERIFIED 2026-06-04" in dash_src:
+        ok("N2 positive 'VERIFIED 2026-06-04' marker present in dashboard")
+    else:
+        fail("N2 BZ3 verification marker missing — was the caveat just deleted?")
+
+    # N3. Star/question suffixes on the Power/Consumption labels are
+    #     gone — BZ3 owners now see the same readout shape as BZ5.
+    #     Two narrow checks: the literal '?' label variants and the
+    #     '*' value suffix are both absent.
+    qmark_present = "'Regen?'" in dash_src or "'Power?'" in dash_src or \
+                    "'Consumption?'" in dash_src
+    star_present = "useTallLayout ? '*'" in dash_src
+    if not qmark_present and not star_present:
+        ok("N3 no '?' label or '*' value suffix anywhere on dashboard")
+    else:
+        fail(f"N3 stale candidate-marker still present: ?={qmark_present} *={star_present}")
+
+    # N4. Logic port (Python): the BZ3 livelog 2 standstill behaviour
+    #     under the +47 calibration. We hard-code the field statistics
+    #     so any future "improvement" that breaks the calibration also
+    #     breaks the BZ3 verification — they're a single fact now.
+    BZ3_STANDSTILL_RAW_MEDIAN = 5021  # measured in friend's session 2
+    BZ3_STANDSTILL_RAW_RANGE  = (4910, 5052)
+    zero = 5018
+    lsb  = 0.1021
+    # Median should produce ~+0.3 A on the +47 calibration; the band
+    # should never exceed ±15 A (anything bigger means the calibration
+    # is wrong for BZ3 and the verification message in N2 is a lie).
+    median_amps = (BZ3_STANDSTILL_RAW_MEDIAN - zero) * lsb
+    low_amps    = (BZ3_STANDSTILL_RAW_RANGE[0] - zero) * lsb
+    high_amps   = (BZ3_STANDSTILL_RAW_RANGE[1] - zero) * lsb
+    if abs(median_amps) < 1.0 and abs(low_amps) < 15 and abs(high_amps) < 15:
+        ok(f"N4 BZ3 standstill on +47 calib: median {median_amps:+.1f} A, band {low_amps:+.1f}..{high_amps:+.1f} A — sane")
+    else:
+        fail(f"N4 BZ3 standstill no longer sane on calibration: median={median_amps:.2f}")
+
+else:
+    ok(f"Part N skipped (build +{pv}, BZ3 verification lands in +48)")
+
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
-print(f"+35→+47 REGRESSION — build +{pv}")
+print(f"+35→+48 REGRESSION — build +{pv}")
 print("=" * 64)
 for m in oks:
     print(f"  [PASS] {m}")

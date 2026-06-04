@@ -282,10 +282,17 @@ class _Connected extends StatelessWidget {
             // kW (proportional, sign-exact) — not raw amps. Hidden when
             // current is stale/unavailable (getter returns null).
             //
-            // BZ3 caveat: 790/0009 is NOT verified on BZ3 (different BMS
-            // mapping — see handoff). On tall layout we mark the value '*'
-            // and label it a candidate so it's never mistaken for a
-            // confirmed reading. BZ5/phone read off the verified BZ5 pack.
+            // BZ3: VERIFIED 2026-06-04. The earlier caveat ("790/0009 NOT
+            // verified on BZ3, different BMS mapping") is retired. A
+            // friend's livelog session 2 (1308 cycles over an 18-min
+            // city drive) shows the BZ3 BMS responds identically to BZ5
+            // on this DID — median standstill raw 5021 (≈ BZ5 zero 5018,
+            // ECU-to-ECU variance ±3 LSB → ±0.3 A), peak +264 A and
+            // −117 A bound a physically sane discharge/regen envelope
+            // for the BZ3 pack. The +47 C33 calibration constants
+            // (zero=5018, ampsPerLsb=0.1021) apply unchanged. No more
+            // '*' suffix on the value and no '?' on the label — BZ3
+            // owners now see the same readout shape as BZ5.
             //
             // v0.1.29+40: these cards are ALWAYS present (no `if`), even
             // when their value is null. Previously they were conditional,
@@ -300,12 +307,9 @@ class _Connected extends StatelessWidget {
                   ? Icons.battery_charging_full
                   : Icons.bolt,
               color: _flowColor(flowDir),
-              label: useTallLayout
-                  ? (flowDir == -1 ? 'Regen?' : 'Power?')
-                  : (flowDir == -1 ? 'Regen' : 'Power'),
+              label: flowDir == -1 ? 'Regen' : 'Power',
               value: powerKw != null
                   ? '${powerKw.abs().toStringAsFixed(1)} kW'
-                      '${useTallLayout ? '*' : ''}'
                   : '—',
             ),
             // Consumption is undefined at a standstill (Wh per km with no
@@ -316,10 +320,9 @@ class _Connected extends StatelessWidget {
               color: (consWhKm != null && consWhKm < 0)
                   ? Colors.green
                   : Colors.tealAccent,
-              label: useTallLayout ? 'Consumption?' : 'Consumption',
+              label: 'Consumption',
               value: consWhKm != null
                   ? '${consWhKm.abs().toStringAsFixed(0)} Wh/km'
-                      '${useTallLayout ? '*' : ''}'
                   : '—',
             ),
             // v0.1.22: PDU heatsink temps (live, 740/0x0010 + 0x0011).
@@ -934,7 +937,7 @@ class _LayoutDiagnostic extends StatelessWidget {
 
 /// Bump when changing the diagnostic format — helps cross-reference
 /// screenshots to specific app versions while iterating.
-const String _kDiagVersion = 'v0.1.29+47';
+const String _kDiagVersion = 'v0.1.29+48';
 
 class _GridCards extends StatelessWidget {
   final List<Widget> children;
