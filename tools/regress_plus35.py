@@ -1385,9 +1385,106 @@ if int(pv) >= 49:
 else:
     ok(f"Part O skipped (build +{pv}, ru locale fix lands in +49)")
 
+# ──────────── Part P: +50 hold-last-value for Power/Consumption ────────────
+if int(pv) >= 50:
+    # P1. Two StatefulWidget classes exist: _PowerCard and _ConsumptionCard.
+    if "class _PowerCard extends StatefulWidget" in dash and \
+       "class _ConsumptionCard extends StatefulWidget" in dash:
+        ok("P1 _PowerCard and _ConsumptionCard StatefulWidget classes present")
+    else:
+        fail("P1 hold-state wrapper classes missing")
+
+    # P2. _MetricCard accepts an optional stale parameter with default
+    #     false (so the change is backward-compatible for the other
+    #     cards that don't need hold-state).
+    if "final bool stale;" in dash and "this.stale = false," in dash:
+        ok("P2 _MetricCard has optional 'stale' parameter, default false")
+    else:
+        fail("P2 _MetricCard missing stale parameter or default")
+
+    # P3. Both Compact and Phone layouts wrap the value Text in Opacity
+    #     controlled by stale. A regression would be applying the
+    #     opacity only to one layout — BZ3 (compact) and BZ5 (phone-
+    #     style on tall) would diverge.
+    opacity_uses = dash.count("opacity: stale ? 0.5 : 1.0")
+    if opacity_uses >= 2:
+        ok(f"P3 Opacity(stale ? 0.5 : 1.0) wraps value in both layouts ({opacity_uses} sites)")
+    else:
+        fail(f"P3 expected ≥2 Opacity(stale) wrappers, found {opacity_uses}")
+
+    # P4. The dashboard call sites for the two cards are the wrappers,
+    #     NOT inline _MetricCard. Match the constructor invocation.
+    if "_PowerCard(powerKw: powerKw, flowDir: flowDir)" in dash and \
+       "_ConsumptionCard(consWhKm: consWhKm)" in dash:
+        ok("P4 dashboard wires _PowerCard / _ConsumptionCard with live values")
+    else:
+        fail("P4 dashboard call sites don't use the new wrappers")
+
+    # P5. Timer-based expiry (not periodic polling). One-shot Timer
+    #     plus dispose-time cancel is the correct lifecycle pattern.
+    #     A `Timer.periodic` here would be a smell — would tick every
+    #     interval forever even when no data is moving.
+    if "Timer? _expiry;" in dash and \
+       "Timer(_holdWindow," in dash and \
+       "Timer.periodic" not in dash:
+        ok("P5 expiry is one-shot Timer (not periodic) with reset-on-absorb")
+    else:
+        fail("P5 expiry timer wrong shape (periodic, or missing reset)")
+
+    # P6. The expiry callback guards with `mounted` before setState —
+    #     forgetting this leaks setState on a disposed State, which
+    #     prints a runtime exception in release.
+    if "if (mounted) setState(() {});" in dash:
+        ok("P6 expiry callback guards setState with mounted check")
+    else:
+        fail("P6 expiry callback missing mounted guard")
+
+    # P7. dispose() cancels the timer. Without this the Timer fires
+    #     after the widget is gone — same mounted-check protects
+    #     against the runtime exception, but the Timer itself leaks
+    #     until it fires.
+    if "_expiry?.cancel();" in dash:
+        ok("P7 dispose cancels expiry timer (no leak)")
+    else:
+        fail("P7 dispose doesn't cancel expiry timer — leak path")
+
+    # P8. Hold window is 8 seconds. Long enough to ride out a single
+    #     ~5-8s polling cycle but short enough that a held value
+    #     can't claim to represent the present.
+    if "Duration(seconds: 8)" in dash:
+        ok("P8 hold window is 8 seconds (one polling cycle, no lies)")
+    else:
+        fail("P8 hold window changed from 8s — verify intentional")
+
+    # P9. Logic port (Python): the decision table for what to show.
+    #     live=value → show value, fresh.
+    #     live=None, held<window → show held, stale.
+    #     live=None, held>=window → show '—', not stale.
+    #     live=None, never held → show '—', not stale.
+    def decide(live, held, age_sec, window=8):
+        if live is not None: return (live, False)
+        if held is not None and age_sec is not None and age_sec <= window:
+            return (held, True)
+        return (None, False)
+    cases = [
+        ((42.0, None, None), (42.0, False)),    # fresh, no history
+        ((None, 42.0,   3),  (42.0, True)),     # gap within window
+        ((None, 42.0,   8),  (42.0, True)),     # at window boundary (inclusive)
+        ((None, 42.0,  20),  (None, False)),    # past window, drop to '—'
+        ((None, None,  None), (None, False)),   # nothing ever, '—'
+        ((13.0, 42.0,   3),  (13.0, False)),    # fresh wins over recent held
+    ]
+    if all(decide(*args) == expected for args, expected in cases):
+        ok("P9 hold/fresh/expired decision table matches Dart logic")
+    else:
+        fail("P9 hold decision table diverged from Dart")
+
+else:
+    ok(f"Part P skipped (build +{pv}, Power/Consumption hold-state lands in +50)")
+
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
-print(f"+35→+49 REGRESSION — build +{pv}")
+print(f"+35→+50 REGRESSION — build +{pv}")
 print("=" * 64)
 for m in oks:
     print(f"  [PASS] {m}")
