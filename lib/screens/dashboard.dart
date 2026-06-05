@@ -399,15 +399,23 @@ class _Connected extends StatelessWidget {
     if (t < 65) return Colors.orangeAccent;
     return Colors.redAccent;
   }
+}
 
-  // v0.1.29+36: power-flow direction → colour. Regen (energy into pack)
-  // green, discharge (energy out) blue, near-zero deadband grey. Matches
-  // the +33 powerFlowDirection contract (1 / −1 / 0).
-  Color _flowColor(int? dir) {
-    if (dir == -1) return Colors.greenAccent;
-    if (dir == 1) return Colors.lightBlueAccent;
-    return Colors.grey;
-  }
+/// v0.1.29+52: power-flow colour helper hoisted to file scope so the
+/// new _PowerCard StatefulWidget (added in +50) can call it. It was
+/// previously an instance method on _Connected — CI release-build in
+/// +50 caught the cross-class call (_PowerCardState._flowColor: method
+/// isn't defined). Pure motion: same body, same callers in _Connected
+/// still work (Dart resolves top-level functions from inside class
+/// methods without qualifier).
+///
+/// Regen (energy returning to pack, dir = −1) green, discharge
+/// (energy leaving, dir = 1) blue, near-zero deadband grey. Matches
+/// the +33 powerFlowDirection contract from connection.dart.
+Color _flowColor(int? dir) {
+  if (dir == -1) return Colors.greenAccent;
+  if (dir == 1) return Colors.lightBlueAccent;
+  return Colors.grey;
 }
 
 /// v5: Parking pawl status — explicit indicator
@@ -926,7 +934,7 @@ class _LayoutDiagnostic extends StatelessWidget {
 
 /// Bump when changing the diagnostic format — helps cross-reference
 /// screenshots to specific app versions while iterating.
-const String _kDiagVersion = 'v0.1.29+51';
+const String _kDiagVersion = 'v0.1.29+52';
 
 class _GridCards extends StatelessWidget {
   final List<Widget> children;
