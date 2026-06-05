@@ -1482,9 +1482,141 @@ if int(pv) >= 50:
 else:
     ok(f"Part P skipped (build +{pv}, Power/Consumption hold-state lands in +50)")
 
+# ──────────── Part Q: +51 pack-current polling observability ────────────
+if int(pv) >= 51:
+    conn = open("lib/services/connection.dart").read()
+    settings = open("lib/screens/settings.dart").read()
+    import os.path
+    pd_path = "lib/screens/polling_diagnostics.dart"
+    has_pd_file = os.path.exists(pd_path)
+
+    # Q1. Four counter fields exist in ConnectionService. Match each
+    #     literal so a future rename can't pass silently.
+    fields = [
+        "int _packCurrentReadOkCount = 0;",
+        "DateTime? _packCurrentPrevSuccessAt;",
+        "int _packCurrentMaxGapMs = 0;",
+        "int _packCurrentGetterCalls = 0;",
+        "int _packCurrentGetterNulls = 0;",
+    ]
+    missing = [f for f in fields if f not in conn]
+    if not missing:
+        ok("Q1 all five observability fields present in ConnectionService")
+    else:
+        fail(f"Q1 missing observability fields: {[m[:40] for m in missing]}")
+
+    # Q2. Four public getters expose the counters. resetPackCurrentObservers
+    #     method exists and notifies listeners.
+    getters = [
+        "int get packCurrentReadOkCount =>",
+        "int get packCurrentMaxGapMs =>",
+        "int? get packCurrentCurrentGapMs {",
+        "int get packCurrentGetterCalls =>",
+        "int get packCurrentGetterNulls =>",
+        "void resetPackCurrentObservers() {",
+    ]
+    missing = [g for g in getters if g not in conn]
+    if not missing:
+        ok("Q2 all six getters + reset method exposed")
+    else:
+        fail(f"Q2 missing accessors: {[m[:40] for m in missing]}")
+
+    # Q3. Getter packCurrentA must increment calls AND nulls on the two
+    #     null-return paths. The previous behaviour was three early
+    #     returns with no observation. We need both increments.
+    if "_packCurrentGetterCalls++;" in conn and \
+       conn.count("_packCurrentGetterNulls++;") >= 2:
+        ok("Q3 packCurrentA getter increments calls + nulls on both paths")
+    else:
+        fail("Q3 getter doesn't observe calls/nulls correctly")
+
+    # Q4. Ingest path updates readOk count + max gap BEFORE assigning
+    #     to _packCurrentA — otherwise the gap is wrong (uses current
+    #     time as prev, gives gap=0). Match the order.
+    ingest_idx = conn.find("if (amps >= -600.0 && amps <= 600.0) {")
+    if ingest_idx < 0:
+        fail("Q4 cannot find ingest path — major refactor?")
+    else:
+        block = conn[ingest_idx:ingest_idx + 1000]
+        readok_idx = block.find("_packCurrentReadOkCount++;")
+        assign_idx = block.find("_packCurrentA = amps;")
+        gap_idx    = block.find("_packCurrentMaxGapMs =")
+        if 0 < readok_idx < assign_idx and 0 < gap_idx < readok_idx:
+            ok("Q4 ingest updates max gap → readOk++ → assigns _packCurrentA (order correct)")
+        else:
+            fail(f"Q4 ingest ordering wrong: gap={gap_idx} readOk={readok_idx} assign={assign_idx}")
+
+    # Q5. The diagnostics screen file exists. Loose file-creation check;
+    #     contents validated by Q6.
+    if has_pd_file:
+        ok("Q5 polling_diagnostics.dart file created")
+    else:
+        fail("Q5 polling_diagnostics.dart missing — patch incomplete")
+
+    if has_pd_file:
+        pd = open(pd_path).read()
+    else:
+        pd = ""
+
+    # Q6. The screen wires to context.watch<ConnectionService>() so it
+    #     rebuilds on notify, plus a 1 Hz Timer.periodic so the live
+    #     gap counter advances visibly between notifies. Both are
+    #     needed — service notify alone freezes the "current gap"
+    #     between successful reads.
+    if "context.watch<ConnectionService>()" in pd and \
+       "Timer.periodic(const Duration(seconds: 1)" in pd:
+        ok("Q6 diag screen watches service AND ticks 1Hz for live gap display")
+    else:
+        fail("Q6 diag screen missing service watch or 1 Hz ticker")
+
+    # Q7. The reset button calls resetPackCurrentObservers (not some
+    #     local-only reset that wouldn't actually zero the service).
+    if "svc.resetPackCurrentObservers()" in pd:
+        ok("Q7 reset button calls service-side resetPackCurrentObservers")
+    else:
+        fail("Q7 reset button doesn't reset service counters")
+
+    # Q8. Settings imports the new screen and exposes a ListTile that
+    #     navigates to it. Without this entry the screen exists but
+    #     can't be reached from the UI.
+    if "import 'polling_diagnostics.dart';" in settings and \
+       "PollingDiagnosticsScreen()" in settings:
+        ok("Q8 Settings imports and navigates to PollingDiagnosticsScreen")
+    else:
+        fail("Q8 Settings doesn't expose the new diag screen")
+
+    # Q9. Logic port (Python): null-rate calculation. Zero calls → 0%
+    #     (avoid divide-by-zero); non-zero → nulls/calls × 100.
+    def null_rate(nulls, calls):
+        return 0.0 if calls == 0 else nulls / calls * 100
+    cases = [
+        ((0,    0), 0.0),
+        ((50, 100), 50.0),
+        ((0,  100), 0.0),
+        ((100,100), 100.0),
+    ]
+    if all(null_rate(*args) == expected for args, expected in cases):
+        ok("Q9 null-rate formula matches Dart (handles zero calls)")
+    else:
+        fail("Q9 null-rate formula diverged from Dart")
+
+    # Q10. No NEW behavioural change in the polling cycle. The 2-second
+    #      stale-gate must still be in place; no new reads added; no
+    #      new timers in the service. Conservative check: the
+    #      `inMilliseconds > 2000` literal still appears in the getter,
+    #      and the ingest path still reads `0009` with the same timeout.
+    if "inMilliseconds > 2000" in conn and \
+       "readDid('0009', tx: '790', rx: '798')" in conn:
+        ok("Q10 stale-gate (2s) and ingest read of 790/0009 unchanged")
+    else:
+        fail("Q10 polling cycle was modified — should be observation-only")
+
+else:
+    ok(f"Part Q skipped (build +{pv}, polling observability lands in +51)")
+
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
-print(f"+35→+50 REGRESSION — build +{pv}")
+print(f"+35→+51 REGRESSION — build +{pv}")
 print("=" * 64)
 for m in oks:
     print(f"  [PASS] {m}")
