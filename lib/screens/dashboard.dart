@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -302,29 +304,16 @@ class _Connected extends StatelessWidget {
             // the other tiles jump around"). Keeping the cells in place
             // and showing '—' holds the layout stable; the figure returns
             // when moving again without anything reflowing.
-            _MetricCard(
-              icon: flowDir == -1
-                  ? Icons.battery_charging_full
-                  : Icons.bolt,
-              color: _flowColor(flowDir),
-              label: flowDir == -1 ? 'Regen' : 'Power',
-              value: powerKw != null
-                  ? '${powerKw.abs().toStringAsFixed(1)} kW'
-                  : '—',
-            ),
-            // Consumption is undefined at a standstill (Wh per km with no
-            // km), so show '—' rather than a fabricated 0 — but keep the
-            // cell so nothing shifts.
-            _MetricCard(
-              icon: Icons.eco,
-              color: (consWhKm != null && consWhKm < 0)
-                  ? Colors.green
-                  : Colors.tealAccent,
-              label: 'Consumption',
-              value: consWhKm != null
-                  ? '${consWhKm.abs().toStringAsFixed(0)} Wh/km'
-                  : '—',
-            ),
+            // v0.1.29+50: Power/Regen and Consumption cards now use
+            // hold-last-value wrappers (_PowerCard, _ConsumptionCard).
+            // See their class docstring for the why. The +40 "always
+            // present, never reflow" property is preserved — each
+            // wrapper always renders one _MetricCard, just with the
+            // last-known value (stale=true) instead of a '—' during
+            // brief polling gaps. After 8 seconds without fresh data
+            // they fall back to '—'.
+            _PowerCard(powerKw: powerKw, flowDir: flowDir),
+            _ConsumptionCard(consWhKm: consWhKm),
             // v0.1.22: PDU heatsink temps (live, 740/0x0010 + 0x0011).
             // Yesterday's hottest values were ~58°C after spirited
             // driving; idle baseline 30-35°C.
@@ -937,7 +926,7 @@ class _LayoutDiagnostic extends StatelessWidget {
 
 /// Bump when changing the diagnostic format — helps cross-reference
 /// screenshots to specific app versions while iterating.
-const String _kDiagVersion = 'v0.1.29+49';
+const String _kDiagVersion = 'v0.1.29+50';
 
 class _GridCards extends StatelessWidget {
   final List<Widget> children;
@@ -975,8 +964,15 @@ class _MetricCard extends StatelessWidget {
   final Color color;
   final String label;
   final String value;
+  // v0.1.29+50: when true, the value text renders at reduced opacity
+  // to signal "this is the last known reading, not the current one".
+  // Used by _PowerCard / _ConsumptionCard during their hold-window to
+  // surface continuity without lying about freshness. Default false
+  // preserves behaviour for all other cards.
+  final bool stale;
   const _MetricCard({
     required this.icon, required this.color, required this.label, required this.value,
+    this.stale = false,
   });
 
   @override
@@ -1013,9 +1009,12 @@ class _MetricCard extends StatelessWidget {
                 FittedBox(
                   fit: BoxFit.scaleDown,
                   alignment: Alignment.centerRight,
-                  child: Text(value,
-                      style: const TextStyle(
-                          fontSize: 18, fontWeight: FontWeight.w500)),
+                  child: Opacity(
+                    opacity: stale ? 0.5 : 1.0,
+                    child: Text(value,
+                        style: const TextStyle(
+                            fontSize: 18, fontWeight: FontWeight.w500)),
+                  ),
                 ),
               ],
             ),
@@ -1045,15 +1044,187 @@ class _MetricCard extends StatelessWidget {
               FittedBox(
                 fit: BoxFit.scaleDown,
                 alignment: Alignment.centerLeft,
-                child: Text(value,
-                    style: const TextStyle(
-                        fontSize: 24, fontWeight: FontWeight.w400)),
+                child: Opacity(
+                  opacity: stale ? 0.5 : 1.0,
+                  child: Text(value,
+                      style: const TextStyle(
+                          fontSize: 24, fontWeight: FontWeight.w400)),
+                ),
               ),
             ],
           ),
         ),
       );
     });
+  }
+}
+
+/// v0.1.29+50: hold-last-value wrappers for the Power/Regen and
+/// Consumption cards. Live driving feedback: the owner reports that
+/// under heavy throttle the readout drops to '—' and can stay there
+/// for stretches — sometimes a minute. Root cause is upstream
+/// (BLE/UDS polling cycle under load — 790-chain stalls, 2-second
+/// stale-gate on the pack-current getter rejecting values that
+/// arrive late), and that's a separate investigation. This patch
+/// is the *visible* fix: when the live value is briefly null but we
+/// have a recent reading, keep showing it for up to HOLD_WINDOW
+/// with reduced opacity (stale=true → Opacity 0.5) so the driver
+/// doesn't watch the card flicker.
+///
+/// The hold window deliberately stops at 8 seconds. Beyond that the
+/// value becomes a lie — at typical city-driving acceleration the
+/// power changes too fast for 15-30s-old numbers to be useful, and
+/// honest '—' is better than confidently-wrong. The opacity cue
+/// signals "this is yesterday's news" without erasing continuity.
+///
+/// Internal state expires via a one-shot Timer rather than polling:
+/// on each absorbed live value the timer is reset to HOLD_WINDOW, and
+/// when it fires we setState({}) so the next build sees showHeld=false.
+/// Cancels in dispose.
+///
+/// What this does NOT do:
+///  * doesn't touch connection.dart, the stale-gate, or any UDS
+///    polling logic (protected layer)
+///  * doesn't reach back into history or trips
+///  * doesn't persist the held value across screen rebuilds — if you
+///    navigate away and back, the hold-state resets
+
+class _PowerCard extends StatefulWidget {
+  final double? powerKw;
+  final int? flowDir;
+  const _PowerCard({required this.powerKw, required this.flowDir});
+
+  @override
+  State<_PowerCard> createState() => _PowerCardState();
+}
+
+class _PowerCardState extends State<_PowerCard> {
+  static const _holdWindow = Duration(seconds: 8);
+  double? _heldPower;
+  int? _heldFlowDir;
+  DateTime? _heldAt;
+  Timer? _expiry;
+
+  @override
+  void initState() {
+    super.initState();
+    _absorbLive();
+  }
+
+  @override
+  void didUpdateWidget(_PowerCard old) {
+    super.didUpdateWidget(old);
+    _absorbLive();
+  }
+
+  void _absorbLive() {
+    if (widget.powerKw != null) {
+      _heldPower = widget.powerKw;
+      _heldFlowDir = widget.flowDir;
+      _heldAt = DateTime.now();
+      _expiry?.cancel();
+      _expiry = Timer(_holdWindow, () {
+        // When the hold expires, force a rebuild so showHeld evaluates
+        // to false and the card falls back to '—'. Guard with mounted
+        // — the widget can be disposed mid-window if the user
+        // navigates away.
+        if (mounted) setState(() {});
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _expiry?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final live = widget.powerKw;
+    final liveDir = widget.flowDir;
+    final age = _heldAt == null ? null : DateTime.now().difference(_heldAt!);
+    final showHeld = live == null &&
+        _heldPower != null &&
+        age != null &&
+        age <= _holdWindow;
+
+    final shownPower = live ?? (showHeld ? _heldPower : null);
+    final shownDir = live != null ? liveDir : (showHeld ? _heldFlowDir : null);
+
+    return _MetricCard(
+      icon: shownDir == -1 ? Icons.battery_charging_full : Icons.bolt,
+      color: _flowColor(shownDir),
+      label: shownDir == -1 ? 'Regen' : 'Power',
+      value: shownPower != null
+          ? '${shownPower.abs().toStringAsFixed(1)} kW'
+          : '—',
+      stale: showHeld,
+    );
+  }
+}
+
+class _ConsumptionCard extends StatefulWidget {
+  final double? consWhKm;
+  const _ConsumptionCard({required this.consWhKm});
+
+  @override
+  State<_ConsumptionCard> createState() => _ConsumptionCardState();
+}
+
+class _ConsumptionCardState extends State<_ConsumptionCard> {
+  static const _holdWindow = Duration(seconds: 8);
+  double? _heldCons;
+  DateTime? _heldAt;
+  Timer? _expiry;
+
+  @override
+  void initState() {
+    super.initState();
+    _absorbLive();
+  }
+
+  @override
+  void didUpdateWidget(_ConsumptionCard old) {
+    super.didUpdateWidget(old);
+    _absorbLive();
+  }
+
+  void _absorbLive() {
+    if (widget.consWhKm != null) {
+      _heldCons = widget.consWhKm;
+      _heldAt = DateTime.now();
+      _expiry?.cancel();
+      _expiry = Timer(_holdWindow, () {
+        if (mounted) setState(() {});
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _expiry?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final live = widget.consWhKm;
+    final age = _heldAt == null ? null : DateTime.now().difference(_heldAt!);
+    final showHeld = live == null &&
+        _heldCons != null &&
+        age != null &&
+        age <= _holdWindow;
+
+    final shown = live ?? (showHeld ? _heldCons : null);
+
+    return _MetricCard(
+      icon: Icons.eco,
+      color: (shown != null && shown < 0) ? Colors.green : Colors.tealAccent,
+      label: 'Consumption',
+      value: shown != null ? '${shown.abs().toStringAsFixed(0)} Wh/km' : '—',
+      stale: showHeld,
+    );
   }
 }
 
