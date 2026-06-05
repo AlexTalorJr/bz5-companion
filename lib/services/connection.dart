@@ -463,6 +463,76 @@ class ConnectionService extends ChangeNotifier {
   double? _packCurrentA;
   DateTime? _packCurrentAt;
 
+  // ── v0.1.29+51: pack-current polling observability (read-only) ──
+  //
+  // The owner reports that on a real BZ5 the Power/Regen card on the
+  // dashboard can flicker to '—' for stretches under heavy throttle —
+  // sometimes a minute. v0.1.29+50 covers the visible part with hold-
+  // last-value. These counters cover the *diagnostic* part: they let
+  // us see, after a drive, what the polling layer actually did.
+  //
+  // None of them change behaviour. No new timers, no extra reads, no
+  // touching the 2-second stale-gate on the getter below. They are
+  // pure observers, updated at the only two points that already exist:
+  //   ingest:  successful raw decode in _runFastSubPoll (the moment a
+  //            fresh 790/0009 value lands in _packCurrentA);
+  //   getter:  packCurrentA accessor — counts how many calls UI made
+  //            and how many of them returned null (either because no
+  //            value is cached or because the stale-gate rejected it).
+  //
+  // The "max gap" in particular is the number that diagnoses the
+  // owner's "—-for-a-minute" report: if it climbs past 10000 ms the
+  // 2-second stale-gate is the proximate cause; if it stays small
+  // but the getter null-rate is high then it's something else
+  // (initialisation, race, UI-side bug).
+  //
+  // Reset boundary: counters accumulate since process start. The UI
+  // exposes a manual reset button in PollingDiagnosticsScreen so the
+  // owner can frame a particular drive.
+  int _packCurrentReadOkCount = 0;
+  DateTime? _packCurrentPrevSuccessAt;
+  int _packCurrentMaxGapMs = 0;
+  int _packCurrentGetterCalls = 0;
+  int _packCurrentGetterNulls = 0;
+
+  /// Total successful raw reads of 790/0009 since process start (or
+  /// last manual reset via [resetPackCurrentObservers]).
+  int get packCurrentReadOkCount => _packCurrentReadOkCount;
+
+  /// Largest observed gap, in milliseconds, between two consecutive
+  /// successful raw reads. Tracks the worst spike — useful for
+  /// diagnosing whether the field complaint of "'—' for a minute"
+  /// is the 2 s stale-gate rejecting late samples or something else.
+  int get packCurrentMaxGapMs => _packCurrentMaxGapMs;
+
+  /// Milliseconds since the most recent successful raw read, or null
+  /// if no read has happened this session. Computed live on access.
+  int? get packCurrentCurrentGapMs {
+    final t = _packCurrentAt;
+    if (t == null) return null;
+    return DateTime.now().difference(t).inMilliseconds;
+  }
+
+  /// Number of times [packCurrentA] has been called this session.
+  int get packCurrentGetterCalls => _packCurrentGetterCalls;
+
+  /// Number of those calls that returned null (no cached value, or
+  /// stale-gate rejected). The ratio nulls/calls is the user-
+  /// observable "how often was Power '—'" rate.
+  int get packCurrentGetterNulls => _packCurrentGetterNulls;
+
+  /// Zero out the four counters. Does NOT clear the cached value —
+  /// just the statistics. Called from the diagnostics screen so
+  /// the owner can scope numbers to a single drive.
+  void resetPackCurrentObservers() {
+    _packCurrentReadOkCount = 0;
+    _packCurrentPrevSuccessAt = null;
+    _packCurrentMaxGapMs = 0;
+    _packCurrentGetterCalls = 0;
+    _packCurrentGetterNulls = 0;
+    notifyListeners();
+  }
+
   /// v0.1.29+33: decode constants for 790/0009 pack current.
   /// raw is u16 big-endian. amps = (raw - zero) * ampsPerLsb, discharge
   /// positive, charge (current INTO pack) negative.
@@ -1022,9 +1092,18 @@ class ConnectionService extends ChangeNotifier {
   /// for [instantPowerKw] and [powerFlowDirection], not for a precise
   /// "X amps" readout.
   double? get packCurrentA {
+    // v0.1.29+51: track every getter call + every null outcome for
+    // diagnostics. No behaviour change — same return values as before.
+    _packCurrentGetterCalls++;
     final t = _packCurrentAt;
-    if (_packCurrentA == null || t == null) return null;
-    if (DateTime.now().difference(t).inMilliseconds > 2000) return null;
+    if (_packCurrentA == null || t == null) {
+      _packCurrentGetterNulls++;
+      return null;
+    }
+    if (DateTime.now().difference(t).inMilliseconds > 2000) {
+      _packCurrentGetterNulls++;
+      return null;
+    }
     return _packCurrentA;
   }
 
@@ -1873,8 +1952,23 @@ class ConnectionService extends ChangeNotifier {
         // peak well under that. Bound generously and skip outliers
         // (misaligned frame / BLE corruption).
         if (amps >= -600.0 && amps <= 600.0) {
+          // v0.1.29+51: observability. Update before assigning the
+          // cached value so the gap is measured between the previous
+          // _packCurrentAt and the new one — the actual transport-
+          // level interval between successful raw decodes.
+          final now = DateTime.now();
+          final prev = _packCurrentPrevSuccessAt;
+          if (prev != null) {
+            final gapMs = now.difference(prev).inMilliseconds;
+            if (gapMs > _packCurrentMaxGapMs) {
+              _packCurrentMaxGapMs = gapMs;
+            }
+          }
+          _packCurrentPrevSuccessAt = now;
+          _packCurrentReadOkCount++;
+
           _packCurrentA = amps;
-          _packCurrentAt = DateTime.now();
+          _packCurrentAt = now;
           if (_currentTripId != null) {
             await db.insertSample(
               tripId: _currentTripId,

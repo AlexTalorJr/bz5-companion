@@ -14,6 +14,7 @@ import 'about.dart';
 import 'data_management.dart';
 import 'diagnostics.dart';
 import 'live_log.dart';
+import 'polling_diagnostics.dart';
 import 'sweep.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -1417,6 +1418,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
             onTap: () => Navigator.of(context).push(
               MaterialPageRoute(
                 builder: (_) => const AboutScreen(),
+              ),
+            ),
+          ),
+          // v0.1.29+51: observability for the 790/0009 polling layer —
+          // counters surface what the transport actually did during a
+          // drive, so the field complaint of "Power card shows '—' for
+          // stretches" can be put on a number. Read-only with a reset.
+          ListTile(
+            leading: const Icon(Icons.troubleshoot,
+                color: Colors.orangeAccent),
+            title: const Text('Polling diagnostics'),
+            subtitle: const Text(
+                'Pack current read counters, gaps, null rate'),
+            trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => const PollingDiagnosticsScreen(),
               ),
             ),
           ),
