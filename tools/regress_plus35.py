@@ -1605,7 +1605,16 @@ if int(pv) >= 51:
     #      new timers in the service. Conservative check: the
     #      `inMilliseconds > 2000` literal still appears in the getter,
     #      and the ingest path still reads `0009` with the same timeout.
-    if "inMilliseconds > 2000" in conn and \
+    #
+    #      v0.1.29+53: superseded — the three-group scheduler patch
+    #      DOES (legitimately) change polling cycle: removes the
+    #      sub-poll cascade, widens stale-gate to 8 s, adds recovery.
+    #      Q10's negative invariant is now backstopped positively by
+    #      R8 (cascade gone), R12 (gate 8 s), R13 (observability
+    #      intact), R14 (calibration untouched).
+    if int(pv) >= 53:
+        ok("Q10 superseded by R8/R12/R13/R14 on +53+ (scheduler rewrite)")
+    elif "inMilliseconds > 2000" in conn and \
        "readDid('0009', tx: '790', rx: '798')" in conn:
         ok("Q10 stale-gate (2s) and ingest read of 790/0009 unchanged")
     else:
@@ -1613,6 +1622,262 @@ if int(pv) >= 51:
 
 else:
     ok(f"Part Q skipped (build +{pv}, polling observability lands in +51)")
+
+# ──────────── Part R: +53 three-group scheduler + recovery ────────────
+if int(pv) >= 53:
+    conn = open("lib/services/connection.dart").read()
+
+    # R1. _PollTask class exists at file scope (not nested in
+    #     ConnectionService — otherwise _runTask's signature
+    #     `_runTask(_PollTask task)` wouldn't resolve when called
+    #     from outside the class body in some refactor scenarios).
+    if "class _PollTask {" in conn:
+        ok("R1 _PollTask class defined at file scope")
+    else:
+        fail("R1 _PollTask class missing — code won't compile")
+
+    # R2. Three task lists exist and are typed. A regression would
+    #     be replacing them with one Map<Group, List<...>>, which
+    #     breaks the scheduling priority order.
+    for needle in [
+        "final List<_PollTask> _fastTasks = [];",
+        "final List<_PollTask> _mediumTasks = [];",
+        "final List<_PollTask> _slowTasks = [];",
+    ]:
+        if needle in conn:
+            ok(f"R2 {needle.split('_')[1].split(' ')[0]} task list present")
+        else:
+            fail(f"R2 missing: {needle}")
+
+    # R3. The four scheduler constants are defined with the
+    #     committed values. Drift here changes behaviour silently —
+    #     e.g. _kMaxConsecutiveSameEcu = 6 would resurrect the
+    #     EMPTY-on-5th-read quirk.
+    constants = [
+        ("_kFastInterval", "Duration(milliseconds: 100)"),
+        ("_kMediumInterval", "Duration(seconds: 5)"),
+        ("_kSlowInterval", "Duration(seconds: 18)"),
+        ("_kMaxConsecutiveSameEcu = 4", ""),
+        ("_kRecoveryGapThresholdMs = 15000", ""),
+        ("_kRecoveryCooldown = Duration(seconds: 60)", ""),
+    ]
+    for (name, val) in constants:
+        needle = f"{name} = {val}" if val else name
+        if needle in conn:
+            ok(f"R3 {name.lstrip('_').split(' ')[0]} = expected")
+        else:
+            fail(f"R3 constant drifted: {name}")
+
+    # R4. Fast group has exactly the three tasks the owner approved:
+    #     speed (740), packV+I (790), and nothing else. A "small
+    #     improvement" that adds a 4th fast task would compete with
+    #     the medium/slow scheduling and widen the round-robin
+    #     pressure on 790.
+    build_idx = conn.find("void _buildSchedule() {")
+    build_end = conn.find("/// Pick the next task", build_idx)
+    if build_idx >= 0 and build_end >= 0:
+        build_block = conn[build_idx:build_end]
+        fast_count = build_block.count("_fastTasks.add(")
+        if fast_count == 2:  # speed + packV+I (the latter reads both V and I)
+            ok("R4 fast group has 2 tasks (speed + packV+I)")
+        else:
+            fail(f"R4 fast group has {fast_count} tasks; expected 2")
+
+    # R5. Medium group: SOC, battery_temp, odometer, pdu_temps. SOH
+    #     must NOT be in medium — owner moved it to slow.
+    if build_idx >= 0 and build_end >= 0:
+        build_block = conn[build_idx:build_end]
+        mediums = [
+            "name: 'soc'", "name: 'battery_temp'",
+            "name: 'odometer'", "name: 'pdu_temps'",
+        ]
+        med_ok = all(m in build_block for m in mediums)
+        # Confirm SOH is NOT in a medium-task position. Approximate
+        # check: 'soh' string appears AFTER the slow-group comment
+        # only.
+        slow_idx = build_block.find("Slow group")
+        soh_idx  = build_block.find("name: 'soh'")
+        if med_ok and slow_idx >= 0 and soh_idx > slow_idx:
+            ok("R5 medium group correct; SOH lives in slow group (owner-moved)")
+        else:
+            fail(f"R5 medium group wrong: med_ok={med_ok} soh_after_slow={soh_idx > slow_idx}")
+
+    # R6. Slow group has SOH, cell_extremes, gear, soc_precise plus
+    #     the atomic blocks full_cells and extra.
+    if build_idx >= 0 and build_end >= 0:
+        build_block = conn[build_idx:build_end]
+        slows = [
+            "name: 'soh'", "name: 'cell_extremes'", "name: 'gear'",
+            "name: 'soc_precise'", "name: 'full_cells'", "name: 'extra'",
+        ]
+        missing = [s for s in slows if s not in build_block]
+        if not missing:
+            ok("R6 slow group has all six tasks (incl. SOH, full_cells)")
+        else:
+            fail(f"R6 slow group missing: {missing}")
+
+    # R7. _pollEcuFiltered exists and preserves the fast-lane
+    #     ownership exclusions (740/0008 and 790/0009). Without
+    #     these, a medium task could shadow-write into the same
+    #     _latestValues slots that fast-lane fills, causing the +51
+    #     observability counters to drift.
+    if "Future<void> _pollEcuFiltered" in conn and \
+       "ecu.txId == '740' && spec.did == '0008'" in conn and \
+       "ecu.txId == '790' && spec.did == '0009'" in conn:
+        ok("R7 _pollEcuFiltered preserves fast-lane DID exclusions")
+    else:
+        fail("R7 _pollEcuFiltered missing or doesn't exclude fast-lane DIDs")
+
+    # R8. The old sub-poll cascade in _pollLoop is GONE. A regression
+    #     here would resurrect "burst 4 reads to 790 every iteration"
+    #     and undo the whole patch. Search for the signature pattern.
+    poll_idx = conn.find("Future<void> _pollLoop() async {")
+    poll_end = conn.find("Future<void> _pollEcuFiltered", poll_idx)
+    if poll_idx >= 0 and poll_end >= 0:
+        loop_body = conn[poll_idx:poll_end]
+        bad_patterns = [
+            "for (final ecu in _ecusToPoll)",
+            "if (cycle % 2 == 0) await _pollCells()",
+            "if (cycle % 2 == 1) await _pollExtraDids()",
+        ]
+        leaks = [p for p in bad_patterns if p in loop_body]
+        if not leaks:
+            ok("R8 old sub-poll cascade removed from _pollLoop")
+        else:
+            fail(f"R8 old cascade leaked into new _pollLoop: {leaks}")
+
+    # R9. _pollLoop calls _buildSchedule before entering the while
+    #     loop. Without this, the three lists stay empty and nothing
+    #     ever gets read.
+    if poll_idx >= 0 and poll_end >= 0:
+        loop_body = conn[poll_idx:poll_end]
+        bs_idx  = loop_body.find("_buildSchedule()")
+        while_idx = loop_body.find("while (_polling")
+        if 0 < bs_idx < while_idx:
+            ok("R9 _buildSchedule() called before main loop")
+        else:
+            fail(f"R9 _buildSchedule ordering wrong: bs={bs_idx} while={while_idx}")
+
+    # R10. Recovery uses _client.initialize() — the soft warm reset
+    #      path. NOT BLE reconnect (which would be _ble.connect() or
+    #      similar). The owner explicitly chose soft only.
+    rec_idx = conn.find("Future<void> _maybeRunRecovery() async {")
+    rec_end = conn.find("Future<void> _pollLoop", rec_idx) if rec_idx >= 0 else -1
+    if rec_idx >= 0 and rec_end >= 0:
+        rec_body = conn[rec_idx:rec_end]
+        if "_client!.initialize()" in rec_body and \
+           "_ble!.connect()" not in rec_body and \
+           "_ble!.disconnect()" not in rec_body:
+            ok("R10 recovery is soft warm reset (no BLE reconnect)")
+        else:
+            fail("R10 recovery hits BLE link — owner asked for soft only")
+
+    # R11. Recovery has cooldown gating BEFORE calling initialize().
+    #      Without it, a single big gap could trigger ATZ every iteration.
+    if rec_idx >= 0 and rec_end >= 0:
+        rec_body = conn[rec_idx:rec_end]
+        cd_idx = rec_body.find("_kRecoveryCooldown")
+        init_idx = rec_body.find("_client!.initialize()")
+        if 0 < cd_idx < init_idx:
+            ok("R11 recovery checks cooldown before warm reset")
+        else:
+            fail(f"R11 recovery cooldown ordering wrong: cd={cd_idx} init={init_idx}")
+
+    # R12. Stale-gate widened to 8 s. The previous 2000 literal must
+    #      be GONE from the getter — it was the bottleneck.
+    getter_idx = conn.find("double? get packCurrentA {")
+    getter_end = conn.find("\n  }", getter_idx)
+    if getter_idx >= 0 and getter_end >= 0:
+        getter_body = conn[getter_idx:getter_end]
+        if "inMilliseconds > 8000" in getter_body and \
+           "inMilliseconds > 2000" not in getter_body:
+            ok("R12 stale-gate widened 2s → 8s in packCurrentA getter")
+        else:
+            fail("R12 stale-gate not widened or 2000 literal still present")
+
+    # R13. Observability hooks from +51 still update on successful
+    #      read. The ingest order (gap → readOk++ → assign) must be
+    #      unchanged — these counters are the diagnostic source that
+    #      the whole +53 effort hinges on.
+    if "_packCurrentReadOkCount++;" in conn and \
+       "_packCurrentMaxGapMs =" in conn and \
+       "_packCurrentPrevSuccessAt = now;" in conn:
+        ok("R13 +51 observability hooks intact (unchanged by +53)")
+    else:
+        fail("R13 +51 observability hooks damaged")
+
+    # R14. The +47 calibration constants are untouched.
+    if "_kPackCurrentZeroRaw = 5018.0" in conn and \
+       "_kPackCurrentAmpsPerLsb = 0.1021" in conn:
+        ok("R14 +47 calibration constants untouched")
+    else:
+        fail("R14 +47 calibration constants were modified — abort")
+
+    # R15. Logic port (Python): ECU round-robin invariant. The
+    #      adapter's "5th consecutive same-ECU read = EMPTY" quirk
+    #      means the scheduler must never let _consecutiveSameEcu
+    #      exceed _kMaxConsecutiveSameEcu (4) when alternatives
+    #      exist. Simulate the picker on a representative task set.
+    class T:
+        def __init__(self, name, ecu):
+            self.name = name; self.ecu = ecu; self.lastRunAt = None
+    def pick(candidates, last_ecu, count_same):
+        if not candidates: return None
+        eligible = candidates
+        if count_same >= 4 and last_ecu is not None:
+            diff = [t for t in candidates if t.ecu != last_ecu]
+            if diff: eligible = diff
+        # least-recent (None = oldest)
+        return sorted(eligible, key=lambda t: (t.lastRunAt is not None, t.lastRunAt))[0]
+    # Set: 2 fast tasks, both reading 790. Round-robin must rotate.
+    fast = [T('packV', '790'), T('packI', '790')]
+    last_ecu, same_count = None, 0
+    history = []
+    for i in range(10):
+        p = pick(fast, last_ecu, same_count)
+        history.append(p.ecu)
+        if last_ecu == p.ecu: same_count += 1
+        else: last_ecu = p.ecu; same_count = 1
+        p.lastRunAt = i
+    # With ONLY 790 candidates, all picks go to 790 — same_count rises.
+    # The quirk WILL fire, but that's OK because no alternative exists.
+    # The relevant invariant: when ANY other ECU is available, scheduler
+    # MUST switch by the 5th pick.
+    fast2 = [T('packV', '790'), T('packI', '790'), T('speed', '740')]
+    last_ecu, same_count = None, 0
+    history2 = []
+    for i in range(10):
+        p = pick(fast2, last_ecu, same_count)
+        history2.append(p.ecu)
+        if last_ecu == p.ecu: same_count += 1
+        else: last_ecu = p.ecu; same_count = 1
+        p.lastRunAt = i
+    # Find longest run of consecutive same-ECU picks
+    longest = 1; current = 1
+    for j in range(1, len(history2)):
+        if history2[j] == history2[j-1]:
+            current += 1
+            if current > longest: longest = current
+        else:
+            current = 1
+    if longest <= 4:
+        ok(f"R15 round-robin invariant holds: longest same-ECU run = {longest} (≤4) over 10 picks")
+    else:
+        fail(f"R15 round-robin VIOLATED: same-ECU run = {longest} (>4)")
+
+    # R16. Triple-sync to +53.
+    pub = open("pubspec.yaml").read()
+    dash = open("lib/screens/dashboard.dart").read()
+    csync = open("lib/services/cloud_sync_service.dart").read()
+    if "version: 0.1.29+53" in pub and \
+       "_kDiagVersion = 'v0.1.29+53'" in dash and \
+       "'0.1.29+53'" in csync:
+        ok("R16 triple-sync to +53 (pubspec / dashboard / cloud_sync)")
+    else:
+        fail("R16 triple-sync incomplete")
+
+else:
+    ok(f"Part R skipped (build +{pv}, three-group scheduler lands in +53)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)

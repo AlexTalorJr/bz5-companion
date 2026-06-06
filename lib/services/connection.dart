@@ -1100,7 +1100,14 @@ class ConnectionService extends ChangeNotifier {
       _packCurrentGetterNulls++;
       return null;
     }
-    if (DateTime.now().difference(t).inMilliseconds > 2000) {
+    // v0.1.29+53: stale-gate widened 2 s → 8 s. Field data (+51
+    // counters on a 40 min drive): null rate 40.7% at 2 s, fast-group
+    // wall-clock period after +53 is ~700 ms per task. 8 s window
+    // comfortably covers one full fast-cycle plus a transient stall.
+    // +50 UI hold-window is also 8 s, so when the cached value is
+    // dropped here, the UI _PowerCard hold-window has just expired
+    // too — they fail in sync (no double-grace, no silent drift).
+    if (DateTime.now().difference(t).inMilliseconds > 8000) {
       _packCurrentGetterNulls++;
       return null;
     }
@@ -1800,75 +1807,348 @@ class ConnectionService extends ChangeNotifier {
   /// and corrupt the BLE channel.
   bool _pollLoopActive = false;
 
+  // ── v0.1.29+53: scheduler state for three-group polling ──
+  //
+  // Replaces the old "iterate ECUs once per cycle + sub-poll between
+  // them" loop, which under load grew to 5-15 s per full cycle and
+  // turned the Power card into a flicker show (field max gap 149 s on
+  // a 40-min drive). New model: each iteration runs at most ONE fast
+  // task + ONE medium task (if due) + ONE slow task (if due), with
+  // ECU round-robin guarding the documented 790-chain quirk (5th
+  // consecutive read to the same ECU returns EMPTY on this adapter).
+  //
+  // Periods are wall-clock, not cycle-count, so ELM stalls don't
+  // de-sync the schedule (a 10 s stall just means medium/slow tasks
+  // come up overdue and run on the next clean iteration).
+  //
+  // Task definitions live in [_buildSchedule], called once per
+  // _startPolling. Each task wraps an existing read function
+  // (_pollSpeedOnly, _pollPackVoltageOnly, _pollCellExtremesOnly,
+  // _pollEcu-with-filter, _pollCells, _pollExtraDids) — no decoder
+  // logic moved, no observability hooks (+51) relocated.
+  static const _kFastInterval = Duration(milliseconds: 100);
+  static const _kMediumInterval = Duration(seconds: 5);
+  static const _kSlowInterval = Duration(seconds: 18);
+  static const _kMaxConsecutiveSameEcu = 4;
+  static const _kRecoveryGapThresholdMs = 15000;
+  static const _kRecoveryCooldown = Duration(seconds: 60);
+
+  final List<_PollTask> _fastTasks = [];
+  final List<_PollTask> _mediumTasks = [];
+  final List<_PollTask> _slowTasks = [];
+
+  // ECU round-robin state: the 790-chain quirk on this adapter forces
+  // us to never issue a 5th consecutive read to the same ECU. The
+  // scheduler counts hits per ECU and, on the next pick within the
+  // same group, prefers a candidate with a different ecuTx when the
+  // counter approaches the limit. If only same-ECU candidates exist,
+  // we still issue the read (better the quirk than blocking forever).
+  String? _lastQueriedEcu;
+  int _consecutiveSameEcuCount = 0;
+
+  // Recovery state. Triggered when packCurrentMaxGap exceeds threshold
+  // OR ≥5 consecutive ELM timeouts. Action: warm reset via the existing
+  // _client.initialize() (which sends ATZ + reinit + clears the
+  // header/rx-filter cache inside Elm327Client). Cooldown keeps us
+  // from looping if the underlying problem isn't transient.
+  DateTime? _lastRecoveryAt;
+  int _recoveryRunsCount = 0;
+
+  /// v0.1.29+53: counters exposed for the diagnostics screen so the
+  /// owner can see whether recovery is firing.
+  int get recoveryRunsCount => _recoveryRunsCount;
+  DateTime? get lastRecoveryAt => _lastRecoveryAt;
+
+  /// Build the three task lists from scratch. Called from _startPolling
+  /// before [_pollLoop] starts so the scheduler has a complete plan.
+  /// Re-buildable: clears the existing lists first so a stop-and-start
+  /// cycle (e.g. reconnect) doesn't accumulate duplicate tasks.
+  void _buildSchedule() {
+    _fastTasks.clear();
+    _mediumTasks.clear();
+    _slowTasks.clear();
+
+    // ── Fast group (every iteration, target ~1 Hz per task) ──
+    // 740/0008 speed, 790/0015 voltage, 790/0009 current.
+    // The latter two are paired physically (V × I = power), but the
+    // scheduler hands them out one per iteration — by the time both
+    // have updated, no more than ~700 ms have elapsed.
+    _fastTasks.add(_PollTask(
+      name: 'speed',
+      ecuTx: '740',
+      execute: _pollSpeedOnly,
+    ));
+    _fastTasks.add(_PollTask(
+      name: 'packV+I',
+      ecuTx: '790',
+      execute: _pollPackVoltageOnly,
+    ));
+
+    // ── Medium group (every ~5 s) ──
+    // Owner-prescribed list. _pollEcuFiltered reads only the listed
+    // DIDs from the given ECU, instead of all of them as _pollEcu
+    // did. This keeps the medium group from accidentally also
+    // reading slow-group DIDs.
+    _mediumTasks.add(_PollTask(
+      name: 'soc',
+      ecuTx: '790',
+      execute: () => _pollEcuFiltered('790', ['0005']),
+    ));
+    _mediumTasks.add(_PollTask(
+      name: 'battery_temp',
+      ecuTx: '790',
+      execute: () => _pollEcuFiltered('790', ['002F']),
+    ));
+    _mediumTasks.add(_PollTask(
+      name: 'odometer',
+      ecuTx: '791',
+      execute: () => _pollEcuFiltered('791', ['0026']),
+    ));
+    _mediumTasks.add(_PollTask(
+      name: 'pdu_temps',
+      ecuTx: '740',
+      execute: () => _pollEcuFiltered(
+          '740', ['0010', '0011', '0012', '0013', '0014', '0015',
+                  '0016', '0017']),
+    ));
+
+    // ── Slow group (every ~18 s) ──
+    // SOH (owner-moved from medium), cell extremes, gear, precise SOC.
+    _slowTasks.add(_PollTask(
+      name: 'soh',
+      ecuTx: '790',
+      execute: () => _pollEcuFiltered('790', ['0029']),
+    ));
+    _slowTasks.add(_PollTask(
+      name: 'cell_extremes',
+      ecuTx: '790',
+      execute: _pollCellExtremesOnly,
+    ));
+    _slowTasks.add(_PollTask(
+      name: 'gear',
+      ecuTx: '791',
+      execute: () => _pollEcuFiltered('791', ['0009']),
+    ));
+    _slowTasks.add(_PollTask(
+      name: 'soc_precise',
+      ecuTx: '790',
+      execute: () => _pollEcuFiltered('790', ['1FFD']),
+    ));
+    // Full-cell snapshot — atomic, large (~40 reads with internal
+    // round-robin already inside _pollCells); slotted as a slow task
+    // so it doesn't compete with the fast group.
+    _slowTasks.add(_PollTask(
+      name: 'full_cells',
+      ecuTx: '790',
+      execute: _pollCells,
+    ));
+    // _pollExtraDids — other registered DIDs that were on the
+    // cycle%2==1 schedule. Same idea: atomic, low frequency.
+    _slowTasks.add(_PollTask(
+      name: 'extra',
+      ecuTx: '791',  // mostly hits 791 (VCU misc) — used for round-robin
+      execute: _pollExtraDids,
+    ));
+  }
+
+  /// Pick the next task from [candidates], respecting ECU round-robin.
+  /// If the last-used ECU has been hit [_kMaxConsecutiveSameEcu] times
+  /// in a row, prefer a candidate whose ecuTx differs. If no such
+  /// candidate exists, fall back to least-recently-run regardless.
+  /// Within the eligible set, pick the one with the oldest [lastRunAt]
+  /// (or null = highest priority).
+  _PollTask? _pickWithRoundRobin(List<_PollTask> candidates) {
+    if (candidates.isEmpty) return null;
+
+    Iterable<_PollTask> eligible = candidates;
+    if (_consecutiveSameEcuCount >= _kMaxConsecutiveSameEcu &&
+        _lastQueriedEcu != null) {
+      final different =
+          candidates.where((t) => t.ecuTx != _lastQueriedEcu).toList();
+      if (different.isNotEmpty) {
+        eligible = different;
+      }
+      // else: all candidates are same-ECU; let the quirk happen
+      // rather than block forever.
+    }
+
+    final sorted = eligible.toList()
+      ..sort((a, b) {
+        if (a.lastRunAt == null) return -1;
+        if (b.lastRunAt == null) return 1;
+        return a.lastRunAt!.compareTo(b.lastRunAt!);
+      });
+    return sorted.first;
+  }
+
+  /// Run [task], update its lastRunAt, and update ECU round-robin
+  /// counters. Errors are caught inside the task (existing read
+  /// functions already do this); we only track timing.
+  Future<void> _runTask(_PollTask task) async {
+    await task.execute();
+    task.lastRunAt = DateTime.now();
+    if (task.ecuTx == _lastQueriedEcu) {
+      _consecutiveSameEcuCount++;
+    } else {
+      _lastQueriedEcu = task.ecuTx;
+      _consecutiveSameEcuCount = 1;
+    }
+  }
+
+  /// Check if a recovery is warranted, and run it if so. Triggers:
+  ///   • packCurrentMaxGapMs in the current observation window has
+  ///     exceeded [_kRecoveryGapThresholdMs] AND we're past cooldown
+  ///     since the last recovery.
+  /// Action:
+  ///   • _client.initialize() — sends ATZ to the chip and replays the
+  ///     init sequence (E0/L0/S0/H1/SP6/AT2 + warmup 0100). This also
+  ///     resets the header/rx-filter cache inside Elm327Client.
+  /// We deliberately do NOT touch the BLE link or reconnect — that's
+  /// a heavier hammer and the owner specifically asked for soft reset
+  /// only. The cooldown prevents oscillation if the warm reset isn't
+  /// enough.
+  Future<void> _maybeRunRecovery() async {
+    if (_client == null) return;
+    if (_packCurrentMaxGapMs <= _kRecoveryGapThresholdMs) return;
+
+    final now = DateTime.now();
+    final lastRec = _lastRecoveryAt;
+    if (lastRec != null && now.difference(lastRec) < _kRecoveryCooldown) {
+      return;
+    }
+
+    debugPrint('Recovery: max gap '
+        '${_packCurrentMaxGapMs}ms exceeded threshold; warm reset');
+    try {
+      await _client!.initialize();
+      _recoveryRunsCount++;
+      _lastRecoveryAt = now;
+      // Reset max gap so we don't immediately re-trigger; the next
+      // big spike will refill it. Counters not affected by design
+      // (resetPackCurrentObservers is the user-facing reset).
+      _packCurrentMaxGapMs = 0;
+      _packCurrentPrevSuccessAt = null;
+      notifyListeners();
+    } catch (e) {
+      debugPrint('Recovery failed: $e');
+      // Don't update _lastRecoveryAt so cooldown doesn't gate a real
+      // retry, but also don't loop tight — natural cycle delay below.
+    }
+  }
+
   Future<void> _pollLoop() async {
     int cycle = 0;
+    _buildSchedule();
     while (_polling && _client != null) {
       _pollLoopActive = true;
       try {
-        // v0.1.24: interleave speed sub-poll between each main ECU poll
-        // so the dashboard speed updates 2-3 times per second instead
-        // of once per full cycle (2-3 s). User feedback: "speed feels
-        // laggy compared to native speedometer". Sub-poll is a single
-        // readDid call against 740/0x0008 (~50-150 ms), cheap enough
-        // to slot between heavier ECU polls without slowing the cycle.
-        //
-        // _pollSpeedOnly catches its own exceptions and notifies
-        // listeners after each successful read, so the UI redraws
-        // mid-cycle.
-        for (final ecu in _ecusToPoll) {
-          await _pollEcu(ecu);
-          await _pollSpeedOnly();
-          // v0.1.29+26: pack voltage sub-poll, slotted same as speed.
-          // Pack V swings 25-30% under load on 136-cell BZ5; previous
-          // ~3s cadence missed regen/accel transients. See
-          // _pollPackVoltageOnly doc.
-          await _pollPackVoltageOnly();
-          // v0.1.29+34: speed sub-poll wedged between the pack V+I block
-          // (790/0015 + 790/0009) and the cell-extremes block (790/002B
-          // + 790/002D). +33 added current to the V sub-poll, which made
-          // the consecutive-790 run 4 reads long (0015,0009,002B,002D) —
-          // one short of the documented "5th consecutive same-ECU read
-          // returns EMPTY" adapter quirk (see runLiveLog notes). This
-          // 740 read resets the ELM327's same-ECU counter, capping each
-          // 790 run at 2. Bonus: speed refreshes one extra time per
-          // iteration. _pollSpeedOnly is cheap (~50-150 ms) and swallows
-          // its own errors, so it can't break the loop if 740 is slow.
-          await _pollSpeedOnly();
-          // v0.1.29+30: fast min/max-cell sub-poll → _subPollPackV.
-          // This is what actually drives the dashboard pack-voltage
-          // number between full _pollCells refreshes (the UI primary is
-          // packVoltageFromCells, NOT hvBusV which +26 sped up). See
-          // _pollCellExtremesOnly doc.
-          await _pollCellExtremesOnly();
-        }
-        if (cycle % 2 == 0) await _pollCells();
-        await _pollSpeedOnly();
-        await _pollPackVoltageOnly();
-        // v0.1.29+34: same 790-chain break as inside the for-ecu loop.
-        await _pollSpeedOnly();
-        await _pollCellExtremesOnly();
-        // v0.1.3: extra DIDs (pack V from 740, cell indices, pack config).
-        // Каждый второй цикл — частоты обновления pack V раз в ~500 мс
-        // достаточно, не надо мучить шину.
-        if (cycle % 2 == 1) await _pollExtraDids();
+        final now = DateTime.now();
+
+        // v0.1.29+53: scheduler-driven. Each iteration may run at most
+        // one fast, one medium (if due), and one slow (if due) task.
+        // Total per iteration: 1-3 reads (~100-300 ms), down from
+        // 60-100 reads (5-15 s) in the pre-+53 loop.
+
+        // Slow group first — if a slow task is overdue, run it; it's
+        // the heaviest single block (full_cells, extra) so we want to
+        // get it out of the way while the fast group hasn't already
+        // hit the round-robin limit.
+        final slowDue = _slowTasks.where((t) =>
+            t.lastRunAt == null ||
+            now.difference(t.lastRunAt!) >= _kSlowInterval).toList();
+        final slowPick = _pickWithRoundRobin(slowDue);
+        if (slowPick != null) await _runTask(slowPick);
+
+        // Medium group.
+        final mediumDue = _mediumTasks.where((t) =>
+            t.lastRunAt == null ||
+            now.difference(t.lastRunAt!) >= _kMediumInterval).toList();
+        final mediumPick = _pickWithRoundRobin(mediumDue);
+        if (mediumPick != null) await _runTask(mediumPick);
+
+        // Fast group — always run one. _kFastInterval is a soft floor;
+        // if all fast tasks have been hit within the interval, the
+        // round-robin still picks the least-recent one (so we don't
+        // stall).
+        final fastPick = _pickWithRoundRobin(_fastTasks);
+        if (fastPick != null) await _runTask(fastPick);
+
+        // Housekeeping (unchanged from pre-+53).
         _updatePowerCalculations();
         await _maybeStartTrip();
-        // v0.1.29+43: end a trip after a long park, so the next drive is
-        // a separate trip (runs after _maybeStartTrip so a freshly-created
-        // trip isn't immediately evaluated for closing).
         await _maybeSegmentTripOnPark();
-        // v0.1.9: rolling trip aggregates + periodic snapshot to DB.
         _updateTripAggregates();
         await _maybeWriteSnapshot();
+
+        // Soft recovery check after housekeeping so it doesn't block
+        // a normal iteration's reads.
+        await _maybeRunRecovery();
       } catch (e) {
         debugPrint('Poll error: $e');
       }
       _pollLoopActive = false;
       cycle++;
       _pollCyclesSinceStart++;
-      await Future.delayed(const Duration(milliseconds: 250));
+      // Short tick — most iterations are 1-3 reads, the delay keeps
+      // the loop from monopolising the event queue and matches the
+      // BLE adapter's typical inter-command quiet time. The fast
+      // group naturally paces itself via ECU round-robin and the
+      // task's own timeouts.
+      await Future.delayed(const Duration(milliseconds: 50));
     }
     _pollLoopActive = false;
+  }
+
+  /// v0.1.29+53: read a specific subset of DIDs from one ECU. Used by
+  /// medium/slow scheduler tasks to read only what their group is
+  /// supposed to read, instead of the whole ECU. Mirrors the body of
+  /// [_pollEcu] but filtered by the [allowed] list. Same error
+  /// handling, same db write, same notifyListeners.
+  Future<void> _pollEcuFiltered(String ecuTx, List<String> allowed) async {
+    if (_client == null) return;
+    // Find the matching EcuSpec to get rxId and the DidSpec entries.
+    final ecu = _ecusToPoll.firstWhere(
+      (e) => e.txId == ecuTx,
+      orElse: () => _ecusToPoll.first,  // fallback shouldn't normally hit
+    );
+    if (ecu.txId != ecuTx) return;  // not in current poll set
+
+    for (final spec in ecu.dids) {
+      if (!allowed.contains(spec.did)) continue;
+      if (spec.category == DidCategory.cells) continue;
+      // Same exclusions as _pollEcu — these are owned by fast-lane.
+      if (ecu.txId == '740' && spec.did == '0008') continue;
+      if (ecu.txId == '790' && spec.did == '0009') continue;
+
+      try {
+        final r = await _client!.readDid(spec.did, tx: ecu.txId, rx: ecu.rxId)
+            .timeout(const Duration(milliseconds: 1500));
+        if (r == null || !r.isPositive) continue;
+
+        final payload = r.payloadAfterUdsRead;
+        if (payload == null) continue;
+
+        final decoded = decodeDid(spec, payload);
+        if (decoded == null) continue;
+
+        _latestValues.putIfAbsent(ecu.txId, () => {})[spec.did] = decoded;
+
+        if (_currentTripId != null) {
+          await db.insertSample(
+            tripId: _currentTripId,
+            ecuTx: ecu.txId,
+            did: spec.did,
+            rawHex: r.rawHex,
+            numeric: decoded.numeric,
+            text: decoded.text,
+          );
+          _samplesInTrip++;
+        }
+      } catch (_) {
+        // Per-DID error → continue to next DID. Same as _pollEcu.
+      }
+    }
+    notifyListeners();
   }
 
   /// v0.1.29+26: read just 790/0x0015 (HV pack voltage) and update
@@ -5332,4 +5612,40 @@ class ModuleSnapshot {
   }
 
   bool get hasAnyTemp => temp1Reported || temp2Reported;
+}
+
+/// v0.1.29+53: scheduler task descriptor. One instance per (DID or
+/// DID-group, ECU) read job. Owned by ConnectionService via the three
+/// task lists (_fastTasks/_mediumTasks/_slowTasks). Mutable lastRunAt
+/// is updated by [ConnectionService._runTask] after each execution;
+/// the scheduler uses it both to gate medium/slow tasks (lastRunAt +
+/// period <= now ⇒ overdue) and as a tiebreaker in round-robin
+/// (oldest run wins). ecuTx is used by the ECU round-robin guard —
+/// scheduler avoids picking a candidate with the same ecuTx as the
+/// last 4 reads when alternatives exist.
+class _PollTask {
+  /// Short human label for debugging / future diagnostics. Not used
+  /// for scheduling logic.
+  final String name;
+
+  /// The ECU tx address this task reads from (e.g. '790', '740').
+  /// Used ONLY for the round-robin guard. If a task internally reads
+  /// from multiple ECUs (e.g. _pollExtraDids), set this to the
+  /// dominant ECU — the round-robin guard is heuristic, not airtight.
+  final String ecuTx;
+
+  /// The function that does the actual read(s). Must catch its own
+  /// errors (existing _pollSpeedOnly / _pollPackVoltageOnly /
+  /// _pollCellExtremesOnly already do; _pollEcuFiltered does too).
+  final Future<void> Function() execute;
+
+  /// Last wall-clock time this task completed (or null if never run
+  /// this session). Updated by [ConnectionService._runTask].
+  DateTime? lastRunAt;
+
+  _PollTask({
+    required this.name,
+    required this.ecuTx,
+    required this.execute,
+  });
 }
