@@ -1949,6 +1949,53 @@ class ConnectionService extends ChangeNotifier {
       ecuTx: '791',  // mostly hits 791 (VCU misc) — used for round-robin
       execute: _pollExtraDids,
     ));
+    // v0.1.29+54: catchall task — runs the legacy _pollEcu sweep over
+    // ONE ECU per invocation, rotating through _ecusToPoll. This
+    // restores reading of DIDs that aren't in any explicit fast/
+    // medium/slow group — most importantly the 20 thermal DIDs
+    // (0171..01BB, module temperatures) which the Battery Health
+    // 'PDU + modules temp' card depends on. They were silently lost
+    // in +53 when the for-each-ECU sweep was removed.
+    //
+    // Why rotate one ECU per call instead of all ECUs in one slow
+    // task: a single _pollEcu(790) sweep is ~20+ reads to the same
+    // ECU which would max out the 790-chain quirk badly. By yielding
+    // back to the scheduler after each ECU, the fast group gets a
+    // chance to interleave 740 reads, naturally breaking the chain.
+    // With 18 s slow period and 3-4 ECUs, a full rotation completes
+    // in ~60-70 s — fine for slowly-changing data like module
+    // temperatures.
+    //
+    // ecuTx is left as 'rotation' (not a real ECU) so the round-
+    // robin guard treats it as a different ECU from any real task
+    // — it always counts as 'switch', resetting _consecutiveSameEcu
+    // when it runs.
+    _slowTasks.add(_PollTask(
+      name: 'catchall',
+      ecuTx: 'rotation',
+      execute: _pollEcuCatchall,
+    ));
+  }
+
+  /// v0.1.29+54: index into _ecusToPoll for the catchall task. Wraps
+  /// when it reaches the end. Reset implicit on _buildSchedule (the
+  /// field is reset to 0 below, the task list is cleared and rebuilt,
+  /// so the rotation starts over fresh on each polling session).
+  int _catchallEcuIndex = 0;
+
+  /// Catchall sweep: reads ONE ECU's full DID list per invocation,
+  /// rotating through _ecusToPoll. The underlying _pollEcu already
+  /// excludes fast-lane DIDs (740/0008, 790/0009) and cells, so this
+  /// won't shadow-write into the slots fast-lane owns. Other DIDs
+  /// (thermal, bodywork, gauges) get refreshed; if they happen to
+  /// duplicate a medium/slow explicit task, the overwrite is benign
+  /// — same registry decoder, same _latestValues slot.
+  Future<void> _pollEcuCatchall() async {
+    final ecus = _ecusToPoll;
+    if (ecus.isEmpty) return;
+    final ecu = ecus[_catchallEcuIndex % ecus.length];
+    _catchallEcuIndex++;
+    await _pollEcu(ecu);
   }
 
   /// Pick the next task from [candidates], respecting ECU round-robin.
