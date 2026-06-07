@@ -1865,19 +1865,121 @@ if int(pv) >= 53:
     else:
         fail(f"R15 round-robin VIOLATED: same-ECU run = {longest} (>4)")
 
-    # R16. Triple-sync to +53.
+    # R16. Triple-sync to the current pv (was hard-coded to +53 at
+    #      land, version-aware on subsequent builds so each new patch
+    #      doesn't have to update this test).
     pub = open("pubspec.yaml").read()
     dash = open("lib/screens/dashboard.dart").read()
     csync = open("lib/services/cloud_sync_service.dart").read()
-    if "version: 0.1.29+53" in pub and \
-       "_kDiagVersion = 'v0.1.29+53'" in dash and \
-       "'0.1.29+53'" in csync:
-        ok("R16 triple-sync to +53 (pubspec / dashboard / cloud_sync)")
+    expected = f"0.1.29+{pv}"
+    if f"version: {expected}" in pub and \
+       f"_kDiagVersion = 'v{expected}'" in dash and \
+       f"'{expected}'" in csync:
+        ok(f"R16 triple-sync to +{pv} (pubspec / dashboard / cloud_sync)")
     else:
-        fail("R16 triple-sync incomplete")
+        fail(f"R16 triple-sync incomplete for +{pv}")
 
 else:
     ok(f"Part R skipped (build +{pv}, three-group scheduler lands in +53)")
+
+# ──────────── Part S: +54 catchall slow task — thermal DIDs ────────────
+if int(pv) >= 54:
+    conn = open("lib/services/connection.dart").read()
+
+    # S1. _pollEcuCatchall function exists. Without it, all DIDs not in
+    #     an explicit fast/medium/slow task are silently dropped — same
+    #     regression the patch fixes.
+    if "Future<void> _pollEcuCatchall() async {" in conn:
+        ok("S1 _pollEcuCatchall function defined")
+    else:
+        fail("S1 _pollEcuCatchall missing — regression not fixed")
+
+    # S2. _catchallEcuIndex field exists for ECU rotation state.
+    if "int _catchallEcuIndex = 0;" in conn:
+        ok("S2 _catchallEcuIndex rotation state field present")
+    else:
+        fail("S2 _catchallEcuIndex missing — rotation can't track position")
+
+    # S3. catchall task wired into the slow group at _buildSchedule.
+    #     Match the literal pair so a copy-paste typo would catch.
+    if "name: 'catchall'" in conn and \
+       "execute: _pollEcuCatchall," in conn and \
+       "ecuTx: 'rotation'" in conn:
+        ok("S3 catchall task registered in slow group with rotation ecuTx")
+    else:
+        fail("S3 catchall task not properly registered")
+
+    # S4. The catchall implementation rotates: reads ONE ECU per call
+    #     by indexing into _ecusToPoll and incrementing the counter.
+    #     Tests for the modulo wrap (or unconditional increment) so a
+    #     future "optimization" that picks a fixed ECU doesn't pass.
+    catchall_idx = conn.find("Future<void> _pollEcuCatchall() async {")
+    catchall_end = conn.find("\n  }", catchall_idx)
+    if catchall_idx >= 0 and catchall_end >= 0:
+        body = conn[catchall_idx:catchall_end]
+        if "_ecusToPoll" in body and \
+           "_catchallEcuIndex %" in body and \
+           "_catchallEcuIndex++" in body and \
+           "_pollEcu(ecu)" in body:
+            ok("S4 catchall rotates through _ecusToPoll one ECU at a time")
+        else:
+            fail("S4 catchall implementation wrong (no rotation / wrong target)")
+
+    # S5. _pollEcu (the legacy sweep) still exists — catchall depends on
+    #     it. A future "cleanup" deleting _pollEcu because it's "only
+    #     called from one place" would re-break thermals.
+    if "Future<void> _pollEcu(EcuSpec ecu) async {" in conn:
+        ok("S5 _pollEcu (legacy sweep) still present — catchall's dependency")
+    else:
+        fail("S5 _pollEcu removed — catchall has nothing to call")
+
+    # S6. Slow group now has SEVEN tasks (six from +53 + catchall).
+    #     Regression check: if a future patch adds another slow task,
+    #     this number bumps and we revisit Part R5/R6 numbers too.
+    build_idx = conn.find("void _buildSchedule() {")
+    build_end = conn.find("/// v0.1.29+54: index into", build_idx)
+    if build_idx < 0 or build_end < 0:
+        build_end = conn.find("/// Pick the next task", build_idx)
+    if build_idx >= 0 and build_end >= 0:
+        build_block = conn[build_idx:build_end]
+        slow_count = build_block.count("_slowTasks.add(")
+        if slow_count == 7:
+            ok(f"S6 slow group has 7 tasks (6 from +53 + catchall)")
+        else:
+            fail(f"S6 slow group has {slow_count} tasks; expected 7")
+
+    # S7. Logic port (Python): rotation invariant. Given a fixed ECU
+    #     list of size N, _catchallEcuIndex modulo N should visit each
+    #     ECU exactly once per N consecutive invocations.
+    def simulate_rotation(n_ecus, n_calls):
+        visited = []
+        idx = 0
+        for _ in range(n_calls):
+            visited.append(idx % n_ecus)
+            idx += 1
+        return visited
+    # 4 ECUs over 8 calls should hit each twice.
+    visits = simulate_rotation(4, 8)
+    from collections import Counter
+    counts = Counter(visits)
+    if all(c == 2 for c in counts.values()) and len(counts) == 4:
+        ok(f"S7 rotation visits each ECU equally (counts: {dict(counts)})")
+    else:
+        fail(f"S7 rotation invariant broken: counts {dict(counts)}")
+
+    # S8. Triple-sync to +54.
+    pub = open("pubspec.yaml").read()
+    dash = open("lib/screens/dashboard.dart").read()
+    csync = open("lib/services/cloud_sync_service.dart").read()
+    if "version: 0.1.29+54" in pub and \
+       "_kDiagVersion = 'v0.1.29+54'" in dash and \
+       "'0.1.29+54'" in csync:
+        ok("S8 triple-sync to +54")
+    else:
+        fail("S8 triple-sync incomplete")
+
+else:
+    ok(f"Part S skipped (build +{pv}, catchall task lands in +54)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
