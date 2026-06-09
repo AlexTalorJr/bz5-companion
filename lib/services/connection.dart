@@ -307,9 +307,25 @@ class ConnectionService extends ChangeNotifier {
   // 1.2–8 s depending on DID count, but speed lives in the fast lane).
   double _tripSpeedSum = 0;     // for averaging
   int _tripSpeedSamples = 0;    // count of moving samples (speed > 1.0)
-  int _tripMovingSec = 0;       // accumulated moving time
-  int _tripIdleSec = 0;         // accumulated idle (Ready, not moving)
-  DateTime? _lastSpeedSampleAt; // for delta-time accumulation
+  // v0.1.29+55: changed from seconds to milliseconds. Previously the
+  // per-cycle dt was integer-divided by 1000 (secs = attribMs ~/ 1000),
+  // which silently dropped sub-second contributions on every tick;
+  // since typical cycle was 50 ms, that meant ALL ticks contributed 0
+  // unless one happened to fall just past a 1000 ms boundary. The
+  // accumulators only registered movement during the long iterations
+  // (slow tasks like _pollCells, recovery). Net effect: history showed
+  // moving/idle totals that didn't match distance / avg_moving math.
+  // Storing milliseconds and converting once at endTrip avoids all
+  // integer-division loss.
+  int _tripMovingMs = 0;        // accumulated moving time in milliseconds
+  int _tripIdleMs = 0;          // accumulated idle (Ready, not moving) ms
+  // v0.1.29+55: dedicated timestamp updated ONLY when a fresh 740/0008
+  // sample actually arrives in _pollSpeedOnly (i.e. the BLE read
+  // succeeded and decode passed sanity). The old _lastSpeedSampleAt
+  // was updated every poll-loop iteration, conflating cycle ticks
+  // with sample arrivals.
+  DateTime? _lastSpeedFreshAt;
+  DateTime? _lastSpeedSampleAt; // v0.1.29+55: retained, no longer used by accounting
   double? _tripStartSocPrecise; // first precise SOC captured at trip start
 
   // v0.1.24: EMA window for trip-aware Range. Expanded from 2 min to
@@ -1466,8 +1482,8 @@ class ConnectionService extends ChangeNotifier {
         peakRegenKw: _tripPeakRegenKw,
         regenEnergyKwh: _tripRegenEnergyKwh,
         avgMovingSpeedKmh: avgMovingSpeed,
-        movingSeconds: _tripMovingSec > 0 ? _tripMovingSec : null,
-        idleSeconds: _tripIdleSec > 0 ? _tripIdleSec : null,
+        movingSeconds: _tripMovingMs > 0 ? (_tripMovingMs ~/ 1000) : null,
+        idleSeconds: _tripIdleMs > 0 ? (_tripIdleMs ~/ 1000) : null,
         energyFromSocKwh: energyFromSoc,
         extra: extraJson,
       );
@@ -1693,8 +1709,8 @@ class ConnectionService extends ChangeNotifier {
         regenEnergyKwh: _tripRegenEnergyKwh,
         // v0.1.21:
         avgMovingSpeedKmh: avgMovingSpeed,
-        movingSeconds: _tripMovingSec > 0 ? _tripMovingSec : null,
-        idleSeconds: _tripIdleSec > 0 ? _tripIdleSec : null,
+        movingSeconds: _tripMovingMs > 0 ? (_tripMovingMs ~/ 1000) : null,
+        idleSeconds: _tripIdleMs > 0 ? (_tripIdleMs ~/ 1000) : null,
         energyFromSocKwh: energyFromSoc,
         extra: extraJson,
       );
@@ -2418,6 +2434,45 @@ class ConnectionService extends ChangeNotifier {
       _latestValues.putIfAbsent('740', () => {});
       _latestValues['740']!['0008'] =
           DecodedValue(numeric: kmh, unit: 'km/h');
+
+      // v0.1.29+55: trip-level speed aggregation moved here from
+      // _updateTripAggregates. The aggregator must run on REAL sample
+      // arrivals, not every 50 ms poll-loop tick — otherwise the
+      // moving/idle dt accounting drowned in integer-division loss
+      // (50 ms / 1000 → 0 sec). Now we update at the only point a
+      // fresh 740/0008 actually lands. Peak/avg/samples are also
+      // moved here so they count one entry per real read (was
+      // counting one entry per cycle tick, biasing averages toward
+      // whatever value was cached at iteration boundaries).
+      if (_currentTripId != null && kmh < 250) {
+        final now = DateTime.now();
+        _tripPeakSpeedKmh = _tripPeakSpeedKmh == null
+            ? kmh
+            : (kmh > _tripPeakSpeedKmh! ? kmh : _tripPeakSpeedKmh);
+        if (_lastSpeedFreshAt != null) {
+          final dt = now.difference(_lastSpeedFreshAt!).inMilliseconds;
+          if (dt > 0) {
+            // v0.1.26+5 reasoning preserved: cap per-sample contribution
+            // at 120 s so a single very late sample (BLE stall / sleep)
+            // can't extrapolate forever, but DO accumulate the capped
+            // portion so the trip's moving+idle total stays close to
+            // wall-clock duration.
+            const capMs = 120000;
+            final attribMs = dt > capMs ? capMs : dt;
+            if (kmh > 1.0) {
+              _tripMovingMs += attribMs;
+            } else {
+              _tripIdleMs += attribMs;
+            }
+          }
+        }
+        _lastSpeedFreshAt = now;
+        if (kmh > 1.0) {
+          _tripSpeedSum += kmh;
+          _tripSpeedSamples++;
+        }
+      }
+
       // v0.1.26+6: also save to samples DB so the in-trip speed history
       // is recorded. Previously _pollEcu(packMonitor) was the only writer
       // for 740/0008 → samples, but as of v0.1.26+6 we skip it there to
@@ -2581,9 +2636,10 @@ class ConnectionService extends ChangeNotifier {
     _tripRegenEnergyKwh = null;
     _tripSpeedSum = 0;
     _tripSpeedSamples = 0;
-    _tripMovingSec = 0;
-    _tripIdleSec = 0;
+    _tripMovingMs = 0;
+    _tripIdleMs = 0;
     _lastSpeedSampleAt = null;
+    _lastSpeedFreshAt = null;
     _tripStartSocPrecise = null;
     _tripStartSoc = null;
     _tripStartOdo = null;
@@ -2730,60 +2786,17 @@ class ConnectionService extends ChangeNotifier {
       }
     }
 
-    // v0.1.21: speed tracking. 740/0x0008 verified as vehicle speed
-    // on 2026-05-19 (scale 1/14.09 in registry, gives km/h directly).
-    //
-    // v0.1.24 BUGFIX: readNumeric() already applies the registry scale,
-    // so it returns km/h ready to use. The earlier `speedRaw * 0.07097`
-    // was a double-scale that turned 35 km/h into 2.5 km/h, which is why
-    // trip peak/avg speed displayed nonsensical values like "4 km/h" for
-    // a trip that included a 90 km/h cruise.
-    final kmh = readNumeric('740', '0008');
-    if (kmh != null) {
-      // 250 km/h ceiling — anything above is parse error / 0xFFFF leak
-      if (kmh >= 0 && kmh < 250) {
-        _tripPeakSpeedKmh = _tripPeakSpeedKmh == null
-            ? kmh
-            : (kmh > _tripPeakSpeedKmh! ? kmh : _tripPeakSpeedKmh);
-
-        // Time accounting: delta from last sample, attributed to moving
-        // or idle based on whether current sample > 1.0 km/h.
-        //
-        // v0.1.26+5 fix: previously the 30s cap was a `drop everything
-        // longer` filter — `if (dt > 0 && dt < 30000)`. Side effect: any
-        // BLE hiccup, ECU sleep window, or pause where 740/0x0008
-        // stopped responding for >30s caused the *entire* gap (could be
-        // minutes) to disappear from the moving/idle tally. One user
-        // observed a 35-minute trip showing only 17 minutes of accounted
-        // time. New behaviour: cap the per-sample contribution at 120s
-        // (so a single rogue sample can't extrapolate forever) but DO
-        // accumulate the capped portion. The trip's wall-clock duration
-        // and the sum of moving+idle now agree to within ~minutes even
-        // under heavy BLE chop.
-        final now = DateTime.now();
-        if (_lastSpeedSampleAt != null) {
-          final dt = now.difference(_lastSpeedSampleAt!).inMilliseconds;
-          if (dt > 0) {
-            const capMs = 120000;
-            final attribMs = dt > capMs ? capMs : dt;
-            final secs = attribMs ~/ 1000;
-            if (secs > 0) {
-              if (kmh > 1.0) {
-                _tripMovingSec += secs;
-              } else {
-                _tripIdleSec += secs;
-              }
-            }
-          }
-        }
-        _lastSpeedSampleAt = now;
-
-        if (kmh > 1.0) {
-          _tripSpeedSum += kmh;
-          _tripSpeedSamples++;
-        }
-      }
-    }
+    // v0.1.21: speed tracking was here. v0.1.29+55 moved peak/avg/
+    // moving-idle/idle accumulators into _pollSpeedOnly itself — that's
+    // the only place where a fresh 740/0008 sample actually lands, and
+    // the old per-cycle code (called every 50 ms tick) was reading the
+    // SAME cached value 20× per second between real reads. The dt-based
+    // time accounting then drowned in integer-division truncation
+    // (50 ms / 1000 = 0), and accumulated only on the rare long
+    // iterations (slow tasks, recovery). Result on the field: 17.8 km
+    // trip showed 51m / 18m moving/idle (math demands ~33m moving at
+    // the reported 32 km/h avg). The fix is to drive time accounting
+    // from the actual sample arrival in _pollSpeedOnly.
 
     // v0.1.21: capture precise SOC at trip start, for energy-from-SOC
     // calculation at trip end. Uses 1FFD high16 / 100. Once captured
