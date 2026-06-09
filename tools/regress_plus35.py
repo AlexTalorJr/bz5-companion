@@ -1967,19 +1967,164 @@ if int(pv) >= 54:
     else:
         fail(f"S7 rotation invariant broken: counts {dict(counts)}")
 
-    # S8. Triple-sync to +54.
+    # S8. Triple-sync to current pv (version-aware, no hard-coded
+    #     constant — same pattern as R16).
     pub = open("pubspec.yaml").read()
     dash = open("lib/screens/dashboard.dart").read()
     csync = open("lib/services/cloud_sync_service.dart").read()
-    if "version: 0.1.29+54" in pub and \
-       "_kDiagVersion = 'v0.1.29+54'" in dash and \
-       "'0.1.29+54'" in csync:
-        ok("S8 triple-sync to +54")
+    expected = f"0.1.29+{pv}"
+    if f"version: {expected}" in pub and \
+       f"_kDiagVersion = 'v{expected}'" in dash and \
+       f"'{expected}'" in csync:
+        ok(f"S8 triple-sync to +{pv}")
     else:
-        fail("S8 triple-sync incomplete")
+        fail(f"S8 triple-sync incomplete for +{pv}")
 
 else:
     ok(f"Part S skipped (build +{pv}, catchall task lands in +54)")
+
+# ──────────── Part T: +55 moving/idle aggregation moved to ingest ────────────
+if int(pv) >= 55:
+    conn = open("lib/services/connection.dart").read()
+
+    # T1. Old field names (_tripMovingSec / _tripIdleSec) must NOT have
+    #     assignments anywhere — the rename to *Ms is mechanical, and
+    #     any leftover `+= secs` would silently keep the bug alive.
+    #     Allow appearance in docstrings (regex matches only the
+    #     assignment patterns).
+    import re
+    if not re.search(r'_tripMovingSec\s*[+=]', conn) and \
+       not re.search(r'_tripIdleSec\s*[+=]', conn):
+        ok("T1 no surviving _tripMovingSec / _tripIdleSec assignments")
+    else:
+        fail("T1 old second-based field assignment leaked")
+
+    # T2. New ms-precision fields exist and are typed int.
+    if "int _tripMovingMs = 0;" in conn and \
+       "int _tripIdleMs = 0;" in conn:
+        ok("T2 _tripMovingMs / _tripIdleMs (ms-precision) defined")
+    else:
+        fail("T2 ms-precision fields missing")
+
+    # T3. New timestamp field _lastSpeedFreshAt distinct from the
+    #     retained _lastSpeedSampleAt. They serve different purposes;
+    #     keeping both lets future regressions diff the old and new
+    #     paths if needed.
+    if "DateTime? _lastSpeedFreshAt;" in conn and \
+       "DateTime? _lastSpeedSampleAt;" in conn:
+        ok("T3 both timestamp fields kept (old + new) for diffability")
+    else:
+        fail("T3 timestamp fields missing or removed")
+
+    # T4. _updateTripAggregates no longer accumulates speed time —
+    #     the entire `if (kmh != null) { ... }` block is gone, replaced
+    #     by a doc-only marker. Match the marker phrase.
+    upd_idx = conn.find("Future<void> _updateTripAggregates")
+    upd_end = conn.find("Future<void>", upd_idx + 1)
+    if upd_idx >= 0 and upd_end >= 0:
+        body = conn[upd_idx:upd_end]
+        if "v0.1.29+55 moved peak/avg/" in body and \
+           "_tripMovingMs +=" not in body and \
+           "_tripIdleMs +=" not in body and \
+           "_tripPeakSpeedKmh = _tripPeakSpeedKmh" not in body:
+            ok("T4 _updateTripAggregates: speed aggregator block removed cleanly")
+        else:
+            fail("T4 _updateTripAggregates still has speed aggregation logic")
+
+    # T5. _pollSpeedOnly now contains the moved aggregator. Match the
+    #     four pieces (peak update, moving accumulator, idle
+    #     accumulator, _lastSpeedFreshAt update) AND require they're
+    #     guarded by _currentTripId != null (no off-trip accumulation).
+    pso_idx = conn.find("Future<void> _pollSpeedOnly() async {")
+    pso_end = conn.find("Future<void>", pso_idx + 1)
+    if pso_idx >= 0 and pso_end >= 0:
+        body = conn[pso_idx:pso_end]
+        if "_tripPeakSpeedKmh = _tripPeakSpeedKmh" in body and \
+           "_tripMovingMs += attribMs" in body and \
+           "_tripIdleMs += attribMs" in body and \
+           "_lastSpeedFreshAt = now" in body and \
+           "if (_currentTripId != null" in body:
+            ok("T5 _pollSpeedOnly has the moved aggregator, trip-guarded")
+        else:
+            fail("T5 _pollSpeedOnly aggregator incomplete or unguarded")
+
+    # T6. DB-write conversion ms→s. Two sites (endTrip on disconnect,
+    #     endTrip on segment-on-park). Both must use the ~/ 1000 pattern.
+    site_count = conn.count("_tripMovingMs > 0 ? (_tripMovingMs ~/ 1000)")
+    if site_count == 2:
+        ok("T6 both endTrip sites convert ms → seconds for DB write")
+    else:
+        fail(f"T6 expected 2 DB-write sites with ms→s, found {site_count}")
+
+    # T7. 120s cap preserved. The reasoning (v0.1.26+5) still holds —
+    #     a single late sample shouldn't extrapolate forever. Cap
+    #     value is in ms (was already; now matches accumulator units).
+    if "const capMs = 120000" in conn:
+        ok("T7 120s per-sample cap preserved in moved code")
+    else:
+        fail("T7 120s cap missing — late samples could extrapolate forever")
+
+    # T8. Logic port (Python): the new math for a representative trip.
+    #     Simulate 25 minutes of driving with sample rate ~1 Hz and 30%
+    #     of samples below 1.0 km/h (stop-and-go traffic). Verify the
+    #     accumulated moving/idle totals match the sample classification
+    #     exactly (no integer-division loss).
+    def simulate(n_samples, dt_ms, fraction_moving):
+        moving_ms = 0
+        idle_ms = 0
+        last_fresh = None
+        for i in range(n_samples):
+            now = i * dt_ms
+            kmh = 30.0 if (i / n_samples) < fraction_moving else 0.0
+            if last_fresh is not None:
+                dt = now - last_fresh
+                if dt > 0:
+                    attrib = min(dt, 120000)
+                    if kmh > 1.0:
+                        moving_ms += attrib
+                    else:
+                        idle_ms += attrib
+            last_fresh = now
+        return moving_ms, idle_ms
+    # 25 min at 1 Hz with 70% moving samples → ~17.5 min moving, ~7.5 idle
+    mv, idl = simulate(1500, 1000, 0.7)
+    # First sample has no dt; remaining 1499 each contribute 1000 ms
+    # 70% of 1499 = 1049 moving samples × 1 s ≈ 1049 s = 17.48 min
+    # 30% of 1499 = 450 idle samples × 1 s ≈ 450 s = 7.5 min
+    expected_mv_min = (int(0.7 * 1499) * 1000) / 60000
+    expected_idl_min = (1499 - int(0.7 * 1499)) * 1000 / 60000
+    actual_mv_min = mv / 60000
+    actual_idl_min = idl / 60000
+    if abs(actual_mv_min - expected_mv_min) < 0.5 and \
+       abs(actual_idl_min - expected_idl_min) < 0.5:
+        ok(f"T8 ms aggregator simulates correctly "
+           f"({actual_mv_min:.1f}m mv / {actual_idl_min:.1f}m idl)")
+    else:
+        fail(f"T8 ms aggregator math drifted: "
+             f"{actual_mv_min:.1f}m mv / {actual_idl_min:.1f}m idl")
+
+    # T9. Sub-second accumulation: verify the OLD bug (sec ~/ 1000 = 0
+    #     on small dt) would now NOT eat the contribution. With 50 ms
+    #     dt at 1.5 Hz over 60 sec → 90 samples × 50 ms = 4500 ms total.
+    #     Old code: secs = 50/1000 = 0 every time → 0 total. New code:
+    #     accumulates the 4500 ms.
+    mv_subsec, _ = simulate(90, 50, 1.0)  # all moving
+    # Expected: (90 - 1) * 50 ms = 4450 ms ≈ 4.45 sec
+    if 4400 <= mv_subsec <= 4500:
+        ok(f"T9 sub-second contributions accumulate ({mv_subsec} ms over 90×50ms)")
+    else:
+        fail(f"T9 sub-second loss: got {mv_subsec} ms (expected ~4450)")
+
+    # T10. Capped-at-120s case: a single 5-minute (300 s) gap should
+    #      contribute only 120 s, not 300. This is the BLE-stall safety.
+    mv_capped, _ = simulate(2, 300000, 1.0)  # two samples, 5 min apart
+    if 120000 - 100 <= mv_capped <= 120000:
+        ok(f"T10 120s cap holds on 5-min gap (capped {mv_capped} ms)")
+    else:
+        fail(f"T10 cap broken: got {mv_capped} ms (expected ~120000)")
+
+else:
+    ok(f"Part T skipped (build +{pv}, moving/idle fix lands in +55)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
