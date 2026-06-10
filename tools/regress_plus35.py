@@ -2126,6 +2126,141 @@ if int(pv) >= 55:
 else:
     ok(f"Part T skipped (build +{pv}, moving/idle fix lands in +55)")
 
+# ──────────── Part U: +56 navigation cleanup + charging UX ────────────
+if int(pv) >= 56:
+    home = open("lib/screens/home.dart").read()
+    hus  = open("lib/screens/wide/head_unit_scaffold.dart").read()
+    sett = open("lib/screens/settings.dart").read()
+    import os.path
+    ban_path = "lib/widgets/charging_banner.dart"
+    ban = open(ban_path).read() if os.path.exists(ban_path) else ""
+
+    # U1. Phone nav slimmed to 4 destinations; ECU Explorer no longer a tab.
+    if home.count("NavigationDestination(") == 4 and \
+       "EcuExplorerScreen()" not in home:
+        ok("U1 phone nav is 4 tabs, ECU Explorer demoted")
+    else:
+        fail("U1 phone nav wrong shape")
+
+    # U2. HU rail: Raw Data screen removed from the stack, labels renamed
+    #     to Russian semantic names, HAL Explorer replaces 'Native API'.
+    if "const RawDataWideScreen()," not in hus and \
+       "Text('Вождение')" in hus and "Text('Автомобиль')" in hus and \
+       "Text('HAL Explorer')" in hus and "Text('Native API')" not in hus:
+        ok("U2 HU rail: 5 destinations, renamed (Вождение/Автомобиль/HAL Explorer)")
+    else:
+        fail("U2 HU rail wrong shape or stale labels")
+
+    # U3. HU rail index consistency: _screens list and destinations count
+    #     must match (5 each). The v0.1.26+13 accident (lost tabs) was
+    #     exactly this kind of drift.
+    hus_dests = hus.count("NavigationRailDestination(")
+    hus_screens = hus.count("WideScreen(),") + hus.count("NativeExplorerWide(")
+    if hus_dests == 5 and hus_screens == 5:
+        ok(f"U3 HU rail: destinations ({hus_dests}) == screens ({hus_screens})")
+    else:
+        fail(f"U3 HU rail drift: {hus_dests} destinations vs {hus_screens} screens")
+
+    # U4. charging_banner.dart exists with the three key mechanisms:
+    #     shared static session guard, route-open guard, named route
+    #     for targeted pop.
+    if ban and "static bool _autoPushedThisSession" in ban and \
+       "static bool _chargingRouteOpen" in ban and \
+       "_kChargingRouteName" in ban:
+        ok("U4 charging banner: session guard + route guard + named route")
+    else:
+        fail("U4 charging_banner.dart missing or incomplete")
+
+    # U5. ChargingAwareBody wired into BOTH scaffolds with auto-push
+    #     restricted to tab index 0 (Driver / Dashboard).
+    if home.count("autoPushWhenVisible: _index == 0") == 1 and \
+       hus.count("autoPushWhenVisible: _index == 0") == 1:
+        ok("U5 ChargingAwareBody in both scaffolds, auto-push only on tab 0")
+    else:
+        fail("U5 ChargingAwareBody wiring wrong")
+
+    # U6. ChargingViewWide is reachable: the banner pushes a route that
+    #     builds it. (The orphan bug this patch fixes — screen existed,
+    #     nothing rendered it.)
+    if "ChargingViewWide()" in ban:
+        ok("U6 ChargingViewWide reachable via banner route (orphan fixed)")
+    else:
+        fail("U6 ChargingViewWide still unreachable")
+
+    # U7. Settings: five section labels present, Advanced ExpansionTile
+    #     contains the research tools (ECU Explorer, DID Sweep, Live Log,
+    #     Polling diagnostics) and the wide-only Raw Data entry.
+    sections_ok = all(f"_SectionLabel('{x}')" in sett
+                      for x in ['Подключение', 'Стоимость', 'Облако',
+                                'Автомобиль', 'Данные'])
+    adv_idx = sett.find("title: const Text('Advanced')")
+    tools_after_adv = adv_idx > 0 and all(
+        sett.find(t, adv_idx) > 0
+        for t in ["EcuExplorerScreen()", "SweepScreen()",
+                  "LiveLogScreen()", "PollingDiagnosticsScreen()",
+                  "RawDataWideScreen()"])
+    if sections_ok and tools_after_adv:
+        ok("U7 Settings grouped; research tools under Advanced")
+    else:
+        fail(f"U7 Settings structure wrong: sections={sections_ok} tools={tools_after_adv}")
+
+    # U8. DTC (user-facing feature) is NOT inside Advanced — it stays in
+    #     the Автомобиль section above the ExpansionTile.
+    dtc_idx = sett.find("Text('Diagnostics (DTC)')")
+    if 0 < dtc_idx < adv_idx:
+        ok("U8 DTC stays top-level (user feature, not research tool)")
+    else:
+        fail("U8 DTC misplaced")
+
+    # U9. Layout debug block: master switch present and OFF.
+    dash = open("lib/screens/dashboard.dart").read()
+    if "kShowLayoutDiagnostic = false" in dash:
+        ok("U9 layout-debug block disabled by default")
+    else:
+        fail("U9 layout-debug still visible in production UI")
+
+    # U10. Protected layers untouched by +56: connection.dart polling
+    #      internals unchanged this patch (scheduler constants intact),
+    #      cloud sync service has only the version bump.
+    conn = open("lib/services/connection.dart").read()
+    if "_kFastInterval = Duration(milliseconds: 100)" in conn and \
+       "_kPackCurrentZeroRaw = 5018.0" in conn:
+        ok("U10 protected polling/calibration layers untouched")
+    else:
+        fail("U10 connection.dart was modified beyond expectations")
+
+    # U11. ChargingViewWide is ADAPTIVE — the banner pushes it on all
+    #      form factors including BZ3 (720 dp tall portrait), where the
+    #      original wide-only three-charts-in-a-Row would compress to
+    #      ~230 dp columns. The narrow branch must: scroll vertically,
+    #      stack the charts at fixed height, shrink the hero font, and
+    #      wrap the summary metrics.
+    cvw = open("lib/screens/wide/charging_view_wide.dart").read()
+    adaptive_bits = [
+        "SingleChildScrollView",          # narrow root scrolls
+        "wide ? 120 : 72",                # hero font shrinks
+        "SizedBox(height: 240",           # charts get explicit height
+        "_ChartsRow(svc: svc, wide: false)",  # column branch wired
+        ": Wrap(",                        # summary metrics reflow
+    ]
+    missing = [b for b in adaptive_bits if b not in cvw]
+    if not missing:
+        ok("U11 ChargingViewWide adaptive for BZ3/narrow (scroll+stack+font+wrap)")
+    else:
+        fail(f"U11 charging view not narrow-safe, missing: {missing}")
+
+    # U12. Wide branch preserved 1:1 — BZ5 keeps the original flex
+    #      layout (three charts side-by-side in a Row, hero at 120).
+    if "_ChartsRow(svc: svc, wide: true)" in cvw and \
+       "Expanded(child: _PowerChart(history: hist))" in cvw and \
+       "Expanded(flex: 4, child: _TopHeroRow(svc: svc, wide: true))" in cvw:
+        ok("U12 BZ5 wide charging layout preserved (flex rows intact)")
+    else:
+        fail("U12 wide charging layout damaged by the adaptive refactor")
+
+else:
+    ok(f"Part U skipped (build +{pv}, navigation cleanup lands in +56)")
+
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
 print(f"+35→+51 REGRESSION — build +{pv}")

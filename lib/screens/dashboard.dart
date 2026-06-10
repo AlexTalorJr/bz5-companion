@@ -886,8 +886,16 @@ class _PhysicsModelCard extends StatelessWidget {
 class _LayoutDiagnostic extends StatelessWidget {
   const _LayoutDiagnostic();
 
+  // v0.1.29+56: master switch, default OFF. The block existed to debug
+  // why the BZ3 tall layout wasn't triggering (v0.1.29+7). The tall
+  // layout has been verified working on the BZ3 since +48, so the
+  // amber debug text is retired from production UI. Flip to true (and
+  // rebuild) if a new head-unit model shows layout-detection problems.
+  static const bool kShowLayoutDiagnostic = false;
+
   @override
   Widget build(BuildContext context) {
+    if (!kShowLayoutDiagnostic) return const SizedBox.shrink();
     final mq = MediaQuery.of(context);
     final size = mq.size;
     final dpr = mq.devicePixelRatio;
@@ -934,7 +942,7 @@ class _LayoutDiagnostic extends StatelessWidget {
 
 /// Bump when changing the diagnostic format — helps cross-reference
 /// screenshots to specific app versions while iterating.
-const String _kDiagVersion = 'v0.1.29+55';
+const String _kDiagVersion = 'v0.1.29+56';
 
 class _GridCards extends StatelessWidget {
   final List<Widget> children;

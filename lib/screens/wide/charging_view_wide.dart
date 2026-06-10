@@ -30,20 +30,45 @@ import '../../services/connection.dart';
 /// Phase / ETA logic lives in [ConnectionService] (`chargingPhase`,
 /// `etaToFullSeconds`) so the heuristics can be unit-tested separately
 /// and reused later (e.g. in a status banner on the phone view).
+/// v0.1.29+56: layout is adaptive. On wide (≥840 dp: BZ5 head unit)
+/// the original three-row flex layout renders as designed. On narrow
+/// (phone, BZ3 tall portrait at 720 dp) the same content reflows
+/// vertically inside a scroll view: hero stack, then the three charts
+/// stacked full-width (240 dp tall each), then the summary strip.
+/// One widget tree, two arrangements — no duplicate screens.
 class ChargingViewWide extends StatelessWidget {
   const ChargingViewWide({super.key});
 
   @override
   Widget build(BuildContext context) {
     final svc = context.watch<ConnectionService>();
-    return Padding(
-      padding: const EdgeInsets.all(16),
+    final wide = MediaQuery.of(context).size.width >= 840;
+
+    if (wide) {
+      return Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Expanded(flex: 4, child: _TopHeroRow(svc: svc, wide: true)),
+            const SizedBox(height: 12),
+            Expanded(flex: 5, child: _ChartsRow(svc: svc, wide: true)),
+            const SizedBox(height: 12),
+            _BottomSummaryStrip(svc: svc),
+          ],
+        ),
+      );
+    }
+
+    // Narrow (BZ3 portrait / phone): vertical scroll, charts stacked.
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(12),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Expanded(flex: 4, child: _TopHeroRow(svc: svc)),
+          _TopHeroRow(svc: svc, wide: false),
           const SizedBox(height: 12),
-          Expanded(flex: 5, child: _ChartsRow(svc: svc)),
+          _ChartsRow(svc: svc, wide: false),
           const SizedBox(height: 12),
           _BottomSummaryStrip(svc: svc),
         ],
@@ -56,16 +81,29 @@ class ChargingViewWide extends StatelessWidget {
 
 class _TopHeroRow extends StatelessWidget {
   final ConnectionService svc;
-  const _TopHeroRow({required this.svc});
+  final bool wide;
+  const _TopHeroRow({required this.svc, required this.wide});
 
   @override
   Widget build(BuildContext context) {
-    return Row(
+    if (wide) {
+      return Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Expanded(flex: 3, child: _PowerHero(svc: svc, wide: true)),
+          const SizedBox(width: 16),
+          Expanded(flex: 2, child: _PhaseEtaStack(svc: svc)),
+        ],
+      );
+    }
+    // Narrow: hero and phase stack vertically; unbounded height inside
+    // the scroll view, so no Expanded here.
+    return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Expanded(flex: 3, child: _PowerHero(svc: svc)),
-        const SizedBox(width: 16),
-        Expanded(flex: 2, child: _PhaseEtaStack(svc: svc)),
+        _PowerHero(svc: svc, wide: false),
+        const SizedBox(height: 12),
+        _PhaseEtaStack(svc: svc),
       ],
     );
   }
@@ -73,7 +111,8 @@ class _TopHeroRow extends StatelessWidget {
 
 class _PowerHero extends StatelessWidget {
   final ConnectionService svc;
-  const _PowerHero({required this.svc});
+  final bool wide;
+  const _PowerHero({required this.svc, this.wide = true});
 
   @override
   Widget build(BuildContext context) {
@@ -108,7 +147,10 @@ class _PowerHero extends StatelessWidget {
                 Text(
                   kw > 0 ? kw.toStringAsFixed(1) : '—',
                   style: TextStyle(
-                    fontSize: 120,
+                    // v0.1.29+56: 120 on wide (BZ5), 72 on narrow (BZ3
+                    // portrait 720 dp / phone) — 120 would eat half the
+                    // viewport height there.
+                    fontSize: wide ? 120 : 72,
                     height: 1,
                     fontWeight: FontWeight.w300,
                     color: kw > 0 ? Colors.amberAccent : Colors.grey,
@@ -255,18 +297,33 @@ class _PhaseEtaStack extends StatelessWidget {
 
 class _ChartsRow extends StatelessWidget {
   final ConnectionService svc;
-  const _ChartsRow({required this.svc});
+  final bool wide;
+  const _ChartsRow({required this.svc, required this.wide});
 
   @override
   Widget build(BuildContext context) {
     final hist = svc.chargingHistory;
-    return Row(
+    if (wide) {
+      return Row(
+        children: [
+          Expanded(child: _PowerChart(history: hist)),
+          const SizedBox(width: 12),
+          Expanded(child: _CellVChart(history: hist)),
+          const SizedBox(width: 12),
+          Expanded(child: _TempChart(history: hist)),
+        ],
+      );
+    }
+    // Narrow (BZ3 720 dp portrait): three full-width charts stacked,
+    // fixed 240 dp height each (they're inside a scroll view, so they
+    // can't take height from flex — explicit SizedBox required).
+    return Column(
       children: [
-        Expanded(child: _PowerChart(history: hist)),
-        const SizedBox(width: 12),
-        Expanded(child: _CellVChart(history: hist)),
-        const SizedBox(width: 12),
-        Expanded(child: _TempChart(history: hist)),
+        SizedBox(height: 240, child: _PowerChart(history: hist)),
+        const SizedBox(height: 12),
+        SizedBox(height: 240, child: _CellVChart(history: hist)),
+        const SizedBox(height: 12),
+        SizedBox(height: 240, child: _TempChart(history: hist)),
       ],
     );
   }
@@ -521,6 +578,10 @@ class _BottomSummaryStrip extends StatelessWidget {
   final ConnectionService svc;
   const _BottomSummaryStrip({required this.svc});
 
+  // v0.1.29+56: below this width the 5-metric Row gets cramped
+  // (~140 dp per column on BZ3's 720 dp). Wrap reflows to 2-3 rows.
+  static const double _kRowMinWidth = 840;
+
   @override
   Widget build(BuildContext context) {
     final chargedKwh = svc.chargedThisChargingSessionKwh;
@@ -532,54 +593,59 @@ class _BottomSummaryStrip extends StatelessWidget {
     final counterRaw = svc.readNumeric('790', '0B00')?.toInt();
     final maxCurrent = svc.readNumeric('782', '000C');
 
+    final wide =
+        MediaQuery.of(context).size.width >= _kRowMinWidth;
+    final metrics = <Widget>[
+      _Metric(
+        label: 'CHARGED',
+        value: chargedKwh != null
+            ? '${chargedKwh.toStringAsFixed(2)} kWh'
+            : '—',
+        hint: 'ΔSOC × pack kWh',
+      ),
+      _Metric(
+        label: 'SOC GAIN',
+        value: socGain != null
+            ? '+${socGain.toStringAsFixed(2)}%'
+            : '—',
+        hint: 'с момента plug-in',
+      ),
+      _Metric(
+        label: 'SESSION',
+        value: durationStr,
+        hint: 'на текущей зарядке',
+      ),
+      _Metric(
+        label: 'COUNTER 0B00',
+        value: counterRaw != null ? '$counterRaw' : '—',
+        hint: 'raw — для калибровки scale',
+      ),
+      _Metric(
+        label: 'I-MAX SET',
+        value: maxCurrent != null
+            ? '${maxCurrent.toStringAsFixed(0)} A'
+            : '—',
+        hint: '782/000C · CC→CV trigger',
+      ),
+    ];
+
     return Card(
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-        child: Row(
-          children: [
-            Expanded(
-              child: _Metric(
-                label: 'CHARGED',
-                value: chargedKwh != null
-                    ? '${chargedKwh.toStringAsFixed(2)} kWh'
-                    : '—',
-                hint: 'ΔSOC × pack kWh',
+        // v0.1.29+56: Row of 5 on wide (BZ5 — each column gets ~400 dp);
+        // Wrap on narrow (BZ3 720 dp portrait / phone) so the metrics
+        // reflow into 2-3 rows instead of squeezing into ~140 dp columns.
+        child: wide
+            ? Row(
+                children: [
+                  for (final m in metrics) Expanded(child: m),
+                ],
+              )
+            : Wrap(
+                spacing: 24,
+                runSpacing: 12,
+                children: metrics,
               ),
-            ),
-            Expanded(
-              child: _Metric(
-                label: 'SOC GAIN',
-                value: socGain != null
-                    ? '+${socGain.toStringAsFixed(2)}%'
-                    : '—',
-                hint: 'с момента plug-in',
-              ),
-            ),
-            Expanded(
-              child: _Metric(
-                label: 'SESSION',
-                value: durationStr,
-                hint: 'на текущей зарядке',
-              ),
-            ),
-            Expanded(
-              child: _Metric(
-                label: 'COUNTER 0B00',
-                value: counterRaw != null ? '$counterRaw' : '—',
-                hint: 'raw — для калибровки scale',
-              ),
-            ),
-            Expanded(
-              child: _Metric(
-                label: 'I-MAX SET',
-                value: maxCurrent != null
-                    ? '${maxCurrent.toStringAsFixed(0)} A'
-                    : '—',
-                hint: '782/000C · CC→CV trigger',
-              ),
-            ),
-          ],
-        ),
       ),
     );
   }

@@ -7,12 +7,15 @@ import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../services/connection.dart';
+import '../widgets/responsive.dart';
 import '../services/cost_settings.dart';
 import '../services/cloud_sync_service.dart';
 import '../services/bridge_diag_service.dart';
 import 'about.dart';
 import 'data_management.dart';
 import 'diagnostics.dart';
+import 'ecu_explorer.dart';
+import 'wide/raw_data_wide.dart';
 import 'live_log.dart';
 import 'polling_diagnostics.dart';
 import 'sweep.dart';
@@ -1221,6 +1224,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
         children: [
           _StatusTile(svc: svc),
           const Divider(),
+
+          // ════════════ Подключение ════════════
+          const _SectionLabel('Подключение'),
           ListTile(
             title: const Text('ELM327 BLE adapter'),
             subtitle: Text(svc.adapterAddress ?? 'Не подключен'),
@@ -1234,11 +1240,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
             value: _autoConnect,
             onChanged: _setAutoConnect,
           ),
-          // v0.1.24: match-speedometer toggle. Default OFF (show true
-          // wheel speed). When ON, Driver view multiplies displayed
-          // speed by 1.05 so the number matches what the analog/digital
-          // speedometer reads. Useful for drivers who glance between
-          // both displays and want one consistent reading.
           SwitchListTile(
             secondary: Icon(Icons.speed,
                 color: _matchSpeedometer ? Colors.cyanAccent : Colors.grey),
@@ -1249,74 +1250,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
             value: _matchSpeedometer,
             onChanged: _setMatchSpeedometer,
           ),
-          // v0.1.27: trip cost. Two soft-settings:
-          //   * cost_per_kwh — number in user's currency units.
-          //     Default 0 means "not configured" and hides cost
-          //     displays everywhere in the UI.
-          //   * currency_symbol — short string ($, €, ₽, RUB, etc).
-          //
-          // Both live in CostSettings (services/cost_settings.dart),
-          // a ChangeNotifier registered via Provider in main.dart.
-          // Driver view and trip_detail listen via context.watch and
-          // rebuild reactively when the user edits these values.
-          //
-          // No DB schema change: cost is computed on the fly from
-          // trip.energyUsedKwh × costPerKwh at display time. Changing
-          // the tariff re-prices all historical trips at the new rate
-          // (acceptable for a single-owner app; if multi-tariff
-          // history becomes a requirement that's a separate patch).
-          Builder(builder: (context) {
-            final cs = context.watch<CostSettings>();
-            return Column(children: [
-              const Divider(),
-              ListTile(
-                leading: const Icon(Icons.attach_money,
-                    color: Colors.amber),
-                title: const Text('Cost per kWh'),
-                subtitle: Text(cs.costPerKwh > 0
-                    ? '${cs.formatAmount(cs.costPerKwh)} за 1 кВт·ч'
-                    : 'Не настроено — стоимость поездки не показывается'),
-                trailing: const Icon(Icons.edit),
-                onTap: () => _editCostPerKwh(context, cs),
-              ),
-              ListTile(
-                leading: const Icon(Icons.currency_exchange,
-                    color: Colors.lightGreenAccent),
-                title: const Text('Currency symbol'),
-                subtitle: Text(
-                    'Текущий: "${cs.currencySymbol}" '
-                    '(пример: ${cs.formatAmount(10)})'),
-                trailing: const Icon(Icons.edit),
-                onTap: () => _editCurrencySymbol(context, cs),
-              ),
-            ]);
-          }),
-          // v0.1.28: cloud backup card. Builder isolates the watch
-          // call so only this section rebuilds when sync status
-          // changes. UI-only; all logic lives in CloudSyncService.
-          Builder(builder: (context) {
-            final cs = context.watch<CloudSyncService>();
-            return Column(children: [
-              const Divider(),
-              _buildCloudHeader(cs),
-              _buildCloudBody(context, cs),
-            ]);
-          }),
-          // v0.1.29+15: Bridge diagnostic card. Separate Builder so the
-          // Cloud backup card above doesn't rebuild on diag status
-          // changes and vice versa. Only visible if the user has at
-          // least registered cloud backup — the diag service shares
-          // the client_token, so it can't function before registration
-          // completes (the body itself shows a hint in that state).
-          Builder(builder: (context) {
-            final bd = context.watch<BridgeDiagService>();
-            return Column(children: [
-              const Divider(),
-              _buildBridgeDiagHeader(bd),
-              _buildBridgeDiagBody(context, bd),
-            ]);
-          }),
-          const Divider(),
           if (svc.status != ConnectionStatus.connected) ...[
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
@@ -1328,9 +1261,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 onPressed: _scanning ? null : () => _scan(svc),
               ),
             ),
-            // Manual reconnect to last adapter — useful when auto-connect
-            // failed at startup (adapter was sleeping etc) and user wants
-            // to retry without scanning the whole BLE neighbourhood.
             if (svc.adapterAddress != null)
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
@@ -1356,6 +1286,49 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ],
           const Divider(),
+
+          // ════════════ Стоимость ════════════
+          const _SectionLabel('Стоимость'),
+          Builder(builder: (context) {
+            final cs = context.watch<CostSettings>();
+            return Column(children: [
+              ListTile(
+                leading: const Icon(Icons.attach_money,
+                    color: Colors.amber),
+                title: const Text('Cost per kWh'),
+                subtitle: Text(cs.costPerKwh > 0
+                    ? '${cs.formatAmount(cs.costPerKwh)} за 1 кВт·ч'
+                    : 'Не настроено — стоимость поездки не показывается'),
+                trailing: const Icon(Icons.edit),
+                onTap: () => _editCostPerKwh(context, cs),
+              ),
+              ListTile(
+                leading: const Icon(Icons.currency_exchange,
+                    color: Colors.lightGreenAccent),
+                title: const Text('Currency symbol'),
+                subtitle: Text(
+                    'Текущий: "${cs.currencySymbol}" '
+                    '(пример: ${cs.formatAmount(10)})'),
+                trailing: const Icon(Icons.edit),
+                onTap: () => _editCurrencySymbol(context, cs),
+              ),
+            ]);
+          }),
+          const Divider(),
+
+          // ════════════ Облако ════════════
+          const _SectionLabel('Облако'),
+          Builder(builder: (context) {
+            final cs = context.watch<CloudSyncService>();
+            return Column(children: [
+              _buildCloudHeader(cs),
+              _buildCloudBody(context, cs),
+            ]);
+          }),
+          const Divider(),
+
+          // ════════════ Автомобиль ════════════
+          const _SectionLabel('Автомобиль'),
           ListTile(
             leading: const Icon(Icons.medical_information,
                 color: Colors.lightBlueAccent),
@@ -1366,45 +1339,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
             onTap: () => Navigator.of(context).push(
               MaterialPageRoute(
                 builder: (_) => const DiagnosticsScreen(),
-              ),
-            ),
-          ),
-          ListTile(
-            leading: const Icon(Icons.search,
-                color: Colors.lightBlueAccent),
-            title: const Text('DID Sweep'),
-            subtitle: const Text(
-                'In-car ECU probe — presets и custom диапазоны'),
-            trailing: const Icon(Icons.chevron_right, color: Colors.grey),
-            onTap: () => Navigator.of(context).push(
-              MaterialPageRoute(
-                builder: (_) => const SweepScreen(),
-              ),
-            ),
-          ),
-          ListTile(
-            leading: const Icon(Icons.timeline,
-                color: Colors.lightBlueAccent),
-            title: const Text('Live Log'),
-            subtitle: const Text(
-                'Time-series polling до 7 DIDs одновременно (для reverse engineering)'),
-            trailing: const Icon(Icons.chevron_right, color: Colors.grey),
-            onTap: () => Navigator.of(context).push(
-              MaterialPageRoute(
-                builder: (_) => const LiveLogScreen(),
-              ),
-            ),
-          ),
-          ListTile(
-            leading: const Icon(Icons.archive_outlined,
-                color: Colors.lightBlueAccent),
-            title: const Text('Data & Export'),
-            subtitle: const Text(
-                'Экспорт trips/snapshots/samples на флешку или в облако, очистка'),
-            trailing: const Icon(Icons.chevron_right, color: Colors.grey),
-            onTap: () => Navigator.of(context).push(
-              MaterialPageRoute(
-                builder: (_) => const DataManagementScreen(),
               ),
             ),
           ),
@@ -1421,22 +1355,113 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
             ),
           ),
-          // v0.1.29+51: observability for the 790/0009 polling layer —
-          // counters surface what the transport actually did during a
-          // drive, so the field complaint of "Power card shows '—' for
-          // stretches" can be put on a number. Read-only with a reset.
+          const Divider(),
+
+          // ════════════ Данные ════════════
+          const _SectionLabel('Данные'),
           ListTile(
-            leading: const Icon(Icons.troubleshoot,
-                color: Colors.orangeAccent),
-            title: const Text('Polling diagnostics'),
+            leading: const Icon(Icons.archive_outlined,
+                color: Colors.lightBlueAccent),
+            title: const Text('Data & Export'),
             subtitle: const Text(
-                'Pack current read counters, gaps, null rate'),
+                'Экспорт trips/snapshots/samples на флешку или в облако, очистка'),
             trailing: const Icon(Icons.chevron_right, color: Colors.grey),
             onTap: () => Navigator.of(context).push(
               MaterialPageRoute(
-                builder: (_) => const PollingDiagnosticsScreen(),
+                builder: (_) => const DataManagementScreen(),
               ),
             ),
+          ),
+          const Divider(),
+
+          // ════════════ Advanced (research tools, collapsed) ════════════
+          // v0.1.29+56: research/diagnostic tooling moved here from the
+          // top-level list. Nothing is deleted — these tools are needed
+          // for the upcoming HAL integration work — they're just out of
+          // the casual user's way. Collapsed by default.
+          ExpansionTile(
+            leading: const Icon(Icons.build_outlined, color: Colors.grey),
+            title: const Text('Advanced'),
+            subtitle: const Text(
+                'Инструменты исследования и диагностики приложения'),
+            childrenPadding: const EdgeInsets.only(left: 8),
+            children: [
+              // Raw Data — wide-only research view (live DID table). On
+              // phone the EcuExplorerScreen below covers the same need.
+              if (LayoutBreakpoints.useHeadUnitLayout(context))
+                ListTile(
+                  leading: const Icon(Icons.table_rows_outlined,
+                      color: Colors.grey),
+                  title: const Text('Raw Data'),
+                  subtitle: const Text(
+                      'Live DID таблица + diagnostics sweep (wide view)'),
+                  trailing:
+                      const Icon(Icons.chevron_right, color: Colors.grey),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => Scaffold(
+                        appBar: AppBar(title: const Text('Raw Data')),
+                        body: const RawDataWideScreen(),
+                      ),
+                    ),
+                  ),
+                ),
+              ListTile(
+                leading: const Icon(Icons.memory, color: Colors.grey),
+                title: const Text('ECU Explorer'),
+                subtitle: const Text('Реестр DID со всех ECU, live значения'),
+                trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const EcuExplorerScreen(),
+                  ),
+                ),
+              ),
+              ListTile(
+                leading: const Icon(Icons.search, color: Colors.grey),
+                title: const Text('DID Sweep'),
+                subtitle: const Text(
+                    'In-car ECU probe — presets и custom диапазоны'),
+                trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const SweepScreen(),
+                  ),
+                ),
+              ),
+              ListTile(
+                leading: const Icon(Icons.timeline, color: Colors.grey),
+                title: const Text('Live Log'),
+                subtitle: const Text(
+                    'Time-series polling до 7 DIDs одновременно'),
+                trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const LiveLogScreen(),
+                  ),
+                ),
+              ),
+              ListTile(
+                leading: const Icon(Icons.troubleshoot, color: Colors.grey),
+                title: const Text('Polling diagnostics'),
+                subtitle: const Text(
+                    'Pack current read counters, gaps, null rate'),
+                trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const PollingDiagnosticsScreen(),
+                  ),
+                ),
+              ),
+              // Bridge diagnostic — cloud bridge debug telemetry.
+              Builder(builder: (context) {
+                final bd = context.watch<BridgeDiagService>();
+                return Column(children: [
+                  _buildBridgeDiagHeader(bd),
+                  _buildBridgeDiagBody(context, bd),
+                ]);
+              }),
+            ],
           ),
         ],
       ),
@@ -1510,6 +1535,29 @@ class _DeviceTile extends StatelessWidget {
       subtitle: Text('${result.device.remoteId.str}\nRSSI: ${result.rssi}'),
       isThreeLine: true,
       onTap: onTap,
+    );
+  }
+}
+
+/// v0.1.29+56: section label for grouped Settings layout. Small
+/// uppercase accent header above each settings group.
+class _SectionLabel extends StatelessWidget {
+  final String text;
+  const _SectionLabel(this.text);
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+      child: Text(
+        text.toUpperCase(),
+        style: const TextStyle(
+          fontSize: 11,
+          letterSpacing: 1.2,
+          color: Colors.lightBlueAccent,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
     );
   }
 }
