@@ -2736,6 +2736,60 @@ if int(pv) >= 60:
 else:
     ok(f"Part X skipped (build +{pv}, l10n wave lands in +60)")
 
+# ───── Part Y: HAL push-telemetry skeleton (+61) ─────
+
+if int(pv) >= 61:
+    import subprocess as _sp
+
+    # Y1. delegate the whole vendoring + glue contract to hal_sync_check.
+    #     It WARNs (exit 0) when the 5 recon files aren't vendored yet, and
+    #     hard-FAILs (exit 1) on a real contract break (arithmetic leak,
+    #     missing channel, blocked binder thread, header/SHA mismatch).
+    _r = _sp.run(['python3', str(root / 'tools/hal_sync_check.py')],
+                 capture_output=True, text=True, cwd=root)
+    if _r.returncode == 0:
+        ok("Y1 hal_sync_check: glue + vendoring contract OK")
+    else:
+        fail(f"Y1 hal_sync_check failed:\n{_r.stdout.strip()}")
+
+    # Y2. manifest pins recon v0.10.53 (the bug-fixed baseline — never
+    #     v0.10.52 with the _tail keys / unsubscribed odometer block).
+    _man = (root /
+            'android/app/src/main/kotlin/com/bz5companion/bz5_companion/'
+            'hal/HAL_SYNC.manifest').read_text()
+    if 'version: recon v0.10.53' in _man:
+        ok("Y2 manifest pinned to recon v0.10.53")
+    else:
+        fail("Y2 manifest not pinned to v0.10.53")
+
+    # Y3. DECODER_CHANGELOG vendored alongside the table (the decoder-sync
+    #     source of truth), and it carries the v0.10.53 normalization entry.
+    _cl = (root /
+           'android/app/src/main/kotlin/com/bz5companion/bz5_companion/'
+           'hal/DECODER_CHANGELOG.md')
+    if _cl.exists() and 'v0.10.53' in _cl.read_text() and \
+       'targetKey normalization' in _cl.read_text():
+        ok("Y3 DECODER_CHANGELOG vendored with v0.10.53 normalization entry")
+    else:
+        fail("Y3 DECODER_CHANGELOG missing or lacks v0.10.53 entry")
+
+    # Y4. HAL stream is NOT auto-wired into any data source / UI yet — +61
+    #     is plumbing only. The SPEED overlapping pilot lands in +62. Guard
+    #     against premature consumption: no screen/service imports the HAL
+    #     channel yet (other than the wrapper itself).
+    _consumers = []
+    for _f in (root / 'lib').rglob('*.dart'):
+        if _f.name == 'hal_telemetry_channel.dart':
+            continue
+        if 'hal_telemetry_channel' in _f.read_text():
+            _consumers.append(str(_f.relative_to(root)))
+    if not _consumers:
+        ok("Y4 HAL stream not yet consumed (plumbing-only, pilot is +62)")
+    else:
+        fail(f"Y4 HAL channel consumed prematurely by: {_consumers}")
+else:
+    ok(f"Part Y skipped (build +{pv}, HAL skeleton lands in +61)")
+
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
 print(f"+35→+51 REGRESSION — build +{pv}")
