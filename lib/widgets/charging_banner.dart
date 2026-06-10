@@ -29,6 +29,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../l10n/strings.dart';
 import '../services/connection.dart';
 import '../screens/wide/charging_view_wide.dart';
 
@@ -143,7 +144,7 @@ class _ChargingBanner extends StatelessWidget {
       final m = (etaSec / 60).round();
       parts.add(m >= 60 ? '~${m ~/ 60}h ${m % 60}m' : '~${m}m');
     }
-    final detail = parts.isEmpty ? 'starting…' : parts.join(' • ');
+    final detail = parts.isEmpty ? S.of('chg.starting') : parts.join(' • ');
 
     return Material(
       color: Colors.amber.shade900.withValues(alpha: 0.25),
@@ -159,7 +160,7 @@ class _ChargingBanner extends StatelessWidget {
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    'Charging • $detail',
+                    S.of('chg.banner').replaceFirst('{detail}', detail),
                     style: const TextStyle(
                       fontWeight: FontWeight.w500,
                       color: Colors.amber,
@@ -189,7 +190,7 @@ class _ChargingSessionScreen extends StatelessWidget {
     final svc = context.watch<ConnectionService>();
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Charging session'),
+        title: Text(S.of('chg.session_title')),
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
           onPressed: () => Navigator.of(context).maybePop(),
@@ -197,14 +198,14 @@ class _ChargingSessionScreen extends StatelessWidget {
       ),
       body: svc.isCharging
           ? const ChargingViewWide()
-          : const Center(
+          : Center(
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Icon(Icons.power_off, size: 64, color: Colors.grey),
-                  SizedBox(height: 16),
-                  Text('Charging session ended',
-                      style: TextStyle(fontSize: 18, color: Colors.grey)),
+                  const Icon(Icons.power_off, size: 64, color: Colors.grey),
+                  const SizedBox(height: 16),
+                  Text(S.of('chg.session_ended'),
+                      style: const TextStyle(fontSize: 18, color: Colors.grey)),
                 ],
               ),
             ),

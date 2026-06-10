@@ -4,7 +4,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
+import '../l10n/strings.dart';
 import '../services/connection.dart';
+import '../services/locale_service.dart';
 
 /// v0.1.7: Diagnostics / DTC reader screen.
 ///
@@ -32,8 +34,7 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
     final svc = context.read<ConnectionService>();
     if (svc.status != ConnectionStatus.connected) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-            content: Text('Не подключено. Подключите адаптер в Settings.')),
+        SnackBar(content: Text(S.of('dtc.not_connected'))),
       );
       return;
     }
@@ -85,20 +86,22 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
     await Clipboard.setData(ClipboardData(text: asJson));
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('JSON скопирован в буфер обмена')),
+      SnackBar(content: Text(S.of('dtc.json_copied'))),
     );
   }
 
   @override
   Widget build(BuildContext context) {
+    // v0.1.29+60: re-render on language switch (per-screen subscription).
+    context.watch<LocaleService>();
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Diagnostics (DTC)'),
+        title: Text(S.of('dtc.title')),
         actions: [
           if (_results != null && !_running)
             IconButton(
               icon: const Icon(Icons.copy),
-              tooltip: 'Copy JSON',
+              tooltip: S.of('dtc.copy_json'),
               onPressed: _copyJson,
             ),
         ],
@@ -170,17 +173,22 @@ class _ScanControlCard extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text('DTC SCAN',
-                          style: TextStyle(
+                      Text(S.of('dtc.scan_hdr'),
+                          style: const TextStyle(
                               fontSize: 12,
                               letterSpacing: 1.5,
                               color: Colors.grey)),
                       Text(
                         running
-                            ? 'Сканирую: $progressCurrent'
+                            ? S
+                                .of('dtc.scanning_cur')
+                                .replaceFirst('{cur}', progressCurrent)
                             : (hasResults
-                                ? 'Last scan: ${_formatTime(lastScanAt)}'
-                                : 'Считать коды ошибок с 9 ECU. Read-only.'),
+                                ? S
+                                    .of('dtc.last_scan')
+                                    .replaceFirst(
+                                        '{t}', _formatTime(lastScanAt))
+                                : S.of('dtc.scan_desc')),
                         style: const TextStyle(
                             fontSize: 13, color: Colors.white70),
                       ),
@@ -197,8 +205,10 @@ class _ScanControlCard extends StatelessWidget {
                               strokeWidth: 2, color: Colors.white))
                       : Icon(hasResults ? Icons.refresh : Icons.play_arrow),
                   label: Text(running
-                      ? 'Сканирую…'
-                      : (hasResults ? 'Run again' : 'Run scan')),
+                      ? S.of('dtc.scanning')
+                      : (hasResults
+                          ? S.of('dtc.run_again')
+                          : S.of('dtc.run_scan'))),
                 ),
               ],
             ),
@@ -212,7 +222,11 @@ class _ScanControlCard extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 4),
-              Text('$progressDone / $progressTotal ECU',
+              Text(
+                  S
+                      .of('dtc.progress')
+                      .replaceFirst('{a}', '$progressDone')
+                      .replaceFirst('{b}', '$progressTotal'),
                   style: const TextStyle(fontSize: 11, color: Colors.grey)),
             ],
           ],
@@ -249,15 +263,15 @@ class _SummaryBanner extends StatelessWidget {
     if (activeFaults > 0) {
       color = Colors.red;
       icon = Icons.error;
-      title = '$activeFaults active fault(s) found';
+      title = S.of('dtc.active_found').replaceFirst('{n}', '$activeFaults');
     } else if (totalDtcs > 0) {
       color = Colors.lightBlueAccent;
       icon = Icons.info_outline;
-      title = 'Clean (no active faults)';
+      title = S.of('dtc.clean_no_active');
     } else {
       color = Colors.green;
       icon = Icons.check_circle;
-      title = 'All ECUs clean';
+      title = S.of('dtc.all_clean');
     }
 
     return Container(
@@ -283,10 +297,12 @@ class _SummaryBanner extends StatelessWidget {
                         color: color)),
                 const SizedBox(height: 2),
                 Text(
-                  '${results.length} ECU scanned · '
-                  '$activeFaults active · '
-                  '$readinessFlags readiness · '
-                  '$ecusWithIssues with entries',
+                  S
+                      .of('dtc.summary')
+                      .replaceFirst('{e}', '${results.length}')
+                      .replaceFirst('{a}', '$activeFaults')
+                      .replaceFirst('{r}', '$readinessFlags')
+                      .replaceFirst('{i}', '$ecusWithIssues'),
                   style: const TextStyle(fontSize: 12, color: Colors.grey),
                 ),
               ],
@@ -316,12 +332,14 @@ class _EcuResultTile extends StatelessWidget {
     }
 
     final statusText = result.activeFaultCount > 0
-        ? '${result.activeFaultCount} active fault(s)'
+        ? S.of('dtc.n_active').replaceFirst('{n}', '${result.activeFaultCount}')
         : result.dtcs.isNotEmpty
-            ? '${result.dtcs.length} readiness flags'
+            ? S
+                .of('dtc.n_readiness')
+                .replaceFirst('{n}', '${result.dtcs.length}')
             : result.errors.isNotEmpty
-                ? 'probe error'
-                : 'clean';
+                ? S.of('dtc.probe_error')
+                : S.of('dtc.clean');
 
     return Card(
       margin: const EdgeInsets.symmetric(vertical: 4),
@@ -347,24 +365,25 @@ class _EcuResultTile extends StatelessWidget {
         ),
         children: [
           if (!result.sessionOk)
-            const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
               child: Row(
                 children: [
-                  Icon(Icons.warning_amber, size: 14, color: Colors.orange),
-                  SizedBox(width: 8),
+                  const Icon(Icons.warning_amber,
+                      size: 14, color: Colors.orange),
+                  const SizedBox(width: 8),
                   Text(
-                    'Extended session не открыта',
-                    style: TextStyle(fontSize: 11, color: Colors.orange),
+                    S.of('dtc.ext_session'),
+                    style: const TextStyle(fontSize: 11, color: Colors.orange),
                   ),
                 ],
               ),
             ),
           if (result.dtcs.isEmpty && result.errors.isEmpty)
-            const Padding(
-              padding: EdgeInsets.all(12),
-              child: Text('Нет DTC',
-                  style: TextStyle(color: Colors.grey, fontSize: 12)),
+            Padding(
+              padding: const EdgeInsets.all(12),
+              child: Text(S.of('dtc.no_dtc'),
+                  style: const TextStyle(color: Colors.grey, fontSize: 12)),
             )
           else ...[
             ...result.dtcs.map((d) => _DtcRow(dtc: d)),
@@ -462,12 +481,11 @@ class _EmptyState extends StatelessWidget {
             Icon(Icons.medical_services_outlined,
                 size: 56, color: Colors.grey.shade600),
             const SizedBox(height: 16),
-            const Text('Tap "Run scan" to read DTCs',
-                style: TextStyle(fontSize: 15, color: Colors.grey)),
+            Text(S.of('dtc.tap_run'),
+                style: const TextStyle(fontSize: 15, color: Colors.grey)),
             const SizedBox(height: 8),
             Text(
-              'Сканирование занимает ~30 секунд. Polling приостанавливается '
-              'на время скана, чтобы не нагружать BLE.',
+              S.of('dtc.scan_takes'),
               textAlign: TextAlign.center,
               style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
             ),
@@ -478,29 +496,30 @@ class _EmptyState extends StatelessWidget {
                 color: Colors.grey.shade900,
                 borderRadius: BorderRadius.circular(8),
               ),
-              child: const Column(
+              child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('Status flags meaning:',
-                      style: TextStyle(
+                  Text(S.of('dtc.flags_hdr'),
+                      style: const TextStyle(
                           fontSize: 11,
                           letterSpacing: 1.0,
                           color: Colors.grey)),
-                  SizedBox(height: 8),
+                  const SizedBox(height: 8),
                   Row(children: [
-                    Icon(Icons.error_outline, size: 14, color: Colors.red),
-                    SizedBox(width: 6),
-                    Text('Active fault — реальная ошибка прямо сейчас',
-                        style: TextStyle(fontSize: 12)),
+                    const Icon(Icons.error_outline,
+                        size: 14, color: Colors.red),
+                    const SizedBox(width: 6),
+                    Text(S.of('dtc.flag_active'),
+                        style: const TextStyle(fontSize: 12)),
                   ]),
-                  SizedBox(height: 4),
+                  const SizedBox(height: 4),
                   Row(children: [
-                    Icon(Icons.flag_outlined, size: 14, color: Colors.grey),
-                    SizedBox(width: 6),
+                    const Icon(Icons.flag_outlined,
+                        size: 14, color: Colors.grey),
+                    const SizedBox(width: 6),
                     Expanded(
-                      child: Text(
-                          'Readiness — тест ещё не выполнен (не fault)',
-                          style: TextStyle(fontSize: 12)),
+                      child: Text(S.of('dtc.flag_readiness'),
+                          style: const TextStyle(fontSize: 12)),
                     ),
                   ]),
                 ],

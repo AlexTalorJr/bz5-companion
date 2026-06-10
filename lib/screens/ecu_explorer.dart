@@ -2,15 +2,19 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../data/ecu_registry.dart';
+import '../l10n/strings.dart';
 import '../services/connection.dart';
+import '../services/locale_service.dart';
 
 class EcuExplorerScreen extends StatelessWidget {
   const EcuExplorerScreen({super.key});
 
   @override
   Widget build(BuildContext context) {
+    // v0.1.29+60: re-render on language switch (per-screen subscription).
+    context.watch<LocaleService>();
     return Scaffold(
-      appBar: AppBar(title: const Text('All ECUs (30)')),
+      appBar: AppBar(title: Text(S.of('ecux.title'))),
       body: ListView.builder(
         itemCount: allBz5Ecus.length,
         itemBuilder: (context, i) {

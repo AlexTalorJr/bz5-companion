@@ -25,7 +25,9 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../l10n/strings.dart';
 import '../services/connection.dart';
+import '../services/locale_service.dart';
 
 class PollingDiagnosticsScreen extends StatefulWidget {
   const PollingDiagnosticsScreen({super.key});
@@ -60,6 +62,8 @@ class _PollingDiagnosticsScreenState extends State<PollingDiagnosticsScreen> {
   @override
   Widget build(BuildContext context) {
     final svc = context.watch<ConnectionService>();
+    // v0.1.29+60: re-render on language switch (per-screen subscription).
+    context.watch<LocaleService>();
 
     final okCount = svc.packCurrentReadOkCount;
     final getterCalls = svc.packCurrentGetterCalls;
@@ -71,25 +75,25 @@ class _PollingDiagnosticsScreenState extends State<PollingDiagnosticsScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Polling diagnostics'),
+        title: Text(S.of('polld.title')),
       ),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
           const _SectionHeader('Pack current (790/0009)'),
-          _Row('ok reads', okCount.toString()),
-          _Row('getter calls', getterCalls.toString()),
-          _Row('getter nulls', getterNulls.toString()),
-          _Row('null rate', '${nullRate.toStringAsFixed(1)} %'),
-          _Row('current gap',
+          _Row(S.of('polld.ok_reads'), okCount.toString()),
+          _Row(S.of('polld.getter_calls'), getterCalls.toString()),
+          _Row(S.of('polld.getter_nulls'), getterNulls.toString()),
+          _Row(S.of('polld.null_rate'), '${nullRate.toStringAsFixed(1)} %'),
+          _Row(S.of('polld.current_gap'),
               currentGap == null ? '—' : '${currentGap} ms'),
-          _Row('max gap',
+          _Row(S.of('polld.max_gap'),
               maxGap == 0 ? '—' : '${maxGap} ms',
               warn: maxGap > 10000),
           const SizedBox(height: 24),
           OutlinedButton.icon(
             icon: const Icon(Icons.refresh),
-            label: const Text('Reset counters'),
+            label: Text(S.of('polld.reset')),
             onPressed: () {
               svc.resetPackCurrentObservers();
             },
@@ -98,16 +102,7 @@ class _PollingDiagnosticsScreenState extends State<PollingDiagnosticsScreen> {
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 4),
             child: Text(
-              'How to read this:\n'
-              '• If max gap stays under ~3000 ms, the 2-second stale-gate '
-              'on packCurrentA is the proximate cause of any flicker — '
-              'one cycle of bad luck is enough.\n'
-              '• If max gap climbs into 10000+ ms, the transport is '
-              'stalling for real (790-chain stall or BLE loss under '
-              'burst load).\n'
-              '• null rate reflects what the UI saw, not what came over '
-              'the wire — high rate with low max gap means the UI is '
-              'polling faster than the cycle refills the cache.',
+              S.of('polld.how_to'),
               style:
                   TextStyle(fontSize: 12, color: Colors.grey.shade400),
             ),

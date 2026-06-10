@@ -3,7 +3,9 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
+import '../l10n/strings.dart';
 import '../services/connection.dart';
+import '../services/locale_service.dart';
 import 'sweep_results.dart';
 
 /// v0.1.14: In-car DID sweep launcher.
@@ -169,6 +171,8 @@ class _SweepScreenState extends State<SweepScreen> {
   @override
   Widget build(BuildContext context) {
     final svc = context.watch<ConnectionService>();
+    // v0.1.29+60: re-render on language switch (per-screen subscription).
+    context.watch<LocaleService>();
     final running = svc.sweepRunning;
 
     return Scaffold(
@@ -177,7 +181,7 @@ class _SweepScreenState extends State<SweepScreen> {
         actions: [
           IconButton(
             icon: const Icon(Icons.history),
-            tooltip: 'Previous sweep runs',
+            tooltip: S.of('sw.prev_runs'),
             onPressed: running
                 ? null
                 : () => Navigator.of(context).push(
@@ -207,9 +211,9 @@ class _SweepScreenState extends State<SweepScreen> {
           const SizedBox(height: 16),
           const Icon(Icons.search, size: 64, color: Colors.lightBlueAccent),
           const SizedBox(height: 16),
-          const Text('Sweep in progress',
+          Text(S.of('sw.in_progress'),
               textAlign: TextAlign.center,
-              style: TextStyle(
+              style: const TextStyle(
                   fontSize: 22, fontWeight: FontWeight.w300, letterSpacing: 1.5)),
           const SizedBox(height: 24),
           LinearProgressIndicator(
@@ -230,7 +234,7 @@ class _SweepScreenState extends State<SweepScreen> {
                   style: const TextStyle(
                       fontSize: 14,
                       fontFeatures: [FontFeature.tabularFigures()])),
-              Text('ETA $etaStr',
+              Text(S.of('sw.eta_fmt').replaceFirst('{t}', etaStr),
                   style: const TextStyle(
                       fontSize: 14,
                       color: Colors.grey,
@@ -245,8 +249,8 @@ class _SweepScreenState extends State<SweepScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('CURRENT DID',
-                      style: TextStyle(
+                  Text(S.of('sw.current_did'),
+                      style: const TextStyle(
                           fontSize: 11,
                           letterSpacing: 1.5,
                           color: Colors.grey)),
@@ -263,7 +267,7 @@ class _SweepScreenState extends State<SweepScreen> {
           const Spacer(),
           ElevatedButton.icon(
             icon: const Icon(Icons.stop),
-            label: const Text('Cancel sweep'),
+            label: Text(S.of('sw.cancel')),
             style: ElevatedButton.styleFrom(
               backgroundColor: Colors.redAccent,
               foregroundColor: Colors.white,
@@ -288,11 +292,11 @@ class _SweepScreenState extends State<SweepScreen> {
               Icon(Icons.bluetooth_disabled,
                   size: 56, color: Colors.grey.shade600),
               const SizedBox(height: 16),
-              const Text('Адаптер не подключен',
-                  style: TextStyle(fontSize: 16)),
+              Text(S.of('common.not_connected_title'),
+                  style: const TextStyle(fontSize: 16)),
               const SizedBox(height: 8),
               Text(
-                'Подключитесь к ELM327 через Settings → ELM327 BLE adapter.',
+                S.of('sw.connect_hint'),
                 textAlign: TextAlign.center,
                 style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
               ),
@@ -304,9 +308,9 @@ class _SweepScreenState extends State<SweepScreen> {
 
     // v0.1.15: BLE channel mutex — refuse if Live Log or DTC scan running.
     final busyReason = svc.liveLogRunning
-        ? 'Live Log is currently running'
+        ? S.of('sw.busy_livelog')
         : svc.dtcScanRunning
-            ? 'DTC scan is currently running'
+            ? S.of('sw.busy_dtc')
             : null;
 
     return ListView(
@@ -319,8 +323,7 @@ class _SweepScreenState extends State<SweepScreen> {
               leading:
                   const Icon(Icons.lock_outline, color: Colors.orangeAccent),
               title: Text(busyReason),
-              subtitle: const Text(
-                  'Sweep will be available when the other operation finishes.'),
+              subtitle: Text(S.of('sw.busy_note')),
             ),
           ),
           const SizedBox(height: 8),
@@ -330,10 +333,11 @@ class _SweepScreenState extends State<SweepScreen> {
             color: Colors.green.shade900.withValues(alpha: 0.3),
             child: ListTile(
               leading: const Icon(Icons.check_circle, color: Colors.greenAccent),
-              title: const Text('Sweep complete'),
-              subtitle: Text('Run #$_justFinishedRunId'),
+              title: Text(S.of('sw.complete')),
+              subtitle: Text(
+                  S.of('sw.run_n').replaceFirst('{n}', '$_justFinishedRunId')),
               trailing: TextButton(
-                child: const Text('Open'),
+                child: Text(S.of('sw.open')),
                 onPressed: () {
                   final runId = _justFinishedRunId;
                   setState(() => _justFinishedRunId = null);
@@ -435,8 +439,8 @@ class _SweepScreenState extends State<SweepScreen> {
                 const SizedBox(height: 12),
                 TextField(
                   controller: _carStateCtrl,
-                  decoration: const InputDecoration(
-                    labelText: 'Car state (optional)',
+                  decoration: InputDecoration(
+                    labelText: S.of('sw.car_state'),
                     hintText: 'P+Ready, AC off',
                     isDense: true,
                   ),
@@ -444,8 +448,8 @@ class _SweepScreenState extends State<SweepScreen> {
                 const SizedBox(height: 12),
                 TextField(
                   controller: _notesCtrl,
-                  decoration: const InputDecoration(
-                    labelText: 'Notes (optional)',
+                  decoration: InputDecoration(
+                    labelText: S.of('sw.notes'),
                     hintText: 'e.g. baseline before drive sweep',
                     isDense: true,
                   ),
@@ -453,7 +457,7 @@ class _SweepScreenState extends State<SweepScreen> {
                 const SizedBox(height: 16),
                 ElevatedButton.icon(
                   icon: const Icon(Icons.play_arrow),
-                  label: const Text('Start custom sweep'),
+                  label: Text(S.of('sw.start_custom')),
                   style: ElevatedButton.styleFrom(
                     minimumSize: const Size.fromHeight(48),
                   ),
@@ -499,10 +503,9 @@ class _SweepScreenState extends State<SweepScreen> {
                 '($total DIDs)'),
             Text('ETA: ~${_fmtEta(etaSec)}'),
             const SizedBox(height: 12),
-            const Text(
-              'Normal polling will be paused during the sweep. '
-              'Screen stays awake. Cancel anytime.',
-              style: TextStyle(fontSize: 12, color: Colors.grey),
+            Text(
+              S.of('sw.confirm_note'),
+              style: const TextStyle(fontSize: 12, color: Colors.grey),
             ),
           ],
         ),
@@ -539,7 +542,7 @@ class _SweepScreenState extends State<SweepScreen> {
 
     if (tx.isEmpty || rx.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('TX и RX обязательны')),
+        SnackBar(content: Text(S.of('sw.tx_rx_required'))),
       );
       return;
     }
@@ -547,7 +550,7 @@ class _SweepScreenState extends State<SweepScreen> {
     final e = int.tryParse(endDid, radix: 16);
     if (s == null || e == null || e < s) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Некорректный диапазон DID')),
+        SnackBar(content: Text(S.of('sw.bad_range'))),
       );
       return;
     }
@@ -585,7 +588,7 @@ class _SweepScreenState extends State<SweepScreen> {
       setState(() => _justFinishedRunId = runId);
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Не удалось запустить sweep')),
+        SnackBar(content: Text(S.of('sw.start_failed'))),
       );
     }
   }

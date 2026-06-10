@@ -3,7 +3,9 @@ import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
 import '../data/database.dart';
+import '../l10n/strings.dart';
 import '../services/connection.dart';
+import '../services/locale_service.dart';
 import 'trip_detail.dart';
 import 'trends.dart';
 
@@ -18,15 +20,21 @@ class HistoryScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // v0.1.29+60: re-render on language switch (per-screen subscription).
+    context.watch<LocaleService>();
     return DefaultTabController(
       length: 2,
       child: Scaffold(
         appBar: AppBar(
-          title: const Text('History'),
-          bottom: const TabBar(
+          title: Text(S.of('hist.title')),
+          bottom: TabBar(
             tabs: [
-              Tab(text: 'Trips', icon: Icon(Icons.route, size: 18)),
-              Tab(text: 'Trends', icon: Icon(Icons.show_chart, size: 18)),
+              Tab(
+                  text: S.of('hist.tab_trips'),
+                  icon: const Icon(Icons.route, size: 18)),
+              Tab(
+                  text: S.of('hist.tab_trends'),
+                  icon: const Icon(Icons.show_chart, size: 18)),
             ],
           ),
         ),
@@ -108,12 +116,11 @@ class _TripsTabState extends State<_TripsTab> {
                   Icon(Icons.route_outlined,
                       size: 64, color: Colors.grey.shade600),
                   const SizedBox(height: 16),
-                  const Text('Поездок пока нет',
-                      style: TextStyle(fontSize: 15)),
+                  Text(S.of('hist.empty_title'),
+                      style: const TextStyle(fontSize: 15)),
                   const SizedBox(height: 8),
                   Text(
-                    'Подключитесь к адаптеру и поезжайте — '
-                    'история начнёт заполняться автоматически.',
+                    S.of('hist.empty_hint'),
                     textAlign: TextAlign.center,
                     style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
                   ),
@@ -194,8 +201,8 @@ class _ActiveTripCard extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(width: 8),
-                  const Text('ACTIVE TRIP',
-                      style: TextStyle(
+                  Text(S.of('hist.active_trip'),
+                      style: const TextStyle(
                           fontSize: 11,
                           letterSpacing: 1.5,
                           color: Colors.greenAccent)),
@@ -212,14 +219,15 @@ class _ActiveTripCard extends StatelessWidget {
               const SizedBox(height: 12),
               Row(
                 children: [
-                  _MetricChip(label: 'TIME', value: _fmtDuration(duration)),
                   _MetricChip(
-                      label: 'DIST',
+                      label: S.of('hist.time'), value: _fmtDuration(duration)),
+                  _MetricChip(
+                      label: S.of('hist.dist'),
                       value: dist != null
                           ? '${dist.toStringAsFixed(1)} km'
                           : '—'),
                   _MetricChip(
-                      label: 'ENERGY',
+                      label: S.of('hist.energy'),
                       value: energy != null
                           ? '${energy.toStringAsFixed(2)} kWh'
                           : '—'),
@@ -229,17 +237,17 @@ class _ActiveTripCard extends StatelessWidget {
               Row(
                 children: [
                   _MetricChip(
-                      label: 'AVG',
+                      label: S.of('hist.avg'),
                       value: cons != null
                           ? '${cons.toStringAsFixed(1)} kWh/100'
                           : '—'),
                   _MetricChip(
-                      label: 'PEAK kW',
+                      label: S.of('hist.peak_kw'),
                       value: peakPwr != null
                           ? peakPwr.toStringAsFixed(1)
                           : '—'),
                   _MetricChip(
-                      label: 'TEMP',
+                      label: S.of('hist.temp'),
                       value: svc.tripMinTempC != null && svc.tripMaxTempC != null
                           ? '${svc.tripMinTempC!.toStringAsFixed(0)}–${svc.tripMaxTempC!.toStringAsFixed(0)}°'
                           : '—'),
@@ -308,7 +316,9 @@ class _TripCard extends StatelessWidget {
                   if (consumption != null)
                     _SmallChip(text: '${consumption.toStringAsFixed(1)} kWh/100'),
                   if (trip.maxBatteryTempC != null)
-                    _SmallChip(text: 'max ${trip.maxBatteryTempC!.toStringAsFixed(0)}°C'),
+                    _SmallChip(
+                        text: S.of('hist.max_temp_chip').replaceFirst(
+                            '{t}', trip.maxBatteryTempC!.toStringAsFixed(0))),
                   if (trip.maxCellSpreadMv != null)
                     _SmallChip(text: 'Δ${trip.maxCellSpreadMv!.toStringAsFixed(0)}mV'),
                 ],

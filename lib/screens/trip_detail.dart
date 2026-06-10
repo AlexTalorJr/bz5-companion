@@ -5,6 +5,8 @@ import 'package:provider/provider.dart';
 
 import '../data/database.dart';
 import '../data/trip_extra.dart';
+import '../l10n/strings.dart';
+import '../services/locale_service.dart';
 import '../services/connection.dart';
 import '../services/cost_settings.dart';
 
@@ -25,10 +27,13 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
   @override
   Widget build(BuildContext context) {
     final svc = context.watch<ConnectionService>();
+    // v0.1.29+60: re-render on language switch (per-screen subscription).
+    context.watch<LocaleService>();
 
     return Scaffold(
       appBar: AppBar(
-        title: Text('Trip #${widget.tripId}'),
+        title: Text(
+            S.of('trip.title').replaceFirst('{id}', '${widget.tripId}')),
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh),
@@ -93,7 +98,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
               // decoder for 1FFD already returns the float percentage,
               // so no valueTransform needed.
               _ChartCard(
-                title: 'SOC vs time',
+                title: S.of('trip.soc_vs_time'),
                 tripId: trip.id,
                 ecuTx: '790',
                 did: '1FFD',
@@ -103,7 +108,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
               ),
               const SizedBox(height: 12),
               _ChartCard(
-                title: 'Battery temperature',
+                title: S.of('trip.battery_temp'),
                 tripId: trip.id,
                 ecuTx: '790',
                 did: '002F',
@@ -121,7 +126,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
               ),
               const SizedBox(height: 12),
               _ChartCard(
-                title: 'Pack voltage (filtered)',
+                title: S.of('trip.pack_v_filtered'),
                 tripId: trip.id,
                 ecuTx: '740',
                 did: '0022',
@@ -134,7 +139,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
               ),
               const SizedBox(height: 12),
               _ChartCard(
-                title: 'HV bus voltage',
+                title: S.of('trip.hv_bus_v'),
                 tripId: trip.id,
                 ecuTx: '790',
                 did: '0015',
@@ -185,7 +190,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
         SpeedHistogramCard(tripId: trip.id, trip: trip),
         const SizedBox(height: 12),
         _ChartCard(
-          title: 'SOC vs time',
+          title: S.of('trip.soc_vs_time'),
           tripId: trip.id,
           ecuTx: '790',
           did: '1FFD',
@@ -196,7 +201,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
         const SizedBox(height: 12),
         pair(
           _ChartCard(
-            title: 'Battery temperature',
+            title: S.of('trip.battery_temp'),
             tripId: trip.id,
             ecuTx: '790',
             did: '002F',
@@ -207,7 +212,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
             svc: svc,
           ),
           _ChartCard(
-            title: 'Pack voltage (filtered)',
+            title: S.of('trip.pack_v_filtered'),
             tripId: trip.id,
             ecuTx: '740',
             did: '0022',
@@ -218,7 +223,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
         ),
         const SizedBox(height: 12),
         _ChartCard(
-          title: 'HV bus voltage',
+          title: S.of('trip.hv_bus_v'),
           tripId: trip.id,
           ecuTx: '790',
           did: '0015',
@@ -270,8 +275,8 @@ class TripSummaryCard extends StatelessWidget {
                 ] else ...[
                   const Icon(Icons.history, size: 16, color: Colors.grey),
                   const SizedBox(width: 6),
-                  const Text('COMPLETED',
-                      style: TextStyle(
+                  Text(S.of('trip.completed'),
+                      style: const TextStyle(
                           fontSize: 11,
                           letterSpacing: 1.5,
                           color: Colors.grey)),
@@ -289,7 +294,9 @@ class TripSummaryCard extends StatelessWidget {
             const SizedBox(height: 4),
             Text(
               _fmtDuration(duration) +
-                  (isActive ? ' (running)' : ' total'),
+                  (isActive
+                      ? S.of('trip.running_suffix')
+                      : S.of('trip.total_suffix')),
               style: const TextStyle(fontSize: 13, color: Colors.grey),
             ),
             if (trip.notes != null) ...[
@@ -331,9 +338,9 @@ class DerivedMetricsCard extends StatelessWidget {
             : null;
 
     final rows = <Widget>[
-      _MetricRow('Distance',
+      _MetricRow(S.of('trip.m_distance'),
           dist != null ? '${dist.toStringAsFixed(2)} km' : '—'),
-      _MetricRow('Energy used',
+      _MetricRow(S.of('trip.m_energy_used'),
           trip.energyUsedKwh != null
               ? '${trip.energyUsedKwh!.toStringAsFixed(2)} kWh'
               : '—'),
@@ -343,8 +350,8 @@ class DerivedMetricsCard extends StatelessWidget {
       // after Energy used because conceptually they're the same
       // metric in two units (kWh vs currency).
       if (totalCost != null)
-        _MetricRow('Total cost', cost.formatAmount(totalCost)),
-      _MetricRow('Avg consumption',
+        _MetricRow(S.of('trip.m_total_cost'), cost.formatAmount(totalCost)),
+      _MetricRow(S.of('trip.m_avg_cons'),
           trip.avgConsumptionKwh100km != null
               ? '${trip.avgConsumptionKwh100km!.toStringAsFixed(1)} kWh/100km'
               : '—'),
@@ -353,15 +360,15 @@ class DerivedMetricsCard extends StatelessWidget {
               ? '${trip.startSoc!.toStringAsFixed(0)}% → ${trip.endSoc!.toStringAsFixed(0)}%'
                   '${socUsed != null && socUsed > 0 ? ' (-${socUsed.toStringAsFixed(0)}%)' : ''}'
               : '—'),
-      _MetricRow('SOC range during trip',
+      _MetricRow(S.of('trip.m_soc_range'),
           (trip.minSoc != null && trip.maxSoc != null)
               ? '${trip.minSoc!.toStringAsFixed(0)}–${trip.maxSoc!.toStringAsFixed(0)}%'
               : '—'),
-      _MetricRow('Battery temp range',
+      _MetricRow(S.of('trip.m_temp_range'),
           (trip.minBatteryTempC != null && trip.maxBatteryTempC != null)
               ? '${trip.minBatteryTempC!.toStringAsFixed(1)}–${trip.maxBatteryTempC!.toStringAsFixed(1)} °C'
               : '—'),
-      _MetricRow('Max cell spread',
+      _MetricRow(S.of('trip.m_cell_spread'),
           trip.maxCellSpreadMv != null
               ? '${trip.maxCellSpreadMv!.toStringAsFixed(0)} mV'
               : '—'),
@@ -375,27 +382,27 @@ class DerivedMetricsCard extends StatelessWidget {
       // Explorer + future bz5-bridge calibration sessions).
       // v0.1.22: peak speed now actually populated (740/0x0008 verified).
       // Remove the "DID not identified" placeholder when value present.
-      _MetricRow('Peak speed',
+      _MetricRow(S.of('trip.m_peak_speed'),
           trip.peakSpeedKmh != null
               ? '${trip.peakSpeedKmh!.toStringAsFixed(0)} km/h'
               : '—'),
       // v0.1.22: new trip metrics enabled by speed DID + precise SOC.
-      _MetricRow('Avg moving speed',
+      _MetricRow(S.of('trip.m_avg_moving'),
           trip.avgMovingSpeedKmh != null
               ? '${trip.avgMovingSpeedKmh!.toStringAsFixed(0)} km/h'
               : '—'),
-      _MetricRow('Time moving / idle',
+      _MetricRow(S.of('trip.m_time_moving'),
           (trip.movingSeconds != null || trip.idleSeconds != null)
               ? '${_fmtDur(trip.movingSeconds)} / ${_fmtDur(trip.idleSeconds)}'
               : '—'),
       // Energy from precise SOC: independent of integer-SOC-based
       // energyUsedKwh above. When both present, comparing the two gives
       // an idea of measurement noise (typically ±5%).
-      _MetricRow('Energy (precise SOC)',
+      _MetricRow(S.of('trip.m_energy_precise'),
           trip.energyFromSocKwh != null
               ? '${trip.energyFromSocKwh!.toStringAsFixed(2)} kWh'
               : '—'),
-      _MetricRow('Samples logged', '${trip.sampleCount}'),
+      _MetricRow(S.of('trip.m_samples'), '${trip.sampleCount}'),
     ];
 
     return Card(
@@ -404,8 +411,8 @@ class DerivedMetricsCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('TRIP METRICS',
-                style: TextStyle(
+            Text(S.of('trip.metrics_hdr'),
+                style: const TextStyle(
                     fontSize: 11,
                     letterSpacing: 1.5,
                     color: Colors.grey)),
@@ -446,8 +453,8 @@ class OdometerRangeCard extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('ODOMETER',
-                      style: TextStyle(
+                  Text(S.of('trip.odometer_hdr'),
+                      style: const TextStyle(
                           fontSize: 11,
                           letterSpacing: 1.2,
                           color: Colors.grey)),
@@ -551,8 +558,8 @@ class MovingIdleDonutCard extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('TIME BREAKDOWN',
-                      style: TextStyle(
+                  Text(S.of('trip.time_breakdown'),
+                      style: const TextStyle(
                           fontSize: 11,
                           letterSpacing: 1.2,
                           color: Colors.grey)),
@@ -567,7 +574,10 @@ class MovingIdleDonutCard extends StatelessWidget {
                         ),
                       ),
                       const SizedBox(width: 6),
-                      Text('Moving  ${_fmtDur(movSec)}',
+                      Text(
+                          S
+                              .of('trip.moving_fmt')
+                              .replaceFirst('{d}', _fmtDur(movSec)),
                           style: const TextStyle(fontSize: 14)),
                     ],
                   ),
@@ -582,7 +592,10 @@ class MovingIdleDonutCard extends StatelessWidget {
                         ),
                       ),
                       const SizedBox(width: 6),
-                      Text('Idle    ${_fmtDur(idleSec)}',
+                      Text(
+                          S
+                              .of('trip.idle_fmt')
+                              .replaceFirst('{d}', _fmtDur(idleSec)),
                           style: const TextStyle(fontSize: 14)),
                     ],
                   ),
@@ -673,8 +686,8 @@ class SpeedHistogramCardState extends State<SpeedHistogramCard> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('SPEED DISTRIBUTION',
-                style: TextStyle(
+            Text(S.of('trip.speed_dist'),
+                style: const TextStyle(
                     fontSize: 11, letterSpacing: 1.2, color: Colors.grey)),
             const SizedBox(height: 12),
             SizedBox(
@@ -714,16 +727,15 @@ class SpeedHistogramCardState extends State<SpeedHistogramCard> {
                         future: _loadSampleBreakdown(),
                         builder: (c, bSnap) {
                           if (!bSnap.hasData) {
-                            return const Text('No speed data for this trip',
-                                style: TextStyle(color: Colors.grey));
+                            return Text(S.of('trip.no_speed_data'),
+                                style: const TextStyle(color: Colors.grey));
                           }
                           final bd = bSnap.data!;
                           if (bd.isEmpty) {
-                            return const Text(
-                                'No samples recorded for this trip at all\n'
-                                '(trip detection or polling was inactive)',
+                            return Text(
+                                S.of('trip.no_samples'),
                                 textAlign: TextAlign.center,
-                                style: TextStyle(color: Colors.grey));
+                                style: const TextStyle(color: Colors.grey));
                           }
                           final has740 = bd.keys.any((k) => k.startsWith('740/'));
                           final lines = (bd.entries.toList()
@@ -750,10 +762,10 @@ class SpeedHistogramCardState extends State<SpeedHistogramCard> {
                   // below (getTitlesWidget / barGroups), so bind it here.
                   final List<int> bins = counts;
                   if (total == 0) {
-                    return const Center(
+                    return Center(
                       child: Text(
-                        'All samples were at 0 km/h (idle trip)',
-                        style: TextStyle(color: Colors.grey),
+                        S.of('trip.all_idle'),
+                        style: const TextStyle(color: Colors.grey),
                       ),
                     );
                   }
@@ -995,7 +1007,7 @@ class _ChartCard extends StatelessWidget {
                   final samples = snap.data!;
                   if (samples.isEmpty) {
                     return Center(
-                      child: Text('Нет данных',
+                      child: Text(S.of('common.no_data'),
                           style: TextStyle(
                               color: Colors.grey.shade600, fontSize: 12)),
                     );
@@ -1027,7 +1039,8 @@ class _ChartCard extends StatelessWidget {
     }
     if (points.length < 2) {
       return Center(
-        child: Text('Только ${points.length} точка(и)',
+        child: Text(
+            S.of('trip.only_n_points').replaceFirst('{n}', '${points.length}'),
             style: TextStyle(color: Colors.grey.shade600, fontSize: 12)),
       );
     }

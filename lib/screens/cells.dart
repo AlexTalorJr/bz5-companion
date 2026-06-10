@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../l10n/strings.dart';
 import '../services/connection.dart';
+import '../services/locale_service.dart';
 
 /// v0.1.2: Cells screen теперь имеет два режима — CELLS и THERMAL.
 /// Переключатель в AppBar; данные общие из ConnectionService.
@@ -20,19 +22,22 @@ class _CellsScreenState extends State<CellsScreen> {
   @override
   Widget build(BuildContext context) {
     final svc = context.watch<ConnectionService>();
+    // v0.1.29+60: re-render on language switch (per-screen subscription).
+    context.watch<LocaleService>();
     final cells = svc.liveCells;
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Cells balance'),
+        title: Text(S.of('cells.tab_balance')),
         actions: [
           // Сегментированный переключатель режима
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
             child: SegmentedButton<int>(
-              segments: const [
-                ButtonSegment(value: 0, label: Text('Cells')),
-                ButtonSegment(value: 1, label: Text('Thermal')),
+              segments: [
+                ButtonSegment(value: 0, label: Text(S.of('dash.cells_title'))),
+                ButtonSegment(
+                    value: 1, label: Text(S.of('cells.tab_thermal'))),
               ],
               selected: {_mode},
               onSelectionChanged: (s) => setState(() => _mode = s.first),
@@ -45,7 +50,7 @@ class _CellsScreenState extends State<CellsScreen> {
         ],
       ),
       body: cells.isEmpty
-          ? const Center(child: Text('Нет данных. Подключитесь и запустите опрос.'))
+          ? Center(child: Text(S.of('cells.empty')))
           : (_mode == 0 ? _CellsView(cells: cells) : _ThermalView(svc: svc)),
     );
   }
@@ -82,7 +87,13 @@ class _SummaryHeader extends StatelessWidget {
     final hi = cells.reduce((a, b) => a > b ? a : b);
     final avg = cells.reduce((a, b) => a + b) / cells.length;
     final spread = hi - lo;
-    final balanceQuality = spread <= 20 ? 'Excellent' : spread <= 50 ? 'Good' : spread <= 100 ? 'Fair' : 'Poor';
+    final balanceQuality = spread <= 20
+        ? S.of('dash.excellent_cap')
+        : spread <= 50
+            ? S.of('dash.good_cap')
+            : spread <= 100
+                ? S.of('dash.fair_cap')
+                : S.of('dash.poor_cap');
     final balanceColor = spread <= 20 ? Colors.green : spread <= 50 ? Colors.lightGreen : spread <= 100 ? Colors.orange : Colors.red;
 
     return Card(
@@ -100,7 +111,7 @@ class _SummaryHeader extends StatelessWidget {
               ],
             ),
             const Divider(height: 24),
-            Text('Balance: $balanceQuality',
+            Text(S.of('cells.balance_fmt').replaceFirst('{q}', balanceQuality),
                 style: TextStyle(fontSize: 16, color: balanceColor, fontWeight: FontWeight.w500)),
           ],
         ),
@@ -207,16 +218,16 @@ class _ThermalView extends StatelessWidget {
       // Pop classification
       if (delta <= 2) {
         spreadColor = Colors.green;
-        spreadLabel = ' — even';
+        spreadLabel = S.of('cells.even');
       } else if (delta <= 5) {
         spreadColor = Colors.lightGreen;
-        spreadLabel = ' — normal';
+        spreadLabel = S.of('cells.normal');
       } else if (delta <= 10) {
         spreadColor = Colors.orange;
-        spreadLabel = ' — uneven';
+        spreadLabel = S.of('cells.uneven');
       } else {
         spreadColor = Colors.red;
-        spreadLabel = ' — check cooling';
+        spreadLabel = S.of('cells.check_cooling');
       }
     }
 
@@ -244,7 +255,7 @@ class _ThermalView extends StatelessWidget {
             const SizedBox(width: 8),
             Expanded(
               child: _SummaryTile(
-                label: 'SPREAD Δ',
+                label: S.of('cells.spread_d'),
                 value: '$spreadText$spreadLabel',
                 color: spreadColor,
               ),
@@ -265,7 +276,10 @@ class _ThermalView extends StatelessWidget {
                       // v0.1.3: уточнили формулировку. У нас 136 ячеек в
                       // 10 модулях, но BMS отдаёт через UDS только min/max
                       // ячейки на модуль (не каждую из 14 ячеек модуля).
-                      '${svc.packModuleCount ?? 10} MODULES · ${svc.packCellCount ?? 136} CELLS TOTAL',
+                      S
+                          .of('cells.modules_hdr')
+                          .replaceFirst('{m}', '${svc.packModuleCount ?? 10}')
+                          .replaceFirst('{c}', '${svc.packCellCount ?? 136}'),
                       style: const TextStyle(fontSize: 10, letterSpacing: 0.5, color: Colors.grey),
                     ),
                     const Spacer(),
@@ -511,7 +525,7 @@ class _ModuleRow extends StatelessWidget {
                                 // fallbackTempC, contrast the label
                                 // against the fill color the same
                                 // way the real temp text does.
-                                'no temp sensor',
+                                S.of('cells.no_temp_sensor'),
                                 style: TextStyle(
                                   fontSize: 10,
                                   color: hasFill
@@ -599,14 +613,14 @@ class _PackExtremesCard extends StatelessWidget {
     if (minV == null || maxV == null) {
       return Card(
         color: Colors.grey.shade900,
-        child: const Padding(
-          padding: EdgeInsets.all(14),
+        child: Padding(
+          padding: const EdgeInsets.all(14),
           child: Row(
             children: [
-              Icon(Icons.battery_unknown, color: Colors.grey, size: 18),
-              SizedBox(width: 10),
-              Text('Pack extremes: loading…',
-                  style: TextStyle(color: Colors.grey, fontSize: 13)),
+              const Icon(Icons.battery_unknown, color: Colors.grey, size: 18),
+              const SizedBox(width: 10),
+              Text(S.of('dash.pack_extremes_loading'),
+                  style: const TextStyle(color: Colors.grey, fontSize: 13)),
             ],
           ),
         ),
@@ -629,13 +643,13 @@ class _PackExtremesCard extends StatelessWidget {
       excellent = 20; good = 40; fair = 80;
     }
     if (spread <= excellent) {
-      quality = (label: 'excellent', color: Colors.green);
+      quality = (label: S.of('dash.excellent'), color: Colors.green);
     } else if (spread <= good) {
-      quality = (label: 'good', color: Colors.lightGreen);
+      quality = (label: S.of('dash.good'), color: Colors.lightGreen);
     } else if (spread <= fair) {
-      quality = (label: 'fair', color: Colors.orange);
+      quality = (label: S.of('dash.fair'), color: Colors.orange);
     } else {
-      quality = (label: 'check', color: Colors.red);
+      quality = (label: S.of('dash.check'), color: Colors.red);
     }
 
     return Card(
@@ -649,7 +663,10 @@ class _PackExtremesCard extends StatelessWidget {
               children: [
                 const Icon(Icons.battery_full, color: Colors.lightBlueAccent, size: 16),
                 const SizedBox(width: 6),
-                Text('PACK EXTREMES (across $cellCount cells)',
+                Text(
+                    S
+                        .of('dash.pack_extremes')
+                        .replaceFirst('{n}', '$cellCount'),
                     style: const TextStyle(
                       fontSize: 10, letterSpacing: 0.8, color: Colors.grey,
                     )),
@@ -738,7 +755,9 @@ class _ExtremesStat extends StatelessWidget {
           ),
         ),
         Text(
-          cellIndex != null ? 'cell #$cellIndex' : 'cell #—',
+          cellIndex != null
+              ? S.of('dash.cell_n').replaceFirst('{n}', '$cellIndex')
+              : S.of('dash.cell_dash'),
           style: const TextStyle(fontSize: 10, color: Colors.grey, letterSpacing: 0.3),
         ),
       ],

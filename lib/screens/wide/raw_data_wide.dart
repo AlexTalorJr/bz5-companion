@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../data/ecu_registry.dart';
+import '../../l10n/strings.dart';
 import '../../services/connection.dart';
+import '../../services/locale_service.dart';
 
 /// v0.1.4: Raw Data screen for head unit.
 ///
@@ -25,13 +27,16 @@ class _RawDataWideScreenState extends State<RawDataWideScreen> {
   // reverse engineering — these match the EcuSpec set defined elsewhere.
   String _selectedTx = '790';
 
+  // v0.1.29+60: subtitles hold l10n KEYS (resolved with S.of at render
+  // time) so the const list survives language switches without rebuild
+  // gymnastics. ECU names are technical identifiers — kept as-is.
   static const _knownEcus = [
-    _EcuInfo(tx: '790', rx: '798', name: 'BMS Master', subtitle: 'cells, SOC, pack stats'),
-    _EcuInfo(tx: '791', rx: '799', name: 'VCU', subtitle: 'gear, odometer, parking'),
-    _EcuInfo(tx: '740', rx: '748', name: 'PDU/HV Junction', subtitle: 'pack nominal const + PDU temps'),
-    _EcuInfo(tx: '782', rx: '78A', name: 'OBC', subtitle: 'on-board charger'),
-    _EcuInfo(tx: '752', rx: '75A', name: 'BMS Slave 1', subtitle: 'sub-pack'),
-    _EcuInfo(tx: '753', rx: '75B', name: 'BMS Slave 2', subtitle: 'sub-pack'),
+    _EcuInfo(tx: '790', rx: '798', name: 'BMS Master', subtitle: 'raw.ecu_bms_master'),
+    _EcuInfo(tx: '791', rx: '799', name: 'VCU', subtitle: 'raw.ecu_vcu'),
+    _EcuInfo(tx: '740', rx: '748', name: 'PDU/HV Junction', subtitle: 'raw.ecu_pdu'),
+    _EcuInfo(tx: '782', rx: '78A', name: 'OBC', subtitle: 'raw.ecu_obc'),
+    _EcuInfo(tx: '752', rx: '75A', name: 'BMS Slave 1', subtitle: 'raw.ecu_slave'),
+    _EcuInfo(tx: '753', rx: '75B', name: 'BMS Slave 2', subtitle: 'raw.ecu_slave'),
   ];
 
   @override
@@ -39,13 +44,15 @@ class _RawDataWideScreenState extends State<RawDataWideScreen> {
     final svc = context.watch<ConnectionService>();
     final connected = svc.status == ConnectionStatus.connected;
 
+    // v0.1.29+60: re-render on language switch (per-screen subscription).
+    context.watch<LocaleService>();
     return Scaffold(
       appBar: AppBar(title: const Text('Raw Data')),
       body: !connected
-          ? const Center(
+          ? Center(
               child: Text(
-                'Адаптер не подключен',
-                style: TextStyle(color: Colors.grey, fontSize: 16),
+                S.of('common.not_connected_title'),
+                style: const TextStyle(color: Colors.grey, fontSize: 16),
               ),
             )
           : Padding(
@@ -130,10 +137,10 @@ class _EcuListPanel extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const Padding(
-              padding: EdgeInsets.fromLTRB(16, 8, 16, 12),
-              child: Text('ECU MODULES',
-                  style: TextStyle(
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+              child: Text(S.of('raw.ecu_modules'),
+                  style: const TextStyle(
                       fontSize: 11,
                       letterSpacing: 1.5,
                       color: Colors.grey)),
@@ -190,7 +197,7 @@ class _EcuListPanel extends StatelessWidget {
                                     ],
                                   ),
                                   const SizedBox(height: 2),
-                                  Text(e.subtitle,
+                                  Text(S.of(e.subtitle),
                                       style: const TextStyle(
                                           fontSize: 11,
                                           color: Colors.grey)),
@@ -241,7 +248,10 @@ class _DidTablePanel extends StatelessWidget {
                         fontSize: 14, fontWeight: FontWeight.w500)),
                 const Spacer(),
                 if (values != null)
-                  Text('${values.length} DIDs · live',
+                  Text(
+                      S
+                          .of('raw.dids_live')
+                          .replaceFirst('{n}', '${values.length}'),
                       style: const TextStyle(
                           fontSize: 11, color: Colors.grey)),
               ],
@@ -253,11 +263,12 @@ class _DidTablePanel extends StatelessWidget {
             // Body
             Expanded(
               child: values == null || values.isEmpty
-                  ? const Center(
+                  ? Center(
                       child: Text(
-                        'Нет данных. Polling ещё не достиг этого ECU,\nили он не отвечает.',
+                        S.of('raw.no_data'),
                         textAlign: TextAlign.center,
-                        style: TextStyle(color: Colors.grey, fontSize: 13),
+                        style:
+                            const TextStyle(color: Colors.grey, fontSize: 13),
                       ),
                     )
                   : ListView.builder(
@@ -400,16 +411,16 @@ class _DiagnosticsPanel extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Text('DIAGNOSTICS',
-                      style: TextStyle(
+                  Text(S.of('raw.diag_hdr'),
+                      style: const TextStyle(
                           fontSize: 11,
                           letterSpacing: 1.5,
                           color: Colors.grey)),
                   const SizedBox(height: 4),
                   Text(
                     canRun
-                        ? 'Run a DID sweep to capture raw responses for analysis. Available while parking.'
-                        : 'Locked while driving. Diagnostics sweep saturates BLE for several minutes — engage parking (gear = P) to enable.',
+                        ? S.of('raw.diag_can_run')
+                        : S.of('raw.diag_locked'),
                     style: TextStyle(
                         fontSize: 12,
                         color: canRun ? Colors.white70 : Colors.grey),
@@ -421,7 +432,7 @@ class _DiagnosticsPanel extends StatelessWidget {
             FilledButton.icon(
               onPressed: canRun ? () => _showSoonSnackbar(context) : null,
               icon: const Icon(Icons.play_arrow),
-              label: const Text('Run sweep'),
+              label: Text(S.of('raw.run_sweep')),
             ),
           ],
         ),
@@ -431,9 +442,8 @@ class _DiagnosticsPanel extends StatelessWidget {
 
   void _showSoonSnackbar(BuildContext context) {
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Diagnostics UI coming in next release. '
-            'For now use bz5_scanner CLI on Mac.'),
+      SnackBar(
+        content: Text(S.of('raw.coming_soon')),
       ),
     );
   }

@@ -4,7 +4,9 @@ import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
 import '../data/database.dart';
+import '../l10n/strings.dart';
 import '../services/connection.dart';
+import '../services/locale_service.dart';
 import '../services/cost_settings.dart';
 import '../services/trend_aggregator.dart';
 import '../widgets/responsive.dart';
@@ -66,6 +68,8 @@ class _TrendsScreenState extends State<TrendsScreen> {
   Widget build(BuildContext context) {
     final svc = context.watch<ConnectionService>();
     final cost = context.watch<CostSettings>();
+    // v0.1.29+60: re-render on language switch (per-screen subscription).
+    context.watch<LocaleService>();
     final now = DateTime.now();
     final from = now.subtract(_windowDuration());
 
@@ -126,13 +130,11 @@ class _TrendsScreenState extends State<TrendsScreen> {
           children: [
             Icon(Icons.insights, size: 56, color: Colors.grey.shade600),
             const SizedBox(height: 16),
-            const Text('Нет поездок за этот период',
-                style: TextStyle(fontSize: 15)),
+            Text(S.of('trends.empty_title'),
+                style: const TextStyle(fontSize: 15)),
             const SizedBox(height: 8),
             Text(
-              'Trends строится по завершённым поездкам. Сделайте поездку '
-              'с подключённым адаптером — итоги, расход и графики появятся '
-              'здесь.',
+              S.of('trends.empty_hint'),
               textAlign: TextAlign.center,
               style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
             ),
@@ -173,12 +175,19 @@ class _TrendsScreenState extends State<TrendsScreen> {
     final cumLast = agg.totalDistanceKm;
     final cumFooter = agg.cumulativeOdometer.isEmpty
         ? '—'
-        : 'итого ${_fmtKm(cumLast)} км · ${agg.tripCount} поезд.';
+        : S
+            .of('trends.total_fmt')
+            .replaceFirst('{km}', _fmtKm(cumLast))
+            .replaceFirst('{n}', '${agg.tripCount}');
 
     final costTotal = agg.costPerMonth.fold<double>(0, (a, b) => a + b.value);
     final costFooter = agg.costPerMonth.isEmpty
         ? '—'
-        : 'итого ${cost.currencySymbol} ${costTotal.toStringAsFixed(1)} · ${agg.costPerMonth.length} мес';
+        : S
+            .of('trends.cost_total_fmt')
+            .replaceFirst('{c}', cost.currencySymbol)
+            .replaceFirst('{v}', costTotal.toStringAsFixed(1))
+            .replaceFirst('{n}', '${agg.costPerMonth.length}');
 
     // Weighted average consumption: total energy / total distance × 100.
     // More honest than averaging per-trip consumption (which would
@@ -189,7 +198,10 @@ class _TrendsScreenState extends State<TrendsScreen> {
         : null;
     final consFooter = avgCons == null
         ? '—'
-        : 'средн. ${avgCons.toStringAsFixed(1)} кВт·ч/100км · ${agg.consumptionPerTrip.length} поезд.';
+        : S
+            .of('trends.avg_cons_fmt')
+            .replaceFirst('{x}', avgCons.toStringAsFixed(1))
+            .replaceFirst('{n}', '${agg.consumptionPerTrip.length}');
 
     final avgRegen = agg.regenSharePct.isEmpty
         ? null
@@ -199,7 +211,10 @@ class _TrendsScreenState extends State<TrendsScreen> {
             agg.regenSharePct.length;
     final regenFooter = avgRegen == null
         ? '—'
-        : 'средн. ${avgRegen.toStringAsFixed(1)}% · ${agg.regenSharePct.length} поезд.';
+        : S
+            .of('trends.avg_regen_fmt')
+            .replaceFirst('{x}', avgRegen.toStringAsFixed(1))
+            .replaceFirst('{n}', '${agg.regenSharePct.length}');
 
     // SOH "было → сейчас": pulls the chronological first and last SOH
     // sample from the snapshot stream. Both are non-null here because
@@ -208,7 +223,11 @@ class _TrendsScreenState extends State<TrendsScreen> {
     final sohNow = sohPoints.isEmpty ? null : sohPoints.last.y;
     final sohFooter = (sohWas == null || sohNow == null)
         ? '—'
-        : 'было ${sohWas.toStringAsFixed(1)}% → сейчас ${sohNow.toStringAsFixed(1)}% · ${sohPoints.length} точ.';
+        : S
+            .of('trends.soh_fmt')
+            .replaceFirst('{a}', sohWas.toStringAsFixed(1))
+            .replaceFirst('{b}', sohNow.toStringAsFixed(1))
+            .replaceFirst('{n}', '${sohPoints.length}');
 
     // v0.1.29+45: SOH y-axis bounds. Hardcoding 95-100% would make a
     // 95% pack "off-screen"; floating with the data would make 0.5%
@@ -236,31 +255,37 @@ class _TrendsScreenState extends State<TrendsScreen> {
         : agg.realRangePer100.last.y;
     final rangeFooter = (avgRange == null || lastRange == null)
         ? '—'
-        : 'средн. ${avgRange.round()} км · последняя ${lastRange.round()} км · ${agg.realRangePer100.length} точ.';
+        : S
+            .of('trends.range_fmt')
+            .replaceFirst('{a}', '${avgRange.round()}')
+            .replaceFirst('{b}', '${lastRange.round()}')
+            .replaceFirst('{n}', '${agg.realRangePer100.length}');
 
     final children = <Widget>[
       // ── Section 1: period totals ──
-      _SectionLabel('Итоги за период'),
+      _SectionLabel(S.of('trends.sec_totals')),
       _TotalsGrid(agg: agg, cost: cost),
       const SizedBox(height: 20),
 
       // ── Section 2: cumulative & cost ──
-      _SectionLabel('Накопительно'),
+      _SectionLabel(S.of('trends.sec_cumulative')),
       _chartGrid(isWide, [
         _LineCard(
-          title: 'Пробег накопительно',
-          subtitle: 'км нарастающим итогом',
+          title: S.of('trends.cumulative_dist'),
+          subtitle: S.of('trends.cumulative_dist_sub'),
           points: agg.cumulativeOdometer,
           color: Colors.lightBlueAccent,
-          unit: 'км',
+          unit: S.of('trends.km'),
           // monotone by nature — no curve (overshoot would break monotonicity)
           curved: false,
           footer: cumFooter,
         ),
         if (cost.isConfigured)
           _BarCard(
-            title: 'Затраты по месяцам',
-            subtitle: '${cost.currencySymbol} за энергию',
+            title: S.of('trends.cost_by_month'),
+            subtitle: S
+                .of('trends.cost_by_month_sub')
+                .replaceFirst('{v}', cost.currencySymbol),
             bars: agg.costPerMonth,
             color: Colors.amberAccent,
             currency: cost.currencySymbol,
@@ -270,20 +295,20 @@ class _TrendsScreenState extends State<TrendsScreen> {
       const SizedBox(height: 20),
 
       // ── Section 3: efficiency ──
-      _SectionLabel('Эффективность вождения'),
+      _SectionLabel(S.of('trends.sec_efficiency')),
       _chartGrid(isWide, [
         _ScatterTrendCard(
-          title: 'Средний расход',
-          subtitle: 'кВт·ч/100км · точка = поездка, линия = среднее',
+          title: S.of('trends.avg_cons'),
+          subtitle: S.of('trends.avg_cons_sub'),
           dots: agg.consumptionPerTrip,
           trend: agg.consumptionTrendLine,
           color: Colors.tealAccent,
-          unit: 'кВт·ч/100км',
+          unit: S.of('trends.kwh100'),
           footer: consFooter,
         ),
         _LineCard(
-          title: 'Доля рекуперации',
-          subtitle: '% возвращённой энергии',
+          title: S.of('trends.regen_share'),
+          subtitle: S.of('trends.regen_share_sub'),
           points: agg.regenSharePct,
           color: Colors.greenAccent,
           unit: '%',
@@ -294,11 +319,11 @@ class _TrendsScreenState extends State<TrendsScreen> {
       const SizedBox(height: 20),
 
       // ── Section 3b: battery health ──
-      _SectionLabel('Здоровье батареи'),
+      _SectionLabel(S.of('trends.sec_health')),
       _chartGrid(isWide, [
         _LineCard(
           title: 'SOH',
-          subtitle: '% ёмкости · медленная деградация',
+          subtitle: S.of('trends.soh_sub'),
           points: sohPoints
               .map((s) => TrendPoint(s.x, s.y))
               .toList(growable: false),
@@ -310,11 +335,11 @@ class _TrendsScreenState extends State<TrendsScreen> {
           forcedMaxY: sohMaxY,
         ),
         _LineCard(
-          title: 'Реальный запас на 100% (вычисл.)',
-          subtitle: 'км/SOC% × 100 · короткие поездки отфильтрованы',
+          title: S.of('trends.real_range'),
+          subtitle: S.of('trends.real_range_sub'),
           points: agg.realRangePer100,
           color: Colors.purpleAccent,
-          unit: 'км',
+          unit: S.of('trends.km'),
           curved: true,
           footer: rangeFooter,
         ),
@@ -378,15 +403,27 @@ class _TotalsGrid extends StatelessWidget {
   Widget build(BuildContext context) {
     final isWide = LayoutBreakpoints.useHeadUnitLayout(context);
     final cards = <Widget>[
-      _metric(Icons.route, 'Пробег',
-          '${_fmt(agg.totalDistanceKm)} км'),
-      _metric(Icons.bolt, 'Энергия',
-          '${_fmt(agg.totalEnergyKwh)} кВт·ч'),
+      _metric(
+          Icons.route,
+          S.of('trends.m_dist'),
+          S
+              .of('trends.m_km_fmt')
+              .replaceFirst('{n}', _fmt(agg.totalDistanceKm))),
+      _metric(
+          Icons.bolt,
+          S.of('trends.m_energy'),
+          S
+              .of('trends.m_kwh_fmt')
+              .replaceFirst('{n}', _fmt(agg.totalEnergyKwh))),
       if (cost.isConfigured)
-        _metric(Icons.payments_outlined, 'Потрачено',
+        _metric(Icons.payments_outlined, S.of('trends.m_spent'),
             '${cost.currencySymbol} ${_fmt(agg.totalCostMoney)}'),
-      _metric(Icons.eco_outlined, 'Рекуперировано',
-          '${_fmt(agg.totalRegenKwh)} кВт·ч'),
+      _metric(
+          Icons.eco_outlined,
+          S.of('trends.m_regen'),
+          S
+              .of('trends.m_kwh_fmt')
+              .replaceFirst('{n}', _fmt(agg.totalRegenKwh))),
     ];
     // v0.1.29+36: totals were a tall 2×2 grid with a lot of dead vertical
     // space (owner feedback). On head unit lay them out in ONE row; on
@@ -828,11 +865,19 @@ const _ruMonthShort = [
   'янв', 'фев', 'мар', 'апр', 'май', 'июн',
   'июл', 'авг', 'сен', 'окт', 'ноя', 'дек',
 ];
+// v0.1.29+60: English fallback mirrors the Russian one. intl's 'en'
+// data is built in (no initializeDateFormatting needed), so the catch
+// branch is nearly unreachable for en — kept for symmetry.
+const _enMonthShort = [
+  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+];
 String _fmtMonthRu(DateTime d) {
+  final ru = S.locale == 'ru';
   try {
-    return DateFormat.MMM('ru').format(d);
+    return DateFormat.MMM(ru ? 'ru' : 'en').format(d);
   } catch (_) {
-    return _ruMonthShort[d.month - 1];
+    return (ru ? _ruMonthShort : _enMonthShort)[d.month - 1];
   }
 }
 
@@ -958,7 +1003,9 @@ SideTitles _monthBarSideTitles(List<PeriodBar> bars) {
 
 Widget _notEnough(int n) => Center(
       child: Text(
-        n == 0 ? 'Нет данных' : '$n точка — мало для графика',
+        n == 0
+            ? S.of('common.no_data')
+            : S.of('trends.not_enough').replaceFirst('{n}', '$n'),
         style: TextStyle(color: Colors.grey.shade600, fontSize: 11),
       ),
     );

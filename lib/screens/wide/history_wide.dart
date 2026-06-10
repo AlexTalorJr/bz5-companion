@@ -4,7 +4,9 @@ import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
 import '../../data/database.dart';
+import '../../l10n/strings.dart';
 import '../../services/connection.dart';
+import '../../services/locale_service.dart';
 import '../trends.dart';
 import '../trip_detail.dart';
 
@@ -34,6 +36,8 @@ class _HistoryWideScreenState extends State<HistoryWideScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // v0.1.29+60: re-render on language switch (per-screen subscription).
+    context.watch<LocaleService>();
     return Padding(
       padding: const EdgeInsets.all(16),
       child: Column(
@@ -42,23 +46,23 @@ class _HistoryWideScreenState extends State<HistoryWideScreen> {
           // Top tab control + title
           Row(
             children: [
-              const Text('HISTORY',
-                  style: TextStyle(
+              Text(S.of('hist.hdr'),
+                  style: const TextStyle(
                       fontSize: 14,
                       letterSpacing: 2.0,
                       fontWeight: FontWeight.w500,
                       color: Colors.grey)),
               const SizedBox(width: 16),
               SegmentedButton<_Tab>(
-                segments: const [
+                segments: [
                   ButtonSegment(
                       value: _Tab.trips,
-                      label: Text('Trips'),
-                      icon: Icon(Icons.route, size: 16)),
+                      label: Text(S.of('hist.tab_trips')),
+                      icon: const Icon(Icons.route, size: 16)),
                   ButtonSegment(
                       value: _Tab.trends,
-                      label: Text('Trends'),
-                      icon: Icon(Icons.show_chart, size: 16)),
+                      label: Text(S.of('hist.tab_trends')),
+                      icon: const Icon(Icons.show_chart, size: 16)),
                 ],
                 selected: {_tab},
                 onSelectionChanged: (s) =>
@@ -107,12 +111,11 @@ class _TripsBody extends StatelessWidget {
                   Icon(Icons.route_outlined,
                       size: 80, color: Colors.grey.shade600),
                   const SizedBox(height: 20),
-                  const Text('Поездок пока нет',
-                      style: TextStyle(fontSize: 18)),
+                  Text(S.of('hist.empty_title'),
+                      style: const TextStyle(fontSize: 18)),
                   const SizedBox(height: 12),
                   Text(
-                    'Подключитесь к адаптеру и поезжайте — '
-                    'история начнёт заполняться автоматически.',
+                    S.of('hist.empty_hint'),
                     textAlign: TextAlign.center,
                     style: TextStyle(fontSize: 13, color: Colors.grey.shade600),
                   ),
@@ -231,7 +234,9 @@ class _TripsListColumn extends StatelessWidget {
                       fontSize: 13)),
               subtitle: Text(
                 isActive
-                    ? 'ACTIVE · ${_fmtDuration(duration)}'
+                    ? S
+                        .of('hist.active_fmt')
+                        .replaceFirst('{dur}', _fmtDuration(duration))
                     : '${_fmtDuration(duration)}'
                       '${dist != null ? ' · ${dist.toStringAsFixed(1)} km' : ''}',
                 style: TextStyle(
@@ -313,11 +318,11 @@ class _SelectedTripDetail extends StatelessWidget {
                     ],
                   ),
                 ),
-                _bigMetric('DISTANCE',
+                _bigMetric(S.of('hist.distance'),
                     trip.distanceKm != null
                         ? '${trip.distanceKm!.toStringAsFixed(1)} km'
                         : '—'),
-                _bigMetric('ENERGY',
+                _bigMetric(S.of('hist.energy'),
                     trip.energyUsedKwh != null
                         ? '${trip.energyUsedKwh!.toStringAsFixed(2)} kWh'
                         : '—'),
@@ -359,7 +364,7 @@ class _SelectedTripDetail extends StatelessWidget {
               svc: svc,
             ),
             _ChartCard(
-              title: 'Battery temp',
+              title: S.of('hist.battery_temp'),
               tripId: trip.id,
               ecuTx: '790',
               did: '002F',
@@ -377,7 +382,7 @@ class _SelectedTripDetail extends StatelessWidget {
           height: 240,
           child: pair(
             _ChartCard(
-              title: 'Pack voltage',
+              title: S.of('hist.pack_voltage'),
               tripId: trip.id,
               ecuTx: '740',
               did: '0022',
@@ -460,8 +465,8 @@ class _ActiveTripWideView extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(width: 10),
-                const Text('ACTIVE TRIP',
-                    style: TextStyle(
+                Text(S.of('hist.active_trip'),
+                    style: const TextStyle(
                         fontSize: 14,
                         letterSpacing: 2.0,
                         fontWeight: FontWeight.w500,
@@ -490,7 +495,7 @@ class _ActiveTripWideView extends StatelessWidget {
             const SizedBox(width: 12),
             Expanded(
                 child: _HugeMetric(
-                    label: 'DISTANCE',
+                    label: S.of('hist.distance'),
                     value: svc.tripDistanceKm != null
                         ? svc.tripDistanceKm!.toStringAsFixed(1)
                         : '—',
@@ -499,7 +504,7 @@ class _ActiveTripWideView extends StatelessWidget {
             const SizedBox(width: 12),
             Expanded(
                 child: _HugeMetric(
-                    label: 'ENERGY USED',
+                    label: S.of('hist.energy_used'),
                     value: svc.tripEnergyUsedKwh != null
                         ? svc.tripEnergyUsedKwh!.toStringAsFixed(2)
                         : '—',
@@ -513,7 +518,7 @@ class _ActiveTripWideView extends StatelessWidget {
           children: [
             Expanded(
                 child: _HugeMetric(
-                    label: 'AVG CONSUMPTION',
+                    label: S.of('hist.avg_cons'),
                     value: svc.tripAvgConsumptionKwh100km != null
                         ? svc.tripAvgConsumptionKwh100km!.toStringAsFixed(1)
                         : '—',
@@ -522,7 +527,7 @@ class _ActiveTripWideView extends StatelessWidget {
             const SizedBox(width: 12),
             Expanded(
                 child: _HugeMetric(
-                    label: 'PEAK POWER',
+                    label: S.of('hist.peak_power'),
                     value: svc.tripPeakPowerKw != null
                         ? svc.tripPeakPowerKw!.toStringAsFixed(1)
                         : '—',
@@ -531,7 +536,7 @@ class _ActiveTripWideView extends StatelessWidget {
             const SizedBox(width: 12),
             Expanded(
                 child: _HugeMetric(
-                    label: 'TEMP RANGE',
+                    label: S.of('hist.temp_range'),
                     value: (svc.tripMinTempC != null && svc.tripMaxTempC != null)
                         ? '${svc.tripMinTempC!.toStringAsFixed(0)}–${svc.tripMaxTempC!.toStringAsFixed(0)}'
                         : '—',
@@ -543,7 +548,7 @@ class _ActiveTripWideView extends StatelessWidget {
         // Mini SOC chart for active trip
         Expanded(
           child: _ChartCard(
-            title: 'SOC over time',
+            title: S.of('hist.soc_over_time'),
             tripId: trip.id,
             ecuTx: '790',
             did: '0005',
@@ -691,7 +696,7 @@ class _ChartCard extends StatelessWidget {
     final points = <FlSpot>[];
     if (samples.isEmpty) {
       return Center(
-        child: Text('Нет данных',
+        child: Text(S.of('common.no_data'),
             style: TextStyle(color: Colors.grey.shade600, fontSize: 12)),
       );
     }
@@ -710,7 +715,7 @@ class _ChartCard extends StatelessWidget {
     }
     if (points.length < 2) {
       return Center(
-        child: Text('Накопление данных...',
+        child: Text(S.of('hist.collecting'),
             style: TextStyle(color: Colors.grey.shade600, fontSize: 12)),
       );
     }

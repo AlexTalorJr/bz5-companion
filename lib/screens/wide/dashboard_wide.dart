@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../l10n/strings.dart';
 import '../../services/connection.dart';
+import '../../services/locale_service.dart';
 
 /// v0.1.4: Head-unit Dashboard.
 ///
@@ -29,6 +31,9 @@ class DashboardWideScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final svc = context.watch<ConnectionService>();
+    // v0.1.29+60: re-render on language switch (per-screen subscription
+    // — const home subtree blocks MaterialApp-level rebuilds).
+    context.watch<LocaleService>();
     final connected = svc.status == ConnectionStatus.connected;
 
     return Scaffold(
@@ -38,7 +43,9 @@ class DashboardWideScreen extends StatelessWidget {
           IconButton(
             icon: Icon(svc.isPolling ? Icons.pause_circle : Icons.play_circle),
             iconSize: 32,
-            tooltip: svc.isPolling ? 'Pause polling' : 'Start polling',
+            tooltip: svc.isPolling
+                ? S.of('dashw.pause_polling')
+                : S.of('dashw.start_polling'),
             onPressed: !connected
                 ? null
                 : () {
@@ -87,10 +94,10 @@ class _NotConnectedHero extends StatelessWidget {
         children: [
           const Icon(Icons.bluetooth_disabled, size: 96, color: Colors.grey),
           const SizedBox(height: 24),
-          Text('Адаптер не подключен',
+          Text(S.of('common.not_connected_title'),
               style: Theme.of(context).textTheme.headlineMedium),
           const SizedBox(height: 12),
-          Text('Перейдите в Settings и нажмите «Найти адаптер»',
+          Text(S.of('common.not_connected_hint'),
               style: Theme.of(context).textTheme.bodyLarge?.copyWith(
                     color: Colors.grey,
                   )),
@@ -176,8 +183,8 @@ class _SocHero extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('STATE OF CHARGE',
-                style: TextStyle(
+            Text(S.of('drv.soc'),
+                style: const TextStyle(
                     fontSize: 13, letterSpacing: 1.5, color: Colors.grey)),
             const SizedBox(height: 8),
             Row(
@@ -229,9 +236,9 @@ class _SocHero extends StatelessWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
-                        const Text('RANGE',
-                            style:
-                                TextStyle(fontSize: 12, color: Colors.grey)),
+                        Text(S.of('dash.range'),
+                            style: const TextStyle(
+                                fontSize: 12, color: Colors.grey)),
                         Text('~${rangeKm!.toInt()} km',
                             style: const TextStyle(
                                 fontSize: 32, fontWeight: FontWeight.w300)),
@@ -292,12 +299,12 @@ class _PackVoltageHero extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Row(
+            Row(
               children: [
-                Icon(Icons.bolt, color: Colors.yellowAccent, size: 22),
-                SizedBox(width: 6),
-                Text('PACK VOLTAGE (LIVE)',
-                    style: TextStyle(
+                const Icon(Icons.bolt, color: Colors.yellowAccent, size: 22),
+                const SizedBox(width: 6),
+                Text(S.of('dash.packv_live'),
+                    style: const TextStyle(
                         fontSize: 12,
                         letterSpacing: 1.5,
                         color: Colors.grey)),
@@ -331,8 +338,8 @@ class _PackVoltageHero extends StatelessWidget {
                       const SizedBox(height: 6),
                     ],
                     if (nominalV != null) ...[
-                      const Text('NOMINAL',
-                          style: TextStyle(
+                      Text(S.of('dash.nominal'),
+                          style: const TextStyle(
                               fontSize: 11, color: Colors.grey)),
                       Text('${nominalV!.toStringAsFixed(1)} V',
                           style: const TextStyle(
@@ -370,15 +377,15 @@ class _ChargingPanel extends StatelessWidget {
     if (!isCharging) {
       return Card(
         color: Colors.grey.shade900,
-        child: const Padding(
-          padding: EdgeInsets.all(14),
+        child: Padding(
+          padding: const EdgeInsets.all(14),
           child: Row(
             children: [
-              Icon(Icons.bolt_outlined, color: Colors.grey, size: 28),
-              SizedBox(width: 10),
+              const Icon(Icons.bolt_outlined, color: Colors.grey, size: 28),
+              const SizedBox(width: 10),
               Expanded(
-                child: Text('Not charging',
-                    style: TextStyle(
+                child: Text(S.of('dash.not_charging'),
+                    style: const TextStyle(
                         color: Colors.grey,
                         letterSpacing: 1.0,
                         fontSize: 13)),
@@ -402,15 +409,15 @@ class _ChargingPanel extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Text('CHARGING',
-                      style: TextStyle(
+                  Text(S.of('dash.charging'),
+                      style: const TextStyle(
                           letterSpacing: 1.5,
                           color: Colors.amber,
                           fontSize: 12)),
                   Text(
                     powerKw > 0.1
                         ? '${powerKw.toStringAsFixed(1)} kW'
-                        : 'Connected',
+                        : S.of('dash.connected'),
                     style: const TextStyle(
                         fontSize: 24, fontWeight: FontWeight.w400),
                   ),
@@ -421,8 +428,8 @@ class _ChargingPanel extends StatelessWidget {
               Column(
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
-                  const Text('THIS SESSION',
-                      style: TextStyle(
+                  Text(S.of('dash.this_session'),
+                      style: const TextStyle(
                           fontSize: 11, color: Colors.lightBlueAccent)),
                   Text('${chargedSession!.toStringAsFixed(2)} kWh',
                       style: const TextStyle(
@@ -489,7 +496,7 @@ class _MiddleColumn extends StatelessWidget {
                       child: _SmallMetricCard(
                         icon: Icons.thermostat,
                         color: Colors.orange,
-                        label: 'BATTERY',
+                        label: S.of('dash.battery'),
                         value:
                             tempRaw != null ? '${tempRaw.toInt()}°C' : '—',
                       ),
@@ -505,7 +512,7 @@ class _MiddleColumn extends StatelessWidget {
                       child: _SmallMetricCard(
                         icon: Icons.speed,
                         color: Colors.blue,
-                        label: 'ODOMETER',
+                        label: S.of('dash.odometer'),
                         value: odo != null ? odo.toStringAsFixed(1) : '—',
                         unit: 'km',
                       ),
@@ -515,7 +522,7 @@ class _MiddleColumn extends StatelessWidget {
                       child: _SmallMetricCard(
                         icon: Icons.refresh,
                         color: Colors.purpleAccent,
-                        label: 'CYCLES',
+                        label: S.of('dash.cycles'),
                         value: cycles != null ? '$cycles' : '—',
                       ),
                     ),
@@ -534,7 +541,7 @@ class _MiddleColumn extends StatelessWidget {
                       child: _SmallMetricCard(
                         icon: Icons.directions_car_filled,
                         color: Colors.cyanAccent,
-                        label: 'SPEED',
+                        label: S.of('drv.speed'),
                         value: vehicleSpeed != null
                             ? vehicleSpeed.toStringAsFixed(0)
                             : '—',
@@ -827,12 +834,16 @@ class _ParkingPawlBlock extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(eng ? 'PAWL ENGAGED' : 'PAWL RELEASED',
+                Text(eng
+                        ? S.of('dash.pawl_engaged')
+                        : S.of('dash.pawl_released'),
                     style: TextStyle(
                         fontSize: 12,
                         letterSpacing: 1.0,
                         color: eng ? Colors.greenAccent : Colors.grey)),
-                Text(eng ? 'parking lock active' : 'mechanical lock disengaged',
+                Text(eng
+                        ? S.of('dash.pawl_engaged_sub')
+                        : S.of('dash.pawl_released_sub'),
                     style: const TextStyle(fontSize: 11, color: Colors.grey)),
               ],
             ),
@@ -915,10 +926,16 @@ class _PackExtremesPanel extends StatelessWidget {
     } else {
       excellent = 20; good = 40; fair = 80;
     }
-    if (spread <= excellent) return (label: 'excellent', color: Colors.green);
-    if (spread <= good) return (label: 'good', color: Colors.lightGreen);
-    if (spread <= fair) return (label: 'fair', color: Colors.orange);
-    return (label: 'check', color: Colors.red);
+    if (spread <= excellent) {
+      return (label: S.of('dash.excellent'), color: Colors.green);
+    }
+    if (spread <= good) {
+      return (label: S.of('dash.good'), color: Colors.lightGreen);
+    }
+    if (spread <= fair) {
+      return (label: S.of('dash.fair'), color: Colors.orange);
+    }
+    return (label: S.of('dash.check'), color: Colors.red);
   }
 
   @override
@@ -926,10 +943,10 @@ class _PackExtremesPanel extends StatelessWidget {
     if (minV == null || maxV == null) {
       return Card(
         color: Colors.grey.shade900,
-        child: const Padding(
-          padding: EdgeInsets.all(14),
-          child: Text('Pack extremes: loading…',
-              style: TextStyle(color: Colors.grey, fontSize: 13)),
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Text(S.of('dash.pack_extremes_loading'),
+              style: const TextStyle(color: Colors.grey, fontSize: 13)),
         ),
       );
     }
@@ -947,7 +964,9 @@ class _PackExtremesPanel extends StatelessWidget {
                 const Icon(Icons.battery_full,
                     color: Colors.lightBlueAccent, size: 18),
                 const SizedBox(width: 6),
-                Text('PACK EXTREMES (across $cellCount cells)',
+                Text(S
+                        .of('dash.pack_extremes')
+                        .replaceFirst('{n}', '$cellCount'),
                     style: const TextStyle(
                         fontSize: 11,
                         letterSpacing: 1.0,
@@ -1040,7 +1059,9 @@ class _ExtremeTile extends StatelessWidget {
             ),
           ],
         ),
-        Text(cellIdx != null ? 'cell #$cellIdx' : 'cell #—',
+        Text(cellIdx != null
+                ? S.of('dash.cell_n').replaceFirst('{n}', '$cellIdx')
+                : S.of('dash.cell_dash'),
             style: const TextStyle(
                 fontSize: 11, color: Colors.grey, letterSpacing: 0.3)),
       ],
@@ -1101,7 +1122,9 @@ class _ModulesListPanel extends StatelessWidget {
           children: [
             Row(
               children: [
-                Text('$moduleCount MODULES · MIN..MAX mV · TEMP',
+                Text(S
+                        .of('dash.modules_hdr')
+                        .replaceFirst('{n}', '$moduleCount'),
                     style: const TextStyle(
                         fontSize: 11,
                         letterSpacing: 1.0,
@@ -1232,7 +1255,7 @@ class _ModuleRow extends StatelessWidget {
                   // v0.1.6: 'no temp' clearer than 'no s.' — emphasises that
                   // only the temperature reading is missing for this module
                   // (cell voltages still readout normally — see column to left)
-                  : 'no temp',
+                  : S.of('dash.no_temp'),
               style: TextStyle(
                   fontSize: 12,
                   color: temp != null ? Colors.white70 : Colors.grey,
