@@ -11,6 +11,9 @@ import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.BinaryMessenger
 import java.util.concurrent.ConcurrentHashMap
+import com.bz5companion.bz5_companion.hal.DecodedStreamSink
+import com.bz5companion.bz5_companion.hal.LiveTelemetrySubscriber
+import com.bz5companion.bz5_companion.hal.TargetRegistry
 
 /**
  * Native bridge for talking to BYD/DiLink 5.0 car framework from Flutter.
@@ -78,6 +81,16 @@ class BydNativePlugin : FlutterPlugin, ActivityAware, MethodChannel.MethodCallHa
     @Volatile
     private var eventSink: EventChannel.EventSink? = null
 
+    // HAL push-telemetry subsystem (v0.1.29+61) — separate from the
+    // ICarPropertyService path above. BYDAuto*Device.registerListener
+    // push stream (vendored recon LiveTelemetrySubscriber) on its OWN
+    // EventChannel so high-rate decoded telemetry never interleaves with
+    // property-subscription events.
+    private lateinit var halEventChannel: EventChannel
+    @Volatile private var halSink: EventChannel.EventSink? = null
+    @Volatile private var halSubscriber: LiveTelemetrySubscriber? = null
+    @Volatile private var halStreamSink: DecodedStreamSink? = null
+
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         appContext = binding.applicationContext
         val msgr: BinaryMessenger = binding.binaryMessenger
@@ -93,6 +106,20 @@ class BydNativePlugin : FlutterPlugin, ActivityAware, MethodChannel.MethodCallHa
 
             override fun onCancel(args: Any?) {
                 eventSink = null
+            }
+        })
+
+        // Dedicated HAL telemetry stream. onListen just records the sink;
+        // the subscription is started explicitly via halStreamStart (so
+        // listening alone doesn't auto-bind the framework).
+        halEventChannel = EventChannel(msgr, CHANNEL_HAL_EVENTS)
+        halEventChannel.setStreamHandler(object : EventChannel.StreamHandler {
+            override fun onListen(args: Any?, sink: EventChannel.EventSink) {
+                halSink = sink
+            }
+            override fun onCancel(args: Any?) {
+                stopHalStream()
+                halSink = null
             }
         })
         BydLogger.i(TAG, "BydNativePlugin attached")
@@ -112,8 +139,12 @@ class BydNativePlugin : FlutterPlugin, ActivityAware, MethodChannel.MethodCallHa
         // framework's internal state changed.
         try { BydHalProbe.clearCache() } catch (_: Throwable) {}
 
+        stopHalStream()
+        halSink = null
+
         methodChannel.setMethodCallHandler(null)
         eventChannel.setStreamHandler(null)
+        halEventChannel.setStreamHandler(null)
         eventSink = null
         BydLogger.i(TAG, "BydNativePlugin detached")
     }
@@ -168,6 +199,9 @@ class BydNativePlugin : FlutterPlugin, ActivityAware, MethodChannel.MethodCallHa
                 "probeConnectionPaths" -> handleProbeConnectionPaths(result)
                 "halProbeAll"          -> handleHalProbeAll(result)
                 "halGet"               -> handleHalGet(call, result)
+                // v0.1.29+61: HAL push-telemetry stream control.
+                "halStreamStart"       -> handleHalStreamStart(result)
+                "halStreamStop"        -> { stopHalStream(); result.success(true) }
                 else                -> result.notImplemented()
             }
         } catch (t: Throwable) {
@@ -520,10 +554,71 @@ class BydNativePlugin : FlutterPlugin, ActivityAware, MethodChannel.MethodCallHa
         )
     }
 
+    // ─── HAL push-telemetry control ────────────────────────────────────
+
+    /**
+     * Start the live HAL telemetry subscription. Requires Dart to already
+     * be listening on the HAL EventChannel (so there's a sink to push
+     * into). Returns the subscriber start status (registered / failed
+     * target counts) for bring-up diagnostics. Restarts cleanly if
+     * already running.
+     */
+    private fun handleHalStreamStart(result: MethodChannel.Result) {
+        val sink = halSink
+            ?: return result.error(
+                "HAL_NO_SINK",
+                "Dart must listen on the HAL event channel before halStreamStart",
+                null,
+            )
+        stopHalStream() // restart cleanly if already running
+
+        // Bring-up can block (reflection + registerListener round-trips),
+        // so run off the main thread; marshal status back via result.
+        Thread {
+            try {
+                val streamSink = DecodedStreamSink(sink)
+                val subscriber = LiveTelemetrySubscriber(
+                    appContext,
+                    streamSink,
+                    TargetRegistry.streamingTargets(appContext), // 8 targets
+                )
+                val status = subscriber.start()
+                halStreamSink = streamSink
+                halSubscriber = subscriber
+                BydLogger.i(TAG, "HAL stream started: $status")
+                // SubscriptionStatus is a data class — not channel-safe.
+                // Marshal to a plain Map the Dart side parses (HalStartStatus).
+                result.success(
+                    mapOf(
+                        "attempted" to status.targetsAttempted,
+                        "registered" to status.targetsRegistered,
+                        "failed" to status.targetsFailed,
+                        "errors" to status.perTargetErrors,
+                    )
+                )
+            } catch (t: Throwable) {
+                BydLogger.e(TAG, "halStreamStart failed", t)
+                stopHalStream()
+                result.error("HAL_START_ERROR", t.message, t.stackTraceToString())
+            }
+        }.start()
+    }
+
+    /** Stop the HAL subscription and detach the bridging sink. Idempotent. */
+    private fun stopHalStream() {
+        try { halSubscriber?.stop() } catch (t: Throwable) {
+            BydLogger.e(TAG, "halSubscriber.stop failed", t)
+        }
+        halSubscriber = null
+        try { halStreamSink?.detach() } catch (_: Throwable) {}
+        halStreamSink = null
+    }
+
     companion object {
         private const val TAG = "BydNativePlugin"
         const val CHANNEL_METHOD = "bz5_companion/native_car"
         const val CHANNEL_EVENTS = "bz5_companion/native_car/events"
+        const val CHANNEL_HAL_EVENTS = "bz5_companion/hal_telemetry/events"
         // Arbitrary 12-bit non-conflicting request code for our perm batch.
         private const val REQ_CODE_BYDAUTO_PERMS = 0x42D
     }

@@ -1,0 +1,36 @@
+# HAL shared-code sync manifest
+# ─────────────────────────────
+# These 5 files are VENDORED from bz5_recon (upstream owns them). They are
+# copied verbatim except the package line + a checksum header. DO NOT edit
+# their bodies in companion — re-sync from recon when divergence is needed
+# (see DECODER_CHANGELOG.md for the decoder delta process).
+#
+# tools/hal_sync_check.py reads this manifest:
+#   - if a listed file is ABSENT from this dir → WARN (not yet vendored)
+#   - if PRESENT → its checksum header must declare this same version + SHA
+#
+# Vendoring procedure (do once, on the Mac that has both repos):
+#   for each file below:
+#     cp  bz5-recon/android/app/src/main/kotlin/com/bz5/recon/live/<F>  ./<F>
+#     set first line:  package com.bz5companion.bz5_companion.hal
+#     paste header above package:
+#       // === SHARED FROM bz5_recon ===
+#       // Source: bz5-recon/.../live/<F>
+#       // Synced: 2026-06-10 (recon v0.10.53, commit d37fbbc)
+#       // SHA256: <SHA from this manifest>
+#       // DO NOT EDIT directly — re-sync from source repo when divergence needed.
+#
+# Target package (companion): com.bz5companion.bz5_companion.hal
+# (handoff suggested com.bz5.companion.hal; we keep the module's existing
+#  root for consistency with the rest of android/.../bz5_companion/)
+
+version: recon v0.10.53
+commit:  d37fbbc
+
+# <filename>  <recon-source SHA256>   (SHA is of the recon source body,
+#                                       a provenance marker — see changelog)
+TelemetrySink.kt           28426f4a53bec05385b8e83e2bee56ebc77cc7d88d70405ba3e2834d0caf402a
+LiveTelemetrySubscriber.kt 925befca76c4d73065c6aa35a0f589846ab6bb74cf6a6213a09f4c525814642e
+ReflectionCache.kt         9cf45133f4f36937c399265d7c95fb866757c56336468a71cdf32c2752a38625
+TargetRegistry.kt          b4668fd0d09c4566d935af5c23483401ac40b9393290d6e3e8538a8097991552
+TelemetryDecoderTable.kt   2178674794f89d643acab60dfd61999fed975aea07511d36e74c306481e08b2f
