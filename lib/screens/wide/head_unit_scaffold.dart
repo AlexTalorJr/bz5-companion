@@ -3,9 +3,9 @@ import 'package:provider/provider.dart';
 
 import '../../services/connection.dart';
 import '../../services/native_detector.dart';
+import '../../widgets/charging_banner.dart';
 import 'driver_view_wide.dart';
 import 'dashboard_wide.dart';
-import 'raw_data_wide.dart';
 import 'history_wide.dart';
 import 'settings_wide.dart';
 import 'native_explorer_wide.dart';
@@ -81,10 +81,12 @@ class _HeadUnitScaffoldState extends State<HeadUnitScaffold> {
     // the first frame paints immediately even if the platform side is
     // slow.
     _nativeDetector.detect();
+    // v0.1.29+56: Raw Data removed from the rail (research tool →
+    // Settings → Advanced). Rail is now 5 destinations:
+    // Вождение / Автомобиль / История / Настройки / HAL Explorer.
     _screens = [
       const DriverViewWideScreen(),
       const DashboardWideScreen(),
-      const RawDataWideScreen(),
       const HistoryWideScreen(),
       const SettingsWideScreen(),
       NativeExplorerWide(detector: _nativeDetector),
@@ -127,7 +129,7 @@ class _HeadUnitScaffoldState extends State<HeadUnitScaffold> {
                 const NavigationRailDestination(
                   icon: Icon(Icons.directions_car_outlined),
                   selectedIcon: Icon(Icons.directions_car_filled),
-                  label: Text('Driver'),
+                  label: Text('Вождение'),
                 ),
                 NavigationRailDestination(
                   icon: Badge(
@@ -137,17 +139,12 @@ class _HeadUnitScaffoldState extends State<HeadUnitScaffold> {
                     child: const Icon(Icons.analytics_outlined),
                   ),
                   selectedIcon: const Icon(Icons.analytics),
-                  label: const Text('Analytics'),
-                ),
-                const NavigationRailDestination(
-                  icon: Icon(Icons.table_rows_outlined),
-                  selectedIcon: Icon(Icons.table_rows),
-                  label: Text('Raw Data'),
+                  label: const Text('Автомобиль'),
                 ),
                 const NavigationRailDestination(
                   icon: Icon(Icons.timeline_outlined),
                   selectedIcon: Icon(Icons.timeline),
-                  label: Text('History'),
+                  label: Text('История'),
                 ),
                 NavigationRailDestination(
                   icon: Badge(
@@ -156,20 +153,26 @@ class _HeadUnitScaffoldState extends State<HeadUnitScaffold> {
                     child: const Icon(Icons.settings_outlined),
                   ),
                   selectedIcon: const Icon(Icons.settings),
-                  label: const Text('Settings'),
+                  label: const Text('Настройки'),
                 ),
                 const NavigationRailDestination(
-                  icon: Icon(Icons.bug_report_outlined),
-                  selectedIcon: Icon(Icons.bug_report),
-                  label: Text('Native API'),
+                  icon: Icon(Icons.memory_outlined),
+                  selectedIcon: Icon(Icons.memory),
+                  label: Text('HAL Explorer'),
                 ),
               ],
             ),
             const VerticalDivider(thickness: 1, width: 1),
             Expanded(
-              child: IndexedStack(
-                index: _index,
-                children: _screens,
+              // v0.1.29+56: charging banner shows above the active tab
+              // while a session runs; auto-push fires only from the
+              // Driver tab (index 0). See charging_banner.dart.
+              child: ChargingAwareBody(
+                autoPushWhenVisible: _index == 0,
+                child: IndexedStack(
+                  index: _index,
+                  children: _screens,
+                ),
               ),
             ),
           ],
