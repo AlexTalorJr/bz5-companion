@@ -8,6 +8,7 @@ import 'services/connection.dart';
 import 'services/cost_settings.dart';
 import 'services/cloud_sync_service.dart';
 import 'services/bridge_diag_service.dart';
+import 'services/locale_service.dart';
 import 'screens/home.dart';
 
 void main() async {
@@ -25,10 +26,16 @@ void main() async {
   // initializer existing — it never did. await before runApp so the
   // first frame is safe.
   await initializeDateFormatting('ru');
+  // v0.1.29+58: resolve + load the app language BEFORE the first frame.
+  // load() is a single SharedPreferences read (sub-ms after the prefs
+  // file is cached by _requestPermissions/plugins init); awaiting here
+  // avoids an en→ru flash on Russian-configured installs.
+  final localeService = LocaleService();
+  await localeService.load();
   await _requestPermissions();
   final db = AppDatabase();
   final svc = ConnectionService(db);
-  runApp(BZ5App(db: db, svc: svc));
+  runApp(BZ5App(db: db, svc: svc, localeService: localeService));
 }
 
 Future<void> _requestPermissions() async {
@@ -42,8 +49,13 @@ Future<void> _requestPermissions() async {
 class BZ5App extends StatefulWidget {
   final AppDatabase db;
   final ConnectionService svc;
+  final LocaleService localeService;
 
-  const BZ5App({super.key, required this.db, required this.svc});
+  const BZ5App(
+      {super.key,
+      required this.db,
+      required this.svc,
+      required this.localeService});
 
   @override
   State<BZ5App> createState() => _BZ5AppState();
@@ -103,9 +115,18 @@ class _BZ5AppState extends State<BZ5App> with WidgetsBindingObserver {
     // injection so it can dispatch bleStart*/bleStopActiveOperation
     // commands. Logical dependency — Plane A drives the car through
     // the same channels ConnectionService already manages.
+    // v0.1.29+58: LocaleService added as a fifth provider — app
+    // language (System/Русский/English). Created and loaded in main()
+    // so the first frame is already in the right language. Localized
+    // screens subscribe via context.watch<LocaleService>() themselves;
+    // a MaterialApp-level rebuild would NOT reach them through the
+    // `home: const HomeScreen()` const subtree (Flutter skips identical
+    // const children), so per-screen watch is the rebuild mechanism.
     return MultiProvider(
       providers: [
         ChangeNotifierProvider<ConnectionService>.value(value: widget.svc),
+        ChangeNotifierProvider<LocaleService>.value(
+            value: widget.localeService),
         ChangeNotifierProvider<CostSettings>(
           // load() fires async; UI uses CostSettings.isLoaded to avoid
           // briefly displaying a 0 value as "not configured" before
