@@ -1,4 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+import '../l10n/strings.dart';
 
 /// v0.1.5: About screen — verified Toyota BZ5 battery pack specification
 /// derived from reverse engineering + cross-validation with manufacturer specs.
@@ -18,6 +21,10 @@ class AboutScreen extends StatelessWidget {
       appBar: AppBar(title: const Text('About / Pack Specification')),
       body: ListView(
         padding: const EdgeInsets.all(16),
+        // v0.1.29+59: _AppInfoCard became stateful (hidden-Advanced tap
+        // counter) — its constructor stays const, so the const list is
+        // still valid (the State object is created at element-mount,
+        // not in the constructor).
         children: const [
           _IntroCard(),
           SizedBox(height: 16),
@@ -401,30 +408,85 @@ class _DisclaimerCard extends StatelessWidget {
   }
 }
 
-class _AppInfoCard extends StatelessWidget {
+/// v0.1.29+59: the APP card doubles as the hidden unlock for the
+/// Advanced research tools in Settings (Android developer-options
+/// pattern): 15 taps set the persistent `advanced_unlocked` pref. A
+/// countdown snackbar appears for the last 5 taps so the gesture is
+/// discoverable-by-intent but not by accident. Already-unlocked state
+/// is loaded once in initState; further taps are then no-ops.
+class _AppInfoCard extends StatefulWidget {
   const _AppInfoCard();
+
+  @override
+  State<_AppInfoCard> createState() => _AppInfoCardState();
+}
+
+class _AppInfoCardState extends State<_AppInfoCard> {
+  static const int _unlockTaps = 15;
+  int _taps = 0;
+  bool _unlocked = false;
+
+  @override
+  void initState() {
+    super.initState();
+    SharedPreferences.getInstance().then((prefs) {
+      if (!mounted) return;
+      setState(() {
+        _unlocked = prefs.getBool('advanced_unlocked') ?? false;
+      });
+    });
+  }
+
+  Future<void> _onTap() async {
+    if (_unlocked) return;
+    _taps++;
+    final left = _unlockTaps - _taps;
+    final messenger = ScaffoldMessenger.of(context);
+    if (left <= 0) {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('advanced_unlocked', true);
+      if (!mounted) return;
+      setState(() => _unlocked = true);
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(
+        SnackBar(content: Text(S.of('about.adv.unlocked'))),
+      );
+    } else if (left <= 5) {
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(
+              S.of('about.adv.progress').replaceFirst('{n}', '$left')),
+          duration: const Duration(milliseconds: 700),
+        ),
+      );
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     return Card(
       color: Colors.grey.shade900,
-      child: const Padding(
-        padding: EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('APP',
-                style: TextStyle(
-                    fontSize: 12,
-                    letterSpacing: 1.5,
-                    color: Colors.grey)),
-            SizedBox(height: 8),
-            _SpecRow('Source code',
-                'github.com/AlexTalorJr/bz5-companion'),
-            _SpecRow('License', 'MIT'),
-            _SpecRow('Hardware', 'ELM327 BLE (e.g., Vgate iCar Pro)'),
-            _SpecRow('Protocol', 'ISO 15765-4 CAN 11/500'),
-          ],
+      child: InkWell(
+        onTap: _onTap,
+        child: const Padding(
+          padding: EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('APP',
+                  style: TextStyle(
+                      fontSize: 12,
+                      letterSpacing: 1.5,
+                      color: Colors.grey)),
+              SizedBox(height: 8),
+              _SpecRow('Source code',
+                  'github.com/AlexTalorJr/bz5-companion'),
+              _SpecRow('License', 'MIT'),
+              _SpecRow('Hardware', 'ELM327 BLE (e.g., Vgate iCar Pro)'),
+              _SpecRow('Protocol', 'ISO 15765-4 CAN 11/500'),
+            ],
+          ),
         ),
       ),
     );

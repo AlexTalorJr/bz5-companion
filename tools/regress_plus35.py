@@ -2375,26 +2375,31 @@ if int(pv) >= 58:
             else:
                 fail("V3 of() body does not implement ru→en→key chain")
 
-        # V4. LocaleService: persistence + resolution
-        bits = ["prefsKey = 'app_locale'", "{'system', 'ru', 'en'}",
-                "PlatformDispatcher.instance.locale.languageCode",
-                "lang == 'ru' ? 'ru' : 'en'"]
-        miss = [b for b in bits if b not in ldart]
-        if not miss:
-            ok("V4 LocaleService: app_locale prefs + system→(ru|en) resolution")
+        # V4. LocaleService: persistence + mode set.
+        #     +58: {'system','ru','en'} + PlatformDispatcher resolution.
+        #     +59: 'system' removed — explicit 'en' default / 'ru'.
+        if int(pv) >= 59:
+            bits = ["prefsKey = 'app_locale'", "{'ru', 'en'}",
+                    "String _mode = 'en';"]
+            anti = ["PlatformDispatcher", "'system'"]
+            miss = [b for b in bits if b not in ldart]
+            # comments legitimately narrate the removed 'system' mode —
+            # the anti-scan must only see code.
+            ldart_code = re.sub(r"//.*", "", ldart)
+            stale = [a for a in anti if a in ldart_code]
+            if not miss and not stale:
+                ok("V4 LocaleService: en-default + explicit ru, no system mode")
+            else:
+                fail(f"V4 LocaleService +59 shape wrong: missing={miss} stale={stale}")
         else:
-            fail(f"V4 LocaleService incomplete, missing: {miss}")
-        # zh-CN head unit: resolve('system') with non-ru platform → 'en'.
-        # Python port of resolve():
-        def resolve(mode, platform_lang):
-            if mode in ('ru', 'en'):
-                return mode
-            return 'ru' if platform_lang.lower() == 'ru' else 'en'
-        if resolve('system', 'zh') == 'en' and resolve('system', 'ru') == 'ru' \
-                and resolve('ru', 'zh') == 'ru' and resolve('en', 'ru') == 'en':
-            ok("V4 resolve() logic-port: system+zh-CN→en (HU case), system+ru→ru")
-        else:
-            fail("V4 resolve() logic-port failed")
+            bits = ["prefsKey = 'app_locale'", "{'system', 'ru', 'en'}",
+                    "PlatformDispatcher.instance.locale.languageCode",
+                    "lang == 'ru' ? 'ru' : 'en'"]
+            miss = [b for b in bits if b not in ldart]
+            if not miss:
+                ok("V4 LocaleService: app_locale prefs + system→(ru|en) resolution")
+            else:
+                fail(f"V4 LocaleService incomplete, missing: {miss}")
         # Ordering contract: S.locale must be written before notifyListeners
         # in BOTH load() and setMode().
         order_ok = True
@@ -2404,7 +2409,9 @@ if int(pv) >= 58:
                 order_ok = False
                 continue
             body = m.group(1)
-            iw = body.find('S.locale = resolve')
+            # +58 wrote `S.locale = resolve(...)`, +59 writes
+            # `S.locale = _mode` — accept any assignment to the static.
+            iw = body.find('S.locale =')
             inot = body.find('notifyListeners()')
             if iw == -1 or inot == -1 or iw > inot:
                 order_ok = False
@@ -2420,14 +2427,18 @@ if int(pv) >= 58:
         else:
             fail("V5 main() LocaleService wiring incomplete")
 
-        # V6. Settings: language section with 3 radios bound to setMode
-        if settings_src.count('RadioListTile<String>(') == 3 and \
+        # V6. Settings: language section radios bound to setMode.
+        #     +58: 3 (System/Русский/English); +59: 2 (English/Русский).
+        want_radios = 2 if int(pv) >= 59 else 3
+        if settings_src.count('RadioListTile<String>(') == want_radios and \
            "S.of('settings.section.language')" in settings_src and \
-           settings_src.count('groupValue: locale.mode') == 3 and \
-           settings_src.count('locale.setMode(v!)') == 3:
-            ok("V6 Settings language section: 3 RadioListTile → setMode")
+           settings_src.count('groupValue: locale.mode') == want_radios and \
+           settings_src.count('locale.setMode(v!)') == want_radios:
+            ok(f"V6 Settings language section: {want_radios} RadioListTile → setMode")
         else:
             fail("V6 Settings language section missing/incomplete")
+        if int(pv) >= 59 and "'system'" in settings_src:
+            fail("V6 stale 'system' language mode still referenced in settings")
 
         # V7. No hardcoded Cyrillic in code (comments stripped) for the
         #     pilot files. strings.dart is exempt (it IS the dictionary).
@@ -2505,8 +2516,11 @@ if int(pv) >= 58:
         #      string in the UI — silent and ugly.
         if en:
             used = set()
-            for f in ('lib/screens/settings.dart', 'lib/screens/home.dart',
-                      'lib/screens/wide/head_unit_scaffold.dart'):
+            v11_files = ['lib/screens/settings.dart', 'lib/screens/home.dart',
+                         'lib/screens/wide/head_unit_scaffold.dart']
+            if int(pv) >= 59:
+                v11_files.append('lib/screens/about.dart')
+            for f in v11_files:
                 used |= set(re.findall(r"S\.of\('([^']+)'\)", (root / f).read_text()))
             missing = sorted(used - set(en))
             if not missing:
@@ -2522,6 +2536,57 @@ if int(pv) >= 58:
             fail("V12 +49 date-locale init lost from main()")
 else:
     ok(f"Part V skipped (build +{pv}, l10n lands in +58)")
+
+# ───── Part W: hidden Advanced (15-tap unlock) + EN/RU only (+59) ─────
+
+if int(pv) >= 59:
+    sett_w = (root / 'lib/screens/settings.dart').read_text()
+    about_w = (root / 'lib/screens/about.dart').read_text()
+    str_w = (root / 'lib/l10n/strings.dart').read_text()
+
+    # W1. Advanced ExpansionTile render-gated by the unlock flag, and the
+    #     flag is loaded from prefs alongside the other settings.
+    if 'if (_advancedUnlocked)' in sett_w and \
+       "prefs.getBool('advanced_unlocked') ?? false" in sett_w:
+        ok("W1 Advanced ExpansionTile gated by advanced_unlocked pref")
+    else:
+        fail("W1 Advanced gating missing in settings.dart")
+
+    # W2. About APP card: 15-tap counter that persists the unlock and
+    #     surfaces both snackbars (countdown + unlocked).
+    bits = ['_unlockTaps = 15', "prefs.setBool('advanced_unlocked', true)",
+            "S.of('about.adv.unlocked')", "S.of('about.adv.progress')",
+            'class _AppInfoCardState extends State<_AppInfoCard>']
+    miss = [b for b in bits if b not in about_w]
+    if not miss:
+        ok("W2 About APP card: 15-tap unlock with persisted flag + snackbars")
+    else:
+        fail(f"W2 About tap-unlock incomplete, missing: {miss}")
+    # Already-unlocked taps must be no-ops.
+    if 'if (_unlocked) return;' in about_w:
+        ok("W2 taps are no-ops once unlocked")
+    else:
+        fail("W2 missing unlocked-state guard in _onTap")
+
+    # W3. Settings re-reads prefs when returning from About — otherwise
+    #     the freshly unlocked section would not appear until the screen
+    #     is recreated.
+    m = re.search(r"const AboutScreen\(\)(.*?)\}", sett_w, re.S)
+    if m and '_loadSettings();' in m.group(0) and 'await Navigator.of(context).push' in sett_w:
+        ok("W3 Settings awaits About route and reloads prefs on return")
+    else:
+        fail("W3 Settings does not refresh unlock state after About")
+
+    # W4. Language keys: system.* removed from both maps, unlock keys in
+    #     both maps (these are user-visible in RU mode too).
+    if "settings.language.system" not in str_w and \
+       str_w.count("'about.adv.progress'") == 2 and \
+       str_w.count("'about.adv.unlocked'") == 2:
+        ok("W4 strings: system keys gone, about.adv.* present in _en and _ru")
+    else:
+        fail("W4 strings.dart language/unlock keys wrong")
+else:
+    ok(f"Part W skipped (build +{pv}, hidden Advanced lands in +59)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
