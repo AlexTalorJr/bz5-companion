@@ -40,6 +40,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
   // wheel speed). When enabled, Driver view multiplies 740/0x0008
   // by 1.05 before display.
   bool _matchSpeedometer = false;
+  // v0.1.29+59: Advanced (research tools) is hidden until unlocked by
+  // 15 taps on the APP card in the About screen (Android dev-options
+  // style). Persisted — once unlocked, stays unlocked.
+  bool _advancedUnlocked = false;
 
   @override
   void initState() {
@@ -53,6 +57,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     setState(() {
       _autoConnect = prefs.getBool('auto_connect_enabled') ?? false;
       _matchSpeedometer = prefs.getBool('match_speedometer') ?? false;
+      _advancedUnlocked = prefs.getBool('advanced_unlocked') ?? false;
     });
   }
 
@@ -1355,27 +1360,32 @@ class _SettingsScreenState extends State<SettingsScreen> {
             title: Text(S.of('settings.about.title')),
             subtitle: Text(S.of('settings.about.subtitle')),
             trailing: const Icon(Icons.chevron_right, color: Colors.grey),
-            onTap: () => Navigator.of(context).push(
-              MaterialPageRoute(
-                builder: (_) => const AboutScreen(),
-              ),
-            ),
+            // v0.1.29+59: await the route and re-read prefs on return —
+            // the About screen is where Advanced gets unlocked (15 taps
+            // on the APP card), and the ExpansionTile below must appear
+            // immediately when the user comes back.
+            onTap: () async {
+              await Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => const AboutScreen(),
+                ),
+              );
+              _loadSettings();
+            },
           ),
           const Divider(),
 
-          // ════════════ Язык / Language (v0.1.29+58) ════════════
-          // Three modes: System (resolves to ru only when the platform
-          // language is Russian, en otherwise — head unit is zh-CN →
-          // en), or an explicit override. setMode() updates S.locale
+          // ════════════ Язык / Language (v0.1.29+58, simplified +59) ════
+          // Two explicit modes: English (default) / Русский. 'System'
+          // removed in +59 (owner decision). setMode() updates S.locale
           // before notifying, and this screen watches LocaleService, so
           // the whole list re-renders in the new language on the same
           // frame the radio is tapped.
           _SectionLabel(S.of('settings.section.language')),
           RadioListTile<String>(
             dense: true,
-            title: Text(S.of('settings.language.system')),
-            subtitle: Text(S.of('settings.language.system_note')),
-            value: 'system',
+            title: Text(S.of('settings.language.en')),
+            value: 'en',
             groupValue: locale.mode,
             onChanged: (v) => locale.setMode(v!),
           ),
@@ -1383,13 +1393,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
             dense: true,
             title: Text(S.of('settings.language.ru')),
             value: 'ru',
-            groupValue: locale.mode,
-            onChanged: (v) => locale.setMode(v!),
-          ),
-          RadioListTile<String>(
-            dense: true,
-            title: Text(S.of('settings.language.en')),
-            value: 'en',
             groupValue: locale.mode,
             onChanged: (v) => locale.setMode(v!),
           ),
@@ -1411,11 +1414,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
           const Divider(),
 
-          // ════════════ Advanced (research tools, collapsed) ════════════
+          // ════════════ Advanced (research tools, hidden) ════════════
           // v0.1.29+56: research/diagnostic tooling moved here from the
           // top-level list. Nothing is deleted — these tools are needed
           // for the upcoming HAL integration work — they're just out of
           // the casual user's way. Collapsed by default.
+          // v0.1.29+59: hidden entirely until unlocked via 15 taps on
+          // the APP card in About (advanced_unlocked pref).
+          if (_advancedUnlocked)
           ExpansionTile(
             leading: const Icon(Icons.build_outlined, color: Colors.grey),
             title: Text(S.of('settings.advanced.title')),

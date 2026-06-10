@@ -89,11 +89,14 @@ class S {
     'settings.disconnect': 'Disconnect',
     'settings.connected_snack': 'Connected! Switch to Dashboard',
 
-    // Settings — language
-    'settings.language.system': 'System (auto)',
-    'settings.language.system_note': 'English unless the system is Russian',
+    // Settings — language (v0.1.29+59: System mode removed — explicit
+    // EN default / RU switch only)
     'settings.language.ru': 'Русский',
     'settings.language.en': 'English',
+
+    // About — hidden Advanced unlock (v0.1.29+59)
+    'about.adv.progress': '{n} taps to unlock Advanced',
+    'about.adv.unlocked': 'Advanced tools unlocked — see Settings',
 
     // Settings — cost
     'settings.cost.per_kwh.title': 'Cost per kWh',
@@ -324,9 +327,9 @@ class S {
     'settings.disconnect': 'Отключить',
     'settings.connected_snack': 'Подключено! Перейдите на Дашборд',
 
-    // Settings — language
-    'settings.language.system': 'Системный (авто)',
-    'settings.language.system_note': 'English, если система не на русском',
+    // About — hidden Advanced unlock (v0.1.29+59)
+    'about.adv.progress': 'Ещё {n} тапов до Advanced',
+    'about.adv.unlocked': 'Инструменты Advanced разблокированы — в Настройках',
 
     // Settings — cost
     'settings.cost.per_kwh.title': 'Стоимость 1 кВт·ч',
