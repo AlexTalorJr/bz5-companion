@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../l10n/strings.dart';
 import '../services/connection.dart';
+import '../services/locale_service.dart';
 import '../widgets/charging_banner.dart';
 import '../widgets/responsive.dart';
 import 'dashboard.dart';
@@ -59,6 +61,10 @@ class _PhoneHomeScreenState extends State<_PhoneHomeScreen> {
   @override
   Widget build(BuildContext context) {
     final svc = context.watch<ConnectionService>();
+    // v0.1.29+58: rebuild the bottom bar on language switch. The const
+    // home subtree blocks MaterialApp-level rebuilds, so localized
+    // widgets subscribe to LocaleService themselves.
+    context.watch<LocaleService>();
     return Scaffold(
       body: ChargingAwareBody(
         // Auto-push only when the user is on Dashboard (index 0).
@@ -72,17 +78,17 @@ class _PhoneHomeScreenState extends State<_PhoneHomeScreen> {
           NavigationDestination(
             icon: const Icon(Icons.dashboard_outlined),
             selectedIcon: const Icon(Icons.dashboard),
-            label: 'Dashboard',
+            label: S.of('nav.dashboard'),
           ),
-          const NavigationDestination(
-            icon: Icon(Icons.battery_4_bar_outlined),
-            selectedIcon: Icon(Icons.battery_4_bar),
-            label: 'Cells',
+          NavigationDestination(
+            icon: const Icon(Icons.battery_4_bar_outlined),
+            selectedIcon: const Icon(Icons.battery_4_bar),
+            label: S.of('nav.cells'),
           ),
-          const NavigationDestination(
-            icon: Icon(Icons.timeline_outlined),
-            selectedIcon: Icon(Icons.timeline),
-            label: 'History',
+          NavigationDestination(
+            icon: const Icon(Icons.timeline_outlined),
+            selectedIcon: const Icon(Icons.timeline),
+            label: S.of('nav.history'),
           ),
           NavigationDestination(
             icon: Badge(
@@ -91,7 +97,7 @@ class _PhoneHomeScreenState extends State<_PhoneHomeScreen> {
               child: const Icon(Icons.settings_outlined),
             ),
             selectedIcon: const Icon(Icons.settings),
-            label: 'Settings',
+            label: S.of('nav.settings'),
           ),
         ],
       ),

@@ -1,14 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../l10n/strings.dart';
 import '../../services/connection.dart';
-import '../../services/native_detector.dart';
+import '../../services/locale_service.dart';
 import '../../widgets/charging_banner.dart';
 import 'driver_view_wide.dart';
 import 'dashboard_wide.dart';
 import 'history_wide.dart';
 import 'settings_wide.dart';
-import 'native_explorer_wide.dart';
 
 /// v0.1.4: Top-level scaffold for head unit / tablet (≥840 dp wide).
 ///
@@ -17,13 +17,12 @@ import 'native_explorer_wide.dart';
 /// strip. Old Dashboard demoted to "Analytics" tab (cells, modules,
 /// pack extremes — for parked-car deep inspection).
 ///
-/// 6 destinations on a left NavigationRail:
+/// 4 destinations on a left NavigationRail (v0.1.29+58 — Raw Data went
+/// to Settings → Advanced in +56, HAL Explorer followed in +58):
 ///   - Driver — speed/gear/SOC/PackV + 6 trip metrics + status strip
 ///   - Analytics — cells, modules, pack extremes (former Dashboard)
-///   - Raw Data — ECU explorer with live DID table + diagnostics sweep
 ///   - History — trip log
 ///   - Settings — adapter / connection management
-///   - Native API — head-unit native HAL probe (v0.1.27)
 ///
 /// IndexedStack preserves screen state across switches (so a sweep
 /// running on Raw Data doesn't get cancelled if the user briefly
@@ -65,43 +64,25 @@ class HeadUnitScaffold extends StatefulWidget {
 class _HeadUnitScaffoldState extends State<HeadUnitScaffold> {
   int _index = 0;
 
-  // v0.1.27: instance-level (was `static const` in v0.1.4..v0.1.26).
-  // NativeExplorerWide needs `NativeDetector` constructor-injected, which
-  // can't live in a const list. The other 5 screens remain const.
-  late final NativeDetector _nativeDetector;
-  late final List<Widget> _screens;
-
-  @override
-  void initState() {
-    super.initState();
-    _nativeDetector = NativeDetector();
-    // Fire-and-forget probe — the ChangeNotifier wakes up the explorer
-    // screen when the answer is back. Detection is cheap (one
-    // Class.forName + optional VIN reflection); we don't await here so
-    // the first frame paints immediately even if the platform side is
-    // slow.
-    _nativeDetector.detect();
-    // v0.1.29+56: Raw Data removed from the rail (research tool →
-    // Settings → Advanced). Rail is now 5 destinations:
-    // Вождение / Автомобиль / История / Настройки / HAL Explorer.
-    _screens = [
-      const DriverViewWideScreen(),
-      const DashboardWideScreen(),
-      const HistoryWideScreen(),
-      const SettingsWideScreen(),
-      NativeExplorerWide(detector: _nativeDetector),
-    ];
-  }
-
-  @override
-  void dispose() {
-    _nativeDetector.dispose();
-    super.dispose();
-  }
+  // v0.1.29+58: HAL Explorer moved off the rail into Settings →
+  // Advanced (owner: research workbench, hide it). With it went the
+  // NativeDetector this state used to own — the pushed route in
+  // settings.dart (_HalExplorerRoute) now manages the detector
+  // lifecycle itself. Rail is 4 destinations, the list is const again
+  // (v0.1.27 made it instance-level solely for the detector injection).
+  static const List<Widget> _screens = [
+    DriverViewWideScreen(),
+    DashboardWideScreen(),
+    HistoryWideScreen(),
+    SettingsWideScreen(),
+  ];
 
   @override
   Widget build(BuildContext context) {
     final svc = context.watch<ConnectionService>();
+    // v0.1.29+58: rebuild rail labels on language switch (the const
+    // home subtree blocks MaterialApp-level rebuilds).
+    context.watch<LocaleService>();
     // v0.1.23: subtle "look here" indicator on Analytics tab when the
     // car is parked. Driver view is intentionally sparse in P (no trip
     // motion, no live speed) — Analytics has the rich data the user
@@ -126,10 +107,10 @@ class _HeadUnitScaffoldState extends State<HeadUnitScaffold> {
               minWidth: 80,
               useIndicator: true,
               destinations: [
-                const NavigationRailDestination(
-                  icon: Icon(Icons.directions_car_outlined),
-                  selectedIcon: Icon(Icons.directions_car_filled),
-                  label: Text('Вождение'),
+                NavigationRailDestination(
+                  icon: const Icon(Icons.directions_car_outlined),
+                  selectedIcon: const Icon(Icons.directions_car_filled),
+                  label: Text(S.of('nav.driving')),
                 ),
                 NavigationRailDestination(
                   icon: Badge(
@@ -139,12 +120,12 @@ class _HeadUnitScaffoldState extends State<HeadUnitScaffold> {
                     child: const Icon(Icons.analytics_outlined),
                   ),
                   selectedIcon: const Icon(Icons.analytics),
-                  label: const Text('Автомобиль'),
+                  label: Text(S.of('nav.vehicle')),
                 ),
-                const NavigationRailDestination(
-                  icon: Icon(Icons.timeline_outlined),
-                  selectedIcon: Icon(Icons.timeline),
-                  label: Text('История'),
+                NavigationRailDestination(
+                  icon: const Icon(Icons.timeline_outlined),
+                  selectedIcon: const Icon(Icons.timeline),
+                  label: Text(S.of('nav.history')),
                 ),
                 NavigationRailDestination(
                   icon: Badge(
@@ -153,12 +134,7 @@ class _HeadUnitScaffoldState extends State<HeadUnitScaffold> {
                     child: const Icon(Icons.settings_outlined),
                   ),
                   selectedIcon: const Icon(Icons.settings),
-                  label: const Text('Настройки'),
-                ),
-                const NavigationRailDestination(
-                  icon: Icon(Icons.memory_outlined),
-                  selectedIcon: Icon(Icons.memory),
-                  label: Text('HAL Explorer'),
+                  label: Text(S.of('nav.settings')),
                 ),
               ],
             ),

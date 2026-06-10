@@ -2142,24 +2142,35 @@ if int(pv) >= 56:
     else:
         fail("U1 phone nav wrong shape")
 
-    # U2. HU rail: Raw Data screen removed from the stack, labels renamed
-    #     to Russian semantic names, HAL Explorer replaces 'Native API'.
-    if "const RawDataWideScreen()," not in hus and \
-       "Text('Вождение')" in hus and "Text('Автомобиль')" in hus and \
-       "Text('HAL Explorer')" in hus and "Text('Native API')" not in hus:
-        ok("U2 HU rail: 5 destinations, renamed (Вождение/Автомобиль/HAL Explorer)")
+    # U2. HU rail: Raw Data screen removed from the stack, semantic labels.
+    #     +56 shape: 5 destinations, Cyrillic literals + HAL Explorer.
+    #     +58 shape: 4 destinations (HAL Explorer → Settings/Advanced),
+    #     labels via S.of (Part V checks the keys themselves).
+    if int(pv) >= 58:
+        if "const RawDataWideScreen()," not in hus and \
+           "S.of('nav.driving')" in hus and "S.of('nav.vehicle')" in hus and \
+           "Text('HAL Explorer')" not in hus and "Text('Native API')" not in hus:
+            ok("U2 HU rail: 4 destinations, S.of labels, HAL Explorer relocated")
+        else:
+            fail("U2 HU rail wrong shape or stale labels")
     else:
-        fail("U2 HU rail wrong shape or stale labels")
+        if "const RawDataWideScreen()," not in hus and \
+           "Text('Вождение')" in hus and "Text('Автомобиль')" in hus and \
+           "Text('HAL Explorer')" in hus and "Text('Native API')" not in hus:
+            ok("U2 HU rail: 5 destinations, renamed (Вождение/Автомобиль/HAL Explorer)")
+        else:
+            fail("U2 HU rail wrong shape or stale labels")
 
     # U3. HU rail index consistency: _screens list and destinations count
-    #     must match (5 each). The v0.1.26+13 accident (lost tabs) was
-    #     exactly this kind of drift.
+    #     must match (5 each on +56/+57; 4 each from +58). The
+    #     v0.1.26+13 accident (lost tabs) was exactly this kind of drift.
     hus_dests = hus.count("NavigationRailDestination(")
     hus_screens = hus.count("WideScreen(),") + hus.count("NativeExplorerWide(")
-    if hus_dests == 5 and hus_screens == 5:
+    want = 4 if int(pv) >= 58 else 5
+    if hus_dests == want and hus_screens == want:
         ok(f"U3 HU rail: destinations ({hus_dests}) == screens ({hus_screens})")
     else:
-        fail(f"U3 HU rail drift: {hus_dests} destinations vs {hus_screens} screens")
+        fail(f"U3 HU rail drift: {hus_dests} destinations vs {hus_screens} screens (want {want})")
 
     # U4. charging_banner.dart exists with the three key mechanisms:
     #     shared static session guard, route-open guard, named route
@@ -2190,10 +2201,18 @@ if int(pv) >= 56:
     # U7. Settings: five section labels present, Advanced ExpansionTile
     #     contains the research tools (ECU Explorer, DID Sweep, Live Log,
     #     Polling diagnostics) and the wide-only Raw Data entry.
-    sections_ok = all(f"_SectionLabel('{x}')" in sett
-                      for x in ['Подключение', 'Стоимость', 'Облако',
-                                'Автомобиль', 'Данные'])
-    adv_idx = sett.find("title: const Text('Advanced')")
+    if int(pv) >= 58:
+        # +58: section labels localized — literals replaced by S.of keys
+        # (and a sixth Language section appeared, checked in Part V).
+        sections_ok = all(f"_SectionLabel(S.of('settings.section.{x}'))" in sett
+                          for x in ['connection', 'cost', 'cloud',
+                                    'vehicle', 'data'])
+        adv_idx = sett.find("title: Text(S.of('settings.advanced.title'))")
+    else:
+        sections_ok = all(f"_SectionLabel('{x}')" in sett
+                          for x in ['Подключение', 'Стоимость', 'Облако',
+                                    'Автомобиль', 'Данные'])
+        adv_idx = sett.find("title: const Text('Advanced')")
     tools_after_adv = adv_idx > 0 and all(
         sett.find(t, adv_idx) > 0
         for t in ["EcuExplorerScreen()", "SweepScreen()",
@@ -2206,7 +2225,10 @@ if int(pv) >= 56:
 
     # U8. DTC (user-facing feature) is NOT inside Advanced — it stays in
     #     the Автомобиль section above the ExpansionTile.
-    dtc_idx = sett.find("Text('Diagnostics (DTC)')")
+    if int(pv) >= 58:
+        dtc_idx = sett.find("Text(S.of('settings.dtc.title'))")
+    else:
+        dtc_idx = sett.find("Text('Diagnostics (DTC)')")
     if 0 < dtc_idx < adv_idx:
         ok("U8 DTC stays top-level (user feature, not research tool)")
     else:
@@ -2260,6 +2282,246 @@ if int(pv) >= 56:
 
 else:
     ok(f"Part U skipped (build +{pv}, navigation cleanup lands in +56)")
+
+# ─────────── Part V: EN/RU localization mechanism (+58) ───────────
+#
+# Pilot scope: mechanism (S + LocaleService) + fully localized Settings
+# screen (phone == wide, settings_wide just wraps SettingsScreen) +
+# nav labels (phone bottom bar + HU rail) + HAL Explorer relocation
+# rail → Settings/Advanced.
+
+if int(pv) >= 58:
+    import ast
+
+    str_path = root / 'lib/l10n/strings.dart'
+    loc_path = root / 'lib/services/locale_service.dart'
+    if not str_path.exists():
+        fail("V1 lib/l10n/strings.dart missing")
+    if not loc_path.exists():
+        fail("V1 lib/services/locale_service.dart missing")
+    if str_path.exists() and loc_path.exists():
+        sdart = str_path.read_text()
+        ldart = loc_path.read_text()
+        settings_src = (root / 'lib/screens/settings.dart').read_text()
+        home_src = (root / 'lib/screens/home.dart').read_text()
+        rail_src = (root / 'lib/screens/wide/head_unit_scaffold.dart').read_text()
+        main_src = (root / 'lib/main.dart').read_text()
+
+        # V1. S class structure
+        bits = ['class S {', 'static String locale', 'static String of(String key)',
+                'Map<String, String> _en', 'Map<String, String> _ru']
+        miss = [b for b in bits if b not in sdart]
+        if not miss:
+            ok("V1 strings.dart: class S with locale/of/_en/_ru")
+        else:
+            fail(f"V1 strings.dart structure incomplete, missing: {miss}")
+
+        # V2. Parse both maps from Dart source. Dart adjacent-string
+        #     concatenation ('a' 'b') is the same as Python's, and the
+        #     entries are plain literals, so ast.literal_eval works after
+        #     wrapping in braces. Catches syntax drift AND gives us real
+        #     key sets for the parity check.
+        def parse_map(name):
+            m = re.search(name + r"\s*=\s*\{(.*?)\n  \};", sdart, re.S)
+            if not m:
+                return None
+            body = m.group(1)
+            body = re.sub(r"//.*", "", body)  # strip comments
+            try:
+                return ast.literal_eval("{" + body + "}")
+            except Exception as e:
+                fail(f"V2 cannot parse {name} as literal map: {e}")
+                return None
+        en = parse_map("_en")
+        ru = parse_map("_ru")
+        if en and ru:
+            ok(f"V2 maps parse: _en={len(en)} keys, _ru={len(ru)} keys")
+            # Parity: every _ru key must exist in _en (en is the fallback
+            # base — ru-only orphans would be unreachable in EN mode and
+            # signal a typo'd key). _ru ⊂ _en is fine and deliberate
+            # (identical strings like 'OK', 'English' fall back).
+            orphans = sorted(set(ru) - set(en))
+            if not orphans:
+                ok("V2 no ru-orphan keys (every _ru key exists in _en)")
+            else:
+                fail(f"V2 ru-orphan keys (likely typos): {orphans[:8]}")
+
+            # V3. Logic-port of the of() chain. The Dart body must match:
+            #   ru → _ru[key] ?? _en[key] ?? key;  en → _en[key] ?? key
+            if "_ru[key] ?? _en[key] ?? key" in sdart and \
+               "return _en[key] ?? key;" in sdart:
+                def of(loc, key):
+                    if loc == 'ru':
+                        return ru.get(key, en.get(key, key))
+                    return en.get(key, key)
+                cases = [
+                    # key in both → per-locale
+                    ('ru', 'common.cancel', 'Отмена'),
+                    ('en', 'common.cancel', 'Cancel'),
+                    # key only in _en → ru falls back to en
+                    ('ru', 'settings.adapter.title', en['settings.adapter.title']),
+                    # key nowhere → key itself
+                    ('ru', 'no.such.key', 'no.such.key'),
+                    ('en', 'no.such.key', 'no.such.key'),
+                ]
+                bad = [(l, k) for l, k, exp in cases if of(l, k) != exp]
+                # the only-in-en case must actually be only-in-en
+                if 'settings.adapter.title' in ru:
+                    warn("V3 fallback fixture 'settings.adapter.title' now in _ru — pick another")
+                if not bad:
+                    ok("V3 of() fallback chain logic-port: ru→en→key verified")
+                else:
+                    fail(f"V3 fallback logic-port mismatches: {bad}")
+            else:
+                fail("V3 of() body does not implement ru→en→key chain")
+
+        # V4. LocaleService: persistence + resolution
+        bits = ["prefsKey = 'app_locale'", "{'system', 'ru', 'en'}",
+                "PlatformDispatcher.instance.locale.languageCode",
+                "lang == 'ru' ? 'ru' : 'en'"]
+        miss = [b for b in bits if b not in ldart]
+        if not miss:
+            ok("V4 LocaleService: app_locale prefs + system→(ru|en) resolution")
+        else:
+            fail(f"V4 LocaleService incomplete, missing: {miss}")
+        # zh-CN head unit: resolve('system') with non-ru platform → 'en'.
+        # Python port of resolve():
+        def resolve(mode, platform_lang):
+            if mode in ('ru', 'en'):
+                return mode
+            return 'ru' if platform_lang.lower() == 'ru' else 'en'
+        if resolve('system', 'zh') == 'en' and resolve('system', 'ru') == 'ru' \
+                and resolve('ru', 'zh') == 'ru' and resolve('en', 'ru') == 'en':
+            ok("V4 resolve() logic-port: system+zh-CN→en (HU case), system+ru→ru")
+        else:
+            fail("V4 resolve() logic-port failed")
+        # Ordering contract: S.locale must be written before notifyListeners
+        # in BOTH load() and setMode().
+        order_ok = True
+        for fn in ('load', 'setMode'):
+            m = re.search(r"Future<void> " + fn + r"\((.*?)\n  \}", ldart, re.S)
+            if not m:
+                order_ok = False
+                continue
+            body = m.group(1)
+            iw = body.find('S.locale = resolve')
+            inot = body.find('notifyListeners()')
+            if iw == -1 or inot == -1 or iw > inot:
+                order_ok = False
+        if order_ok:
+            ok("V4 S.locale written before notifyListeners in load() and setMode()")
+        else:
+            fail("V4 S.locale/notifyListeners ordering broken")
+
+        # V5. main.dart wiring: loaded before runApp + provider registered
+        if 'await localeService.load();' in main_src and \
+           'ChangeNotifierProvider<LocaleService>.value' in main_src:
+            ok("V5 main(): LocaleService loaded pre-runApp + in provider tree")
+        else:
+            fail("V5 main() LocaleService wiring incomplete")
+
+        # V6. Settings: language section with 3 radios bound to setMode
+        if settings_src.count('RadioListTile<String>(') == 3 and \
+           "S.of('settings.section.language')" in settings_src and \
+           settings_src.count('groupValue: locale.mode') == 3 and \
+           settings_src.count('locale.setMode(v!)') == 3:
+            ok("V6 Settings language section: 3 RadioListTile → setMode")
+        else:
+            fail("V6 Settings language section missing/incomplete")
+
+        # V7. No hardcoded Cyrillic in code (comments stripped) for the
+        #     pilot files. strings.dart is exempt (it IS the dictionary).
+        for f in ('lib/screens/settings.dart', 'lib/screens/home.dart',
+                  'lib/screens/wide/head_unit_scaffold.dart'):
+            dirty = []
+            for i, line in enumerate((root / f).read_text().split('\n'), 1):
+                code = re.sub(r"//.*$", "", line)
+                if re.search(r"[А-Яа-яЁё]", code):
+                    dirty.append(i)
+            if not dirty:
+                ok(f"V7 no hardcoded Cyrillic outside comments: {f}")
+            else:
+                fail(f"V7 hardcoded Cyrillic in {f} lines {dirty[:6]}")
+
+        # V8. Localized screens subscribe to LocaleService themselves —
+        #     `home: const HomeScreen()` is a const subtree, so a
+        #     MaterialApp-level rebuild never reaches them.
+        subs = {
+            'lib/screens/settings.dart': 'context.watch<LocaleService>()',
+            'lib/screens/home.dart': 'context.watch<LocaleService>()',
+            'lib/screens/wide/head_unit_scaffold.dart':
+                'context.watch<LocaleService>()',
+        }
+        miss = [f for f, needle in subs.items()
+                if needle not in (root / f).read_text()]
+        if not miss:
+            ok("V8 pilot screens watch LocaleService (instant re-render)")
+        else:
+            fail(f"V8 missing LocaleService watch in: {miss}")
+
+        # V9. HAL Explorer relocation: gone from the rail, present in
+        #     Settings → Advanced with its own detector lifecycle.
+        rail_clean = ('NativeExplorerWide(' not in rail_src
+                      and "Text('HAL Explorer')" not in rail_src
+                      and rail_src.count('NavigationRailDestination(') == 4)
+        settings_hosts = ('_HalExplorerRoute' in settings_src
+                          and 'NativeExplorerWide(detector: _detector)' in settings_src
+                          and '_detector = NativeDetector();' in settings_src
+                          and '_detector.dispose();' in settings_src)
+        if rail_clean:
+            ok("V9 rail is 4 destinations, NativeExplorerWide removed")
+        else:
+            fail("V9 rail still references HAL Explorer / wrong destination count")
+        if settings_hosts:
+            ok("V9 Settings/Advanced hosts HAL Explorer with owned detector lifecycle")
+        else:
+            fail("V9 _HalExplorerRoute missing or detector lifecycle incomplete")
+        # Not wide-gated: BZ3 (phone layout) must reach it. The tile must
+        # NOT sit inside the useHeadUnitLayout conditional the way Raw
+        # Data does — structural proxy: the HAL ListTile appears after the
+        # Polling diagnostics tile, and there is exactly one
+        # useHeadUnitLayout gate inside the Advanced children (Raw Data's).
+        adv = settings_src[settings_src.find("ExpansionTile("):]
+        if adv.count('LayoutBreakpoints.useHeadUnitLayout(context)') == 1 \
+                and adv.find("Text('HAL Explorer')") > adv.find("Text('Polling diagnostics')") > -1:
+            ok("V9 HAL Explorer tile is not wide-gated (BZ3 phone layout reaches it)")
+        else:
+            fail("V9 HAL Explorer tile gating/placement wrong")
+
+        # V10. Nav labels localized
+        if all(k in home_src for k in ["S.of('nav.dashboard')", "S.of('nav.cells')",
+                                       "S.of('nav.history')", "S.of('nav.settings')"]):
+            ok("V10 phone bottom-bar labels via S.of")
+        else:
+            fail("V10 phone bottom-bar labels not localized")
+        if all(k in rail_src for k in ["S.of('nav.driving')", "S.of('nav.vehicle')",
+                                       "S.of('nav.history')", "S.of('nav.settings')"]):
+            ok("V10 HU rail labels via S.of")
+        else:
+            fail("V10 HU rail labels not localized")
+
+        # V11. Every S.of('key') used anywhere must exist in _en (the
+        #      fallback base). A missing key renders as the raw key
+        #      string in the UI — silent and ugly.
+        if en:
+            used = set()
+            for f in ('lib/screens/settings.dart', 'lib/screens/home.dart',
+                      'lib/screens/wide/head_unit_scaffold.dart'):
+                used |= set(re.findall(r"S\.of\('([^']+)'\)", (root / f).read_text()))
+            missing = sorted(used - set(en))
+            if not missing:
+                ok(f"V11 all {len(used)} S.of keys used in pilot files exist in _en")
+            else:
+                fail(f"V11 S.of keys missing from _en: {missing}")
+
+        # V12. The +49 intl date init must survive (we localize strings,
+        #      not the date machinery).
+        if "await initializeDateFormatting('ru');" in main_src:
+            ok("V12 initializeDateFormatting('ru') preserved in main()")
+        else:
+            fail("V12 +49 date-locale init lost from main()")
+else:
+    ok(f"Part V skipped (build +{pv}, l10n lands in +58)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
