@@ -83,10 +83,11 @@ class DecodedStreamSink(
         }
     }
 
-    // onTargetEvent: degradation / target-level signal. Unused in phase 1
-    // (mutually-exclusive sources don't need it). When we wire auto
-    // HAL→OBD2 fallback we'll override this; default no-op for now.
-    override fun onTargetEvent(targetKey: String, eventType: Int) {
+    // onTargetEvent: per-target lifecycle / health signal (REGISTERED_OK,
+    // REGISTER_FAILED, etc). Unused in phase 1 (mutually-exclusive sources
+    // don't need it). When we wire auto HAL→OBD2 fallback we'll consume the
+    // degradation signal here; default no-op for now.
+    override fun onTargetEvent(event: TargetEvent) {
         // no-op (phase 1)
     }
 
