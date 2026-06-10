@@ -2773,12 +2773,13 @@ if int(pv) >= 61:
     else:
         fail("Y3 DECODER_CHANGELOG missing or lacks v0.10.53 entry")
 
-    # Y4. HAL stream must NOT be wired into the real data source / daily UI
-    #     yet — the SPEED overlapping pilot lands in +64. The only allowed
-    #     consumers are the wrapper itself and (from +63) the dev-only
-    #     HAL Test screen under Advanced. Anything else consuming the channel
-    #     is premature production wiring.
+    # Y4. Until +64 the HAL channel was plumbing-only (wrapper + dev HAL
+    #     Test). From +64 the SPEED pilot wires it into the data layer via
+    #     HalTelemetryService, so that service joins the allowlist. Anything
+    #     else consuming the channel directly is still premature.
     _hal_allow = {'hal_telemetry_channel.dart', 'hal_test.dart'}
+    if int(pv) >= 64:
+        _hal_allow.add('hal_telemetry_service.dart')
     _consumers = []
     for _f in (root / 'lib').rglob('*.dart'):
         if _f.name in _hal_allow:
@@ -2786,12 +2787,76 @@ if int(pv) >= 61:
         if 'hal_telemetry_channel' in _f.read_text():
             _consumers.append(str(_f.relative_to(root)))
     if not _consumers:
-        ok("Y4 HAL stream consumed only by wrapper + dev HAL Test "
-           "(pilot is +64)")
+        ok("Y4 HAL channel consumed only by sanctioned files")
     else:
         fail(f"Y4 HAL channel consumed prematurely by: {_consumers}")
 else:
     ok(f"Part Y skipped (build +{pv}, HAL skeleton lands in +61)")
+
+# ───── Part Z: SPEED overlapping pilot (+64) ─────
+
+if int(pv) >= 64:
+    _svc = (root / 'lib/services/hal_telemetry_service.dart')
+    _dp = (root / 'lib/widgets/driver_panels.dart').read_text()
+    _conn = (root / 'lib/services/connection.dart').read_text()
+    _set = (root / 'lib/screens/settings.dart').read_text()
+
+    # Z1. HalTelemetryService: source mode persisted, freshness gate, and
+    #     PILOT SCOPE — only 'speed' is consumed for display (everything
+    #     else flows but is ignored, per the agreed phase-1 plan).
+    if _svc.exists():
+        ss = _svc.read_text()
+        if "'hal_source_mode'" in ss and 'enum HalSourceMode' in ss:
+            ok("Z1 HalTelemetryService has persisted source mode")
+        else:
+            fail("Z1 source mode / persistence missing")
+        if "e.name != 'speed'" in ss or "e.name == 'speed'" in ss:
+            ok("Z1 service consumes only SPEED (pilot scope)")
+        else:
+            fail("Z1 service not scoped to SPEED only")
+        if 'halSpeedFresh' in ss and 'Duration' in ss:
+            ok("Z1 service has a freshness gate")
+        else:
+            fail("Z1 freshness gate missing")
+    else:
+        fail("Z1 hal_telemetry_service.dart missing")
+
+    # Z2. Honesty of the data layer: ConnectionService.vehicleSpeedKmh must
+    #     STILL read OBD2 (740/0008) only — the pilot swaps the DISPLAY, not
+    #     the recorded value, so trip aggregates stay single-sourced.
+    import re as _reZ
+    _vs = _reZ.search(r'double\?\s+get\s+vehicleSpeedKmh\s*\{(.*?)\}',
+                      _conn, _reZ.S)
+    if _vs and "_latestValues['740']" in _vs.group(1) \
+            and 'hal' not in _vs.group(1).lower():
+        ok("Z2 vehicleSpeedKmh still pure OBD2 (aggregates honest)")
+    else:
+        fail("Z2 vehicleSpeedKmh changed — aggregate honesty at risk")
+    # connection.dart must not import the HAL service/channel
+    if 'hal_telemetry' not in _conn:
+        ok("Z2 ConnectionService does not import HAL (additive rule kept)")
+    else:
+        fail("Z2 ConnectionService now references HAL — not additive")
+
+    # Z3. Driver gauge resolver: prefers HAL when permitted, falls back to
+    #     OBD2 vehicleSpeedKmh; temporary dual-readout gated on hal.running.
+    if 'useHalForSpeed' in _dp and 'vehicleSpeedKmh' in _dp:
+        ok("Z3 driver gauge resolves HAL→OBD2 with fallback")
+    else:
+        fail("Z3 driver gauge resolver missing")
+    if 'hal.running' in _dp and 'OBD2' in _dp:
+        ok("Z3 temporary dual-readout present (gated on stream running)")
+    else:
+        fail("Z3 dual-readout missing")
+
+    # Z4. Source toggle in main Settings: three modes wired to setMode.
+    if _set.count('RadioListTile<HalSourceMode>') == 3 \
+            and 'hal.setMode(' in _set:
+        ok("Z4 data-source toggle: 3 modes wired in Settings")
+    else:
+        fail("Z4 data-source toggle missing/incomplete")
+else:
+    ok(f"Part Z skipped (build +{pv}, SPEED pilot lands in +64)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)

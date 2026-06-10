@@ -17,6 +17,7 @@ import '../services/bridge_diag_service.dart';
 import 'about.dart';
 import 'data_management.dart';
 import 'diagnostics.dart';
+import '../services/hal_telemetry_service.dart';
 import 'ecu_explorer.dart';
 import 'hal_test.dart';
 import 'wide/raw_data_wide.dart';
@@ -1260,6 +1261,47 @@ class _SettingsScreenState extends State<SettingsScreen> {
             value: _matchSpeedometer,
             onChanged: _setMatchSpeedometer,
           ),
+          // v0.1.29+64: data-source selector (SPEED pilot). Auto prefers the
+          // HAL stream when live; HAL-only / OBD2-only force a source for
+          // side-by-side verification. Reads/writes HalTelemetryService.
+          Builder(builder: (context) {
+            final hal = context.watch<HalTelemetryService>();
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                ListTile(
+                  leading: const Icon(Icons.cable, color: Colors.grey),
+                  title: Text(S.of('settings.datasource.title')),
+                  subtitle: Text(
+                    hal.mode != HalSourceMode.obd2Only && !hal.running
+                        ? S.of('settings.datasource.hal_unavailable')
+                        : S.of('settings.datasource.subtitle'),
+                  ),
+                ),
+                RadioListTile<HalSourceMode>(
+                  dense: true,
+                  title: Text(S.of('settings.datasource.auto')),
+                  value: HalSourceMode.auto,
+                  groupValue: hal.mode,
+                  onChanged: (m) => hal.setMode(m!),
+                ),
+                RadioListTile<HalSourceMode>(
+                  dense: true,
+                  title: Text(S.of('settings.datasource.hal')),
+                  value: HalSourceMode.halOnly,
+                  groupValue: hal.mode,
+                  onChanged: (m) => hal.setMode(m!),
+                ),
+                RadioListTile<HalSourceMode>(
+                  dense: true,
+                  title: Text(S.of('settings.datasource.obd2')),
+                  value: HalSourceMode.obd2Only,
+                  groupValue: hal.mode,
+                  onChanged: (m) => hal.setMode(m!),
+                ),
+              ],
+            );
+          }),
           if (svc.status != ConnectionStatus.connected) ...[
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),

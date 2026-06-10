@@ -19,8 +19,10 @@ library;
 
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
 import '../services/hal_telemetry_channel.dart';
+import '../services/hal_telemetry_service.dart';
 
 class HalTestScreen extends StatefulWidget {
   const HalTestScreen({super.key});
@@ -61,7 +63,7 @@ class _NameStat {
 }
 
 class _HalTestScreenState extends State<HalTestScreen> {
-  final _hal = HalTelemetryChannel.instance;
+  HalTelemetryService? _svc;
   StreamSubscription<HalEvent>? _sub;
 
   bool _running = false;
@@ -83,14 +85,16 @@ class _HalTestScreenState extends State<HalTestScreen> {
   void dispose() {
     _repaint?.cancel();
     _sub?.cancel();
-    // Best-effort stop so we don't leave the framework subscription live
-    // after leaving the screen.
-    _hal.stop();
+    // The SERVICE owns the native subscription (it may be feeding the live
+    // speedometer). We only release our diagnostic retainer — the service
+    // keeps the stream up if the source mode still wants it.
+    _svc?.releaseStream();
     super.dispose();
   }
 
   Future<void> _start() async {
     if (_running || _starting) return;
+    final svc = _svc ??= context.read<HalTelemetryService>();
     setState(() {
       _starting = true;
       _error = null;
@@ -99,24 +103,25 @@ class _HalTestScreenState extends State<HalTestScreen> {
       _totalEvents = 0;
     });
 
-    // Listen FIRST — the platform rejects halStreamStart with HAL_NO_SINK
-    // if nothing is listening on the event channel yet.
-    _sub = _hal.events.listen(_onEvent, onError: (Object e) {
+    // Attach to the service's shared event stream and retain it so the
+    // native subscription is running while we watch. Listen FIRST, then
+    // retain (retain may start the stream, which needs a live sink).
+    _sub = svc.rawEvents.listen(_onEvent, onError: (Object e) {
       if (mounted) setState(() => _error = 'stream error: $e');
     });
-
-    final status = await _hal.start();
+    await svc.retainStream();
     if (!mounted) return;
     setState(() {
       _starting = false;
-      if (status == null) {
-        _error = 'halStreamStart returned null (HAL unavailable on this '
-            'device, or no sink). Check logs.';
+      if (!svc.running) {
+        _error = 'HAL stream not running (unavailable on this device, or '
+            'no sink). Check logs.';
         _running = false;
         _sub?.cancel();
         _sub = null;
+        svc.releaseStream();
       } else {
-        _status = status;
+        _status = svc.status;
         _running = true;
         _startedAt = DateTime.now();
       }
@@ -124,9 +129,9 @@ class _HalTestScreenState extends State<HalTestScreen> {
   }
 
   Future<void> _stop() async {
-    await _hal.stop();
     await _sub?.cancel();
     _sub = null;
+    await _svc?.releaseStream();
     if (mounted) setState(() => _running = false);
   }
 

@@ -38,6 +38,7 @@ import 'package:provider/provider.dart';
 import '../l10n/strings.dart';
 import '../services/connection.dart';
 import '../services/cost_settings.dart';
+import '../services/hal_telemetry_service.dart';
 
 /// Speed (huge) + status strip (Pack V / Bat / PDU temps).
 ///
@@ -55,9 +56,21 @@ class SpeedAndStatusStrip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final svc = context.watch<ConnectionService>();
+    // v0.1.29+64: HAL SPEED overlapping pilot. The displayed speedo prefers
+    // HAL when its stream is live & fresh and the source mode permits it;
+    // otherwise it falls back to OBD2. The swap is invisible (same gauge),
+    // except for the temporary dual-readout line below used to verify the
+    // two sources agree on a live drive. vehicleSpeedKmh (and trip
+    // aggregates) stay pure OBD2 — see HalTelemetryService.
+    final hal = context.watch<HalTelemetryService>();
     // v0.1.24: display speed = true wheel speed × 1.05 if user enabled
     // the "match speedometer" toggle in Settings; else raw true speed.
-    final speed = svc.displaySpeedKmh ?? 0.0;
+    final bool usingHal = hal.useHalForSpeed;
+    final double? rawSpeed =
+        usingHal ? hal.halSpeedKmh : svc.vehicleSpeedKmh;
+    final double speed = rawSpeed == null
+        ? 0.0
+        : (svc.matchSpeedometer ? rawSpeed * 1.05 : rawSpeed);
     final packFromCells = svc.packVoltageFromCells;
     final hvBus = svc.hvBusV;
     final batTemp = svc.readNumeric('790', '002F');
@@ -163,6 +176,25 @@ class SpeedAndStatusStrip extends StatelessWidget {
                     fontSize: compact ? 10 : 12,
                     letterSpacing: compact ? 1.0 : 1.5,
                     color: Colors.grey)),
+            // v0.1.29+64 PILOT (temporary): show HAL vs OBD2 speed side by
+            // side whenever the HAL stream is running, so the two sources
+            // can be compared on a live drive. The active source is marked
+            // with •. Removed once HAL speed is confirmed to track OBD2.
+            if (hal.running)
+              Builder(builder: (_) {
+                final h = hal.halSpeedKmh;
+                final o = svc.vehicleSpeedKmh;
+                String f(double? v) => v == null ? '—' : v.toStringAsFixed(0);
+                final halDot = usingHal ? '•' : ' ';
+                final obdDot = usingHal ? ' ' : '•';
+                return Text(
+                  '$halDot HAL ${f(h)} · OBD2 ${f(o)} $obdDot',
+                  style: TextStyle(
+                      fontSize: compact ? 9 : 11,
+                      color: Colors.tealAccent.withValues(alpha: 0.7),
+                      fontFeatures: const [FontFeature.tabularFigures()]),
+                );
+              }),
             SizedBox(height: compact ? 2 : 4),
             // Compact mode runs inside an unbounded-height ListView
             // (via SizedBox parent). Expanded() would assert. In wide
