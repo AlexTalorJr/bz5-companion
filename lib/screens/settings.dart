@@ -18,6 +18,7 @@ import 'about.dart';
 import 'data_management.dart';
 import 'diagnostics.dart';
 import 'ecu_explorer.dart';
+import 'hal_test.dart';
 import 'wide/raw_data_wide.dart';
 import 'wide/native_explorer_wide.dart';
 import 'live_log.dart';
@@ -1509,6 +1510,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 onTap: () => Navigator.of(context).push(
                   MaterialPageRoute(
                     builder: (_) => const _HalExplorerRoute(),
+                  ),
+                ),
+              ),
+              // v0.1.29+63: temporary HAL push-telemetry bring-up test.
+              // Start/Stop the live subscription, watch registered status +
+              // per-decoder value & Hz. Developer surface — removed once the
+              // SPEED overlapping pilot (+64) proves the stream path.
+              ListTile(
+                leading: const Icon(Icons.sensors, color: Colors.grey),
+                title: const Text('HAL Test'),
+                subtitle: const Text('Live push-telemetry bring-up (dev)'),
+                trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const HalTestScreen(),
                   ),
                 ),
               ),

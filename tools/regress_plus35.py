@@ -2773,18 +2773,21 @@ if int(pv) >= 61:
     else:
         fail("Y3 DECODER_CHANGELOG missing or lacks v0.10.53 entry")
 
-    # Y4. HAL stream is NOT auto-wired into any data source / UI yet — +61
-    #     is plumbing only. The SPEED overlapping pilot lands in +62. Guard
-    #     against premature consumption: no screen/service imports the HAL
-    #     channel yet (other than the wrapper itself).
+    # Y4. HAL stream must NOT be wired into the real data source / daily UI
+    #     yet — the SPEED overlapping pilot lands in +64. The only allowed
+    #     consumers are the wrapper itself and (from +63) the dev-only
+    #     HAL Test screen under Advanced. Anything else consuming the channel
+    #     is premature production wiring.
+    _hal_allow = {'hal_telemetry_channel.dart', 'hal_test.dart'}
     _consumers = []
     for _f in (root / 'lib').rglob('*.dart'):
-        if _f.name == 'hal_telemetry_channel.dart':
+        if _f.name in _hal_allow:
             continue
         if 'hal_telemetry_channel' in _f.read_text():
             _consumers.append(str(_f.relative_to(root)))
     if not _consumers:
-        ok("Y4 HAL stream not yet consumed (plumbing-only, pilot is +62)")
+        ok("Y4 HAL stream consumed only by wrapper + dev HAL Test "
+           "(pilot is +64)")
     else:
         fail(f"Y4 HAL channel consumed prematurely by: {_consumers}")
 else:
