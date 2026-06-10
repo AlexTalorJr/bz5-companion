@@ -43,12 +43,28 @@ if "Future<List<Trip>> getTripsInRange(DateTime from, DateTime to)" in db:
 else:
     fail("getTripsInRange missing from database.dart")
 
-# A3. three sections wired
-for label in ["Итоги за период", "Накопительно", "Эффективность вождения", "Здоровье батареи"]:
-    if label in trends:
-        ok(f"section present: {label}")
-    else:
-        fail(f"section label missing: {label}")
+# A3. three sections wired.
+#     +60: section labels moved into the l10n dictionary — trends.dart
+#     references keys, strings.dart holds both translations. The check
+#     follows: key usage in trends + RU value still present in dict.
+if int(pv) >= 60:
+    _strings_src = (root / 'lib/l10n/strings.dart').read_text()
+    for key, ru_label in [
+        ('trends.sec_totals', 'Итоги за период'),
+        ('trends.sec_cumulative', 'Накопительно'),
+        ('trends.sec_efficiency', 'Эффективность вождения'),
+        ('trends.sec_health', 'Здоровье батареи'),
+    ]:
+        if f"_SectionLabel(S.of('{key}'))" in trends and ru_label in _strings_src:
+            ok(f"section present via l10n key: {key}")
+        else:
+            fail(f"section missing: {key} / {ru_label}")
+else:
+    for label in ["Итоги за период", "Накопительно", "Эффективность вождения", "Здоровье батареи"]:
+        if label in trends:
+            ok(f"section present: {label}")
+        else:
+            fail(f"section label missing: {label}")
 
 # A4. old snapshot-only charts removed (the dead ones). Match the old
 #     chart *titles* exactly (title: 'X') — not bare substrings, which
@@ -71,8 +87,12 @@ if "isCurved: curved" in trends or "isCurved: true" in trends:
 else:
     warn("no curved line flag found")
 
-# A6. cumulative odometer must NOT be curved (monotone integrity)
-m = re.search(r"Пробег накопительно.*?curved:\s*(true|false)", trends, re.S)
+# A6. cumulative odometer must NOT be curved (monotone integrity).
+#     +60: the title literal became an l10n key — anchor on the key.
+_a6_anchor = (r"S\.of\('trends\.cumulative_dist'\).*?curved:\s*(true|false)"
+              if int(pv) >= 60
+              else r"Пробег накопительно.*?curved:\s*(true|false)")
+m = re.search(_a6_anchor, trends, re.S)
 if m and m.group(1) == "false":
     ok("cumulative distance is non-curved (monotone preserved)")
 elif m:
@@ -1347,9 +1367,13 @@ if int(pv) >= 49:
     #     try/catch fallback to a hardcoded month-name array. Belt-
     #     and-suspenders: even if init somehow fails, white boxes
     #     don't return.
+    #     +60: helper became locale-aware — fallback indexes a
+    #     ternary-selected array, intl locale follows S.locale.
+    _o4_fallback = ("(ru ? _ruMonthShort : _enMonthShort)[d.month - 1]"
+                    if int(pv) >= 60 else "_ruMonthShort[d.month - 1]")
     if "String _fmtMonthRu(DateTime d)" in trends and \
        "try {" in trends and \
-       "_ruMonthShort[d.month - 1]" in trends:
+       _o4_fallback in trends:
         ok("O4 trends has defensive _fmtMonthRu helper with hardcoded fallback")
     else:
         fail("O4 _fmtMonthRu defensive helper missing")
@@ -2587,6 +2611,130 @@ if int(pv) >= 59:
         fail("W4 strings.dart language/unlock keys wrong")
 else:
     ok(f"Part W skipped (build +{pv}, hidden Advanced lands in +59)")
+
+# ───── Part X: full l10n wave + TripCell layout fix (+60) ─────
+
+if int(pv) >= 60:
+    import subprocess as _sp
+
+    # X1. const-ancestry checker: no S.of inside const constructor spans
+    #     or const list literals anywhere in lib/. This is the compile
+    #     killer the sandbox can't catch (no Dart toolchain) — the
+    #     checker already caught 4 real bugs during the +60 wave.
+    _r = _sp.run(['python3', str(root / 'tools/const_l10n_check.py')],
+                 capture_output=True, text=True, cwd=root)
+    if _r.returncode == 0:
+        ok("X1 const_l10n_check: no S.of inside const spans")
+    else:
+        fail(f"X1 const_l10n_check failed:\n{_r.stdout.strip()}")
+
+    # X2. No Cyrillic in CODE (comments stripped) in any localized file —
+    #     every user-facing RU string must live in strings.dart now.
+    _x2_files = [
+        'lib/screens/dashboard.dart', 'lib/screens/cells.dart',
+        'lib/screens/history.dart', 'lib/screens/trends.dart',
+        'lib/screens/trip_detail.dart', 'lib/screens/diagnostics.dart',
+        'lib/screens/data_management.dart',
+        'lib/screens/polling_diagnostics.dart',
+        'lib/screens/sweep.dart', 'lib/screens/sweep_results.dart',
+        'lib/screens/live_log.dart', 'lib/screens/live_log_results.dart',
+        'lib/screens/ecu_explorer.dart',
+        'lib/screens/wide/driver_view_wide.dart',
+        'lib/screens/wide/dashboard_wide.dart',
+        'lib/screens/wide/history_wide.dart',
+        'lib/screens/wide/charging_view_wide.dart',
+        'lib/screens/wide/raw_data_wide.dart',
+        'lib/widgets/driver_panels.dart',
+        'lib/widgets/charging_banner.dart',
+    ]
+    _x2_bad = []
+    for _f in _x2_files:
+        _src = (root / _f).read_text()
+        # Allowlist: _ruMonthShort in trends.dart is locale DATA (the
+        # defensive fallback array guarded by O4/O6), not a UI string —
+        # strip that one const block before scanning.
+        _src = re.sub(
+            r"const _ruMonthShort = \[[^\]]*\];", '', _src)
+        _code = re.sub(r'///.*', '', _src)
+        _code = re.sub(r'//.*', '', _code)
+        if re.search(r'[А-Яа-яЁё]', _code):
+            _x2_bad.append(_f)
+    if not _x2_bad:
+        ok(f"X2 no Cyrillic outside comments in {len(_x2_files)} localized files")
+    else:
+        fail(f"X2 Cyrillic still in code of: {_x2_bad}")
+
+    # X3. Global key existence: every S.of('key') anywhere in lib/ must
+    #     exist in BOTH _en and _ru (V11 covered only the +58 pilots).
+    _strings_src = (root / 'lib/l10n/strings.dart').read_text()
+    _en_body = _strings_src.split('_en = ')[1].split('_ru = ')[0]
+    _ru_body = _strings_src.split('_ru = ')[1]
+    _used = set()
+    for _f in (root / 'lib').rglob('*.dart'):
+        if _f.name == 'strings.dart':
+            continue
+        _used |= set(re.findall(r"S\.of\('([^']+)'\)", _f.read_text()))
+    # _en is the canonical map — every key must exist there. _ru may
+    # legitimately omit TERM keys (S.of falls back ru→_ru??_en??key by
+    # design, +58): the allowlist below names the deliberate en-only
+    # keys; anything else missing from _ru is a forgotten translation.
+    _ru_enonly_ok = {
+        'settings.adapter.title', 'settings.dtc.title',
+        'settings.language.en', 'settings.language.ru',
+    }
+    _miss_en = sorted(k for k in _used if f"'{k}'" not in _en_body)
+    _miss_ru = sorted(k for k in _used
+                      if f"'{k}'" not in _ru_body and k not in _ru_enonly_ok)
+    if not _miss_en and not _miss_ru:
+        ok(f"X3 all {len(_used)} S.of keys exist in _en "
+           f"(+ru, {len(_ru_enonly_ok)} deliberate en-only terms)")
+    else:
+        fail(f"X3 keys missing — en: {_miss_en} ru: {_miss_ru}")
+
+    # X4. Every SCREEN file that calls S.of in widget code subscribes to
+    #     LocaleService (per-screen watch — the rebuild contract from
+    #     +58). Widgets (driver_panels, charging_banner) are exempt:
+    #     their hosting screens watch and rebuild them.
+    _x4_bad = []
+    for _f in (root / 'lib/screens').rglob('*.dart'):
+        _src = _f.read_text()
+        if "S.of('" in _src and 'context.watch<LocaleService>()' not in _src:
+            _x4_bad.append(str(_f.relative_to(root)))
+    if not _x4_bad:
+        ok("X4 every screen using S.of watches LocaleService")
+    else:
+        fail(f"X4 screens using S.of without LocaleService watch: {_x4_bad}")
+
+    # X5. TripCell layout fix (owner field photo, BZ5 driver view):
+    #     value + unit on a shared alphabetic baseline — the old
+    #     end-alignment + bottom-padding hack let the '—' dash float
+    #     mid-line above the unit. Plus the '0.0' distance fallback for
+    #     an active trip with no movement yet.
+    _dp = (root / 'lib/widgets/driver_panels.dart').read_text()
+    _cell = _dp.split('class TripCell')[1]
+    if 'CrossAxisAlignment.baseline' in _cell and \
+       'textBaseline: TextBaseline.alphabetic' in _cell and \
+       "EdgeInsets.only(bottom: 6)" not in _cell:
+        ok("X5 TripCell: baseline alignment, bottom-padding hack removed")
+    else:
+        fail("X5 TripCell baseline fix missing/incomplete")
+    if "svc.currentTripId != null ? '0.0' : '—'" in _dp and \
+       'value: distStr,' in _dp:
+        ok("X5 distance shows 0.0 (not dash) during an active trip")
+    else:
+        fail("X5 distance 0.0-fallback missing")
+
+    # X6. Month axis labels are locale-aware: intl locale follows
+    #     S.locale with an en fallback array mirroring the ru one.
+    _tr = (root / 'lib/screens/trends.dart').read_text()
+    if "DateFormat.MMM(ru ? 'ru' : 'en')" in _tr and \
+       "const _enMonthShort = [" in _tr and \
+       "'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun'," in _tr:
+        ok("X6 month formatter locale-aware with en fallback array")
+    else:
+        fail("X6 locale-aware month formatter missing")
+else:
+    ok(f"Part X skipped (build +{pv}, l10n wave lands in +60)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)

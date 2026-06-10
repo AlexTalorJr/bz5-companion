@@ -1,4 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+
+import '../services/locale_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../l10n/strings.dart';
@@ -17,6 +20,10 @@ class AboutScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // v0.1.29+60: re-render on language switch (per-screen subscription).
+    // Full About l10n lands in +61 — the +59 adv-unlock strings already
+    // resolve via S.of, so the screen must hold the rebuild contract now.
+    context.watch<LocaleService>();
     return Scaffold(
       appBar: AppBar(title: const Text('About / Pack Specification')),
       body: ListView(

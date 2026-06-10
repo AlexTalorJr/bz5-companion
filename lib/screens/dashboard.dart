@@ -3,7 +3,9 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../l10n/strings.dart';
 import '../services/connection.dart';
+import '../services/locale_service.dart';
 import '../widgets/driver_panels.dart';
 
 class DashboardScreen extends StatelessWidget {
@@ -12,6 +14,8 @@ class DashboardScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final svc = context.watch<ConnectionService>();
+    // v0.1.29+60: re-render on language switch (per-screen subscription).
+    context.watch<LocaleService>();
     final connected = svc.status == ConnectionStatus.connected;
 
     return Scaffold(
@@ -47,9 +51,10 @@ class _NotConnected extends StatelessWidget {
           children: [
             const Icon(Icons.bluetooth_disabled, size: 80, color: Colors.grey),
             const SizedBox(height: 24),
-            Text('Не подключен', style: Theme.of(context).textTheme.headlineSmall),
+            Text(S.of('common.not_connected_title'),
+                style: Theme.of(context).textTheme.headlineSmall),
             const SizedBox(height: 12),
-            const Text('Settings → Найти адаптер', textAlign: TextAlign.center),
+            Text(S.of('dash.find_hint'), textAlign: TextAlign.center),
           ],
         ),
       ),
@@ -219,7 +224,7 @@ class _Connected extends StatelessWidget {
             _MetricCard(
               icon: Icons.thermostat,
               color: Colors.orange,
-              label: 'Battery',
+              label: S.of('dash.battery_s'),
               // Decoder применяет offset −40, не вычитаем повторно.
               value: tempRaw != null ? '${tempRaw.toInt()}°C' : '—',
             ),
@@ -244,7 +249,7 @@ class _Connected extends StatelessWidget {
             _MetricCard(
               icon: Icons.speed,
               color: Colors.blue,
-              label: 'Odometer',
+              label: S.of('dash.odometer_s'),
               value: odo != null ? '${odo.toStringAsFixed(1)} km' : '—',
             ),
             // v0.1.29+8: Cycles and Gear are hidden on tall layout —
@@ -438,7 +443,9 @@ class _ParkingPawlRow extends StatelessWidget {
             ),
             const SizedBox(width: 12),
             Text(
-              engaged ? 'Parking pawl engaged' : 'Parking pawl released',
+              engaged
+                  ? S.of('dash.pawl_engaged_long')
+                  : S.of('dash.pawl_released_long'),
               style: const TextStyle(fontSize: 13, letterSpacing: 0.3),
             ),
           ],
@@ -470,8 +477,9 @@ class _SocCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('STATE OF CHARGE',
-                style: TextStyle(fontSize: 12, letterSpacing: 1.5, color: Colors.grey)),
+            Text(S.of('drv.soc'),
+                style: const TextStyle(
+                    fontSize: 12, letterSpacing: 1.5, color: Colors.grey)),
             const SizedBox(height: 8),
             Row(
               crossAxisAlignment: CrossAxisAlignment.end,
@@ -520,7 +528,9 @@ class _SocCard extends StatelessWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
-                        const Text('Range', style: TextStyle(fontSize: 11, color: Colors.grey)),
+                        Text(S.of('dash.range_s'),
+                            style: const TextStyle(
+                                fontSize: 11, color: Colors.grey)),
                         Text('~${rangeKm!.toInt()} km',
                             style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w400)),
                       ],
@@ -608,8 +618,8 @@ class _TallSocCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('STATE OF CHARGE',
-                style: TextStyle(
+            Text(S.of('drv.soc'),
+                style: const TextStyle(
                     fontSize: 10, letterSpacing: 1.0, color: Colors.grey)),
             const SizedBox(height: 4),
             Expanded(
@@ -646,7 +656,10 @@ class _TallSocCard extends StatelessWidget {
             ),
             const SizedBox(height: 4),
             if (rangeKm != null)
-              Text('Range ~${rangeKm!.toInt()} km',
+              Text(
+                  S
+                      .of('dash.range_inline')
+                      .replaceFirst('{n}', '${rangeKm!.toInt()}'),
                   style: const TextStyle(
                       fontSize: 11, color: Colors.white70)),
             const SizedBox(height: 4),
@@ -731,9 +744,13 @@ class _ChargingBanner extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text('CHARGING',
-                          style: TextStyle(letterSpacing: 1.5, color: Colors.amber)),
-                      Text(power > 0.1 ? '${power.toStringAsFixed(1)} kW' : 'Connected',
+                      Text(S.of('dash.charging'),
+                          style: const TextStyle(
+                              letterSpacing: 1.5, color: Colors.amber)),
+                      Text(
+                          power > 0.1
+                              ? '${power.toStringAsFixed(1)} kW'
+                              : S.of('dash.connected'),
                           style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w500)),
                     ],
                   ),
@@ -742,8 +759,9 @@ class _ChargingBanner extends StatelessWidget {
                   Column(
                     crossAxisAlignment: CrossAxisAlignment.end,
                     children: [
-                      const Text('ETA to 100%',
-                          style: TextStyle(fontSize: 11, color: Colors.grey)),
+                      Text(S.of('dash.eta100'),
+                          style: const TextStyle(
+                              fontSize: 11, color: Colors.grey)),
                       Text(_fmtHours(etaHours),
                           style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w500)),
                     ],
@@ -757,8 +775,8 @@ class _ChargingBanner extends StatelessWidget {
                 children: [
                   const Icon(Icons.water_drop, color: Colors.lightBlueAccent, size: 18),
                   const SizedBox(width: 8),
-                  const Text('This session: ',
-                      style: TextStyle(fontSize: 13, color: Colors.grey)),
+                  Text(S.of('dash.this_session_inline'),
+                      style: const TextStyle(fontSize: 13, color: Colors.grey)),
                   Text('${chargedSession!.toStringAsFixed(2)} kWh',
                       style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500)),
                 ],
@@ -796,10 +814,17 @@ class _TripCard extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('Trip #${svc.currentTripId} · LIVE',
+                  Text(
+                      S
+                          .of('dash.trip_live')
+                          .replaceFirst('{id}', '${svc.currentTripId}'),
                       style: const TextStyle(letterSpacing: 1.0)),
                   if (tripEnergy > 0)
-                    Text('${tripEnergy.toStringAsFixed(2)} kWh used',
+                    Text(
+                        S
+                            .of('dash.kwh_used')
+                            .replaceFirst(
+                                '{e}', tripEnergy.toStringAsFixed(2)),
                         style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w500)),
                 ],
               ),
@@ -823,9 +848,12 @@ class _PhysicsModelCard extends StatelessWidget {
 
         // Footer line — показываем реальные значения если получили,
         // иначе fallback к жёстко заданным (нашли в реверсе 2026-05-03).
-        final cellsText = cellCount != null ? '$cellCount cells' : '136 cells';
-        final modText = moduleCount != null
-            ? '$moduleCount modules' : '10 modules';
+        final cellsText = S
+            .of('dash.cells_fmt')
+            .replaceFirst('{n}', '${cellCount ?? 136}');
+        final modText = S
+            .of('dash.modules_fmt')
+            .replaceFirst('{n}', '${moduleCount ?? 10}');
 
         return Card(
           color: Colors.grey.shade900,
@@ -835,11 +863,15 @@ class _PhysicsModelCard extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Row(
-                  children: const [
-                    Icon(Icons.science_outlined, size: 14, color: Colors.grey),
-                    SizedBox(width: 4),
-                    Text('CALIBRATION',
-                        style: TextStyle(fontSize: 11, letterSpacing: 1.0, color: Colors.grey)),
+                  children: [
+                    const Icon(Icons.science_outlined,
+                        size: 14, color: Colors.grey),
+                    const SizedBox(width: 4),
+                    Text(S.of('dash.calibration'),
+                        style: const TextStyle(
+                            fontSize: 11,
+                            letterSpacing: 1.0,
+                            color: Colors.grey)),
                   ],
                 ),
                 const SizedBox(height: 8),
@@ -856,8 +888,11 @@ class _PhysicsModelCard extends StatelessWidget {
                 if (minIdx != null && maxIdx != null) ...[
                   const SizedBox(height: 6),
                   Text(
-                    '• Live extremes: cell #$minIdx = lowest, '
-                    'cell #$maxIdx = highest (of $cellsText)',
+                    S
+                        .of('dash.live_extremes')
+                        .replaceFirst('{a}', '$minIdx')
+                        .replaceFirst('{b}', '$maxIdx')
+                        .replaceFirst('{c}', cellsText),
                     style: const TextStyle(fontSize: 11, color: Colors.grey, height: 1.4),
                   ),
                 ],
@@ -942,7 +977,7 @@ class _LayoutDiagnostic extends StatelessWidget {
 
 /// Bump when changing the diagnostic format — helps cross-reference
 /// screenshots to specific app versions while iterating.
-const String _kDiagVersion = 'v0.1.29+59';
+const String _kDiagVersion = 'v0.1.29+60';
 
 class _GridCards extends StatelessWidget {
   final List<Widget> children;
@@ -1237,7 +1272,7 @@ class _ConsumptionCardState extends State<_ConsumptionCard> {
     return _MetricCard(
       icon: Icons.eco,
       color: (shown != null && shown < 0) ? Colors.green : Colors.tealAccent,
-      label: 'Consumption',
+      label: S.of('dash.consumption_s'),
       value: shown != null ? '${shown.abs().toStringAsFixed(0)} Wh/km' : '—',
       stale: showHeld,
     );
@@ -1272,19 +1307,26 @@ class _CellsSummaryCard extends StatelessWidget {
     } else {
       excellent = 20; good = 40; fair = 80;
     }
-    if (spread <= excellent) return (label: 'Excellent', color: Colors.green);
-    if (spread <= good) return (label: 'Good', color: Colors.lightGreen);
-    if (spread <= fair) return (label: 'Fair', color: Colors.orange);
-    return (label: 'Poor', color: Colors.red);
+    if (spread <= excellent) {
+      return (label: S.of('dash.excellent_cap'), color: Colors.green);
+    }
+    if (spread <= good) {
+      return (label: S.of('dash.good_cap'), color: Colors.lightGreen);
+    }
+    if (spread <= fair) {
+      return (label: S.of('dash.fair_cap'), color: Colors.orange);
+    }
+    return (label: S.of('dash.poor_cap'), color: Colors.red);
   }
 
   @override
   Widget build(BuildContext context) {
     if (cells.isEmpty) {
-      return const Card(child: ListTile(
-        leading: Icon(Icons.battery_3_bar),
-        title: Text('Cells'),
-        subtitle: Text('Загрузка...'),
+      return Card(
+          child: ListTile(
+        leading: const Icon(Icons.battery_3_bar),
+        title: Text(S.of('dash.cells_title')),
+        subtitle: Text(S.of('common.loading')),
       ));
     }
     final lo = cells.reduce((a, b) => a < b ? a : b);
@@ -1302,8 +1344,9 @@ class _CellsSummaryCard extends StatelessWidget {
           children: [
             Row(
               children: [
-                const Text('CELLS BALANCE',
-                    style: TextStyle(fontSize: 11, letterSpacing: 1.5, color: Colors.grey)),
+                Text(S.of('dash.cells_balance'),
+                    style: const TextStyle(
+                        fontSize: 11, letterSpacing: 1.5, color: Colors.grey)),
                 const Spacer(),
                 Text(quality.label,
                     style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: quality.color)),

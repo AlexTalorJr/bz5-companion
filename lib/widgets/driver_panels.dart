@@ -35,6 +35,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../l10n/strings.dart';
 import '../services/connection.dart';
 import '../services/cost_settings.dart';
 
@@ -157,7 +158,7 @@ class SpeedAndStatusStrip extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('SPEED',
+            Text(S.of('drv.speed'),
                 style: TextStyle(
                     fontSize: compact ? 10 : 12,
                     letterSpacing: compact ? 1.0 : 1.5,
@@ -194,6 +195,12 @@ class TripMetricsPanel extends StatelessWidget {
     final cost = context.watch<CostSettings>();
 
     final dist = svc.tripDistanceKm;
+    // v0.1.29+60: while a trip is active but no movement happened yet,
+    // tripDistanceKm is still null — show an honest 0.0 instead of a
+    // floating dash (owner field photo: '— km' looked broken).
+    final distStr = dist != null
+        ? dist.toStringAsFixed(1)
+        : (svc.currentTripId != null ? '0.0' : '—');
     // v0.1.24: precise-SOC-based energy/consumption (1FFD-derived) so
     // values update each poll cycle smoothly. Integer SOC versions
     // step in 0.65 kWh chunks which made short trips look frozen.
@@ -232,9 +239,9 @@ class TripMetricsPanel extends StatelessWidget {
       children: [
         Expanded(
           child: TripCell(
-              value: dist != null ? dist.toStringAsFixed(1) : '—',
+              value: distStr,
               unit: 'km',
-              label: 'distance',
+              label: S.of('drv.cell.distance'),
               valueFontSize: cellFontSize,
               labelFontSize: labelFontSize,
               unitFontSize: unitFontSize),
@@ -245,7 +252,7 @@ class TripMetricsPanel extends StatelessWidget {
                   ? energyUsed.toStringAsFixed(2)
                   : '—',
               unit: 'kWh',
-              label: 'energy used',
+              label: S.of('drv.cell.energy'),
               valueFontSize: cellFontSize,
               labelFontSize: labelFontSize,
               unitFontSize: unitFontSize),
@@ -257,8 +264,8 @@ class TripMetricsPanel extends StatelessWidget {
                   : (consumption != null
                       ? consumption.toStringAsFixed(1)
                       : '—'),
-              unit: tripAgeSec < 120 ? 'calculating…' : 'kWh/100km',
-              label: 'consumption',
+              unit: tripAgeSec < 120 ? S.of('drv.calculating') : 'kWh/100km',
+              label: S.of('drv.cell.consumption'),
               valueFontSize: cellFontSize,
               labelFontSize: labelFontSize,
               unitFontSize: unitFontSize,
@@ -279,7 +286,7 @@ class TripMetricsPanel extends StatelessWidget {
           child: TripCell(
               value: dur != null ? _fmtDur(dur) : '—',
               unit: '',
-              label: 'duration',
+              label: S.of('drv.cell.duration'),
               valueFontSize: cellFontSize,
               labelFontSize: labelFontSize,
               unitFontSize: unitFontSize),
@@ -290,7 +297,7 @@ class TripMetricsPanel extends StatelessWidget {
                   ? peakKmh.toStringAsFixed(0)
                   : '—',
               unit: 'km/h',
-              label: 'peak speed',
+              label: S.of('drv.cell.peak'),
               valueFontSize: cellFontSize,
               labelFontSize: labelFontSize,
               unitFontSize: unitFontSize),
@@ -301,7 +308,7 @@ class TripMetricsPanel extends StatelessWidget {
                   ? avgMovingKmh.toStringAsFixed(0)
                   : '—',
               unit: 'km/h',
-              label: 'avg moving',
+              label: S.of('drv.cell.avg_moving'),
               valueFontSize: cellFontSize,
               labelFontSize: labelFontSize,
               unitFontSize: unitFontSize),
@@ -320,7 +327,7 @@ class TripMetricsPanel extends StatelessWidget {
                 Icon(Icons.timeline,
                     size: compact ? 12 : 14, color: Colors.grey),
                 const SizedBox(width: 6),
-                Text('THIS TRIP',
+                Text(S.of('drv.this_trip'),
                     style: TextStyle(
                         fontSize: compact ? 10 : 11,
                         letterSpacing: 1.5,
@@ -331,7 +338,7 @@ class TripMetricsPanel extends StatelessWidget {
                         fontSize: compact ? 10 : 11, color: Colors.grey)),
                 const Spacer(),
                 if (tripCostStr != null) ...[
-                  Text('TRIP COST',
+                  Text(S.of('drv.trip_cost'),
                       style: TextStyle(
                           fontSize: compact ? 9 : 10,
                           letterSpacing: 1.2,
@@ -409,8 +416,18 @@ class TripCell extends StatelessWidget {
         FittedBox(
           fit: BoxFit.scaleDown,
           alignment: Alignment.centerLeft,
+          // v0.1.29+60: value + unit sit on a shared text BASELINE.
+          // The previous CrossAxisAlignment.end + Padding(bottom: 6)
+          // hack approximated baseline alignment for normal digits but
+          // fell apart when value == '—': the em-dash glyph floats at
+          // mid x-height of a 36px line while the 14px unit hugged the
+          // bottom, reading as two misaligned lines with a hole under
+          // them (owner field photo, BZ5 driver view). True baseline
+          // alignment is correct for every glyph, digit or dash, in
+          // both wide and compact modes.
           child: Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
+            crossAxisAlignment: CrossAxisAlignment.baseline,
+            textBaseline: TextBaseline.alphabetic,
             children: [
               Text(value,
                   style: TextStyle(
@@ -430,18 +447,15 @@ class TripCell extends StatelessWidget {
                           : FontStyle.normal)),
               if (unit.isNotEmpty) ...[
                 const SizedBox(width: 4),
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 6),
-                  child: Text(unit,
-                      style: TextStyle(
-                          fontSize: unitFontSize,
-                          color: isCalculating
-                              ? Colors.grey.shade600
-                              : Colors.grey,
-                          fontStyle: isCalculating
-                              ? FontStyle.italic
-                              : FontStyle.normal)),
-                ),
+                Text(unit,
+                    style: TextStyle(
+                        fontSize: unitFontSize,
+                        color: isCalculating
+                            ? Colors.grey.shade600
+                            : Colors.grey,
+                        fontStyle: isCalculating
+                            ? FontStyle.italic
+                            : FontStyle.normal)),
               ],
             ],
           ),

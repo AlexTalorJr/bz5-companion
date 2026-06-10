@@ -13,7 +13,9 @@ import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../data/database.dart';
+import '../l10n/strings.dart';
 import '../services/connection.dart';
+import '../services/locale_service.dart';
 
 /// v0.1.14: list of all past sweep runs.
 ///
@@ -24,8 +26,10 @@ class SweepRunListScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final svc = context.watch<ConnectionService>();
+    // v0.1.29+60: re-render on language switch (per-screen subscription).
+    context.watch<LocaleService>();
     return Scaffold(
-      appBar: AppBar(title: const Text('Sweep history')),
+      appBar: AppBar(title: Text(S.of('sw.history'))),
       body: FutureBuilder<List<SweepRun>>(
         future: svc.db.getAllSweepRuns(),
         builder: (context, snap) {
@@ -43,12 +47,11 @@ class SweepRunListScreen extends StatelessWidget {
                     Icon(Icons.search_off,
                         size: 56, color: Colors.grey.shade600),
                     const SizedBox(height: 16),
-                    const Text('No sweep runs yet',
-                        style: TextStyle(fontSize: 15)),
+                    Text(S.of('sw.no_runs'),
+                        style: const TextStyle(fontSize: 15)),
                     const SizedBox(height: 8),
                     Text(
-                      'Run a sweep from Settings → DID Sweep '
-                      'or from Raw Data → Run sweep on head unit.',
+                      S.of('sw.no_runs_hint'),
                       textAlign: TextAlign.center,
                       style: TextStyle(
                           fontSize: 12, color: Colors.grey.shade600),
@@ -118,6 +121,8 @@ class _SweepResultsScreenState extends State<SweepResultsScreen> {
   Widget build(BuildContext context) {
     final svc = context.watch<ConnectionService>();
 
+    // v0.1.29+60: re-render on language switch (per-screen subscription).
+    context.watch<LocaleService>();
     return Scaffold(
       appBar: AppBar(
         title: Text('Sweep #${widget.runId}'),
@@ -129,12 +134,12 @@ class _SweepResultsScreenState extends State<SweepResultsScreen> {
                     height: 18,
                     child: CircularProgressIndicator(strokeWidth: 2))
                 : const Icon(Icons.ios_share),
-            tooltip: 'Share this run',
+            tooltip: S.of('sw.share_run'),
             onPressed: _exporting ? null : () => _shareRun(svc, share: true),
           ),
           IconButton(
             icon: const Icon(Icons.download),
-            tooltip: 'Save to Downloads',
+            tooltip: S.of('sw.save_downloads'),
             onPressed: _exporting ? null : () => _shareRun(svc, share: false),
           ),
         ],
@@ -166,7 +171,7 @@ class _SweepResultsScreenState extends State<SweepResultsScreen> {
                     final filtered = _applyFilter(all, _filter);
                     if (filtered.isEmpty) {
                       return Center(
-                        child: Text('No results match filter',
+                        child: Text(S.of('sw.no_match'),
                             style: TextStyle(color: Colors.grey.shade600)),
                       );
                     }
@@ -306,13 +311,17 @@ class _SweepResultsScreenState extends State<SweepResultsScreen> {
         );
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Saved: $zipPath')),
+          SnackBar(
+              content:
+                  Text(S.of('sw.saved_fmt').replaceFirst('{p}', zipPath))),
         );
       }
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Export failed: $e')),
+        SnackBar(
+            content: Text(
+                S.of('sw.export_failed_fmt').replaceFirst('{e}', '$e'))),
       );
     } finally {
       if (mounted) setState(() => _exporting = false);
@@ -397,8 +406,11 @@ class _RunHeader extends StatelessWidget {
             ),
             const SizedBox(height: 4),
             Text(
-              'Range: 0x${run.startDid} .. 0x${run.endDid} '
-              '(${run.totalProbes} DIDs)',
+              S
+                  .of('sw.range_fmt')
+                  .replaceFirst('{a}', run.startDid)
+                  .replaceFirst('{b}', run.endDid)
+                  .replaceFirst('{n}', '${run.totalProbes}'),
               style: const TextStyle(
                   fontSize: 13,
                   fontFeatures: [FontFeature.tabularFigures()]),
@@ -410,8 +422,11 @@ class _RunHeader extends StatelessWidget {
             ),
             const SizedBox(height: 4),
             Text(
-              '${run.validResponses} valid · '
-              '${run.totalProbes - run.validResponses} no response or error',
+              S
+                  .of('sw.valid_fmt')
+                  .replaceFirst('{v}', '${run.validResponses}')
+                  .replaceFirst(
+                      '{e}', '${run.totalProbes - run.validResponses}'),
               style: const TextStyle(
                   fontSize: 13,
                   fontFeatures: [FontFeature.tabularFigures()]),
@@ -419,14 +434,18 @@ class _RunHeader extends StatelessWidget {
             if (run.carState != null && run.carState!.isNotEmpty)
               Padding(
                 padding: const EdgeInsets.only(top: 4),
-                child: Text('Car state: ${run.carState}',
+                child: Text(
+                    S
+                        .of('sw.car_state_fmt')
+                        .replaceFirst('{s}', '${run.carState}'),
                     style: const TextStyle(
                         fontSize: 12, color: Colors.lightBlueAccent)),
               ),
             if (run.notes != null && run.notes!.isNotEmpty)
               Padding(
                 padding: const EdgeInsets.only(top: 2),
-                child: Text('Notes: ${run.notes}',
+                child: Text(
+                    S.of('sw.notes_fmt').replaceFirst('{s}', '${run.notes}'),
                     style: const TextStyle(
                         fontSize: 12, fontStyle: FontStyle.italic)),
               ),
@@ -477,7 +496,8 @@ class _ResultTile extends StatelessWidget {
     if (hasData) {
       subtitle = result.rawHex!;
     } else if (hasError) {
-      subtitle = 'Error: ${result.errorCode}';
+      subtitle =
+          S.of('sw.error_fmt').replaceFirst('{e}', '${result.errorCode}');
     } else {
       subtitle = '(empty)';
     }

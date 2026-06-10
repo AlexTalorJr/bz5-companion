@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../data/database.dart';
+import '../l10n/strings.dart';
 import '../services/connection.dart';
+import '../services/locale_service.dart';
 import '../services/export_service.dart';
 
 /// v0.1.11: Data management screen — export all data to share sheet,
@@ -66,19 +68,21 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
   @override
   Widget build(BuildContext context) {
     final svc = context.watch<ConnectionService>();
+    // v0.1.29+60: re-render on language switch (per-screen subscription).
+    context.watch<LocaleService>();
     return Scaffold(
-      appBar: AppBar(title: const Text('Data & Export')),
+      appBar: AppBar(title: Text(S.of('settings.data.title'))),
       body: ListView(
         padding: const EdgeInsets.symmetric(vertical: 8),
         children: [
-          _section('STORAGE'),
+          _section(S.of('dataexp.sec_storage')),
           if (_loadingCounts)
-            const ListTile(
-              leading: SizedBox(
+            ListTile(
+              leading: const SizedBox(
                 width: 18, height: 18,
                 child: CircularProgressIndicator(strokeWidth: 2),
               ),
-              title: Text('Подсчёт...'),
+              title: Text(S.of('dataexp.counting')),
             )
           else if (_counts != null) ...[
             ListTile(
@@ -124,14 +128,12 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
           ],
 
           const Divider(),
-          _section('EXPORT'),
-          const Padding(
-            padding: EdgeInsets.fromLTRB(16, 4, 16, 8),
+          _section(S.of('dataexp.sec_export')),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
             child: Text(
-              'Создаёт zip-архив со всеми выбранными данными и открывает '
-              'системное меню "Поделиться". Можно сохранить файл через '
-              '"Проводник" на флешку, отправить в облако или мессенджер.',
-              style: TextStyle(fontSize: 12, color: Colors.grey),
+              S.of('dataexp.export_intro'),
+              style: const TextStyle(fontSize: 12, color: Colors.grey),
             ),
           ),
           SwitchListTile(
@@ -139,7 +141,7 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
             onChanged: _exporting ? null : (v) => setState(() => _includeTrips = v),
             secondary: const Icon(Icons.route),
             title: const Text('Trips'),
-            subtitle: const Text('trips.csv — открывается в Excel/Numbers'),
+            subtitle: Text(S.of('dataexp.trips_sub')),
             dense: true,
           ),
           SwitchListTile(
@@ -149,8 +151,7 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
                 : (v) => setState(() => _includeSnapshots = v),
             secondary: const Icon(Icons.timeline),
             title: const Text('Snapshots'),
-            subtitle:
-                const Text('snapshots.csv — данные для долговременных графиков'),
+            subtitle: Text(S.of('dataexp.snapshots_sub')),
             dense: true,
           ),
           SwitchListTile(
@@ -160,9 +161,7 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
                 : (v) => setState(() => _includeSamples = v),
             secondary: const Icon(Icons.dns),
             title: const Text('Raw samples'),
-            subtitle: const Text(
-                'samples.sqlite — бинарный дамп БД (компактно), '
-                'открывается в DB Browser'),
+            subtitle: Text(S.of('dataexp.samples_sub')),
             dense: true,
           ),
           SwitchListTile(
@@ -178,8 +177,7 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
             onChanged: _exporting ? null : (v) => setState(() => _includeLiveLogs = v),
             secondary: const Icon(Icons.timeline),
             title: const Text('Live Log sessions'),
-            subtitle: const Text(
-                'live_log_sessions.csv + live_log_entries.csv (time-series)'),
+            subtitle: Text(S.of('dataexp.livelogs_sub')),
             dense: true,
           ),
           Padding(
@@ -192,8 +190,8 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
                       child: CircularProgressIndicator(strokeWidth: 2))
                   : const Icon(Icons.ios_share),
               label: Text(_exporting
-                  ? 'Экспорт: $_stage...'
-                  : 'Поделиться (Share)'),
+                  ? S.of('dataexp.exporting').replaceFirst('{stage}', _stage)
+                  : S.of('dataexp.share_btn')),
               style: ElevatedButton.styleFrom(
                 minimumSize: const Size.fromHeight(48),
               ),
@@ -205,22 +203,19 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
             child: OutlinedButton.icon(
               icon: const Icon(Icons.download),
               label: Text(_exporting
-                  ? 'Экспорт: $_stage...'
-                  : 'Сохранить в Downloads'),
+                  ? S.of('dataexp.exporting').replaceFirst('{stage}', _stage)
+                  : S.of('dataexp.save_btn')),
               style: OutlinedButton.styleFrom(
                 minimumSize: const Size.fromHeight(48),
               ),
               onPressed: _exporting ? null : () => _doExport(svc, toDownloads: true),
             ),
           ),
-          const Padding(
-            padding: EdgeInsets.fromLTRB(16, 0, 16, 8),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
             child: Text(
-              'На головном устройстве выбирайте «Сохранить в Downloads» — '
-              'файл появится в системной папке Downloads, откуда его можно '
-              'открыть через «Проводник» и скопировать на флешку. На телефоне '
-              'удобнее «Поделиться».',
-              style: TextStyle(fontSize: 11, color: Colors.grey),
+              S.of('dataexp.hu_note'),
+              style: const TextStyle(fontSize: 11, color: Colors.grey),
             ),
           ),
           if (_lastResult != null)
@@ -232,88 +227,89 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
             ),
 
           const Divider(),
-          _section('CLEANUP'),
-          const Padding(
-            padding: EdgeInsets.fromLTRB(16, 4, 16, 8),
+          _section(S.of('dataexp.sec_cleanup')),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
             child: Text(
-              'Удаление данных безвозвратно. Перед очисткой рекомендуем '
-              'сделать экспорт.',
-              style: TextStyle(fontSize: 12, color: Colors.orangeAccent),
+              S.of('dataexp.cleanup_warn'),
+              style: const TextStyle(fontSize: 12, color: Colors.orangeAccent),
             ),
           ),
           ListTile(
             leading: const Icon(Icons.delete_outline, color: Colors.orangeAccent),
-            title: const Text('Очистить raw samples'),
-            subtitle:
-                const Text('Удалить все детальные measurements (история DID)'),
+            title: Text(S.of('dataexp.clear_samples')),
+            subtitle: Text(S.of('dataexp.clear_samples_sub')),
             onTap: () => _confirmAndClear(
-              title: 'Удалить все raw samples?',
-              description:
-                  'Trips и Snapshots сохранятся, но детальные measurements '
-                  'будут утеряны. Это самая объёмная таблица.',
+              title: S.of('dataexp.clear_samples_q'),
+              description: S.of('dataexp.clear_samples_desc'),
               action: () async {
                 final n = await svc.db.clearAllSamples();
-                return '$n samples удалено';
+                return S
+                    .of('dataexp.n_samples_deleted')
+                    .replaceFirst('{n}', '$n');
               },
             ),
           ),
           ListTile(
             leading: const Icon(Icons.delete_outline, color: Colors.orangeAccent),
-            title: const Text('Очистить snapshots'),
-            subtitle: const Text('Очистит долговременные графики (Trends)'),
+            title: Text(S.of('dataexp.clear_snapshots')),
+            subtitle: Text(S.of('dataexp.clear_snapshots_sub')),
             onTap: () => _confirmAndClear(
-              title: 'Удалить все snapshots?',
-              description:
-                  'Trends графики (24h / 7d / 30d / 1y / all) будут пустыми. '
-                  'Данные начнут накапливаться заново через 2-10 минут.',
+              title: S.of('dataexp.clear_snapshots_q'),
+              description: S.of('dataexp.clear_snapshots_desc'),
               action: () async {
                 final n = await svc.db.clearAllSnapshots();
-                return '$n snapshots удалено';
+                return S
+                    .of('dataexp.n_snapshots_deleted')
+                    .replaceFirst('{n}', '$n');
               },
             ),
           ),
           ListTile(
             leading: const Icon(Icons.delete_forever, color: Colors.redAccent),
-            title: const Text('Очистить все trips'),
-            subtitle: const Text('Удаляет trips + связанные samples (cascade)'),
+            title: Text(S.of('dataexp.clear_trips')),
+            subtitle: Text(S.of('dataexp.clear_trips_sub')),
             onTap: () => _confirmAndClear(
-              title: 'Удалить все trips и samples?',
-              description:
-                  'История поездок и все measurements в них будут утеряны. '
-                  'Snapshots останутся.',
+              title: S.of('dataexp.clear_trips_q'),
+              description: S.of('dataexp.clear_trips_desc'),
               action: () async {
                 final (trips, samples) = await svc.db.clearAllTrips();
-                return '$trips trips и $samples samples удалено';
+                return S
+                    .of('dataexp.trips_samples_deleted')
+                    .replaceFirst('{t}', '$trips')
+                    .replaceFirst('{s}', '$samples');
               },
             ),
           ),
           ListTile(
             leading: const Icon(Icons.delete_outline, color: Colors.orangeAccent),
-            title: const Text('Очистить sweep results'),
-            subtitle: const Text('Удалит логи всех DID-сканирований'),
+            title: Text(S.of('dataexp.clear_sweeps')),
+            subtitle: Text(S.of('dataexp.clear_sweeps_sub')),
             onTap: () => _confirmAndClear(
-              title: 'Удалить все sweep results?',
-              description:
-                  'История in-car DID сканирований будет утеряна. Может быть '
-                  'полезно если sweep results занимают много места.',
+              title: S.of('dataexp.clear_sweeps_q'),
+              description: S.of('dataexp.clear_sweeps_desc'),
               action: () async {
                 final (runs, results) = await svc.db.clearAllSweeps();
-                return '$runs runs и $results results удалено';
+                return S
+                    .of('dataexp.runs_results_deleted')
+                    .replaceFirst('{r}', '$runs')
+                    .replaceFirst('{s}', '$results');
               },
             ),
           ),
           ListTile(
             leading: const Icon(Icons.delete_outline, color: Colors.orangeAccent),
-            title: const Text('Очистить Live Log sessions'),
-            subtitle: const Text('Удалит все time-series записи'),
+            title: Text(S.of('dataexp.clear_livelogs')),
+            subtitle: Text(S.of('dataexp.clear_livelogs_sub')),
             onTap: () => _confirmAndClear(
-              title: 'Удалить все Live Log sessions?',
-              description:
-                  'История time-series polling будет утеряна. Перед очисткой '
-                  'рекомендуем экспортировать данные.',
+              title: S.of('dataexp.clear_livelogs_q'),
+              description: S.of('dataexp.clear_livelogs_desc'),
               action: () async {
                 final (sessions, entries) = await svc.db.clearAllLiveLogs();
-                return '$sessions sessions и $entries entries удалено';
+                return S
+                    .of('dataexp.sessions_entries_deleted')
+                    .replaceFirst('{a}', '$sessions')
+                    .replaceFirst('{b}', '$entries');
               },
             ),
           ),
@@ -369,19 +365,32 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
           .join(', ');
       setState(() {
         if (result.destinationKind == ExportDestinationKind.downloads) {
-          _lastResult = 'Сохранено (${result.humanSize}): $summary\n'
-              'Путь: ${result.zipPath}';
+          _lastResult = S
+              .of('dataexp.saved_fmt')
+              .replaceFirst('{size}', result.humanSize)
+              .replaceFirst('{summary}', summary)
+              .replaceFirst('{path}', result.zipPath);
         } else {
           _lastResult = result.sharedSuccessfully
-              ? 'Поделено (${result.humanSize}): $summary'
-              : 'Архив создан (${result.humanSize}): $summary. Поделиться отменено.';
+              ? S
+                  .of('dataexp.shared_fmt')
+                  .replaceFirst('{size}', result.humanSize)
+                  .replaceFirst('{summary}', summary)
+              : S
+                  .of('dataexp.share_cancelled_fmt')
+                  .replaceFirst('{size}', result.humanSize)
+                  .replaceFirst('{summary}', summary);
         }
       });
     } catch (e) {
       if (!mounted) return;
-      setState(() => _lastResult = 'Ошибка: $e');
+      setState(() =>
+          _lastResult = S.of('dataexp.error_fmt').replaceFirst('{e}', '$e'));
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Export failed: $e')),
+        SnackBar(
+            content: Text(S
+                .of('dataexp.export_failed_fmt')
+                .replaceFirst('{e}', '$e'))),
       );
     } finally {
       if (mounted) {
@@ -406,12 +415,12 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Отмена'),
+            child: Text(S.of('common.cancel')),
           ),
           TextButton(
             style: TextButton.styleFrom(foregroundColor: Colors.redAccent),
             onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Удалить'),
+            child: Text(S.of('common.delete')),
           ),
         ],
       ),
@@ -427,7 +436,9 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Ошибка: $e')),
+        SnackBar(
+            content:
+                Text(S.of('dataexp.error_fmt').replaceFirst('{e}', '$e'))),
       );
     }
   }

@@ -2,7 +2,9 @@ import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../l10n/strings.dart';
 import '../../services/connection.dart';
+import '../../services/locale_service.dart';
 
 /// v0.1.26: Charging Companion view for the head-unit Driver tab.
 ///
@@ -42,6 +44,8 @@ class ChargingViewWide extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final svc = context.watch<ConnectionService>();
+    // v0.1.29+60: re-render on language switch (per-screen subscription).
+    context.watch<LocaleService>();
     final wide = MediaQuery.of(context).size.width >= 840;
 
     if (wide) {
@@ -133,8 +137,8 @@ class _PowerHero extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Text('CHARGING POWER',
-                style: TextStyle(
+            Text(S.of('chg.power_hdr'),
+                style: const TextStyle(
                     fontSize: 12,
                     letterSpacing: 2,
                     color: Colors.amberAccent,
@@ -173,9 +177,8 @@ class _PowerHero extends StatelessWidget {
             const SizedBox(height: 4),
             Text(
               isCalibrating
-                  ? 'Calculating… need ≥0.3% SOC growth to overcome quantization noise '
-                      '(~7 min at 2 kW AC, ~3 min at 7 kW AC, ~20 sec at 50 kW DC)'
-                  : 'Power = ΔSOC × pack kWh / Δt, integrated over up to 10 min for accuracy',
+                  ? S.of('chg.calc_note')
+                  : S.of('chg.power_formula'),
               style: TextStyle(fontSize: 10, color: Colors.grey.shade600),
             ),
           ],
@@ -197,10 +200,10 @@ class _PhaseEtaStack extends StatelessWidget {
     final gain = svc.socGainedThisChargingSessionPct;
 
     final phaseLabel = switch (phase) {
-      ChargingPhase.unknown => 'analyzing…',
+      ChargingPhase.unknown => S.of('chg.analyzing'),
       ChargingPhase.cc => 'CC phase',
-      ChargingPhase.cv => 'CV phase (tapering)',
-      ChargingPhase.almostDone => 'Almost done',
+      ChargingPhase.cv => S.of('chg.cv_phase'),
+      ChargingPhase.almostDone => S.of('chg.almost_done'),
     };
     final phaseColor = switch (phase) {
       ChargingPhase.unknown => Colors.grey,
@@ -220,8 +223,8 @@ class _PhaseEtaStack extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  const Text('PHASE',
-                      style: TextStyle(
+                  Text(S.of('chg.phase'),
+                      style: const TextStyle(
                           fontSize: 11, letterSpacing: 2, color: Colors.grey)),
                   const SizedBox(height: 8),
                   Text(phaseLabel,
@@ -238,7 +241,9 @@ class _PhaseEtaStack extends StatelessWidget {
                   ),
                   if (gain != null)
                     Text(
-                      '+${gain.toStringAsFixed(2)}% since plug-in',
+                      S
+                          .of('chg.gain_since')
+                          .replaceFirst('{n}', gain.toStringAsFixed(2)),
                       style: TextStyle(
                           fontSize: 11, color: Colors.greenAccent.shade400),
                     ),
@@ -256,8 +261,8 @@ class _PhaseEtaStack extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  const Text('ETA TO 100%',
-                      style: TextStyle(
+                  Text(S.of('chg.eta100'),
+                      style: const TextStyle(
                           fontSize: 11, letterSpacing: 2, color: Colors.grey)),
                   const SizedBox(height: 8),
                   Text(
@@ -270,8 +275,8 @@ class _PhaseEtaStack extends StatelessWidget {
                   const SizedBox(height: 4),
                   Text(
                     etaSec == null
-                        ? 'нужно ≥5 минут данных'
-                        : 'linear extrapolation · curves to longer in CV',
+                        ? S.of('chg.need5')
+                        : S.of('chg.eta_note'),
                     style: TextStyle(fontSize: 10, color: Colors.grey.shade500),
                   ),
                 ],
@@ -284,9 +289,9 @@ class _PhaseEtaStack extends StatelessWidget {
   }
 
   static String _formatEta(int seconds) {
-    if (seconds < 60) return '<1 min';
+    if (seconds < 60) return S.of('chg.lt1min');
     final m = seconds ~/ 60;
-    if (m < 60) return '~$m min';
+    if (m < 60) return S.of('chg.eta_m').replaceFirst('{m}', '$m');
     final h = m ~/ 60;
     final mm = m % 60;
     return '~${h}h ${mm}m';
@@ -362,7 +367,10 @@ class _ChartCard extends StatelessWidget {
             Expanded(
               child: sampleCount < 2
                   ? Center(
-                      child: Text('collecting… ($sampleCount samples)',
+                      child: Text(
+                          S
+                              .of('chg.collecting')
+                              .replaceFirst('{n}', '$sampleCount'),
                           style: TextStyle(
                               fontSize: 12,
                               color: Colors.grey.shade600)),
@@ -396,8 +404,8 @@ class _PowerChart extends StatelessWidget {
         ? 1.0
         : spots.map((e) => e.y).reduce((a, b) => a > b ? a : b);
     return _ChartCard(
-      title: 'POWER',
-      subtitle: 'kW vs minutes',
+      title: S.of('chg.power'),
+      subtitle: S.of('chg.kw_vs_min'),
       sampleCount: spots.length,
       chartBuilder: () => LineChart(
         LineChartData(
@@ -456,8 +464,8 @@ class _CellVChart extends StatelessWidget {
     return _ChartCard(
       title: 'CELL V min / max',
       subtitle: spread != null
-          ? 'mV vs min · current spread $spread mV'
-          : 'mV vs min',
+          ? S.of('chg.mv_vs_min_spread').replaceFirst('{s}', '$spread')
+          : S.of('chg.mv_vs_min'),
       sampleCount: minSpots.length,
       chartBuilder: () => LineChart(
         LineChartData(
@@ -513,10 +521,12 @@ class _TempChart extends StatelessWidget {
     final pad = (hi - lo).abs() * 0.15 + 1;
     final latestC = history.isNotEmpty ? history.last.tempC : null;
     return _ChartCard(
-      title: 'BATTERY TEMP',
+      title: S.of('chg.bat_temp'),
       subtitle: latestC != null
-          ? '°C vs min · now ${latestC.toStringAsFixed(1)} °C'
-          : '°C vs min',
+          ? S
+              .of('chg.c_vs_min_now')
+              .replaceFirst('{t}', latestC.toStringAsFixed(1))
+          : S.of('chg.c_vs_min'),
       sampleCount: spots.length,
       chartBuilder: () => LineChart(
         LineChartData(
@@ -597,28 +607,28 @@ class _BottomSummaryStrip extends StatelessWidget {
         MediaQuery.of(context).size.width >= _kRowMinWidth;
     final metrics = <Widget>[
       _Metric(
-        label: 'CHARGED',
+        label: S.of('chg.charged'),
         value: chargedKwh != null
             ? '${chargedKwh.toStringAsFixed(2)} kWh'
             : '—',
         hint: 'ΔSOC × pack kWh',
       ),
       _Metric(
-        label: 'SOC GAIN',
+        label: S.of('chg.soc_gain'),
         value: socGain != null
             ? '+${socGain.toStringAsFixed(2)}%'
             : '—',
-        hint: 'с момента plug-in',
+        hint: S.of('chg.since_plugin'),
       ),
       _Metric(
-        label: 'SESSION',
+        label: S.of('chg.session'),
         value: durationStr,
-        hint: 'на текущей зарядке',
+        hint: S.of('chg.session_sub'),
       ),
       _Metric(
         label: 'COUNTER 0B00',
         value: counterRaw != null ? '$counterRaw' : '—',
-        hint: 'raw — для калибровки scale',
+        hint: S.of('chg.counter_raw'),
       ),
       _Metric(
         label: 'I-MAX SET',
@@ -653,8 +663,11 @@ class _BottomSummaryStrip extends StatelessWidget {
   static String _fmtDuration(Duration d) {
     final h = d.inHours;
     final m = d.inMinutes % 60;
-    if (h == 0) return '$m мин';
-    return '${h}ч ${m}м';
+    if (h == 0) return S.of('chg.dur_m').replaceFirst('{m}', '$m');
+    return S
+        .of('chg.dur_hm')
+        .replaceFirst('{h}', '$h')
+        .replaceFirst('{m}', '$m');
   }
 }
 

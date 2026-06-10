@@ -13,7 +13,9 @@ import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../data/database.dart';
+import '../l10n/strings.dart';
 import '../services/connection.dart';
+import '../services/locale_service.dart';
 
 /// v0.1.15: list of all past Live Log sessions.
 class LiveLogSessionListScreen extends StatelessWidget {
@@ -22,8 +24,10 @@ class LiveLogSessionListScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final svc = context.watch<ConnectionService>();
+    // v0.1.29+60: re-render on language switch (per-screen subscription).
+    context.watch<LocaleService>();
     return Scaffold(
-      appBar: AppBar(title: const Text('Live Log history')),
+      appBar: AppBar(title: Text(S.of('ll.history'))),
       body: FutureBuilder<List<LiveLogSession>>(
         future: svc.db.getAllLiveLogSessions(),
         builder: (context, snap) {
@@ -41,11 +45,11 @@ class LiveLogSessionListScreen extends StatelessWidget {
                     Icon(Icons.timeline,
                         size: 56, color: Colors.grey.shade600),
                     const SizedBox(height: 16),
-                    const Text('No live-log sessions yet',
-                        style: TextStyle(fontSize: 15)),
+                    Text(S.of('ll.no_sessions'),
+                        style: const TextStyle(fontSize: 15)),
                     const SizedBox(height: 8),
                     Text(
-                      'Run a session from Settings → Live Log.',
+                      S.of('ll.no_sessions_hint'),
                       textAlign: TextAlign.center,
                       style: TextStyle(
                           fontSize: 12, color: Colors.grey.shade600),
@@ -109,6 +113,8 @@ class _LiveLogResultsScreenState extends State<LiveLogResultsScreen> {
   Widget build(BuildContext context) {
     final svc = context.watch<ConnectionService>();
 
+    // v0.1.29+60: re-render on language switch (per-screen subscription).
+    context.watch<LocaleService>();
     return Scaffold(
       appBar: AppBar(
         title: Text('Live Log #${widget.sessionId}'),
@@ -120,12 +126,12 @@ class _LiveLogResultsScreenState extends State<LiveLogResultsScreen> {
                     height: 18,
                     child: CircularProgressIndicator(strokeWidth: 2))
                 : const Icon(Icons.ios_share),
-            tooltip: 'Share this session',
+            tooltip: S.of('ll.share_session'),
             onPressed: _exporting ? null : () => _shareSession(svc, share: true),
           ),
           IconButton(
             icon: const Icon(Icons.download),
-            tooltip: 'Save to Downloads',
+            tooltip: S.of('sw.save_downloads'),
             onPressed: _exporting ? null : () => _shareSession(svc, share: false),
           ),
         ],
@@ -277,13 +283,17 @@ class _LiveLogResultsScreenState extends State<LiveLogResultsScreen> {
         );
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Saved: $zipPath')),
+          SnackBar(
+              content:
+                  Text(S.of('sw.saved_fmt').replaceFirst('{p}', zipPath))),
         );
       }
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Export failed: $e')),
+        SnackBar(
+            content: Text(
+                S.of('sw.export_failed_fmt').replaceFirst('{e}', '$e'))),
       );
     } finally {
       if (mounted) setState(() => _exporting = false);
@@ -391,7 +401,10 @@ class _Header extends StatelessWidget {
             ),
             const SizedBox(height: 2),
             Text(
-              '${session.cycleCount} cycles · ${session.entryCount} entries',
+              S
+                  .of('ll.cycles_entries_fmt')
+                  .replaceFirst('{c}', '${session.cycleCount}')
+                  .replaceFirst('{e}', '${session.entryCount}'),
               style: const TextStyle(
                   fontSize: 13,
                   fontFeatures: [FontFeature.tabularFigures()]),
@@ -399,14 +412,20 @@ class _Header extends StatelessWidget {
             if (session.carState != null && session.carState!.isNotEmpty)
               Padding(
                 padding: const EdgeInsets.only(top: 4),
-                child: Text('Car state: ${session.carState}',
+                child: Text(
+                    S
+                        .of('sw.car_state_fmt')
+                        .replaceFirst('{s}', '${session.carState}'),
                     style: const TextStyle(
                         fontSize: 12, color: Colors.lightBlueAccent)),
               ),
             if (session.notes != null && session.notes!.isNotEmpty)
               Padding(
                 padding: const EdgeInsets.only(top: 2),
-                child: Text('Notes: ${session.notes}',
+                child: Text(
+                    S
+                        .of('sw.notes_fmt')
+                        .replaceFirst('{s}', '${session.notes}'),
                     style: const TextStyle(
                         fontSize: 12, fontStyle: FontStyle.italic)),
               ),
@@ -426,7 +445,7 @@ class _EntriesTable extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (entries.isEmpty) {
-      return const Center(child: Text('No entries'));
+      return Center(child: Text(S.of('ll.no_entries')));
     }
 
     // Build wide layout: rows = cycle, columns = DIDs

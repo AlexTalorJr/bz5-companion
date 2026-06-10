@@ -3,7 +3,9 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
+import '../l10n/strings.dart';
 import '../services/connection.dart';
+import '../services/locale_service.dart';
 import 'live_log_results.dart';
 
 /// v0.1.15: Live Log launcher.
@@ -112,6 +114,8 @@ class _LiveLogScreenState extends State<LiveLogScreen> {
   @override
   Widget build(BuildContext context) {
     final svc = context.watch<ConnectionService>();
+    // v0.1.29+60: re-render on language switch (per-screen subscription).
+    context.watch<LocaleService>();
     final running = svc.liveLogRunning;
 
     return Scaffold(
@@ -120,7 +124,7 @@ class _LiveLogScreenState extends State<LiveLogScreen> {
         actions: [
           IconButton(
             icon: const Icon(Icons.history),
-            tooltip: 'Previous live-log sessions',
+            tooltip: S.of('ll.prev_sessions'),
             onPressed: running
                 ? null
                 : () => Navigator.of(context).push(
@@ -146,10 +150,11 @@ class _LiveLogScreenState extends State<LiveLogScreen> {
               Icon(Icons.bluetooth_disabled,
                   size: 56, color: Colors.grey.shade600),
               const SizedBox(height: 16),
-              const Text('Адаптер не подключен', style: TextStyle(fontSize: 16)),
+              Text(S.of('common.not_connected_title'),
+                  style: const TextStyle(fontSize: 16)),
               const SizedBox(height: 8),
               Text(
-                'Подключитесь к ELM327 через Settings → ELM327 BLE adapter.',
+                S.of('sw.connect_hint'),
                 textAlign: TextAlign.center,
                 style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
               ),
@@ -161,9 +166,9 @@ class _LiveLogScreenState extends State<LiveLogScreen> {
 
     // v0.1.15: BLE channel mutex with Sweep and DTC scan.
     final busyReason = svc.sweepRunning
-        ? 'DID Sweep is currently running'
+        ? S.of('sw.busy_sweep')
         : svc.dtcScanRunning
-            ? 'DTC scan is currently running'
+            ? S.of('sw.busy_dtc')
             : null;
     final canStart = busyReason == null;
 
@@ -176,10 +181,11 @@ class _LiveLogScreenState extends State<LiveLogScreen> {
             child: ListTile(
               leading:
                   const Icon(Icons.check_circle, color: Colors.greenAccent),
-              title: const Text('Live log complete'),
-              subtitle: Text('Session #$_justFinishedId'),
+              title: Text(S.of('ll.complete')),
+              subtitle: Text(
+                  S.of('ll.session_n').replaceFirst('{n}', '$_justFinishedId')),
               trailing: TextButton(
-                child: const Text('Open'),
+                child: Text(S.of('sw.open')),
                 onPressed: () {
                   final id = _justFinishedId;
                   setState(() => _justFinishedId = null);
@@ -193,14 +199,12 @@ class _LiveLogScreenState extends State<LiveLogScreen> {
           ),
           const SizedBox(height: 8),
         ],
-        _section('DIDs to poll (up to 7)'),
-        const Padding(
-          padding: EdgeInsets.fromLTRB(16, 4, 16, 8),
+        _section(S.of('ll.dids_hdr')),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
           child: Text(
-            'Один цикл = один запрос к каждому DID подряд. С 5 DIDs цикл ~1.2 сек '
-            '(~0.8 Hz общая частота). Записи в БД stream-ом — отмена не потеряет '
-            'данные.',
-            style: TextStyle(fontSize: 12, color: Colors.grey),
+            S.of('ll.cycle_note'),
+            style: const TextStyle(fontSize: 12, color: Colors.grey),
           ),
         ),
         // v0.1.26: ready-made presets for the recurring R&E scenarios.
@@ -261,19 +265,20 @@ class _LiveLogScreenState extends State<LiveLogScreen> {
             padding: const EdgeInsets.all(8),
             child: OutlinedButton.icon(
               icon: const Icon(Icons.add),
-              label: Text('Add DID (${_entries.length}/7)'),
+              label: Text(
+                  S.of('ll.add_did').replaceFirst('{n}', '${_entries.length}')),
               onPressed: () => setState(
                   () => _entries.add(_DidEntry(txEcu: '791', rxEcu: '799'))),
             ),
           ),
         const Divider(),
-        _section('Annotations'),
+        _section(S.of('ll.annotations')),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 12),
           child: TextField(
             controller: _carStateCtrl,
-            decoration: const InputDecoration(
-              labelText: 'Car state',
+            decoration: InputDecoration(
+              labelText: S.of('ll.car_state'),
               hintText: 'e.g. driving 60 km/h steady, regen test',
               isDense: true,
             ),
@@ -284,8 +289,8 @@ class _LiveLogScreenState extends State<LiveLogScreen> {
           padding: const EdgeInsets.symmetric(horizontal: 12),
           child: TextField(
             controller: _notesCtrl,
-            decoration: const InputDecoration(
-              labelText: 'Notes (optional)',
+            decoration: InputDecoration(
+              labelText: S.of('sw.notes'),
               hintText: 'free-form',
               isDense: true,
             ),
@@ -297,7 +302,7 @@ class _LiveLogScreenState extends State<LiveLogScreen> {
           padding: const EdgeInsets.symmetric(horizontal: 12),
           child: ElevatedButton.icon(
             icon: const Icon(Icons.fiber_manual_record, color: Colors.red),
-            label: const Text('Start Live Log'),
+            label: Text(S.of('ll.start')),
             style: ElevatedButton.styleFrom(
               minimumSize: const Size.fromHeight(56),
             ),
@@ -311,16 +316,17 @@ class _LiveLogScreenState extends State<LiveLogScreen> {
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
             child: Text(
-              '$busyReason. Live Log will be available when the other operation finishes.',
+              S.of('ll.busy_note').replaceFirst('{r}', busyReason!),
               style: const TextStyle(fontSize: 11, color: Colors.orangeAccent),
             ),
           )
         else if (!_entries.every((e) => e.isValid))
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 16),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
             child: Text(
-              'Заполните все поля: TX, RX (3+ hex), DID (1-4 hex, padded автоматически).',
-              style: TextStyle(fontSize: 11, color: Colors.orangeAccent),
+              S.of('ll.fill_all'),
+              style:
+                  const TextStyle(fontSize: 11, color: Colors.orangeAccent),
             ),
           ),
       ],
@@ -341,7 +347,9 @@ class _LiveLogScreenState extends State<LiveLogScreen> {
                   color: Colors.red, size: 16),
               const SizedBox(width: 8),
               Text(
-                'RECORDING — cycle ${svc.liveLogCycle}',
+                S
+                    .of('ll.recording')
+                    .replaceFirst('{n}', '${svc.liveLogCycle}'),
                 style: const TextStyle(
                     fontSize: 16,
                     fontWeight: FontWeight.w500,
@@ -350,8 +358,8 @@ class _LiveLogScreenState extends State<LiveLogScreen> {
             ],
           ),
           const SizedBox(height: 16),
-          const Text('LATEST VALUES',
-              style: TextStyle(
+          Text(S.of('ll.latest'),
+              style: const TextStyle(
                   fontSize: 11, letterSpacing: 1.5, color: Colors.grey)),
           const SizedBox(height: 8),
           Expanded(
@@ -374,7 +382,7 @@ class _LiveLogScreenState extends State<LiveLogScreen> {
                         style: const TextStyle(
                             fontFeatures: [FontFeature.tabularFigures()])),
                     subtitle: Text(
-                      value ?? '(no data yet)',
+                      value ?? S.of('ll.no_data_yet'),
                       style: const TextStyle(
                           fontFamily: 'monospace',
                           fontSize: 11,
@@ -415,7 +423,7 @@ class _LiveLogScreenState extends State<LiveLogScreen> {
       setState(() => _justFinishedId = id);
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Не удалось запустить live-log')),
+        SnackBar(content: Text(S.of('ll.start_failed'))),
       );
     }
   }

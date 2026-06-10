@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../l10n/strings.dart';
 import '../../services/connection.dart';
 import '../../services/cost_settings.dart';
+import '../../services/locale_service.dart';
 import '../../widgets/driver_panels.dart';
 
 /// v0.1.23: Driver-first head-unit view.
@@ -31,6 +33,9 @@ class DriverViewWideScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final svc = context.watch<ConnectionService>();
+    // v0.1.29+60: language switch re-renders this tab (const home
+    // subtree blocks MaterialApp-level rebuilds — see LocaleService).
+    context.watch<LocaleService>();
     final connected = svc.status == ConnectionStatus.connected;
     if (!connected) {
       return const _NotConnectedHero();
@@ -50,10 +55,10 @@ class _NotConnectedHero extends StatelessWidget {
         children: [
           const Icon(Icons.bluetooth_disabled, size: 96, color: Colors.grey),
           const SizedBox(height: 24),
-          Text('Адаптер не подключен',
+          Text(S.of('common.not_connected_title'),
               style: Theme.of(context).textTheme.headlineMedium),
           const SizedBox(height: 12),
-          Text('Перейдите в Settings и нажмите «Найти адаптер»',
+          Text(S.of('common.not_connected_hint'),
               style: Theme.of(context)
                   .textTheme
                   .bodyLarge
@@ -199,8 +204,8 @@ class _SocCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('STATE OF CHARGE',
-                style: TextStyle(
+            Text(S.of('drv.soc'),
+                style: const TextStyle(
                     fontSize: 12,
                     letterSpacing: 1.5,
                     color: Colors.grey)),
@@ -291,8 +296,8 @@ class _BottomStatusStrip extends StatelessWidget {
             ? Colors.lightBlueAccent
             : Colors.white70;
     final String powerStr = powerKw != null
-        ? '${flowDir == -1 ? 'Regen' : 'Power'} ${powerKw.abs().toStringAsFixed(1)} kW'
-        : 'Power —';
+        ? '${flowDir == -1 ? S.of('drv.regen') : S.of('drv.power')} ${powerKw.abs().toStringAsFixed(1)} kW'
+        : '${S.of('drv.power')} —';
 
     // Battery temp: trip range if active, single value if idle.
     final hasTrip = svc.currentTripId != null;
@@ -328,12 +333,12 @@ class _BottomStatusStrip extends StatelessWidget {
             Text(batTempStr),
             const _Sep(),
             Text(odo != null
-                ? 'Odo ${odo.toStringAsFixed(1)} km'
-                : 'Odo —'),
+                ? '${S.of('drv.odo')} ${odo.toStringAsFixed(1)} km'
+                : '${S.of('drv.odo')} —'),
             const _Sep(),
             Text(spread != null
-                ? 'Cell spread ${spread.abs()} mV'
-                : 'Cell spread —'),
+                ? '${S.of('drv.cell_spread')} ${spread.abs()} mV'
+                : '${S.of('drv.cell_spread')} —'),
           ],
         ),
       ),
