@@ -153,6 +153,31 @@ def check_sink():
     else:
         warn("sink: DecodedValue mapping not confirmed")
 
+    # sink override signatures must match the vendored TelemetrySink — a
+    # guessed signature compiles to "overrides nothing" and breaks CI (this
+    # is exactly what bit onTargetEvent first time). Only enforce once the
+    # interface is actually vendored.
+    sink_iface = HAL_DIR / 'TelemetrySink.kt'
+    if sink_iface.exists():
+        iface = sink_iface.read_text()
+        iface_funs = dict(re.findall(r'fun\s+(\w+)\s*\(([^)]*)\)', iface, re.S))
+        sink_funs = dict(
+            re.findall(r'override\s+fun\s+(\w+)\s*\(([^)]*)\)', s, re.S))
+
+        def _norm(p):
+            return re.sub(r'\s+', ' ', p).strip().rstrip(',').strip()
+
+        bad = []
+        for fn, params in sink_funs.items():
+            if fn not in iface_funs:
+                bad.append(f"{fn} (not on interface)")
+            elif _norm(params) != _norm(iface_funs[fn]):
+                bad.append(f"{fn} params differ")
+        if bad:
+            fail(f"sink override mismatch vs TelemetrySink: {bad}")
+        else:
+            ok("sink: overrides match the vendored TelemetrySink signatures")
+
 
 def check_plugin():
     if not PLUGIN.exists():
