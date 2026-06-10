@@ -4,6 +4,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
 
 import 'data/database.dart';
+import 'services/hal_telemetry_service.dart';
 import 'services/connection.dart';
 import 'services/cost_settings.dart';
 import 'services/cloud_sync_service.dart';
@@ -139,6 +140,12 @@ class _BZ5AppState extends State<BZ5App> with WidgetsBindingObserver {
         ),
         ChangeNotifierProvider<BridgeDiagService>(
           create: (_) => BridgeDiagService(svc: widget.svc)..init(),
+        ),
+        // v0.1.29+64: HAL push-telemetry (SPEED overlapping pilot). Owns
+        // the live HAL stream + source mode; feeds the DISPLAYED speedo
+        // only — trip aggregates stay on OBD2 ConnectionService.
+        ChangeNotifierProvider<HalTelemetryService>(
+          create: (_) => HalTelemetryService()..init(),
         ),
       ],
       child: MaterialApp(
