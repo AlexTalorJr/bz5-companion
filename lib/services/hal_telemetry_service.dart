@@ -1,9 +1,13 @@
-/// HAL telemetry service (v0.1.29+64) — SPEED overlapping pilot.
+/// HAL telemetry service — overlapping data source for the display layer.
+///
+/// v0.1.29+64 proved the pattern with SPEED (HAL=cluster, confirmed on a
+/// live drive); v0.1.29+66 extends it to the full overlapping wave:
+/// pack_voltage, pack_current (as derived power), gear_enum and SOC —
+/// each one an invisible source swap inside the SAME widget, with
+/// automatic per-name fallback to OBD2.
 ///
 /// Owns the live HAL push-telemetry subscription (the +61/+62 stream) and
-/// exposes the latest decoded values the UI cares about. For the pilot
-/// that's just SPEED; the same pattern extends to packV / current / SOC /
-/// gear / temps once speed is proven.
+/// exposes the latest decoded values the UI cares about.
 ///
 /// Source policy (persisted in prefs 'hal_source_mode'):
 ///   - auto      : prefer HAL when its stream is live and fresh, else OBD2
@@ -61,32 +65,121 @@ class HalTelemetryService extends ChangeNotifier {
   HalStartStatus? _status;
   HalStartStatus? get status => _status;
 
-  // Latest SPEED (km/h, raw — no speedometer-match multiplier) + when it
-  // arrived. Freshness is judged against [_freshnessWindow].
-  double? _speedKmh;
-  DateTime? _speedAt;
+  // ─── Latest decoded values (v0.1.29+66 overlapping wave) ────────────
+  //
+  // Per-name latest sample. Two freshness classes, matching how the HAL
+  // actually delivers (field rates from the 2026-06-11 drive, HAL Test):
+  //
+  //  * CONTINUOUS — pushed at a steady rate while the stream is up:
+  //      speed ~8 Hz, pack_current ~2.2 Hz, pack_voltage ~0.8 Hz,
+  //      gear_enum ~3.4 Hz. Freshness = sample age within a per-name
+  //      window; a stall (binder loss) trips the fallback well before
+  //      the user notices a frozen value.
+  //  * EVENT-DRIVEN — pushed only when the value CHANGES: soc_display,
+  //      soc_battery (0.0 Hz at steady state; SOC can sit for many
+  //      minutes). An age window would falsely expire them, so they
+  //      count as fresh while the stream is RUNNING and are cleared on
+  //      stop.
+  static const Map<String, Duration> _continuousWindow = {
+    'speed': Duration(milliseconds: 1500),
+    'pack_voltage': Duration(seconds: 6),
+    'pack_current': Duration(seconds: 6),
+    'gear_enum': Duration(seconds: 6),
+  };
+  static const Set<String> _eventDriven = {'soc_display', 'soc_battery'};
 
-  // How long a HAL value stays "fresh" before the resolver falls back to
-  // OBD2. Speed streams at ~8 Hz, so 1.5 s is generous — a real stall
-  // (BLE/binder loss) trips it well before the user notices a frozen gauge.
-  static const _freshnessWindow = Duration(milliseconds: 1500);
+  // Range guards per name — same role as the 0..220 speed guard from the
+  // +64 pilot: drop frame-misalignment junk before it reaches a display.
+  static const Map<String, (double, double)> _range = {
+    'speed': (0, 220),
+    'pack_voltage': (250, 500),
+    'pack_current': (-600, 600),
+    'gear_enum': (0, 15),
+    'soc_display': (0, 100),
+    'soc_battery': (0, 100),
+  };
+
+  final Map<String, ({double value, DateTime at})> _latest = {};
+
+  /// Latest raw value for a consumed name, or null if never received.
+  double? halValue(String name) => _latest[name]?.value;
+
+  /// Freshness per the name's class (see the field-rate table above).
+  bool halFresh(String name) {
+    final s = _latest[name];
+    if (s == null) return false;
+    if (_eventDriven.contains(name)) return _running;
+    final w = _continuousWindow[name];
+    if (w == null) return false;
+    return DateTime.now().difference(s.at) <= w;
+  }
+
+  /// Source policy gate: mode permits HAL AND a fresh value exists.
+  bool _useHal(String name) {
+    if (_mode == HalSourceMode.obd2Only) return false;
+    return halFresh(name);
+  }
+
+  // ── speed (kept from the +64 pilot — same names, same semantics) ──
 
   /// Raw HAL speed in km/h, or null if never received.
-  double? get halSpeedKmh => _speedKmh;
+  double? get halSpeedKmh => halValue('speed');
 
   /// True if a HAL speed value arrived within the freshness window.
-  bool get halSpeedFresh {
-    final at = _speedAt;
-    if (at == null || _speedKmh == null) return false;
-    return DateTime.now().difference(at) <= _freshnessWindow;
-  }
+  bool get halSpeedFresh => halFresh('speed');
 
   /// Whether the resolver should use HAL speed for display right now:
   /// mode permits it AND a fresh value exists.
-  bool get useHalForSpeed {
-    if (_mode == HalSourceMode.obd2Only) return false;
-    return halSpeedFresh;
+  bool get useHalForSpeed => _useHal('speed');
+
+  // ── pack voltage (direct measurement; OBD2 shows sum-of-cells) ──
+
+  double? get halPackVoltage => halValue('pack_voltage');
+  bool get useHalForPackV => _useHal('pack_voltage');
+
+  // ── gear (HAL gear_enum confirmed same encoding as OBD2 791/0009:
+  //    1=P 2=R 4=D live-verified 2026-06-11; both feed the same
+  //    _gearStr mapping so the swap is invisible) ──
+
+  double? get halGear => halValue('gear_enum');
+  bool get useHalForGear => _useHal('gear_enum');
+
+  // ── SOC (soc_display = instrument-cluster %, live-verified equal to
+  //    the cluster AND to soc_battery at 32% on 2026-06-11; prefer the
+  //    cluster value, fall back to the raw BMS one) ──
+
+  double? get halSocPct => _useHal('soc_display')
+      ? halValue('soc_display')
+      : halValue('soc_battery');
+  bool get useHalForSoc =>
+      _useHal('soc_display') || _useHal('soc_battery');
+
+  // ── power (derived: HAL pack_current × HAL pack_voltage). Both
+  //    sources are discharge-positive (same convention as the OBD2
+  //    C33 path — see the vendored decoder-table header note), so the
+  //    sign semantics of instantPowerKw carry over unchanged. ──
+
+  double? get halPowerKw {
+    if (!_useHal('pack_current') || !_useHal('pack_voltage')) return null;
+    final i = halValue('pack_current');
+    final v = halValue('pack_voltage');
+    if (i == null || v == null) return null;
+    return v * i / 1000.0;
   }
+
+  /// Flow direction mirroring ConnectionService.powerFlowDirection
+  /// (1 discharge / −1 regen-or-charge / 0 near zero). Same ±3 A
+  /// deadband so the UI behaves identically whichever source feeds it.
+  int? get halFlowDir {
+    if (!_useHal('pack_current')) return null;
+    final i = halValue('pack_current');
+    if (i == null) return null;
+    if (i > 3.0) return 1;
+    if (i < -3.0) return -1;
+    return 0;
+  }
+
+  bool get useHalForPower => halPowerKw != null;
 
   /// Raw event stream (all decoders), for the dev HAL Test screen. The
   /// service is the SINGLE owner of the native subscription; HAL Test
@@ -165,26 +258,31 @@ class HalTelemetryService extends ChangeNotifier {
     await _sub?.cancel();
     _sub = null;
     _running = false;
-    _speedKmh = null;
-    _speedAt = null;
+    // Stale values must not survive a stop — event-driven names (SOC)
+    // count as fresh while running, so leaving them would lie after a
+    // restart with the car in a different state.
+    _latest.clear();
   }
 
   void _onEvent(HalEvent e) {
-    // Pilot: only SPEED is consumed for display. Everything else flows but
-    // is ignored here (the HAL Test screen shows the full set).
-    if (e.name != 'speed') return;
+    // v0.1.29+66: consume the overlapping-wave allowlist (speed,
+    // pack_voltage, pack_current, gear_enum, soc_display, soc_battery).
+    // Everything else flows but is ignored here — the HAL Test screen
+    // still shows the full set, including the battery-temp CANDIDATES
+    // from CompanionDecoderOverrides, which deliberately stay out of
+    // this allowlist until verified against OBD2 790/002F.
+    final guard = _range[e.name];
+    if (guard == null) return; // not a consumed name
     final v = e.value;
     if (v == null) return;
     final d = v.toDouble();
-    // Same range guard the OBD2 path uses, to drop frame-misalignment junk.
-    if (d < 0 || d > 220) return;
-    _speedKmh = d;
-    _speedAt = DateTime.now();
-    // No notifyListeners() per event — at ~8 Hz that would over-rebuild.
-    // The Driver gauge already rebuilds on the OBD2 ConnectionService
-    // poll cadence (it watches that service); the resolver reads our
-    // latest value at paint time. A coalesced notify keeps the gauge
-    // lively without flooding.
+    if (d < guard.$1 || d > guard.$2) return; // frame-misalignment junk
+    _latest[e.name] = (value: d, at: DateTime.now());
+    // No notifyListeners() per event — at ~15 Hz aggregate that would
+    // over-rebuild. The widgets already rebuild on the OBD2
+    // ConnectionService poll cadence; the resolvers read our latest
+    // values at paint time. A coalesced notify keeps displays lively
+    // without flooding.
     _scheduleNotify();
   }
 

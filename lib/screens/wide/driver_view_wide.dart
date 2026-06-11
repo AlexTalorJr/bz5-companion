@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../../l10n/strings.dart';
 import '../../services/connection.dart';
 import '../../services/cost_settings.dart';
+import '../../services/hal_telemetry_service.dart';
 import '../../services/locale_service.dart';
 import '../../widgets/driver_panels.dart';
 
@@ -134,7 +135,13 @@ class _GearCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final svc = context.watch<ConnectionService>();
-    final gear = svc.readNumeric('791', '0009')?.toInt();
+    // v0.1.29+66: gear prefers the HAL gear_enum push (~3.4 Hz, same
+    // 1=P/2=R/4=D encoding live-verified) over the OBD2 poll when fresh.
+    final hal = context.watch<HalTelemetryService>();
+    final gear = (hal.useHalForGear
+            ? hal.halGear
+            : svc.readNumeric('791', '0009'))
+        ?.toInt();
     final parking = svc.parkingPawlEngaged;
     final isCharging = svc.isCharging;
 
@@ -177,9 +184,12 @@ class _SocCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final svc = context.watch<ConnectionService>();
-    // Prefer precise SOC (1FFD). Fall back to integer (0x0005).
+    // v0.1.29+66: prefer HAL soc_display (instrument-cluster %, live-
+    // verified) when fresh; then precise OBD2 (1FFD); then integer 0x0005.
+    final hal = context.watch<HalTelemetryService>();
     final socInt = svc.readNumeric('790', '0005');
-    final displaySoc = svc.socPrecisePct ?? socInt;
+    final displaySoc = (hal.useHalForSoc ? hal.halSocPct : svc.socPrecisePct)
+        ?? socInt;
     final rangeKm = svc.rangeEstimateKm;
 
     // Same threshold band used elsewhere in the app for consistency.
@@ -288,8 +298,10 @@ class _BottomStatusStrip extends StatelessWidget {
     // read-only). Discharge blue / regen green / near-zero grey; we show
     // kW magnitude (provisional scale, sign-exact) not raw amps. Falls
     // back to a dash when current is stale.
-    final powerKw = svc.instantPowerKw;
-    final flowDir = svc.powerFlowDirection;
+    final hal = context.watch<HalTelemetryService>();
+    final powerKw = hal.useHalForPower ? hal.halPowerKw : svc.instantPowerKw;
+    final flowDir =
+        hal.useHalForPower ? hal.halFlowDir : svc.powerFlowDirection;
     final Color powerColor = flowDir == -1
         ? Colors.greenAccent
         : flowDir == 1

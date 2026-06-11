@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 
 import '../../l10n/strings.dart';
 import '../../services/connection.dart';
+import '../../services/hal_telemetry_service.dart';
 import '../../services/locale_service.dart';
 
 /// v0.1.26: Charging Companion view for the head-unit Driver tab.
@@ -196,7 +197,10 @@ class _PhaseEtaStack extends StatelessWidget {
   Widget build(BuildContext context) {
     final phase = svc.chargingPhase;
     final etaSec = svc.etaToFullSeconds;
-    final soc = svc.socPrecisePct ?? svc.readNumeric('790', '0005');
+    // v0.1.29+66: HAL soc_display (cluster %) preferred when fresh.
+    final hal = context.watch<HalTelemetryService>();
+    final soc = (hal.useHalForSoc ? hal.halSocPct : svc.socPrecisePct)
+        ?? svc.readNumeric('790', '0005');
     final gain = svc.socGainedThisChargingSessionPct;
 
     final phaseLabel = switch (phase) {

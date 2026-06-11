@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../../l10n/strings.dart';
 import '../../services/connection.dart';
+import '../../services/hal_telemetry_service.dart';
 import '../../services/locale_service.dart';
 import '../../widgets/charging_banner.dart';
 import 'driver_view_wide.dart';
@@ -87,7 +88,11 @@ class _HeadUnitScaffoldState extends State<HeadUnitScaffold> {
     // car is parked. Driver view is intentionally sparse in P (no trip
     // motion, no live speed) — Analytics has the rich data the user
     // probably wants to see in that idle moment.
-    final gear = svc.readNumeric('791', '0009');
+    // v0.1.29+66: same gear resolution as the cards (HAL when fresh).
+    final hal = context.watch<HalTelemetryService>();
+    final gear = hal.useHalForGear
+        ? hal.halGear
+        : svc.readNumeric('791', '0009');
     final isParked = gear != null && gear.toInt() == 1;
 
     return Scaffold(

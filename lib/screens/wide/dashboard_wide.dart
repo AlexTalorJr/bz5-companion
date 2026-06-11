@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../../l10n/strings.dart';
 import '../../services/connection.dart';
+import '../../services/hal_telemetry_service.dart';
 import '../../services/locale_service.dart';
 
 /// v0.1.4: Head-unit Dashboard.
@@ -115,6 +116,10 @@ class _LeftColumn extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // v0.1.29+66 overlapping wave: SOC and pack V prefer the HAL push
+    // stream when fresh (per-value OBD2 fallback). Invisible swap —
+    // same heroes, same places. See HalTelemetryService.
+    final hal = context.watch<HalTelemetryService>();
     final soc = svc.readNumeric('790', '0005');
     final rangeKm = svc.rangeEstimateKm;
     // v0.1.27+2: primary live pack V = sum-of-cells average × N
@@ -123,7 +128,9 @@ class _LeftColumn extends StatelessWidget {
     // during DC charging — measured −83V below sum-of-cells at 76 kW peak,
     // which is physically impossible. See connection.dart packVoltageFromCells
     // for the rationale. Legacy sources kept as side-panel diagnostics.
-    final packFromCells = svc.packVoltageFromCells;
+    final packFromCells = hal.useHalForPackV
+        ? hal.halPackVoltage
+        : svc.packVoltageFromCells;
     final packV = svc.packVoltageV;
     final packVInst = svc.packVoltageInstantV;
     final hvBus = svc.hvBusV;
@@ -133,7 +140,11 @@ class _LeftColumn extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Expanded(flex: 5, child: _SocHero(soc: soc, socPrecise: svc.socPrecisePct, rangeKm: rangeKm)),
+        Expanded(flex: 5, child: _SocHero(
+                soc: soc,
+                socPrecise:
+                    hal.useHalForSoc ? hal.halSocPct : svc.socPrecisePct,
+                rangeKm: rangeKm)),
         const SizedBox(height: 12),
         Expanded(
           flex: 3,
@@ -455,11 +466,17 @@ class _MiddleColumn extends StatelessWidget {
     final tempRaw = svc.readNumeric('790', '002F');
     final odo = svc.readNumeric('791', '0026');
     final cycles = svc.cycleCount;
-    final gear = svc.readNumeric('791', '0009');
+    // v0.1.29+66: gear and the live speed cell prefer HAL when fresh
+    // (gear_enum ~3.4 Hz / speed ~8 Hz, both live-verified vs cluster).
+    final hal = context.watch<HalTelemetryService>();
+    final gear = hal.useHalForGear
+        ? hal.halGear
+        : svc.readNumeric('791', '0009');
     final parkingEngaged = svc.parkingPawlEngaged;
     final isCharging = svc.isCharging;
     // v0.1.22: new live signals exposed on wide dashboard.
-    final vehicleSpeed = svc.vehicleSpeedKmh;
+    final vehicleSpeed =
+        hal.useHalForSpeed ? hal.halSpeedKmh : svc.vehicleSpeedKmh;
     final pduTemp1 = svc.readNumeric('740', '0010');
     final pduTemp2 = svc.readNumeric('740', '0011');
 
@@ -874,7 +891,11 @@ class _RightColumn extends StatelessWidget {
         ?? svc.readNumeric('790', '002D');
     final minIdx = svc.globalMinCellIndex;
     final maxIdx = svc.globalMaxCellIndex;
-    final soc = svc.readNumeric('790', '0005') ?? 50;
+    // v0.1.29+66: same SOC resolution as the hero (HAL cluster % first).
+    final hal = context.watch<HalTelemetryService>();
+    final soc = (hal.useHalForSoc ? hal.halSocPct : svc.socPrecisePct)
+        ?? svc.readNumeric('790', '0005')
+        ?? 50;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,

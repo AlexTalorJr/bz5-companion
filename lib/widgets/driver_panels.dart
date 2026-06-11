@@ -56,12 +56,11 @@ class SpeedAndStatusStrip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final svc = context.watch<ConnectionService>();
-    // v0.1.29+64: HAL SPEED overlapping pilot. The displayed speedo prefers
-    // HAL when its stream is live & fresh and the source mode permits it;
-    // otherwise it falls back to OBD2. The swap is invisible (same gauge),
-    // except for the temporary dual-readout line below used to verify the
-    // two sources agree on a live drive. vehicleSpeedKmh (and trip
-    // aggregates) stay pure OBD2 — see HalTelemetryService.
+    // v0.1.29+64/+66: HAL overlapping. The displayed speedo and Pack V
+    // prefer HAL when its stream is live & fresh and the source mode
+    // permits it; otherwise each falls back to OBD2 independently. The
+    // swap is invisible (same gauge, same strip). vehicleSpeedKmh (and
+    // trip aggregates) stay pure OBD2 — see HalTelemetryService.
     final hal = context.watch<HalTelemetryService>();
     // v0.1.24: display speed = true wheel speed × 1.05 if user enabled
     // the "match speedometer" toggle in Settings; else raw true speed.
@@ -71,7 +70,12 @@ class SpeedAndStatusStrip extends StatelessWidget {
     final double speed = rawSpeed == null
         ? 0.0
         : (svc.matchSpeedometer ? rawSpeed * 1.05 : rawSpeed);
-    final packFromCells = svc.packVoltageFromCells;
+    // Pack V: HAL pack_voltage is a direct measurement off the charging
+    // device (445–454 V live-verified 2026-06-11) — preferred over the
+    // OBD2 sum-of-cells reconstruction when fresh.
+    final packFromCells = hal.useHalForPackV
+        ? hal.halPackVoltage
+        : svc.packVoltageFromCells;
     final hvBus = svc.hvBusV;
     final batTemp = svc.readNumeric('790', '002F');
     final pdu1 = svc.readNumeric('740', '0010');
@@ -176,25 +180,10 @@ class SpeedAndStatusStrip extends StatelessWidget {
                     fontSize: compact ? 10 : 12,
                     letterSpacing: compact ? 1.0 : 1.5,
                     color: Colors.grey)),
-            // v0.1.29+64 PILOT (temporary): show HAL vs OBD2 speed side by
-            // side whenever the HAL stream is running, so the two sources
-            // can be compared on a live drive. The active source is marked
-            // with •. Removed once HAL speed is confirmed to track OBD2.
-            if (hal.running)
-              Builder(builder: (_) {
-                final h = hal.halSpeedKmh;
-                final o = svc.vehicleSpeedKmh;
-                String f(double? v) => v == null ? '—' : v.toStringAsFixed(0);
-                final halDot = usingHal ? '•' : ' ';
-                final obdDot = usingHal ? ' ' : '•';
-                return Text(
-                  '$halDot HAL ${f(h)} · OBD2 ${f(o)} $obdDot',
-                  style: TextStyle(
-                      fontSize: compact ? 9 : 11,
-                      color: Colors.tealAccent.withValues(alpha: 0.7),
-                      fontFeatures: const [FontFeature.tabularFigures()]),
-                );
-              }),
+            // v0.1.29+66: the temporary +64 HAL·OBD2 dual-readout is gone —
+            // HAL speed was confirmed against both OBD2 and the cluster on
+            // live drives (tracks the cluster, 1–3 km/h truer than OBD2).
+            // Source comparison now lives where it belongs: HAL Test.
             SizedBox(height: compact ? 2 : 4),
             // Compact mode runs inside an unbounded-height ListView
             // (via SizedBox parent). Expanded() would assert. In wide

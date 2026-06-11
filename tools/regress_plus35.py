@@ -2810,10 +2810,15 @@ if int(pv) >= 64:
             ok("Z1 HalTelemetryService has persisted source mode")
         else:
             fail("Z1 source mode / persistence missing")
-        if "e.name != 'speed'" in ss or "e.name == 'speed'" in ss:
-            ok("Z1 service consumes only SPEED (pilot scope)")
+        # Pilot-scope assertion holds only for the +64/+65 window; the
+        # +66 overlapping wave deliberately widens consumption (Part AA).
+        if int(pv) < 66:
+            if "e.name != 'speed'" in ss or "e.name == 'speed'" in ss:
+                ok("Z1 service consumes only SPEED (pilot scope)")
+            else:
+                fail("Z1 service not scoped to SPEED only")
         else:
-            fail("Z1 service not scoped to SPEED only")
+            ok("Z1 pilot scope superseded by +66 overlapping wave (Part AA)")
         if 'halSpeedFresh' in ss and 'Duration' in ss:
             ok("Z1 service has a freshness gate")
         else:
@@ -2844,10 +2849,18 @@ if int(pv) >= 64:
         ok("Z3 driver gauge resolves HAL→OBD2 with fallback")
     else:
         fail("Z3 driver gauge resolver missing")
-    if 'hal.running' in _dp and 'OBD2' in _dp:
-        ok("Z3 temporary dual-readout present (gated on stream running)")
+    # The temporary dual-readout existed to verify HAL vs OBD2 on a live
+    # drive; speed was confirmed (tracks cluster) and +66 removes it.
+    if int(pv) < 66:
+        if 'hal.running' in _dp and 'OBD2' in _dp:
+            ok("Z3 temporary dual-readout present (gated on stream running)")
+        else:
+            fail("Z3 dual-readout missing")
     else:
-        fail("Z3 dual-readout missing")
+        if 'halDot' not in _dp and 'obdDot' not in _dp:
+            ok("Z3 +64 dual-readout removed (speed source confirmed)")
+        else:
+            fail("Z3 stale dual-readout still present in +66")
 
     # Z4. Source toggle in main Settings: three modes wired to setMode.
     if _set.count('RadioListTile<HalSourceMode>') == 3 \
@@ -2857,6 +2870,118 @@ if int(pv) >= 64:
         fail("Z4 data-source toggle missing/incomplete")
 else:
     ok(f"Part Z skipped (build +{pv}, SPEED pilot lands in +64)")
+
+# ───── Part AA: HAL overlapping wave — packV / gear / SOC / power (+66) ─────
+
+if int(pv) >= 66:
+    _ss = (root / 'lib/services/hal_telemetry_service.dart').read_text()
+    _dp = (root / 'lib/widgets/driver_panels.dart').read_text()
+    _conn = (root / 'lib/services/connection.dart').read_text()
+    _plug = (root / 'android/app/src/main/kotlin/com/bz5companion/'
+                    'bz5_companion/BydNativePlugin.kt').read_text()
+    _ovr_p = (root / 'android/app/src/main/kotlin/com/bz5companion/'
+                     'bz5_companion/hal/CompanionDecoderOverrides.kt')
+    _man = (root / 'android/app/src/main/AndroidManifest.xml').read_text()
+    _perm = (root / 'android/app/src/main/kotlin/com/bz5companion/'
+                    'bz5_companion/BydPermissions.kt').read_text()
+
+    # AA1. Service consumes the agreed allowlist with per-name freshness:
+    #      continuous windows for speed/packV/current/gear, event-driven
+    #      (running-gated) for the SOC pair, range guards on every name.
+    _names = ["'speed'", "'pack_voltage'", "'pack_current'",
+              "'gear_enum'", "'soc_display'", "'soc_battery'"]
+    if all(n in _ss for n in _names) and '_continuousWindow' in _ss \
+            and '_eventDriven' in _ss and '_range' in _ss:
+        ok("AA1 service: allowlist + two freshness classes + range guards")
+    else:
+        fail("AA1 service allowlist/freshness machinery incomplete")
+    if 'halPackVoltage' in _ss and 'halGear' in _ss and 'halSocPct' in _ss \
+            and 'halPowerKw' in _ss and 'halFlowDir' in _ss:
+        ok("AA1 service exposes the overlapping resolvers")
+    else:
+        fail("AA1 overlapping resolver getters missing")
+    # Power deadband must mirror the OBD2 contract (±3 A) so the UI flow
+    # indicator behaves identically whichever source feeds it.
+    if 'i > 3.0' in _ss and 'i < -3.0' in _ss:
+        ok("AA1 halFlowDir mirrors the ±3 A OBD2 deadband")
+    else:
+        fail("AA1 halFlowDir deadband does not mirror OBD2")
+
+    # AA2. Honesty carried forward: recorded values stay pure OBD2. The
+    #      Z2 vehicleSpeedKmh check still runs above; here we extend the
+    #      no-HAL rule to the whole ConnectionService and the raw screen.
+    if 'hal_telemetry' not in _conn:
+        ok("AA2 ConnectionService still HAL-free (aggregates honest)")
+    else:
+        fail("AA2 ConnectionService references HAL — honesty at risk")
+    _raw = (root / 'lib/screens/wide/raw_data_wide.dart').read_text()
+    if 'hal_telemetry' not in _raw:
+        ok("AA2 raw-data screen stays pure OBD2 (diagnostic truth)")
+    else:
+        fail("AA2 raw-data screen polluted with HAL resolution")
+
+    # AA3. The invisible swap is wired at the display sites: packV in the
+    #      driver strip, gear/SOC/power on both dashboards + scaffold badge.
+    if 'useHalForPackV' in _dp and 'halPackVoltage' in _dp:
+        ok("AA3 driver strip resolves pack V (HAL→OBD2)")
+    else:
+        fail("AA3 driver strip pack V resolver missing")
+    _sites = {
+        'lib/screens/dashboard.dart': ['useHalForGear', 'useHalForSoc',
+                                       'useHalForPower', 'useHalForPackV'],
+        'lib/screens/wide/dashboard_wide.dart': ['useHalForGear',
+                                                 'useHalForSoc',
+                                                 'useHalForPackV'],
+        'lib/screens/wide/driver_view_wide.dart': ['useHalForGear',
+                                                   'useHalForSoc',
+                                                   'useHalForPower'],
+        'lib/screens/wide/head_unit_scaffold.dart': ['useHalForGear'],
+        'lib/screens/wide/charging_view_wide.dart': ['useHalForSoc'],
+    }
+    _missing = []
+    for _f, _needs in _sites.items():
+        _body = (root / _f).read_text()
+        for _n in _needs:
+            if _n not in _body:
+                _missing.append(f"{_f}:{_n}")
+    if not _missing:
+        ok("AA3 overlapping resolvers present at all display sites")
+    else:
+        fail(f"AA3 missing resolvers: {_missing}")
+
+    # AA4. Companion override layer: local insulation fix (shared-table
+    #      ×1000 bug) + battery-temp candidates, wired into the sink AND
+    #      the Statistic subscription — without touching vendored files.
+    if _ovr_p.exists():
+        _ovr = _ovr_p.read_text()
+        if 'scale = 0.001' in _ovr and '0x47300018' in _ovr:
+            ok("AA4 insulation local fix (scale=0.001) present")
+        else:
+            fail("AA4 insulation override missing/wrong scale")
+        if '0x47800010' in _ovr and 'extraStatisticFids' in _ovr:
+            ok("AA4 probe_highest_temp candidate + extra fid declared")
+        else:
+            fail("AA4 battery-temp candidate layer incomplete")
+    else:
+        fail("AA4 CompanionDecoderOverrides.kt missing")
+    if 'DecodedStreamSink(sink, CompanionDecoderOverrides.map)' in _plug \
+            and 'extraStatisticFids' in _plug:
+        ok("AA4 plugin wires overrides into sink + subscription")
+    else:
+        fail("AA4 plugin does not wire the override layer")
+
+    # AA5. AC permission fix (field-confirmed missing 2026-06-11: AcDevice
+    #      getInstance SecurityException naming BYDAUTO_AC_COMMON).
+    if 'BYDAUTO_AC_COMMON' in _man and 'BYDAUTO_AC_GET' in _man:
+        ok("AA5 manifest declares BYDAUTO_AC_COMMON + _GET")
+    else:
+        fail("AA5 AC permissions missing from manifest")
+    if 'BYDAUTO_AC_COMMON' in _perm:
+        ok("AA5 AC permission in the runtime-request list")
+    else:
+        fail("AA5 AC permission not runtime-requested")
+else:
+    ok(f"Part AA skipped (build +{pv}, overlapping wave lands in +66)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
