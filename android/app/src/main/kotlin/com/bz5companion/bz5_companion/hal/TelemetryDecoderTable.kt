@@ -1,7 +1,7 @@
 // === SHARED FROM bz5_recon — DO NOT EDIT (re-sync from recon) ===
 // Source: bz5-recon/android/app/src/main/kotlin/com/bz5/recon/live/TelemetryDecoderTable.kt
-// Synced: 2026-06-10 (recon v0.10.53, commit d37fbbc)
-// SHA256: 2178674794f89d643acab60dfd61999fed975aea07511d36e74c306481e08b2f
+// Synced: 2026-06-11 (recon v0.10.57, commit p078)
+// SHA256: b26144b8299079a02d4ca346ee373a12d353a40835da5908103859d4a70ee3c9
 package com.bz5companion.bz5_companion.hal
 
 // === SHARED CANDIDATE (bz5_recon ↔ bz5_companion) ===
@@ -130,79 +130,161 @@ object TelemetryDecoderTable {
         // ─── Statistic (tail) ────────────────────────────────────────────
         put("BYDAutoStatisticDevice|0x49502010",
             Decoder("odometer", "km", ValueSource.INT, scale = 0.1,
-                notes = "raw units 100 m → ×0.1 = km"))
+                notes = "STATISTIC_TOTAL_MILEAGE; raw units 100 m → ×0.1 = km"))
         put("BYDAutoStatisticDevice|0x49503010",
             Decoder("trip_a", "km", ValueSource.INT, scale = 0.1))
         put("BYDAutoStatisticDevice|0x49503024",
             Decoder("trip_b", "km", ValueSource.INT, scale = 0.1))
         put("BYDAutoStatisticDevice|0x49507032",
-            Decoder("aux_battery_12v", "V", ValueSource.DOUBLE,
-                notes = "AUX 12V health (13.7 V healthy)"))
+            Decoder("avg_consumption_50km", "kWh/100km", ValueSource.DOUBLE,
+                notes = "STATISTIC_LAST_50KM_EQUAL_FUEL_CON; 12.8 observed (avg consumption last 50km). NOT aux 12V — earlier misread."))
 
-        // ─── Engine (patch 066 decode via time-series correlation) ───────
+        // ─── Statistic (new from firmware catalog, patch 075) ────────────
+        put("BYDAutoStatisticDevice|0x2D300030",
+            Decoder("soc_battery", "%", ValueSource.INT,
+                notes = "STATISTIC_SOC_BATTERY_PERCENTAGE; BMS state of charge"))
+        put("BYDAutoStatisticDevice|0x49505038",
+            Decoder("soc_display", "%", ValueSource.DOUBLE,
+                notes = "STATISTIC_ELEC_PERCENTAGE; dashboard-displayed charge %"))
+        put("BYDAutoStatisticDevice|0x49507028",
+            Decoder("ev_range", "km", ValueSource.INT,
+                notes = "STATISTIC_ELEC_DRIVING_RANGE; estimated remaining range"))
+        put("BYDAutoStatisticDevice|0x44500830",
+            Decoder("instant_consumption", "kWh/100km", ValueSource.INT,
+                notes = "STATISTIC_INSTANT_EV_CONSUME; instantaneous consumption"))
+        put("BYDAutoStatisticDevice|0x47800020",
+            Decoder("cell_temp_lowest", "°C", ValueSource.INT,
+                notes = "STATISTIC_PROBE_LOWEST_TEMP; lowest cell-probe temperature"))
+
+        // ─── Engine (names from firmware BYDAutoFeatureIds catalog, patch 075) ─
+        // The firmware catalog resolved the long-running Engine fid guesses to
+        // exact names. Two prior misidentifications corrected:
+        //   0x15100020: was "motor_current_proxy" → ENGINE_POWER (kW). Verified:
+        //     ENGINE_POWER ≈ torque×ω with ratio 0.99–1.03 (trip-3); peak 208
+        //     ≈ nameplate 200 kW. It correlated with current only because
+        //     P ≈ V×I at ~constant V — it IS independent power, not an echo.
+        //   0x40F00008: was "pack_voltage_xcheck" → ENGINE_DRIVER_MOTOR_CONTROL_
+        //     VOLTAGE (inverter control voltage, not pack V). r=0.889 with pack
+        //     V because both track the same DC bus, but semantically distinct.
         put("BYDAutoEngineDevice|0x28A00008",
             Decoder("motor_rpm", "RPM", ValueSource.INT,
-                notes = "slope 79.3 RPM/(km/h) ≈ theoretical 78.5 for BZ5 single-speed reducer 9.7:1"))
-        // HYPOTHESIS — needs corr-with primary pack_voltage on drive run:
-        // put("BYDAutoEngineDevice|0x40F00008",
-        //     Decoder("pack_voltage_xcheck", "V", ValueSource.INT,
-        //         notes = "r=0.66 with Charging|0x2D300008 — middling; not promoted yet"))
-        // HYPOTHESIS — name guessed from physical range (26–39 °C) and Engine
-        // device family, but no independent corr or sensor cross-check.
-        // Needs corr-with cabin OBD temp readout or charge-soak temp curve:
-        // put("BYDAutoEngineDevice|0x3DB00008",
-        //     Decoder("inverter_motor_temp", "°C", ValueSource.INT,
-        //         notes = "26–39 °C observed; no strong correlation with speed; unverified semantic"))
-        // HYPOTHESIS — r=0.52 with pack_current is weak; could be any of
-        // {motor_torque, motor_power_kw, regen_target_pct}. Needs corr-with
-        // pedal position or a clean accel/coast/regen segment for confirmation:
-        // put("BYDAutoEngineDevice|0x15100020",
-        //     Decoder("motor_torque", "Nm", ValueSource.INT,
-        //         notes = "signed; r=0.52 with pack_current — weak; unverified"))
+                notes = "ENGINE_DRIVER_MOTOR_SPEED; slope 79.3 RPM/(km/h), r=0.968 speed; nameplate max ~16000"))
+        put("BYDAutoEngineDevice|0x28A00018",
+            Decoder("motor_torque", "Nm", ValueSource.DOUBLE,
+                notes = "ENGINE_DRIVER_MOTOR_TORQUE; signed, peak 330 Nm = nameplate; T×ω matches ENGINE_POWER & 200kW"))
+        put("BYDAutoEngineDevice|0x15100020",
+            Decoder("motor_power", "kW", ValueSource.INT,
+                notes = "ENGINE_POWER; signed; peak 208≈200kW nameplate; = torque×ω ratio 0.99-1.03 (trip-3)"))
+        put("BYDAutoEngineDevice|0x3DB00010",
+            Decoder("motor_temp", "°C", ValueSource.INT,
+                notes = "ENGINE_DRIVER_MOTOR_TEMP; 30–44 °C observed"))
+        put("BYDAutoEngineDevice|0x3DB00008",
+            Decoder("inverter_temp", "°C", ValueSource.INT,
+                notes = "ENGINE_DRIVER_MOTOR_CONTROL_TEMP (inverter); 25–55 °C; distinct from motor_temp (r=0.03)"))
+        put("BYDAutoEngineDevice|0x40F00008",
+            Decoder("motor_control_voltage", "V", ValueSource.INT,
+                notes = "ENGINE_DRIVER_MOTOR_CONTROL_VOLTAGE; inverter DC bus, tracks pack V (r=0.889) but distinct"))
 
         // ─── Gearbox (patch 067 trip-1 partial decode) ───────────────────
         put("BYDAutoGearboxDevice|0x0FB00020",
             Decoder("gear_enum", "", ValueSource.INT,
-                notes = "1=Park, 2=Reverse, 4=Drive, 3=unknown (need controlled sequence)"))
+                notes = "1=Park, 2=Reverse, 3=Neutral, 4=Drive (full enum confirmed trip-2 R→N→R→D→R→P sequence)"))
         put("BYDAutoGearboxDevice|0x22A00022",
-            Decoder("brake_toggle", "", ValueSource.INT,
-                notes = "0=released, 1=pressed"))
-        // HYPOTHESIS — BZ5 is a single-speed EV with no clutch, name probably
-        // misleading inherited from generic BYD framework. Could be brake-pedal
-        // pressure tier, regen-paddle position, or some shifter-stalk state.
-        // Needs corr-with deliberate paddle/pedal use to confirm semantic:
-        // put("BYDAutoGearboxDevice|0x21800411",
-        //     Decoder("clutch_toggle", "", ValueSource.INT,
-        //         notes = "0/1/2/3 — pad/clutch state"))
+            Decoder("brake_pedal", "", ValueSource.INT,
+                notes = "GEARBOX_BRAKE_PEDAL; 0=released, 1=pressed"))
+        // PROMOTED patch 075 via firmware catalog: GEARBOX_EPB_STATE — the
+        // electronic parking brake, not a clutch (BZ5 is single-speed, no
+        // clutch). Earlier "clutch_toggle" hypothesis retired.
+        put("BYDAutoGearboxDevice|0x21800411",
+            Decoder("epb_state", "", ValueSource.INT,
+                notes = "GEARBOX_EPB_STATE; electronic parking brake state (0/1/2/3)"))
 
         // ─── AC (event-driven climate control) ───────────────────────────
-        put("BYDAutoAcDevice|0x2FC0001C",
-            Decoder("ac_fan_speed", "", ValueSource.INT, notes = "1–7"))
-        put("BYDAutoAcDevice|0x2FC00018",
-            Decoder("ac_temp_level", "", ValueSource.INT, notes = "1–6"))
+        // ─── AC (re-mapped from firmware catalog, patch 075) ─────────────
+        // The p074 demotion was right to drop the old guesses. The catalog now
+        // gives exact names; trip-2 subtypes 0x2FC00014/00028/00030 resolve to
+        // AC_CYCLE_MODE / AC_TEMP_MAIN / AC_TEMP_DEPUTY. NAMES are firmware-
+        // exact, but VALUE SCALE is not yet pinned: trip-2 climate actions
+        // produced small ints (0/1) on TEMP_MAIN where setpoints 21/23 were
+        // expected, so the temp encoding (offset/scale, or "level index" vs
+        // °C) still needs a dedicated stationary climate test with per-action
+        // timestamps. Promoted with names; companion should treat values as
+        // raw until the climate test confirms scale.
         put("BYDAutoAcDevice|0x2FC00028",
-            Decoder("ac_setpoint", "°C", ValueSource.DOUBLE))
-        put("BYDAutoAcDevice|0x2FC0000C", Decoder("ac_on", "", ValueSource.INT, notes = "0/1"))
-        put("BYDAutoAcDevice|0x2FC00012", Decoder("ac_auto", "", ValueSource.INT, notes = "0/1"))
-        put("BYDAutoAcDevice|0x2FC0000B", Decoder("ac_recirc", "", ValueSource.INT, notes = "0/1"))
-        put("BYDAutoAcDevice|0x2FC00009", Decoder("ac_defrost", "", ValueSource.INT, notes = "0/1"))
-        put("BYDAutoAcDevice|0x2FC0000A", Decoder("ac_compressor", "", ValueSource.INT, notes = "0/1"))
+            Decoder("ac_temp_main", "", ValueSource.INT,
+                notes = "AC_TEMP_MAIN (driver setpoint); raw — scale TBD by climate test"))
+        put("BYDAutoAcDevice|0x2FC00030",
+            Decoder("ac_temp_deputy", "", ValueSource.INT,
+                notes = "AC_TEMP_DEPUTY (passenger setpoint); raw — scale TBD"))
+        put("BYDAutoAcDevice|0x2FC0001C",
+            Decoder("ac_wind_level", "", ValueSource.INT, notes = "AC_WIND_LEVEL (fan speed)"))
+        put("BYDAutoAcDevice|0x2FC00018",
+            Decoder("ac_wind_mode", "", ValueSource.INT, notes = "AC_WIND_MODE (airflow direction)"))
+        put("BYDAutoAcDevice|0x2FC00014",
+            Decoder("ac_cycle_mode", "", ValueSource.INT, notes = "AC_CYCLE_MODE (recirc/fresh)"))
+        put("BYDAutoAcDevice|0x2FC00010",
+            Decoder("ac_power_state", "", ValueSource.INT, notes = "AC_POWER_STATE (on/off)"))
+        put("BYDAutoAcDevice|0x2FC00012",
+            Decoder("ac_ctrl_mode", "", ValueSource.INT, notes = "AC_CTRL_MODE (auto/manual)"))
+        put("BYDAutoAcDevice|0x2FC00038",
+            Decoder("ac_temp_out", "°C", ValueSource.DOUBLE, notes = "AC_TEMP_OUT (outside temp)"))
 
-        // ─── Tyre (TPMS) ─────────────────────────────────────────────────
+        // ─── Tyre (TPMS) — wheel positions from firmware catalog, patch 075 ──
+        // Ground-truth confirmed (owner reading 2.7–2.9 bar, ~20°C). Pressure
+        // is kPa (287–292 = 2.87–2.92 bar), temperature is °C direct.
+        // Positions are EXACT from firmware names (no guessing).
+        put("BYDAutoTyreDevice|0x99000124",
+            Decoder("tyre_pressure_fl", "kPa", ValueSource.INT, notes = "TYRE_PRESSURE_VALUE_LEFT_FRONT"))
         put("BYDAutoTyreDevice|0x99000128",
-            Decoder("tyre_pressure_generic", "kPa", ValueSource.INT,
-                notes = "wheel position encoded in higher-byte; trip-1 only RIGHT_FRONT delivered"))
+            Decoder("tyre_pressure_fr", "kPa", ValueSource.INT, notes = "TYRE_PRESSURE_VALUE_RIGHT_FRONT"))
+        put("BYDAutoTyreDevice|0x9900012C",
+            Decoder("tyre_pressure_rl", "kPa", ValueSource.INT, notes = "TYRE_PRESSURE_VALUE_LEFT_REAR"))
+        put("BYDAutoTyreDevice|0x99000130",
+            Decoder("tyre_pressure_rr", "kPa", ValueSource.INT, notes = "TYRE_PRESSURE_VALUE_RIGHT_REAR"))
+        put("BYDAutoTyreDevice|0x99000183",
+            Decoder("tyre_temp_fl", "°C", ValueSource.DOUBLE, notes = "TYRE_TEMPERATURE_VALUE_LEFT_FRONT"))
+        put("BYDAutoTyreDevice|0x99000185",
+            Decoder("tyre_temp_fr", "°C", ValueSource.DOUBLE, notes = "TYRE_TEMPERATURE_VALUE_RIGHT_FRONT"))
+        put("BYDAutoTyreDevice|0x99000187",
+            Decoder("tyre_temp_rl", "°C", ValueSource.DOUBLE, notes = "TYRE_TEMPERATURE_VALUE_LEFT_REAR"))
+        put("BYDAutoTyreDevice|0x99000189",
+            Decoder("tyre_temp_rr", "°C", ValueSource.DOUBLE, notes = "TYRE_TEMPERATURE_VALUE_RIGHT_REAR"))
 
-        // ─── Radar (8 parking sensors, patch 066) ────────────────────────
-        // Range 62–127 cm; 127 = max range / no obstacle.
-        put("BYDAutoRadarDevice|0x99000061", Decoder("radar_fl_corner", "cm", ValueSource.INT))
-        put("BYDAutoRadarDevice|0x99000062", Decoder("radar_fl_center", "cm", ValueSource.INT))
-        put("BYDAutoRadarDevice|0x99000063", Decoder("radar_fr_center", "cm", ValueSource.INT))
-        put("BYDAutoRadarDevice|0x99000064", Decoder("radar_fr_corner", "cm", ValueSource.INT))
-        put("BYDAutoRadarDevice|0x99000065", Decoder("radar_rl_corner", "cm", ValueSource.INT))
-        put("BYDAutoRadarDevice|0x99000066", Decoder("radar_rl_center", "cm", ValueSource.INT))
-        put("BYDAutoRadarDevice|0x99000067", Decoder("radar_rr_center", "cm", ValueSource.INT))
-        put("BYDAutoRadarDevice|0x99000068", Decoder("radar_rr_corner", "cm", ValueSource.INT))
+        // ─── Radar obstacle distance (8 sensors) ─────────────────────────
+        // Names from firmware BYDAutoFeatureIds catalog (patch 078). The old
+        // corner/center labels (patch 066) were PRE-catalog positional guesses
+        // and were wrong for the four rear/side sensors — e.g. 0x65 was
+        // labelled "rl_corner" but firmware = RADAR_OBSTACLE_DISTANCE_LEFT (a
+        // side sensor), and 0x68 was "rr_corner" but firmware = ..._RIGHT.
+        // Now mapped 1:1 to the firmware fid names so companion UI places each
+        // sensor correctly.
+        // Range observed 19–127 in the s3 parking run; 126/127 = clear / no
+        // obstacle. Unit assumed cm; absolute scale not yet pinned by a
+        // tape-measure ground truth — treat as raw distance index until then.
+        put("BYDAutoRadarDevice|0x99000061", Decoder("radar_obstacle_left_front", "cm", ValueSource.INT, notes = "RADAR_OBSTACLE_DISTANCE_LEFT_FRONT (front, outer left)"))
+        put("BYDAutoRadarDevice|0x99000062", Decoder("radar_obstacle_front_left_mid", "cm", ValueSource.INT, notes = "RADAR_OBSTACLE_DISTANCE_FRONT_LEFT_MID (front, inner left)"))
+        put("BYDAutoRadarDevice|0x99000063", Decoder("radar_obstacle_front_right_mid", "cm", ValueSource.INT, notes = "RADAR_OBSTACLE_DISTANCE_FRONT_RIGHT_MID (front, inner right)"))
+        put("BYDAutoRadarDevice|0x99000064", Decoder("radar_obstacle_right_front", "cm", ValueSource.INT, notes = "RADAR_OBSTACLE_DISTANCE_RIGHT_FRONT (front, outer right)"))
+        put("BYDAutoRadarDevice|0x99000065", Decoder("radar_obstacle_left", "cm", ValueSource.INT, notes = "RADAR_OBSTACLE_DISTANCE_LEFT (rear, outer left)"))
+        put("BYDAutoRadarDevice|0x99000066", Decoder("radar_obstacle_left_rear", "cm", ValueSource.INT, notes = "RADAR_OBSTACLE_DISTANCE_LEFT_REAR (rear, inner left)"))
+        put("BYDAutoRadarDevice|0x99000067", Decoder("radar_obstacle_right_rear", "cm", ValueSource.INT, notes = "RADAR_OBSTACLE_DISTANCE_RIGHT_REAR (rear, inner right)"))
+        put("BYDAutoRadarDevice|0x99000068", Decoder("radar_obstacle_right", "cm", ValueSource.INT, notes = "RADAR_OBSTACLE_DISTANCE_RIGHT (rear, outer right)"))
+
+        // ─── Radar probe state (8 sensors, patch 078) ────────────────────
+        // RADAR_PROBE_STATE_* — per-sensor enum, observed 0–4 in the s3
+        // parking run (0 when clear). Likely a proximity/warning-zone level or
+        // sensor health code; exact value→meaning mapping is TBD (needs a
+        // controlled approach against a known obstacle distance). Confirmed
+        // live (all 8 fids fired in s3); promoted as raw enum with semantics
+        // pending. Companion may show as a raw badge until decoded.
+        put("BYDAutoRadarDevice|0x99000071", Decoder("radar_state_left_front", "", ValueSource.INT, notes = "RADAR_PROBE_STATE_LEFT_FRONT; enum 0-4, semantics TBD"))
+        put("BYDAutoRadarDevice|0x99000072", Decoder("radar_state_front_left_mid", "", ValueSource.INT, notes = "RADAR_PROBE_STATE_FRONT_LEFT_MID; enum 0-4, semantics TBD"))
+        put("BYDAutoRadarDevice|0x99000073", Decoder("radar_state_front_right_mid", "", ValueSource.INT, notes = "RADAR_PROBE_STATE_FRONT_RIGHT_MID; enum 0-4, semantics TBD"))
+        put("BYDAutoRadarDevice|0x99000074", Decoder("radar_state_right_front", "", ValueSource.INT, notes = "RADAR_PROBE_STATE_RIGHT_FRONT; enum 0-4, semantics TBD"))
+        put("BYDAutoRadarDevice|0x99000075", Decoder("radar_state_left", "", ValueSource.INT, notes = "RADAR_PROBE_STATE_LEFT; enum 0-4, semantics TBD"))
+        put("BYDAutoRadarDevice|0x99000076", Decoder("radar_state_left_rear", "", ValueSource.INT, notes = "RADAR_PROBE_STATE_LEFT_REAR; enum 0-4, semantics TBD"))
+        put("BYDAutoRadarDevice|0x99000077", Decoder("radar_state_right_rear", "", ValueSource.INT, notes = "RADAR_PROBE_STATE_RIGHT_REAR; enum 0-4, semantics TBD"))
+        put("BYDAutoRadarDevice|0x99000078", Decoder("radar_state_right", "", ValueSource.INT, notes = "RADAR_PROBE_STATE_RIGHT; enum 0-4, semantics TBD"))
     }
 
     /**

@@ -2757,21 +2757,21 @@ if int(pv) >= 61:
     _man = (root /
             'android/app/src/main/kotlin/com/bz5companion/bz5_companion/'
             'hal/HAL_SYNC.manifest').read_text()
-    if 'version: recon v0.10.53' in _man:
-        ok("Y2 manifest pinned to recon v0.10.53")
+    if 'version: recon v0.10.57' in _man:
+        ok("Y2 manifest pinned to recon v0.10.57")
     else:
-        fail("Y2 manifest not pinned to v0.10.53")
+        fail("Y2 manifest not pinned to v0.10.57")
 
     # Y3. DECODER_CHANGELOG vendored alongside the table (the decoder-sync
     #     source of truth), and it carries the v0.10.53 normalization entry.
     _cl = (root /
            'android/app/src/main/kotlin/com/bz5companion/bz5_companion/'
            'hal/DECODER_CHANGELOG.md')
-    if _cl.exists() and 'v0.10.53' in _cl.read_text() and \
-       'targetKey normalization' in _cl.read_text():
-        ok("Y3 DECODER_CHANGELOG vendored with v0.10.53 normalization entry")
+    if _cl.exists() and 'v0.10.57' in _cl.read_text() and \
+       'v0.10.53' in _cl.read_text():
+        ok("Y3 DECODER_CHANGELOG vendored through v0.10.57 (history intact)")
     else:
-        fail("Y3 DECODER_CHANGELOG missing or lacks v0.10.53 entry")
+        fail("Y3 DECODER_CHANGELOG missing or not synced to v0.10.57")
 
     # Y4. Until +64 the HAL channel was plumbing-only (wrapper + dev HAL
     #     Test). From +64 the SPEED pilot wires it into the data layer via

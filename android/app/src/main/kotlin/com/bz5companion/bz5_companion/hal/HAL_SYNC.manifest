@@ -16,7 +16,7 @@
 #     paste header above package:
 #       // === SHARED FROM bz5_recon ===
 #       // Source: bz5-recon/.../live/<F>
-#       // Synced: 2026-06-10 (recon v0.10.53, commit d37fbbc)
+#       // Synced: 2026-06-10 (recon v0.10.57, commit p078)
 #       // SHA256: <SHA from this manifest>
 #       // DO NOT EDIT directly — re-sync from source repo when divergence needed.
 #
@@ -24,13 +24,13 @@
 # (handoff suggested com.bz5.companion.hal; we keep the module's existing
 #  root for consistency with the rest of android/.../bz5_companion/)
 
-version: recon v0.10.53
-commit:  d37fbbc
+version: recon v0.10.57
+commit:  p078
 
 # <filename>  <recon-source SHA256>   (SHA is of the recon source body,
 #                                       a provenance marker — see changelog)
 TelemetrySink.kt           28426f4a53bec05385b8e83e2bee56ebc77cc7d88d70405ba3e2834d0caf402a
 LiveTelemetrySubscriber.kt 925befca76c4d73065c6aa35a0f589846ab6bb74cf6a6213a09f4c525814642e
 ReflectionCache.kt         9cf45133f4f36937c399265d7c95fb866757c56336468a71cdf32c2752a38625
-TargetRegistry.kt          b4668fd0d09c4566d935af5c23483401ac40b9393290d6e3e8538a8097991552
-TelemetryDecoderTable.kt   2178674794f89d643acab60dfd61999fed975aea07511d36e74c306481e08b2f
+TargetRegistry.kt          4c260db27c4ac5abf6275668e8d137564a3090de97b7c390f424097d7964acf4
+TelemetryDecoderTable.kt   b26144b8299079a02d4ca346ee373a12d353a40835da5908103859d4a70ee3c9

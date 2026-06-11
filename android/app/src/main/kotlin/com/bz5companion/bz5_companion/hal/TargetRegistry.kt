@@ -1,7 +1,7 @@
 // === SHARED FROM bz5_recon — DO NOT EDIT (re-sync from recon) ===
 // Source: bz5-recon/android/app/src/main/kotlin/com/bz5/recon/live/TargetRegistry.kt
-// Synced: 2026-06-10 (recon v0.10.53, commit d37fbbc)
-// SHA256: b4668fd0d09c4566d935af5c23483401ac40b9393290d6e3e8538a8097991552
+// Synced: 2026-06-11 (recon v0.10.57, commit p078)
+// SHA256: 4c260db27c4ac5abf6275668e8d137564a3090de97b7c390f424097d7964acf4
 package com.bz5companion.bz5_companion.hal
 
 import android.content.Context
@@ -176,6 +176,18 @@ object TargetRegistry {
         val radarNamedIds         = fidsByInnerClassSimpleName(featureIdsCls, "Radar")
         val vehicleHealthNamedIds = fidsByInnerClassSimpleName(featureIdsCls, "VehicleHealth")
 
+        // Patch 077 — exploratory Gb/Speed/Bodywork targets: CLOSED (patch 078).
+        // Three sessions on 2026-06-11 proved all three are unreachable for an
+        // untrusted app, and unlike the silent devices below they FAIL at
+        // getInstance (logged errors every run, not zero-cost silence):
+        //   BYDAutoGbDevice       → class_not_found (not in untrusted classpath)
+        //   BYDAutoSpeedDevice    → SecurityException BYDAUTO_SPEED_GET
+        //   BYDAutoBodyworkDevice → SecurityException BYDAUTO_BODYWORK_GET
+        // The Bodywork push-channel hypothesis is refuted: the signature wall
+        // sits on getInstance, so registerListener is never reached — the
+        // _COMMON ≠ _GET escape does not apply here. Targets removed to keep
+        // the run log clean. accelerator-pedal depth stays an OBD2-only path.
+
         if (chargingNamedIds.isNotEmpty()) targets.add(TargetSpec(
             "BYDAutoChargingDevice",
             "android.hardware.bydauto.charging.BYDAutoChargingDevice",
@@ -234,6 +246,9 @@ object TargetRegistry {
             "BYDAutoVehicleHealthDevice",
             "android.hardware.bydauto.vehiclehealth.BYDAutoVehicleHealthDevice",
             pickReadOnlyIds(vehicleHealthNamedIds, 32)))
+
+        // (Patch 077 Gb/Speed/Bodywork target additions removed in patch 078 —
+        //  see closure note above where their fid resolution used to live.)
 
         // Statistic tail — fids 65..N if catalog > 64.
         if (statisticNamedIds.size > 64) {
@@ -349,7 +364,12 @@ object TargetRegistry {
             0x49502010,             // odometer
             0x49503010,             // trip_a
             0x49503024,             // trip_b
-            0x49507032,             // aux_battery_12v
+            0x49507032,             // avg_consumption_50km
+            0x2D300030,             // soc_battery (patch 075)
+            0x49505038,             // soc_display (patch 075)
+            0x49507028,             // ev_range (patch 075)
+            0x44500830,             // instant_consumption (patch 075)
+            0x47800020,             // cell_temp_lowest (patch 075)
             0x99000191.toInt()      // battery_serial (bufdata)
         )
         val statisticIds: IntArray = if (statisticNamedIds.isNotEmpty()) {
