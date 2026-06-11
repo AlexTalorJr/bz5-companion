@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -118,15 +120,309 @@ class _GearAndSocStack extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // v0.1.29+67: power earned a real card (it lived in the 14 pt bottom
+    // strip — unreadable at driver distance). Stack: gear / power / SOC.
     return const Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Expanded(flex: 4, child: _GearCard()),
+        Expanded(flex: 3, child: _GearCard()),
         SizedBox(height: 12),
-        Expanded(flex: 6, child: _SocCard()),
+        Expanded(flex: 4, child: _PowerCard()),
+        SizedBox(height: 12),
+        Expanded(flex: 5, child: _SocCard()),
       ],
     );
   }
+}
+
+/// v0.1.29+67: Tesla-style live power card — big kW number, a center-zero
+/// horizontal bar (right = discharge up to +200 kW, left = regen down to
+/// −100 kW, scales chosen by the owner against the confirmed 223 kW
+/// electrical peak), and a ~60 s sparkline.
+///
+/// DISPLAY-ONLY: samples the resolved power (HAL preferred, OBD2
+/// fallback — same resolver as everywhere) on a 500 ms timer into a local
+/// ring buffer. Nothing is recorded; connection.dart untouched. The
+/// buffer lives in widget state — the IndexedStack in head_unit_scaffold
+/// keeps this subtree alive across tab switches, so history survives
+/// navigation and only resets on app restart.
+class _PowerCard extends StatefulWidget {
+  const _PowerCard();
+
+  @override
+  State<_PowerCard> createState() => _PowerCardState();
+}
+
+class _PowerCardState extends State<_PowerCard> {
+  static const _sampleEvery = Duration(milliseconds: 500);
+  static const _historyLen = 120; // × 500 ms = 60 s window
+  static const _dischargeFullKw = 200.0; // bar scale, owner-confirmed
+  static const _regenFullKw = 100.0;     // bar scale, owner-confirmed
+
+  // Ring buffer of the last [_historyLen] samples; null = no data at
+  // that tick (BLE+HAL both stale) → rendered as a gap.
+  final List<double?> _hist =
+      List<double?>.filled(_historyLen, null, growable: false);
+  int _head = 0; // next write position
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _timer = Timer.periodic(_sampleEvery, (_) => _sample());
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  void _sample() {
+    if (!mounted) return;
+    final svc = context.read<ConnectionService>();
+    final hal = context.read<HalTelemetryService>();
+    final p = hal.useHalForPower ? hal.halPowerKw : svc.instantPowerKw;
+    _hist[_head] = p;
+    _head = (_head + 1) % _historyLen;
+    // The card also rebuilds via watch() below; this setState keeps the
+    // sparkline scrolling even when both providers are quiet.
+    setState(() {});
+  }
+
+  /// Oldest-first copy of the ring for painting.
+  List<double?> get _ordered => [
+        ..._hist.sublist(_head),
+        ..._hist.sublist(0, _head),
+      ];
+
+  @override
+  Widget build(BuildContext context) {
+    final svc = context.watch<ConnectionService>();
+    final hal = context.watch<HalTelemetryService>();
+    final powerKw =
+        hal.useHalForPower ? hal.halPowerKw : svc.instantPowerKw;
+    final flowDir =
+        hal.useHalForPower ? hal.halFlowDir : svc.powerFlowDirection;
+
+    final Color powerColor = flowDir == -1
+        ? Colors.greenAccent
+        : flowDir == 1
+            ? Colors.lightBlueAccent
+            : Colors.white70;
+    final String dirLabel =
+        flowDir == -1 ? S.of('drv.regen') : S.of('drv.power');
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(dirLabel.toUpperCase(),
+                style: const TextStyle(
+                    fontSize: 11, letterSpacing: 1.5, color: Colors.grey)),
+            const SizedBox(height: 2),
+            Expanded(
+              flex: 5,
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.centerLeft,
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Text(
+                      powerKw != null
+                          ? powerKw.abs().toStringAsFixed(1)
+                          : '—',
+                      style: TextStyle(
+                          fontSize: 44,
+                          fontWeight: FontWeight.w400,
+                          color: powerColor,
+                          height: 0.95),
+                    ),
+                    const SizedBox(width: 6),
+                    const Padding(
+                      padding: EdgeInsets.only(bottom: 5),
+                      child: Text('kW',
+                          style:
+                              TextStyle(fontSize: 16, color: Colors.grey)),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 6),
+            // Center-zero bar: regen grows left (green), discharge grows
+            // right (blue). Asymmetric scales per the physics of the car.
+            SizedBox(
+              height: 8,
+              child: CustomPaint(
+                size: const Size.fromHeight(8),
+                painter: _PowerBarPainter(
+                  kw: powerKw,
+                  dischargeFull: _dischargeFullKw,
+                  regenFull: _regenFullKw,
+                ),
+              ),
+            ),
+            const SizedBox(height: 6),
+            Expanded(
+              flex: 4,
+              child: CustomPaint(
+                size: Size.infinite,
+                painter: _PowerSparklinePainter(
+                  samples: _ordered,
+                  dischargeFull: _dischargeFullKw,
+                  regenFull: _regenFullKw,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Horizontal center-zero power bar. Zero sits where the regen/discharge
+/// scales meet (regenFull left of it, dischargeFull right of it), so the
+/// pixel-per-kW density differs per side — deliberate: full-left always
+/// means "max regen", full-right "max discharge".
+class _PowerBarPainter extends CustomPainter {
+  final double? kw;
+  final double dischargeFull;
+  final double regenFull;
+  _PowerBarPainter(
+      {required this.kw,
+      required this.dischargeFull,
+      required this.regenFull});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final zeroX =
+        size.width * (regenFull / (regenFull + dischargeFull));
+    final track = Paint()
+      ..color = Colors.white.withValues(alpha: 0.08)
+      ..style = PaintingStyle.fill;
+    final r = RRect.fromRectAndRadius(
+        Offset.zero & size, const Radius.circular(4));
+    canvas.drawRRect(r, track);
+
+    final v = kw;
+    if (v != null && v.abs() > 0.05) {
+      final fill = Paint()
+        ..color = v >= 0 ? Colors.lightBlueAccent : Colors.greenAccent;
+      if (v >= 0) {
+        final w =
+            (v / dischargeFull).clamp(0.0, 1.0) * (size.width - zeroX);
+        canvas.drawRRect(
+            RRect.fromRectAndRadius(
+                Rect.fromLTWH(zeroX, 0, w, size.height),
+                const Radius.circular(4)),
+            fill);
+      } else {
+        final w = (v.abs() / regenFull).clamp(0.0, 1.0) * zeroX;
+        canvas.drawRRect(
+            RRect.fromRectAndRadius(
+                Rect.fromLTWH(zeroX - w, 0, w, size.height),
+                const Radius.circular(4)),
+            fill);
+      }
+    }
+
+    // Zero tick on top of the fill.
+    final tick = Paint()
+      ..color = Colors.white.withValues(alpha: 0.5)
+      ..strokeWidth = 1.5;
+    canvas.drawLine(
+        Offset(zeroX, -1), Offset(zeroX, size.height + 1), tick);
+  }
+
+  @override
+  bool shouldRepaint(_PowerBarPainter old) =>
+      old.kw != kw ||
+      old.dischargeFull != dischargeFull ||
+      old.regenFull != regenFull;
+}
+
+/// ~60 s power sparkline. Zero line at the regen/discharge boundary
+/// (same asymmetric vertical scale as the bar: top = +dischargeFull,
+/// bottom = −regenFull). Discharge above the line in blue, regen below
+/// in green; null samples leave gaps.
+class _PowerSparklinePainter extends CustomPainter {
+  final List<double?> samples;
+  final double dischargeFull;
+  final double regenFull;
+  _PowerSparklinePainter(
+      {required this.samples,
+      required this.dischargeFull,
+      required this.regenFull});
+
+  double _y(double kw, Size size) {
+    final span = dischargeFull + regenFull;
+    // +dischargeFull → y=0 (top); −regenFull → y=height (bottom).
+    return ((dischargeFull - kw) / span).clamp(0.0, 1.0) * size.height;
+  }
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (samples.isEmpty) return;
+    final zeroY = _y(0, size);
+    final zeroPaint = Paint()
+      ..color = Colors.white.withValues(alpha: 0.15)
+      ..strokeWidth = 1;
+    canvas.drawLine(Offset(0, zeroY), Offset(size.width, zeroY), zeroPaint);
+
+    final dx = size.width / (samples.length - 1);
+    final line = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.8
+      ..strokeCap = StrokeCap.round;
+
+    Path? path;
+    double? prev;
+    for (var i = 0; i < samples.length; i++) {
+      final s = samples[i];
+      if (s == null) {
+        // Gap: flush the current segment.
+        if (path != null) {
+          line.color = (prev ?? 0) >= 0
+              ? Colors.lightBlueAccent.withValues(alpha: 0.9)
+              : Colors.greenAccent.withValues(alpha: 0.9);
+          canvas.drawPath(path, line);
+          path = null;
+        }
+        continue;
+      }
+      final p = Offset(i * dx, _y(s, size));
+      if (path == null) {
+        path = Path()..moveTo(p.dx, p.dy);
+      } else {
+        // Color flips on sign change: flush and restart so discharge
+        // stays blue and regen green within one trace.
+        if (prev != null && (prev >= 0) != (s >= 0)) {
+          line.color = prev >= 0
+              ? Colors.lightBlueAccent.withValues(alpha: 0.9)
+              : Colors.greenAccent.withValues(alpha: 0.9);
+          canvas.drawPath(path, line);
+          path = Path()..moveTo(p.dx, p.dy);
+        } else {
+          path.lineTo(p.dx, p.dy);
+        }
+      }
+      prev = s;
+    }
+    if (path != null) {
+      line.color = (prev ?? 0) >= 0
+          ? Colors.lightBlueAccent.withValues(alpha: 0.9)
+          : Colors.greenAccent.withValues(alpha: 0.9);
+      canvas.drawPath(path, line);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_PowerSparklinePainter old) => true;
 }
 
 class _GearCard extends StatelessWidget {
@@ -294,22 +590,9 @@ class _BottomStatusStrip extends StatelessWidget {
         ? svc.globalMaxCellMv! - svc.globalMinCellMv!
         : null;
 
-    // v0.1.29+36: live power flow on the driver display (+33 data layer,
-    // read-only). Discharge blue / regen green / near-zero grey; we show
-    // kW magnitude (provisional scale, sign-exact) not raw amps. Falls
-    // back to a dash when current is stale.
-    final hal = context.watch<HalTelemetryService>();
-    final powerKw = hal.useHalForPower ? hal.halPowerKw : svc.instantPowerKw;
-    final flowDir =
-        hal.useHalForPower ? hal.halFlowDir : svc.powerFlowDirection;
-    final Color powerColor = flowDir == -1
-        ? Colors.greenAccent
-        : flowDir == 1
-            ? Colors.lightBlueAccent
-            : Colors.white70;
-    final String powerStr = powerKw != null
-        ? '${flowDir == -1 ? S.of('drv.regen') : S.of('drv.power')} ${powerKw.abs().toStringAsFixed(1)} kW'
-        : '${S.of('drv.power')} —';
+    // v0.1.29+67: power moved out of this strip into its own _PowerCard
+    // (gear/power/SOC stack) — a 14 pt line was unreadable at driver
+    // distance and the card adds the flow bar + 60 s sparkline.
 
     // Battery temp: trip range if active, single value if idle.
     final hasTrip = svc.currentTripId != null;
@@ -338,8 +621,6 @@ class _BottomStatusStrip extends StatelessWidget {
         child: Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Text(powerStr, style: TextStyle(color: powerColor)),
-            const _Sep(),
             Text(soh != null ? 'SOH ${soh.toInt()} %' : 'SOH —'),
             const _Sep(),
             Text(batTempStr),
