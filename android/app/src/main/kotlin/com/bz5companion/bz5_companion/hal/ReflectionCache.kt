@@ -1,6 +1,6 @@
 // === SHARED FROM bz5_recon — DO NOT EDIT (re-sync from recon) ===
 // Source: bz5-recon/android/app/src/main/kotlin/com/bz5/recon/live/ReflectionCache.kt
-// Synced: 2026-06-10 (recon v0.10.53, commit d37fbbc)
+// Synced: 2026-06-11 (recon v0.10.57, commit p078)
 // SHA256: 9cf45133f4f36937c399265d7c95fb866757c56336468a71cdf32c2752a38625
 package com.bz5companion.bz5_companion.hal
 

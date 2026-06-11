@@ -1,6 +1,6 @@
 // === SHARED FROM bz5_recon — DO NOT EDIT (re-sync from recon) ===
 // Source: bz5-recon/android/app/src/main/kotlin/com/bz5/recon/live/TelemetrySink.kt
-// Synced: 2026-06-10 (recon v0.10.53, commit d37fbbc)
+// Synced: 2026-06-11 (recon v0.10.57, commit p078)
 // SHA256: 28426f4a53bec05385b8e83e2bee56ebc77cc7d88d70405ba3e2834d0caf402a
 package com.bz5companion.bz5_companion.hal
 
