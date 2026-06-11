@@ -11,6 +11,7 @@ import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.BinaryMessenger
 import java.util.concurrent.ConcurrentHashMap
+import com.bz5companion.bz5_companion.hal.CompanionDecoderOverrides
 import com.bz5companion.bz5_companion.hal.DecodedStreamSink
 import com.bz5companion.bz5_companion.hal.LiveTelemetrySubscriber
 import com.bz5companion.bz5_companion.hal.TargetRegistry
@@ -576,11 +577,25 @@ class BydNativePlugin : FlutterPlugin, ActivityAware, MethodChannel.MethodCallHa
         // so run off the main thread; marshal status back via result.
         Thread {
             try {
-                val streamSink = DecodedStreamSink(sink)
+                // v0.1.29+66: companion override layer — local decoder fixes
+                // and battery-temp candidates (see CompanionDecoderOverrides).
+                val streamSink = DecodedStreamSink(sink, CompanionDecoderOverrides.map)
+                // The vendored registry is never edited (DO-NOT-EDIT / SHA
+                // pinned); extra companion-only fids are layered on top by
+                // copying the Statistic TargetSpec with an extended id set.
+                val baseTargets = TargetRegistry.streamingTargets(appContext) // 8 targets
+                val targets = baseTargets.map { spec ->
+                    if (spec.key == "BYDAutoStatisticDevice")
+                        spec.copy(
+                            featureIds = spec.featureIds +
+                                CompanionDecoderOverrides.extraStatisticFids
+                        )
+                    else spec
+                }
                 val subscriber = LiveTelemetrySubscriber(
                     appContext,
                     streamSink,
-                    TargetRegistry.streamingTargets(appContext), // 8 targets
+                    targets,
                 )
                 val status = subscriber.start()
                 halStreamSink = streamSink

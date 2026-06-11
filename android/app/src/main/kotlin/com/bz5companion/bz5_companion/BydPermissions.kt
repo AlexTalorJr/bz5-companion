@@ -91,6 +91,11 @@ object BydPermissions {
         "android.permission.BYDAUTO_BIGDATA_COMMON"       to "Big data / register tables",
         "android.permission.BYDAUTO_VEHICLE_DATA_GET"     to "Vehicle data (R only)",
         "android.permission.BYDAUTO_BIGDATA_GET"          to "Big data (R only)",
+        // v0.1.29+66: AC domain — the one _COMMON we never declared.
+        // Field-confirmed missing on 2026-06-11 (HAL Test: AcDevice
+        // getInstance SecurityException naming BYDAUTO_AC_COMMON).
+        "android.permission.BYDAUTO_AC_COMMON"            to "Climate / AC state (R/W)",
+        "android.permission.BYDAUTO_AC_GET"               to "Climate / AC state (R only)",
     )
 
     /**

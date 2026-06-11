@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 
 import '../l10n/strings.dart';
 import '../services/connection.dart';
+import '../services/hal_telemetry_service.dart';
 import '../services/locale_service.dart';
 import '../widgets/driver_panels.dart';
 
@@ -68,13 +69,20 @@ class _Connected extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // v0.1.29+66 overlapping wave: gear / SOC / pack V / power prefer the
+    // HAL push stream when fresh, falling back to OBD2 per-value. Each
+    // swap is invisible — same card, same place, no source label. Trip
+    // aggregates and everything recorded stay pure OBD2 (honesty rule).
+    final hal = context.watch<HalTelemetryService>();
     final soc = svc.readNumeric('790', '0005');
     final soh = svc.readNumeric('790', '0029');
     final tempRaw = svc.readNumeric('790', '002F');
     final cellMin = svc.readNumeric('790', '002B');
     final cellMax = svc.readNumeric('790', '002D');
     final odo = svc.readNumeric('791', '0026');
-    final gear = svc.readNumeric('791', '0009');
+    final gear = hal.useHalForGear
+        ? hal.halGear
+        : svc.readNumeric('791', '0009');
     final cells = svc.liveCells;
     final isCharging = svc.isCharging;
     final rangeKm = svc.rangeEstimateKm;
@@ -86,13 +94,18 @@ class _Connected extends StatelessWidget {
     // (DC 2026-05-22: hvBus showed -83V offset vs cells; AC 2026-05-23:
     // hvBus showed 405.5V while cells×136 = 458.9V → -53V offset).
     // See connection.dart packVoltageFromCells for full rationale.
-    final packFromCells = svc.packVoltageFromCells;
+    // v0.1.29+66: prefer the HAL direct pack-voltage measurement when
+    // fresh (445-454 V live-verified); OBD2 sum-of-cells is the fallback.
+    final packFromCells = hal.useHalForPackV
+        ? hal.halPackVoltage
+        : svc.packVoltageFromCells;
     final packV = svc.packVoltageV;       // platform constant ~450V (fallback only)
     final hvBus = svc.hvBusV;              // HV bus (live but lies under charge)
     final parkingEngaged = svc.parkingPawlEngaged;
     final chargedSession = svc.chargedThisSessionKwh;
     // v0.1.22: live signals from PDU (740) added to UI.
-    final vehicleSpeed = svc.vehicleSpeedKmh;       // 740/0x0008 / 14.09
+    final vehicleSpeed =
+        hal.useHalForSpeed ? hal.halSpeedKmh : svc.vehicleSpeedKmh;
     final pduTemp1 = svc.readNumeric('740', '0010'); // PDU heatsink 1
     final pduTemp2 = svc.readNumeric('740', '0011'); // PDU heatsink 2
 
@@ -101,8 +114,13 @@ class _Connected extends StatelessWidget {
     // Wh/km) — no protocol logic touched. Magnitude inherits the
     // PROVISIONAL current scale, so we show power/flow/consumption (which
     // are scale-proportional and sign-exact) and deliberately NOT raw amps.
-    final powerKw = svc.instantPowerKw;             // discharge +, regen −
-    final flowDir = svc.powerFlowDirection;         // 1 / −1 / 0 (sign exact)
+    // v0.1.29+66: power prefers the HAL-derived product (pack_current ×
+    // pack_voltage, both direct measurements, same discharge-positive
+    // convention) over the OBD2 provisional-scale path when fresh.
+    final powerKw = hal.useHalForPower ? hal.halPowerKw : svc.instantPowerKw;
+    final flowDir = hal.useHalForPower
+        ? hal.halFlowDir
+        : svc.powerFlowDirection;                   // 1 / −1 / 0 (sign exact)
     final consWhKm = svc.instantConsumptionWhKm;    // null below 3 km/h
 
     // v0.1.29: detect "tall portrait" head units (BZ3 in particular).
@@ -165,7 +183,9 @@ class _Connected extends StatelessWidget {
                   flex: 2,
                   child: _TallSocCard(
                     soc: soc,
-                    socPrecise: svc.socPrecisePct,
+                    socPrecise: hal.useHalForSoc
+                        ? hal.halSocPct
+                        : svc.socPrecisePct,
                     rangeKm: rangeKm,
                     gear: gear,
                     parkingEngaged: parkingEngaged,
@@ -176,7 +196,13 @@ class _Connected extends StatelessWidget {
             ),
           )
         else
-          _SocCard(soc: soc, socPrecise: svc.socPrecisePct, rangeKm: rangeKm),
+          _SocCard(
+              soc: soc,
+              // v0.1.29+66: HAL soc_display = the instrument-cluster %
+              // (live-verified equal on 2026-06-11); preferred when fresh.
+              socPrecise:
+                  hal.useHalForSoc ? hal.halSocPct : svc.socPrecisePct,
+              rangeKm: rangeKm),
         const SizedBox(height: 12),
         if (isCharging) _ChargingBanner(svc: svc, chargedSession: chargedSession),
         if (isCharging) const SizedBox(height: 12),
@@ -977,7 +1003,7 @@ class _LayoutDiagnostic extends StatelessWidget {
 
 /// Bump when changing the diagnostic format — helps cross-reference
 /// screenshots to specific app versions while iterating.
-const String _kDiagVersion = 'v0.1.29+65';
+const String _kDiagVersion = 'v0.1.29+66';
 
 class _GridCards extends StatelessWidget {
   final List<Widget> children;
