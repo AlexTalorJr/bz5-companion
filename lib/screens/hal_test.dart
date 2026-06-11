@@ -169,9 +169,25 @@ class _HalTestScreenState extends State<HalTestScreen> {
                       style: const TextStyle(color: Colors.grey),
                     ),
                   )
-                : ListView.builder(
+                // v0.1.29+67: dense grid instead of a list — with 45+
+                // params flowing, the point of this screen is "one photo
+                // captures everything". Cells auto-flow at ≤190 px wide,
+                // which lands ~9×6 on the head unit: the full set fits a
+                // single screenshot. Stable alphabetical order keeps
+                // photos comparable between drives. Long-press a cell for
+                // its decoder key.
+                : GridView.builder(
+                    padding: const EdgeInsets.all(8),
+                    gridDelegate:
+                        const SliverGridDelegateWithMaxCrossAxisExtent(
+                      maxCrossAxisExtent: 190,
+                      mainAxisSpacing: 6,
+                      crossAxisSpacing: 6,
+                      childAspectRatio: 1.9,
+                    ),
                     itemCount: names.length,
-                    itemBuilder: (_, i) => _row(names[i], _byName[names[i]]!),
+                    itemBuilder: (_, i) =>
+                        _cell(names[i], _byName[names[i]]!),
                   ),
           ),
         ],
@@ -246,34 +262,61 @@ class _HalTestScreenState extends State<HalTestScreen> {
     );
   }
 
-  Widget _row(String name, _NameStat st) {
+  /// Photo-friendly value: enough digits to be useful, few enough to
+  /// stay readable in a 190 px cell (raw doubles arrive with 13+ digits).
+  static String _fmt(num v) {
+    if (v == v.roundToDouble() && v.abs() < 1e7) return v.toInt().toString();
+    final a = v.abs();
+    if (a >= 100) return v.toStringAsFixed(0);
+    if (a >= 10) return v.toStringAsFixed(1);
+    return v.toStringAsFixed(2);
+  }
+
+  Widget _cell(String name, _NameStat st) {
     final v = st.lastValue;
-    final valueStr = v == null
-        ? '—'
-        : (v == v.roundToDouble() ? v.toInt().toString() : v.toString());
-    return ListTile(
-      dense: true,
-      title: Text(name, style: const TextStyle(fontFamily: 'monospace')),
-      subtitle: Text(st.key,
-          style: const TextStyle(fontSize: 11, color: Colors.grey)),
-      trailing: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        crossAxisAlignment: CrossAxisAlignment.end,
-        children: [
-          Text(
-            '$valueStr ${st.unit}',
-            style: const TextStyle(
-                fontSize: 15,
-                fontFeatures: [FontFeature.tabularFigures()]),
-          ),
-          Text(
-            '${st.hz.toStringAsFixed(1)} Hz · ${st.count}',
-            style: const TextStyle(
-                fontSize: 11,
-                color: Colors.grey,
-                fontFeatures: [FontFeature.tabularFigures()]),
-          ),
-        ],
+    final valueStr = v == null ? '—' : _fmt(v);
+    return Tooltip(
+      message: st.key,
+      triggerMode: TooltipTriggerMode.longPress,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.04),
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                  fontSize: 9.5,
+                  fontFamily: 'monospace',
+                  color: Colors.grey),
+            ),
+            FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: Alignment.centerLeft,
+              child: Text(
+                st.unit.isEmpty ? valueStr : '$valueStr ${st.unit}',
+                style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w500,
+                    fontFeatures: [FontFeature.tabularFigures()]),
+              ),
+            ),
+            Text(
+              '${st.hz.toStringAsFixed(1)} Hz · ${st.count}',
+              style: const TextStyle(
+                  fontSize: 8.5,
+                  color: Colors.grey,
+                  fontFeatures: [FontFeature.tabularFigures()]),
+            ),
+          ],
+        ),
       ),
     );
   }

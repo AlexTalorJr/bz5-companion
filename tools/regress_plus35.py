@@ -2983,6 +2983,50 @@ if int(pv) >= 66:
 else:
     ok(f"Part AA skipped (build +{pv}, overlapping wave lands in +66)")
 
+# ───── Part AB: power card + HAL Test grid (+67) ─────
+
+if int(pv) >= 67:
+    _dvw = (root / 'lib/screens/wide/driver_view_wide.dart').read_text()
+    _ht = (root / 'lib/screens/hal_test.dart').read_text()
+
+    # AB1. Power card present in the gear/power/SOC stack with the
+    #      owner-confirmed asymmetric scales (200 discharge / 100 regen),
+    #      flow bar and sparkline painters.
+    if '_PowerCard' in _dvw and '_PowerBarPainter' in _dvw \
+            and '_PowerSparklinePainter' in _dvw:
+        ok("AB1 power card + bar + sparkline present")
+    else:
+        fail("AB1 power card components missing")
+    if '_dischargeFullKw = 200.0' in _dvw and '_regenFullKw = 100.0' in _dvw:
+        ok("AB1 bar scales 200/100 kW (owner-confirmed)")
+    else:
+        fail("AB1 bar scales wrong")
+    # Display-only: the sampler must not touch connection.dart (already
+    # enforced by AA2) and must use the same resolver as everywhere.
+    if 'useHalForPower' in _dvw and 'instantPowerKw' in _dvw:
+        ok("AB1 sampler uses the shared HAL→OBD2 power resolver")
+    else:
+        fail("AB1 sampler bypasses the shared resolver")
+
+    # AB2. Power removed from the bottom strip (no duplication).
+    if 'powerStr' not in _dvw:
+        ok("AB2 bottom-strip power line removed (lives in the card now)")
+    else:
+        fail("AB2 power still duplicated in the bottom strip")
+
+    # AB3. HAL Test renders a photo-friendly grid (one screenshot = full
+    #      param set), stable-sorted, with the decoder key on long-press.
+    if 'GridView.builder' in _ht and 'SliverGridDelegateWithMaxCrossAxisExtent' in _ht:
+        ok("AB3 HAL Test grid layout present")
+    else:
+        fail("AB3 HAL Test still a list")
+    if 'Tooltip' in _ht and 'TooltipTriggerMode.longPress' in _ht:
+        ok("AB3 decoder key reachable via long-press")
+    else:
+        fail("AB3 decoder key tooltip missing")
+else:
+    ok(f"Part AB skipped (build +{pv}, power card lands in +67)")
+
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
 print(f"+35→+51 REGRESSION — build +{pv}")
