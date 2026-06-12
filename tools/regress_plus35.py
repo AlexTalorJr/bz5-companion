@@ -3027,6 +3027,31 @@ if int(pv) >= 67:
 else:
     ok(f"Part AB skipped (build +{pv}, power card lands in +67)")
 
+# ───── Part AC: CI delivery via Releases (+68) ─────
+
+if int(pv) >= 68:
+    _wf = (root / '.github/workflows/build.yml').read_text()
+    # AC1. Release publishing is unconditional on main builds (it became
+    #      the canonical delivery after the artifact quota incident) and
+    #      tags are unique per commit.
+    if 'tag_name: build-${{ env.BUILD_NUMBER }}' in _wf \
+            and 'make_latest: true' in _wf:
+        ok("AC1 release publish step (per-commit tag, latest pointer)")
+    else:
+        fail("AC1 release publish step missing/incomplete")
+    if 'contents: write' in _wf:
+        ok("AC1 workflow grants contents:write for releases")
+    else:
+        fail("AC1 GITHUB_TOKEN lacks contents:write")
+    # AC2. Artifact path demoted: short retention + quota failures
+    #      don't kill a green build.
+    if 'retention-days: 7' in _wf and 'continue-on-error: true' in _wf:
+        ok("AC2 artifact retention 7d + quota-tolerant upload")
+    else:
+        fail("AC2 artifact step still quota-fragile")
+else:
+    ok(f"Part AC skipped (build +{pv}, release delivery lands in +68)")
+
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
 print(f"+35→+51 REGRESSION — build +{pv}")
