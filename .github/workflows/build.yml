@@ -9,6 +9,12 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
+    # v0.1.29+68: releases are now the primary APK delivery channel
+    # (see the release step below) — GITHUB_TOKEN needs write access
+    # to create tags/releases. Default token perms can be read-only.
+    permissions:
+      contents: write
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -267,16 +273,33 @@ jobs:
              build/app/outputs/flutter-apk/bz5-companion-${{ env.VERSION_NAME }}.apk
 
       - name: Upload APK artifact
+        # v0.1.29+68: artifacts are now a CONVENIENCE copy only — the
+        # canonical delivery is the Release below (separate storage,
+        # not subject to the Actions artifact quota that killed the
+        # +66 build upload). retention-days dropped 30 → 7 so old APKs
+        # expire on their own and stop eating the quota; and a quota
+        # failure here must not fail an otherwise green build, hence
+        # continue-on-error.
         uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: bz5-companion-${{ env.VERSION_NAME }}
           path: build/app/outputs/flutter-apk/*.apk
-          retention-days: 30
+          retention-days: 7
 
-      - name: Create release on tag
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Publish APK to Release
+        # v0.1.29+68: every main-branch build publishes its APK as a
+        # GitHub Release (tag build-N, N = versionCode = rev-list count,
+        # unique per commit; a re-run of the same commit updates the
+        # same release instead of duplicating). Release assets live in
+        # repo storage, NOT in the Actions artifact quota. make_latest
+        # keeps /releases/latest pointing at the newest APK — stable
+        # download URL for the USB-stick flow.
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: build-${{ env.BUILD_NUMBER }}
+          name: bz5-companion ${{ env.VERSION_NAME }}
           files: build/app/outputs/flutter-apk/*.apk
+          make_latest: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
