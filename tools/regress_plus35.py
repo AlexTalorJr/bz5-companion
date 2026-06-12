@@ -3043,12 +3043,19 @@ if int(pv) >= 68:
         ok("AC1 workflow grants contents:write for releases")
     else:
         fail("AC1 GITHUB_TOKEN lacks contents:write")
-    # AC2. Artifact path demoted: short retention + quota failures
-    #      don't kill a green build.
-    if 'retention-days: 7' in _wf and 'continue-on-error: true' in _wf:
-        ok("AC2 artifact retention 7d + quota-tolerant upload")
+    # AC2. (+69 hardening) The artifact-upload step is gone entirely —
+    #      a quota-tolerant copy still proved fragile in the field, so
+    #      the only acceptable state is zero artifact calls.
+    if int(pv) >= 69:
+        if 'upload-artifact' not in _wf:
+            ok("AC2 no artifact upload at all (Releases-only delivery)")
+        else:
+            fail("AC2 artifact upload crept back into the workflow")
     else:
-        fail("AC2 artifact step still quota-fragile")
+        if 'retention-days: 7' in _wf and 'continue-on-error: true' in _wf:
+            ok("AC2 artifact retention 7d + quota-tolerant upload")
+        else:
+            fail("AC2 artifact step still quota-fragile")
 else:
     ok(f"Part AC skipped (build +{pv}, release delivery lands in +68)")
 
