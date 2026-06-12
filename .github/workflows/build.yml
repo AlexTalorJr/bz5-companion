@@ -272,21 +272,14 @@ jobs:
           mv build/app/outputs/flutter-apk/app-release.apk \
              build/app/outputs/flutter-apk/bz5-companion-${{ env.VERSION_NAME }}.apk
 
-      - name: Upload APK artifact
-        # v0.1.29+68: artifacts are now a CONVENIENCE copy only — the
-        # canonical delivery is the Release below (separate storage,
-        # not subject to the Actions artifact quota that killed the
-        # +66 build upload). retention-days dropped 30 → 7 so old APKs
-        # expire on their own and stop eating the quota; and a quota
-        # failure here must not fail an otherwise green build, hence
-        # continue-on-error.
-        uses: actions/upload-artifact@v4
-        continue-on-error: true
-        with:
-          name: bz5-companion-${{ env.VERSION_NAME }}
-          path: build/app/outputs/flutter-apk/*.apk
-          retention-days: 7
-
+      # v0.1.29+69: the artifact-upload step is GONE entirely. +68 demoted
+      # it to a continue-on-error convenience copy, but a build still
+      # died on the quota before reaching the Release step (the failing
+      # run executed a pre-+68 workflow — the workflow file comes from
+      # the commit being built). Rather than depend on that subtlety,
+      # the step is removed: no artifact call → no quota interaction →
+      # no failure mode. Releases are the one and only delivery channel;
+      # /releases/latest is the stable newest-APK URL.
       - name: Publish APK to Release
         # v0.1.29+68: every main-branch build publishes its APK as a
         # GitHub Release (tag build-N, N = versionCode = rev-list count,
