@@ -171,8 +171,8 @@ class _HalTestScreenState extends State<HalTestScreen> {
                   )
                 // v0.1.29+67: dense grid instead of a list — with 45+
                 // params flowing, the point of this screen is "one photo
-                // captures everything". Cells auto-flow at ≤190 px wide,
-                // which lands ~9×6 on the head unit: the full set fits a
+                // captures everything". Cells auto-flow at ≤150 px wide,
+                // which lands ~12 columns on the head unit: the full set fits a
                 // single screenshot. Stable alphabetical order keeps
                 // photos comparable between drives. Long-press a cell for
                 // its decoder key.
@@ -180,10 +180,10 @@ class _HalTestScreenState extends State<HalTestScreen> {
                     padding: const EdgeInsets.all(8),
                     gridDelegate:
                         const SliverGridDelegateWithMaxCrossAxisExtent(
-                      maxCrossAxisExtent: 190,
-                      mainAxisSpacing: 6,
-                      crossAxisSpacing: 6,
-                      childAspectRatio: 1.9,
+                      maxCrossAxisExtent: 150,
+                      mainAxisSpacing: 4,
+                      crossAxisSpacing: 4,
+                      childAspectRatio: 1.75,
                     ),
                     itemCount: names.length,
                     itemBuilder: (_, i) =>
@@ -293,7 +293,7 @@ class _HalTestScreenState extends State<HalTestScreen> {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(
-                  fontSize: 9.5,
+                  fontSize: 8.5,
                   fontFamily: 'monospace',
                   color: Colors.grey),
             ),
@@ -303,7 +303,7 @@ class _HalTestScreenState extends State<HalTestScreen> {
               child: Text(
                 st.unit.isEmpty ? valueStr : '$valueStr ${st.unit}',
                 style: const TextStyle(
-                    fontSize: 16,
+                    fontSize: 14,
                     fontWeight: FontWeight.w500,
                     fontFeatures: [FontFeature.tabularFigures()]),
               ),

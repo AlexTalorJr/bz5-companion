@@ -2997,10 +2997,25 @@ if int(pv) >= 67:
         ok("AB1 power card + bar + sparkline present")
     else:
         fail("AB1 power card components missing")
-    if '_dischargeFullKw = 200.0' in _dvw and '_regenFullKw = 100.0' in _dvw:
-        ok("AB1 bar scales 200/100 kW (owner-confirmed)")
+    # +70: scales auto-zoom (variant B) instead of fixed 200/100.
+    if int(pv) >= 70:
+        if '_recomputeScales' in _dvw and '_dischargeCeilKw = 200.0' in _dvw \
+                and '_regenCeilKw = 100.0' in _dvw \
+                and '_scaleEase' in _dvw:
+            ok("AB1 power auto-zoom scales (ease to window max, capped 200/100)")
+        else:
+            fail("AB1 auto-zoom scale machinery missing")
+        # Power card lives in its own centre column, not the right stack.
+        if '_GearAndSocStack' in _dvw and '_PowerCard' in _dvw \
+                and '_PowerCard()' in _dvw:
+            ok("AB1 power card in centre column; right stack back to gear/SOC")
+        else:
+            fail("AB1 centre-column power layout missing")
     else:
-        fail("AB1 bar scales wrong")
+        if '_dischargeFullKw = 200.0' in _dvw and '_regenFullKw = 100.0' in _dvw:
+            ok("AB1 bar scales 200/100 kW (owner-confirmed)")
+        else:
+            fail("AB1 bar scales wrong")
     # Display-only: the sampler must not touch connection.dart (already
     # enforced by AA2) and must use the same resolver as everywhere.
     if 'useHalForPower' in _dvw and 'instantPowerKw' in _dvw:

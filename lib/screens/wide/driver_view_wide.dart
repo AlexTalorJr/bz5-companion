@@ -85,15 +85,16 @@ class _DriverContent extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // Top zone: speed + status strip (left) | gear + SOC stack (right).
-          // flex 5 — gets most of the vertical real estate when trip is
-          // active (drops slightly when trip-section hidden but we keep
-          // ratio stable for layout calm).
+          // Top zone: speed + status (left) | power card (centre, the
+          // empty band the owner circled) | gear + SOC stack (right, back
+          // to its pre-+67 compact form).
           Expanded(
             flex: hasTrip ? 5 : 7,
             child: const Row(
               children: [
                 Expanded(flex: 3, child: SpeedAndStatusStrip()),
+                SizedBox(width: 16),
+                Expanded(flex: 2, child: _PowerCard()),
                 SizedBox(width: 16),
                 Expanded(flex: 2, child: _GearAndSocStack()),
               ],
@@ -120,16 +121,15 @@ class _GearAndSocStack extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // v0.1.29+67: power earned a real card (it lived in the 14 pt bottom
-    // strip — unreadable at driver distance). Stack: gear / power / SOC.
+    // v0.1.29+70: back to the compact gear-over-SOC pair. The power card
+    // moved out to its own centre column (the band the owner circled) —
+    // it never belonged squeezed into this narrow right stack.
     return const Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Expanded(flex: 3, child: _GearCard()),
+        Expanded(flex: 2, child: _GearCard()),
         SizedBox(height: 12),
-        Expanded(flex: 4, child: _PowerCard()),
-        SizedBox(height: 12),
-        Expanded(flex: 5, child: _SocCard()),
+        Expanded(flex: 3, child: _SocCard()),
       ],
     );
   }
@@ -156,8 +156,21 @@ class _PowerCard extends StatefulWidget {
 class _PowerCardState extends State<_PowerCard> {
   static const _sampleEvery = Duration(milliseconds: 500);
   static const _historyLen = 120; // × 500 ms = 60 s window
-  static const _dischargeFullKw = 200.0; // bar scale, owner-confirmed
-  static const _regenFullKw = 100.0;     // bar scale, owner-confirmed
+
+  // v0.1.29+70: auto-zoom scales (owner-chosen "variant B"). A fixed
+  // ±200/100 kW scale made city driving (±2-30 kW) a flat line. Instead
+  // each side of the scale tracks the max |power| seen in the visible
+  // window × 1.2 headroom, with a floor so it doesn't twitch on parked
+  // noise and a ceiling at the physical limits. The scale eases toward
+  // its target rather than snapping, so the graph never jumps.
+  static const _dischargeFloorKw = 10.0;
+  static const _dischargeCeilKw = 200.0; // confirmed electrical peak ~223
+  static const _regenFloorKw = 10.0;
+  static const _regenCeilKw = 100.0;
+  static const _scaleEase = 0.15; // per-tick approach to the target
+
+  double _dischargeScale = _dischargeFloorKw;
+  double _regenScale = _regenFloorKw;
 
   // Ring buffer of the last [_historyLen] samples; null = no data at
   // that tick (BLE+HAL both stale) → rendered as a gap.
@@ -185,9 +198,27 @@ class _PowerCardState extends State<_PowerCard> {
     final p = hal.useHalForPower ? hal.halPowerKw : svc.instantPowerKw;
     _hist[_head] = p;
     _head = (_head + 1) % _historyLen;
+    _recomputeScales();
     // The card also rebuilds via watch() below; this setState keeps the
     // sparkline scrolling even when both providers are quiet.
     setState(() {});
+  }
+
+  /// Ease both half-scales toward (window max × 1.2), clamped to
+  /// [floor, ceil]. Discharge and regen scale independently so a long
+  /// coast doesn't shrink the discharge axis and vice-versa.
+  void _recomputeScales() {
+    double maxDis = 0, maxReg = 0;
+    for (final s in _hist) {
+      if (s == null) continue;
+      if (s > maxDis) maxDis = s;
+      if (-s > maxReg) maxReg = -s;
+    }
+    final disTarget =
+        (maxDis * 1.2).clamp(_dischargeFloorKw, _dischargeCeilKw);
+    final regTarget = (maxReg * 1.2).clamp(_regenFloorKw, _regenCeilKw);
+    _dischargeScale += (disTarget - _dischargeScale) * _scaleEase;
+    _regenScale += (regTarget - _regenScale) * _scaleEase;
   }
 
   /// Oldest-first copy of the ring for painting.
@@ -212,19 +243,35 @@ class _PowerCardState extends State<_PowerCard> {
             : Colors.white70;
     final String dirLabel =
         flowDir == -1 ? S.of('drv.regen') : S.of('drv.power');
+    // Current scale readout so the auto-zoom stays honest — the driver
+    // can always see what full-deflection means right now.
+    final String scaleLabel =
+        '+${_dischargeScale.round()} / −${_regenScale.round()} kW';
 
     return Card(
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
+        padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(dirLabel.toUpperCase(),
-                style: const TextStyle(
-                    fontSize: 11, letterSpacing: 1.5, color: Colors.grey)),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(dirLabel.toUpperCase(),
+                    style: const TextStyle(
+                        fontSize: 11,
+                        letterSpacing: 1.5,
+                        color: Colors.grey)),
+                Text(scaleLabel,
+                    style: const TextStyle(
+                        fontSize: 10,
+                        color: Colors.grey,
+                        fontFeatures: [FontFeature.tabularFigures()])),
+              ],
+            ),
             const SizedBox(height: 2),
             Expanded(
-              flex: 5,
+              flex: 4,
               child: FittedBox(
                 fit: BoxFit.scaleDown,
                 alignment: Alignment.centerLeft,
@@ -236,17 +283,17 @@ class _PowerCardState extends State<_PowerCard> {
                           ? powerKw.abs().toStringAsFixed(1)
                           : '—',
                       style: TextStyle(
-                          fontSize: 44,
+                          fontSize: 52,
                           fontWeight: FontWeight.w400,
                           color: powerColor,
                           height: 0.95),
                     ),
                     const SizedBox(width: 6),
                     const Padding(
-                      padding: EdgeInsets.only(bottom: 5),
+                      padding: EdgeInsets.only(bottom: 7),
                       child: Text('kW',
                           style:
-                              TextStyle(fontSize: 16, color: Colors.grey)),
+                              TextStyle(fontSize: 18, color: Colors.grey)),
                     ),
                   ],
                 ),
@@ -254,27 +301,27 @@ class _PowerCardState extends State<_PowerCard> {
             ),
             const SizedBox(height: 6),
             // Center-zero bar: regen grows left (green), discharge grows
-            // right (blue). Asymmetric scales per the physics of the car.
+            // right (blue). Scales auto-zoom (see _recomputeScales).
             SizedBox(
               height: 8,
               child: CustomPaint(
                 size: const Size.fromHeight(8),
                 painter: _PowerBarPainter(
                   kw: powerKw,
-                  dischargeFull: _dischargeFullKw,
-                  regenFull: _regenFullKw,
+                  dischargeFull: _dischargeScale,
+                  regenFull: _regenScale,
                 ),
               ),
             ),
-            const SizedBox(height: 6),
+            const SizedBox(height: 8),
             Expanded(
-              flex: 4,
+              flex: 5,
               child: CustomPaint(
                 size: Size.infinite,
                 painter: _PowerSparklinePainter(
                   samples: _ordered,
-                  dischargeFull: _dischargeFullKw,
-                  regenFull: _regenFullKw,
+                  dischargeFull: _dischargeScale,
+                  regenFull: _regenScale,
                 ),
               ),
             ),

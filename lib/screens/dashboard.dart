@@ -1003,7 +1003,7 @@ class _LayoutDiagnostic extends StatelessWidget {
 
 /// Bump when changing the diagnostic format — helps cross-reference
 /// screenshots to specific app versions while iterating.
-const String _kDiagVersion = 'v0.1.29+69';
+const String _kDiagVersion = 'v0.1.29+70';
 
 class _GridCards extends StatelessWidget {
   final List<Widget> children;
