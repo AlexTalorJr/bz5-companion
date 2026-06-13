@@ -51,6 +51,27 @@ object CompanionDecoderOverrides {
         "BYDAutoStatisticDevice|0x000A4490" to Decoder(
             "battery_temp_low", "°C", ValueSource.INT,
             notes = "CANDIDATE STATISTIC_LOWEST_BATTERY_TEMP; never seen live"),
+
+        // CANDIDATES (v0.1.29+70) — battery temp, SECOND attempt on the
+        // RIGHT devices. The +66 round only probed BYDAutoStatisticDevice
+        // (PROBE + the AVG/HIGH/LOW trio) — all aggregates, rare by design,
+        // confirmed dead on our hardware AND in recon's raw chunks. We
+        // never tried the profile devices. These fids are ALREADY in the
+        // vendored Energy/Charging subscriptions (Energy harvests all 33;
+        // these Charging fids sit at positions 19 & 33 of the 80 picked) —
+        // they flow raw but get dropped for lack of a decoder, exactly the
+        // insulation situation. So this is a pure decoder addition, no
+        // subscription change. Surface in HAL Test, correlate vs OBD2
+        // 790/002F; promote the one that tracks it into the shared table.
+        "BYDAutoEnergyDevice|0x000DA09B" to Decoder(
+            "energy_dc_port_temp", "°C", ValueSource.INT,
+            notes = "CANDIDATE ENERGY_DC_CHARGING_PORT_TEMP; on the battery profile device"),
+        "BYDAutoChargingDevice|0x00072559" to Decoder(
+            "charging_max_power_batt_temp", "°C", ValueSource.INT,
+            notes = "CANDIDATE CHARGING_VTOV_MAX_POWER_BATTERY_TEMP"),
+        "BYDAutoChargingDevice|0x0004CFF3" to Decoder(
+            "charging_max_temp_allowed", "°C", ValueSource.INT,
+            notes = "CANDIDATE CHARGING_VTOV_MAX_TEMP_ALLOWED"),
     )
 
     /**

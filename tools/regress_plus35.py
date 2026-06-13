@@ -2962,6 +2962,14 @@ if int(pv) >= 66:
             ok("AA4 probe_highest_temp candidate + extra fid declared")
         else:
             fail("AA4 battery-temp candidate layer incomplete")
+        # +71: battery-temp second attempt on the profile devices
+        # (Energy/Charging) — pure decoder add, fids already subscribed.
+        if int(pv) >= 71:
+            if 'BYDAutoEnergyDevice|0x000DA09B' in _ovr \
+                    and 'BYDAutoChargingDevice|0x00072559' in _ovr:
+                ok("AA4 Energy/Charging battery-temp candidates added")
+            else:
+                fail("AA4 profile-device temp candidates missing")
     else:
         fail("AA4 CompanionDecoderOverrides.kt missing")
     if 'DecodedStreamSink(sink, CompanionDecoderOverrides.map)' in _plug \
