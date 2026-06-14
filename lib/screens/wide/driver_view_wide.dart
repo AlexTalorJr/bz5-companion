@@ -179,6 +179,17 @@ class _PowerCardState extends State<_PowerCard> {
   int _head = 0; // next write position
   Timer? _timer;
 
+  // v0.1.29+72: carry-forward to stop the sparkline tearing. The power
+  // source (HAL ~2.2 Hz, OBD2 slower) often has no fresh value at a given
+  // 500 ms tick, so writing null on every miss left visible gaps mid-line
+  // even while driving steadily. We instead hold the last real value for
+  // up to [_carryTicks] ticks (2 s), so micro-gaps between updates fill in
+  // while a genuinely dead source (≥2 s with nothing) still shows a gap —
+  // honest, just not jittery.
+  static const _carryTicks = 4; // × 500 ms = 2 s max carry
+  double? _lastReal;
+  int _carriedFor = 0;
+
   @override
   void initState() {
     super.initState();
@@ -196,7 +207,21 @@ class _PowerCardState extends State<_PowerCard> {
     final svc = context.read<ConnectionService>();
     final hal = context.read<HalTelemetryService>();
     final p = hal.useHalForPower ? hal.halPowerKw : svc.instantPowerKw;
-    _hist[_head] = p;
+    // Carry-forward: a fresh reading resets the carry; a miss reuses the
+    // last real value for up to _carryTicks, then becomes a true gap.
+    double? sample;
+    if (p != null) {
+      _lastReal = p;
+      _carriedFor = 0;
+      sample = p;
+    } else if (_lastReal != null && _carriedFor < _carryTicks) {
+      _carriedFor++;
+      sample = _lastReal;
+    } else {
+      _lastReal = null;
+      sample = null;
+    }
+    _hist[_head] = sample;
     _head = (_head + 1) % _historyLen;
     _recomputeScales();
     // The card also rebuilds via watch() below; this setState keeps the
@@ -641,9 +666,14 @@ class _BottomStatusStrip extends StatelessWidget {
     // (gear/power/SOC stack) — a 14 pt line was unreadable at driver
     // distance and the card adds the flow bar + 60 s sparkline.
 
-    // Battery temp: trip range if active, single value if idle.
+    // Battery temp: HAL probe_highest_temp (verified = battery temp) when
+    // fresh, else OBD2 — trip range if active, single 790/002F if idle.
     final hasTrip = svc.currentTripId != null;
+    final hal = context.watch<HalTelemetryService>();
     final batTempStr = (() {
+      if (hal.useHalForBatteryTemp && hal.halBatteryTempC != null) {
+        return 'Bat ${hal.halBatteryTempC!.toInt()}°C';
+      }
       if (hasTrip &&
           svc.tripMinTempC != null &&
           svc.tripMaxTempC != null) {
@@ -655,6 +685,15 @@ class _BottomStatusStrip extends StatelessWidget {
       final cur = svc.readNumeric('790', '002F');
       return cur != null ? 'Bat ${cur.toInt()}°C' : 'Bat —';
     })();
+    // Motor / inverter temps are HAL-only (no OBD2 source) — show "—"
+    // when the HAL stream is stale (honesty rule).
+    final motorTempStr = (hal.useHalForMotorTemp && hal.halMotorTempC != null)
+        ? 'Mot ${hal.halMotorTempC!.toInt()}°C'
+        : 'Mot —';
+    final invTempStr =
+        (hal.useHalForInverterTemp && hal.halInverterTempC != null)
+            ? 'Inv ${hal.halInverterTempC!.toInt()}°C'
+            : 'Inv —';
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
@@ -671,6 +710,10 @@ class _BottomStatusStrip extends StatelessWidget {
             Text(soh != null ? 'SOH ${soh.toInt()} %' : 'SOH —'),
             const _Sep(),
             Text(batTempStr),
+            const _Sep(),
+            Text(motorTempStr),
+            const _Sep(),
+            Text(invTempStr),
             const _Sep(),
             Text(odo != null
                 ? '${S.of('drv.odo')} ${odo.toStringAsFixed(1)} km'
