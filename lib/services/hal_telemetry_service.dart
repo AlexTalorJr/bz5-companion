@@ -85,6 +85,12 @@ class HalTelemetryService extends ChangeNotifier {
     'pack_voltage': Duration(seconds: 6),
     'pack_current': Duration(seconds: 6),
     'gear_enum': Duration(seconds: 6),
+    // v0.1.29+72: battery/drive temperatures. Slow signals — probe runs
+    // ~0.5 Hz (n=12-15 per recon chunk), motor/inverter similar — so the
+    // freshness window is generous (8 s) to avoid flicker between updates.
+    'probe_highest_temp': Duration(seconds: 8),
+    'motor_temp': Duration(seconds: 8),
+    'inverter_temp': Duration(seconds: 8),
   };
   static const Set<String> _eventDriven = {'soc_display', 'soc_battery'};
 
@@ -97,6 +103,14 @@ class HalTelemetryService extends ChangeNotifier {
     'gear_enum': (0, 15),
     'soc_display': (0, 100),
     'soc_battery': (0, 100),
+    // v0.1.29+72: temperatures. probe_highest_temp verified as battery
+    // temp (HAL 22 °C = cluster Bat 21 °C, recon p083 promotes it as
+    // canonical). motor/inverter are distinct sensors (r=0.03). Guard
+    // band −40..150 °C drops frame-misalignment junk (e.g. the broken
+    // cell_temp_lowest 1.03e9 raw).
+    'probe_highest_temp': (-40, 150),
+    'motor_temp': (-40, 150),
+    'inverter_temp': (-40, 150),
   };
 
   final Map<String, ({double value, DateTime at})> _latest = {};
@@ -180,6 +194,24 @@ class HalTelemetryService extends ChangeNotifier {
   }
 
   bool get useHalForPower => halPowerKw != null;
+
+  // ── temperatures (v0.1.29+72). Battery temp = probe_highest_temp
+  //    (0x47800010), verified against the instrument cluster (HAL 22 °C
+  //    vs Bat 21 °C) and recon's ~0.5 Hz stream. motor_temp (0x3DB00010)
+  //    and inverter_temp (0x3DB00008) are distinct drive-side sensors
+  //    (r=0.03). OBD2 has battery temp only (790/002F → ConnectionService
+  //    .avgTemp); motor/inverter have no OBD2 source, so their card cells
+  //    show "—" when HAL is stale (honesty rule). ──
+
+  double? get halBatteryTempC => halValue('probe_highest_temp');
+  bool get useHalForBatteryTemp => _useHal('probe_highest_temp');
+
+  double? get halMotorTempC => halValue('motor_temp');
+  bool get useHalForMotorTemp => _useHal('motor_temp');
+
+  double? get halInverterTempC => halValue('inverter_temp');
+  bool get useHalForInverterTemp => _useHal('inverter_temp');
+
 
   /// Raw event stream (all decoders), for the dev HAL Test screen. The
   /// service is the SINGLE owner of the native subscription; HAL Test
@@ -267,10 +299,12 @@ class HalTelemetryService extends ChangeNotifier {
   void _onEvent(HalEvent e) {
     // v0.1.29+66: consume the overlapping-wave allowlist (speed,
     // pack_voltage, pack_current, gear_enum, soc_display, soc_battery).
+    // v0.1.29+72: + battery/drive temps (probe_highest_temp, motor_temp,
+    // inverter_temp) — promoted after probe verified vs the cluster.
     // Everything else flows but is ignored here — the HAL Test screen
-    // still shows the full set, including the battery-temp CANDIDATES
-    // from CompanionDecoderOverrides, which deliberately stay out of
-    // this allowlist until verified against OBD2 790/002F.
+    // still shows the full set, including the charging-context temp
+    // CANDIDATES from CompanionDecoderOverrides, which stay out of this
+    // allowlist until verified on a charge session.
     final guard = _range[e.name];
     if (guard == null) return; // not a consumed name
     final v = e.value;

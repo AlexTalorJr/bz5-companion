@@ -251,8 +251,14 @@ class _Connected extends StatelessWidget {
               icon: Icons.thermostat,
               color: Colors.orange,
               label: S.of('dash.battery_s'),
-              // Decoder применяет offset −40, не вычитаем повторно.
-              value: tempRaw != null ? '${tempRaw.toInt()}°C' : '—',
+              // v0.1.29+72: HAL probe_highest_temp (verified = battery
+              // temp) when fresh, else OBD2 790/002F. Decoder применяет
+              // offset −40, не вычитаем повторно.
+              value: (hal.useHalForBatteryTemp && hal.halBatteryTempC != null)
+                  ? '${hal.halBatteryTempC!.toInt()}°C'
+                  : tempRaw != null
+                      ? '${tempRaw.toInt()}°C'
+                      : '—',
             ),
             // v0.1.29+2: Primary = sum-of-cells average × N (the only
             // physically-correct pack V we have). Fallbacks marked '*' kept
@@ -1003,7 +1009,7 @@ class _LayoutDiagnostic extends StatelessWidget {
 
 /// Bump when changing the diagnostic format — helps cross-reference
 /// screenshots to specific app versions while iterating.
-const String _kDiagVersion = 'v0.1.29+71';
+const String _kDiagVersion = 'v0.1.29+72';
 
 class _GridCards extends StatelessWidget {
   final List<Widget> children;

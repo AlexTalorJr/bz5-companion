@@ -52,26 +52,27 @@ object CompanionDecoderOverrides {
             "battery_temp_low", "°C", ValueSource.INT,
             notes = "CANDIDATE STATISTIC_LOWEST_BATTERY_TEMP; never seen live"),
 
-        // CANDIDATES (v0.1.29+70) — battery temp, SECOND attempt on the
-        // RIGHT devices. The +66 round only probed BYDAutoStatisticDevice
-        // (PROBE + the AVG/HIGH/LOW trio) — all aggregates, rare by design,
-        // confirmed dead on our hardware AND in recon's raw chunks. We
-        // never tried the profile devices. These fids are ALREADY in the
-        // vendored Energy/Charging subscriptions (Energy harvests all 33;
-        // these Charging fids sit at positions 19 & 33 of the 80 picked) —
-        // they flow raw but get dropped for lack of a decoder, exactly the
-        // insulation situation. So this is a pure decoder addition, no
-        // subscription change. Surface in HAL Test, correlate vs OBD2
-        // 790/002F; promote the one that tracks it into the shared table.
+        // CANDIDATES (v0.1.29+70, status updated +72) — Energy/Charging
+        // temp fids. Battery temperature is now resolved via
+        // probe_highest_temp (0x47800010, promoted below this patch), so
+        // these are no longer needed as a battery-temp fallback. They are
+        // NOT dead-confirmed for us, though: recon (Friend 3, v0.10.61,
+        // n=4) saw zero events across charge/city/motorway, but all three
+        // are charging-CONTEXT fids by name (DC port temp, V2X max-power
+        // battery temp, V2X max-temp-allowed) and we have NOT yet run a
+        // charge session with HAL Test open. They stay in the override as
+        // a no-cost decoder layer (already subscribed, just decoded) until
+        // verified on an AC/DC charge. Surface in HAL Test only — NOT in
+        // the consumed allowlist, NOT on any card.
         "BYDAutoEnergyDevice|0x000DA09B" to Decoder(
             "energy_dc_port_temp", "°C", ValueSource.INT,
-            notes = "CANDIDATE ENERGY_DC_CHARGING_PORT_TEMP; on the battery profile device"),
+            notes = "CANDIDATE charging-context; recon n=4 no events in drive — verify during a charge with HAL Test open"),
         "BYDAutoChargingDevice|0x00072559" to Decoder(
             "charging_max_power_batt_temp", "°C", ValueSource.INT,
-            notes = "CANDIDATE CHARGING_VTOV_MAX_POWER_BATTERY_TEMP"),
+            notes = "CANDIDATE charging-context; recon n=4 no events in drive — verify during a charge with HAL Test open"),
         "BYDAutoChargingDevice|0x0004CFF3" to Decoder(
             "charging_max_temp_allowed", "°C", ValueSource.INT,
-            notes = "CANDIDATE CHARGING_VTOV_MAX_TEMP_ALLOWED"),
+            notes = "CANDIDATE charging-context; recon n=4 no events in drive — verify during a charge with HAL Test open"),
     )
 
     /**
