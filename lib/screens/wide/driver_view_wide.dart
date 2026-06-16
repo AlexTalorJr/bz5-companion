@@ -179,17 +179,6 @@ class _PowerCardState extends State<_PowerCard> {
   int _head = 0; // next write position
   Timer? _timer;
 
-  // v0.1.29+72: carry-forward to stop the sparkline tearing. The power
-  // source (HAL ~2.2 Hz, OBD2 slower) often has no fresh value at a given
-  // 500 ms tick, so writing null on every miss left visible gaps mid-line
-  // even while driving steadily. We instead hold the last real value for
-  // up to [_carryTicks] ticks (2 s), so micro-gaps between updates fill in
-  // while a genuinely dead source (≥2 s with nothing) still shows a gap —
-  // honest, just not jittery.
-  static const _carryTicks = 4; // × 500 ms = 2 s max carry
-  double? _lastReal;
-  int _carriedFor = 0;
-
   @override
   void initState() {
     super.initState();
@@ -207,21 +196,11 @@ class _PowerCardState extends State<_PowerCard> {
     final svc = context.read<ConnectionService>();
     final hal = context.read<HalTelemetryService>();
     final p = hal.useHalForPower ? hal.halPowerKw : svc.instantPowerKw;
-    // Carry-forward: a fresh reading resets the carry; a miss reuses the
-    // last real value for up to _carryTicks, then becomes a true gap.
-    double? sample;
-    if (p != null) {
-      _lastReal = p;
-      _carriedFor = 0;
-      sample = p;
-    } else if (_lastReal != null && _carriedFor < _carryTicks) {
-      _carriedFor++;
-      sample = _lastReal;
-    } else {
-      _lastReal = null;
-      sample = null;
-    }
-    _hist[_head] = sample;
+    // v0.1.29+73: the sparkline is now drawn as discrete vertical bars
+    // (see _PowerBarsPainter), so a missing sample is simply a missing
+    // bar — invisible against its neighbours. No carry-forward needed;
+    // we record the true value (or null) each tick.
+    _hist[_head] = p;
     _head = (_head + 1) % _historyLen;
     _recomputeScales();
     // The card also rebuilds via watch() below; this setState keeps the
@@ -343,7 +322,7 @@ class _PowerCardState extends State<_PowerCard> {
               flex: 5,
               child: CustomPaint(
                 size: Size.infinite,
-                painter: _PowerSparklinePainter(
+                painter: _PowerBarsPainter(
                   samples: _ordered,
                   dischargeFull: _dischargeScale,
                   regenFull: _regenScale,
@@ -422,18 +401,25 @@ class _PowerBarPainter extends CustomPainter {
 /// (same asymmetric vertical scale as the bar: top = +dischargeFull,
 /// bottom = −regenFull). Discharge above the line in blue, regen below
 /// in green; null samples leave gaps.
-class _PowerSparklinePainter extends CustomPainter {
+/// v0.1.29+73: 60 s power history drawn as discrete vertical bars rather
+/// than a connected line. The source (HAL ~2.2 Hz / OBD2 slower) doesn't
+/// produce a value on every 500 ms tick, and a polyline tears at every
+/// gap. Bars sidestep this entirely: each sample is its own bar from the
+/// zero line to its value (discharge up = blue, regen down = green), and
+/// a missing sample is just a missing bar — invisible at this density
+/// (120 bars across the width). The fill reads like the instrument
+/// cluster's own power graph.
+class _PowerBarsPainter extends CustomPainter {
   final List<double?> samples;
   final double dischargeFull;
   final double regenFull;
-  _PowerSparklinePainter(
+  _PowerBarsPainter(
       {required this.samples,
       required this.dischargeFull,
       required this.regenFull});
 
   double _y(double kw, Size size) {
     final span = dischargeFull + regenFull;
-    // +dischargeFull → y=0 (top); −regenFull → y=height (bottom).
     return ((dischargeFull - kw) / span).clamp(0.0, 1.0) * size.height;
   }
 
@@ -446,55 +432,38 @@ class _PowerSparklinePainter extends CustomPainter {
       ..strokeWidth = 1;
     canvas.drawLine(Offset(0, zeroY), Offset(size.width, zeroY), zeroPaint);
 
-    final dx = size.width / (samples.length - 1);
-    final line = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.8
-      ..strokeCap = StrokeCap.round;
+    // Bar pitch: divide the width evenly across all slots; keep a hairline
+    // gap so adjacent bars stay legible. Bars are at least ~2 px wide.
+    final pitch = size.width / samples.length;
+    final barW = (pitch * 0.7).clamp(1.5, 6.0);
 
-    Path? path;
-    double? prev;
+    final discharge = Paint()
+      ..style = PaintingStyle.fill
+      ..color = Colors.lightBlueAccent.withValues(alpha: 0.85);
+    final regen = Paint()
+      ..style = PaintingStyle.fill
+      ..color = Colors.greenAccent.withValues(alpha: 0.85);
+
     for (var i = 0; i < samples.length; i++) {
       final s = samples[i];
-      if (s == null) {
-        // Gap: flush the current segment.
-        if (path != null) {
-          line.color = (prev ?? 0) >= 0
-              ? Colors.lightBlueAccent.withValues(alpha: 0.9)
-              : Colors.greenAccent.withValues(alpha: 0.9);
-          canvas.drawPath(path, line);
-          path = null;
-        }
-        continue;
-      }
-      final p = Offset(i * dx, _y(s, size));
-      if (path == null) {
-        path = Path()..moveTo(p.dx, p.dy);
-      } else {
-        // Color flips on sign change: flush and restart so discharge
-        // stays blue and regen green within one trace.
-        if (prev != null && (prev >= 0) != (s >= 0)) {
-          line.color = prev >= 0
-              ? Colors.lightBlueAccent.withValues(alpha: 0.9)
-              : Colors.greenAccent.withValues(alpha: 0.9);
-          canvas.drawPath(path, line);
-          path = Path()..moveTo(p.dx, p.dy);
-        } else {
-          path.lineTo(p.dx, p.dy);
-        }
-      }
-      prev = s;
-    }
-    if (path != null) {
-      line.color = (prev ?? 0) >= 0
-          ? Colors.lightBlueAccent.withValues(alpha: 0.9)
-          : Colors.greenAccent.withValues(alpha: 0.9);
-      canvas.drawPath(path, line);
+      if (s == null) continue; // missing bar — no neighbour effect
+      final yVal = _y(s, size);
+      final cx = i * pitch + pitch / 2;
+      // Bar spans between the zero line and the value; min 1 px so a
+      // near-zero reading still shows a sliver.
+      final top = s >= 0 ? yVal : zeroY;
+      final bot = s >= 0 ? zeroY : yVal;
+      final h = (bot - top).clamp(1.0, size.height);
+      final rect = Rect.fromLTWH(cx - barW / 2, top, barW, h);
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(rect, const Radius.circular(1)),
+        s >= 0 ? discharge : regen,
+      );
     }
   }
 
   @override
-  bool shouldRepaint(_PowerSparklinePainter old) => true;
+  bool shouldRepaint(_PowerBarsPainter old) => true;
 }
 
 class _GearCard extends StatelessWidget {
