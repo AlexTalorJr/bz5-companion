@@ -115,6 +115,27 @@ class HalTelemetryService extends ChangeNotifier {
 
   final Map<String, ({double value, DateTime at})> _latest = {};
 
+  /// v0.1.29+73: sticky cache for the slow temperature signals. probe /
+  /// motor / inverter update at ~0.5 Hz and individual frames sometimes
+  /// arrive misaligned (dropped by the range guard), so the plain
+  /// _latest+8s-window flickers to "—" between good frames. The temps are
+  /// physically slow (battery/coolant temperature can't jump in seconds),
+  /// so we keep the last in-range value for a long hold (90 s) and only
+  /// fall back to OBD2/"—" if the stream is truly gone. A bad/out-of-range
+  /// frame never overwrites a good one — it's simply ignored.
+  static const _tempNames = {'probe_highest_temp', 'motor_temp', 'inverter_temp'};
+  static const _tempHold = Duration(seconds: 90);
+  final Map<String, ({double value, DateTime at})> _lastGoodTemp = {};
+
+  /// Last good temperature value, held across short dropouts/bad frames.
+  double? _tempValue(String name) {
+    final s = _lastGoodTemp[name];
+    if (s == null) return null;
+    if (!_running) return null;
+    if (DateTime.now().difference(s.at) > _tempHold) return null;
+    return s.value;
+  }
+
   /// Latest raw value for a consumed name, or null if never received.
   double? halValue(String name) => _latest[name]?.value;
 
@@ -203,14 +224,14 @@ class HalTelemetryService extends ChangeNotifier {
   //    .avgTemp); motor/inverter have no OBD2 source, so their card cells
   //    show "—" when HAL is stale (honesty rule). ──
 
-  double? get halBatteryTempC => halValue('probe_highest_temp');
-  bool get useHalForBatteryTemp => _useHal('probe_highest_temp');
+  double? get halBatteryTempC => _tempValue('probe_highest_temp');
+  bool get useHalForBatteryTemp => _tempValue('probe_highest_temp') != null;
 
-  double? get halMotorTempC => halValue('motor_temp');
-  bool get useHalForMotorTemp => _useHal('motor_temp');
+  double? get halMotorTempC => _tempValue('motor_temp');
+  bool get useHalForMotorTemp => _tempValue('motor_temp') != null;
 
-  double? get halInverterTempC => halValue('inverter_temp');
-  bool get useHalForInverterTemp => _useHal('inverter_temp');
+  double? get halInverterTempC => _tempValue('inverter_temp');
+  bool get useHalForInverterTemp => _tempValue('inverter_temp') != null;
 
 
   /// Raw event stream (all decoders), for the dev HAL Test screen. The
@@ -294,6 +315,7 @@ class HalTelemetryService extends ChangeNotifier {
     // count as fresh while running, so leaving them would lie after a
     // restart with the car in a different state.
     _latest.clear();
+    _lastGoodTemp.clear();
   }
 
   void _onEvent(HalEvent e) {
@@ -312,6 +334,11 @@ class HalTelemetryService extends ChangeNotifier {
     final d = v.toDouble();
     if (d < guard.$1 || d > guard.$2) return; // frame-misalignment junk
     _latest[e.name] = (value: d, at: DateTime.now());
+    // v0.1.29+73: slow temps also feed the sticky cache so the cards hold
+    // the last good reading across dropouts / bad frames (no flicker).
+    if (_tempNames.contains(e.name)) {
+      _lastGoodTemp[e.name] = (value: d, at: DateTime.now());
+    }
     // No notifyListeners() per event — at ~15 Hz aggregate that would
     // over-rebuild. The widgets already rebuild on the OBD2
     // ConnectionService poll cadence; the resolvers read our latest

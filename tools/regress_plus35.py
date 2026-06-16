@@ -3001,8 +3001,8 @@ if int(pv) >= 67:
     #      owner-confirmed asymmetric scales (200 discharge / 100 regen),
     #      flow bar and sparkline painters.
     if '_PowerCard' in _dvw and '_PowerBarPainter' in _dvw \
-            and '_PowerSparklinePainter' in _dvw:
-        ok("AB1 power card + bar + sparkline present")
+            and '_PowerBarsPainter' in _dvw:
+        ok("AB1 power card + bar + sparkline(bars) present")
     else:
         fail("AB1 power card components missing")
     # +70: scales auto-zoom (variant B) instead of fixed 200/100.
