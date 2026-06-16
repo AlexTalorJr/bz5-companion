@@ -2862,10 +2862,14 @@ if int(pv) >= 64:
         else:
             fail("Z3 stale dual-readout still present in +66")
 
-    # Z4. Source toggle in main Settings: three modes wired to setMode.
-    if _set.count('RadioListTile<HalSourceMode>') == 3 \
-            and 'hal.setMode(' in _set:
-        ok("Z4 data-source toggle: 3 modes wired in Settings")
+    # Z4. Source toggle in main Settings. v0.1.29+74: discrete choice —
+    #     Auto removed from the UI, so exactly 2 RadioListTile (HAL/OBD2).
+    #     The 'auto' enum value persists internally as a back-compat net.
+    if _set.count('RadioListTile<HalSourceMode>') == 2 \
+            and 'hal.setMode(' in _set \
+            and 'HalSourceMode.halOnly' in _set \
+            and 'HalSourceMode.obd2Only' in _set:
+        ok("Z4 data-source toggle: 2 discrete modes wired in Settings")
     else:
         fail("Z4 data-source toggle missing/incomplete")
 else:

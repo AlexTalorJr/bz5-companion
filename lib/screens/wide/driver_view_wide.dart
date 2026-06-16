@@ -625,8 +625,9 @@ class _BottomStatusStrip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final svc = context.watch<ConnectionService>();
+    final hal = context.watch<HalTelemetryService>();
     final soh = svc.readNumeric('790', '0029');
-    final odo = svc.readNumeric('791', '0026');
+    final odo = hal.useHalForOdometer ? hal.halOdometerKm : svc.readNumeric('791', '0026');
     final spread = (svc.globalMaxCellMv != null && svc.globalMinCellMv != null)
         ? svc.globalMaxCellMv! - svc.globalMinCellMv!
         : null;
@@ -638,7 +639,6 @@ class _BottomStatusStrip extends StatelessWidget {
     // Battery temp: HAL probe_highest_temp (verified = battery temp) when
     // fresh, else OBD2 — trip range if active, single 790/002F if idle.
     final hasTrip = svc.currentTripId != null;
-    final hal = context.watch<HalTelemetryService>();
     final batTempStr = (() {
       if (hal.useHalForBatteryTemp && hal.halBatteryTempC != null) {
         return 'Bat ${hal.halBatteryTempC!.toInt()}°C';
