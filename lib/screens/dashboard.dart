@@ -79,7 +79,7 @@ class _Connected extends StatelessWidget {
     final tempRaw = svc.readNumeric('790', '002F');
     final cellMin = svc.readNumeric('790', '002B');
     final cellMax = svc.readNumeric('790', '002D');
-    final odo = svc.readNumeric('791', '0026');
+    final odo = hal.useHalForOdometer ? hal.halOdometerKm : svc.readNumeric('791', '0026');
     final gear = hal.useHalForGear
         ? hal.halGear
         : svc.readNumeric('791', '0009');
@@ -1009,7 +1009,7 @@ class _LayoutDiagnostic extends StatelessWidget {
 
 /// Bump when changing the diagnostic format — helps cross-reference
 /// screenshots to specific app versions while iterating.
-const String _kDiagVersion = 'v0.1.29+73';
+const String _kDiagVersion = 'v0.1.29+74';
 
 class _GridCards extends StatelessWidget {
   final List<Widget> children;

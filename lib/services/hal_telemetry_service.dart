@@ -91,6 +91,11 @@ class HalTelemetryService extends ChangeNotifier {
     'probe_highest_temp': Duration(seconds: 8),
     'motor_temp': Duration(seconds: 8),
     'inverter_temp': Duration(seconds: 8),
+    // v0.1.29+74: odometer + trip meters. Monotonic, change slowly; the
+    // sticky hold keeps them populated. Generous window.
+    'odometer': Duration(seconds: 10),
+    'trip_a': Duration(seconds: 10),
+    'trip_b': Duration(seconds: 10),
   };
   static const Set<String> _eventDriven = {'soc_display', 'soc_battery'};
 
@@ -111,6 +116,11 @@ class HalTelemetryService extends ChangeNotifier {
     'probe_highest_temp': (-40, 150),
     'motor_temp': (-40, 150),
     'inverter_temp': (-40, 150),
+    // v0.1.29+74: odometer up to 1e6 km; trips up to 100k km. Lower bound
+    // 0 (can't be negative). Decoder already applies ×0.1 → value in km.
+    'odometer': (0, 1000000),
+    'trip_a': (0, 100000),
+    'trip_b': (0, 100000),
   };
 
   final Map<String, ({double value, DateTime at})> _latest = {};
@@ -123,18 +133,38 @@ class HalTelemetryService extends ChangeNotifier {
   /// so we keep the last in-range value for a long hold (90 s) and only
   /// fall back to OBD2/"—" if the stream is truly gone. A bad/out-of-range
   /// frame never overwrites a good one — it's simply ignored.
-  static const _tempNames = {'probe_highest_temp', 'motor_temp', 'inverter_temp'};
   static const _tempHold = Duration(seconds: 90);
-  final Map<String, ({double value, DateTime at})> _lastGoodTemp = {};
 
-  /// Last good temperature value, held across short dropouts/bad frames.
-  double? _tempValue(String name) {
-    final s = _lastGoodTemp[name];
+  /// v0.1.29+74: the discrete-source UX (HAL vs OBD2, no Auto) needs the
+  /// overlapping core (speed/V/I/SOC/power/gear + odometer) to keep
+  /// reading even across brief stream gaps when the user pinned HAL —
+  /// otherwise the widgets would blink. So ALL of these get the same
+  /// sticky hold as temps: the last good value is retained for _coreHold,
+  /// and [isStale] reports when the retained value is older than the
+  /// per-name freshness window so the UI can dim it (held but ageing).
+  /// This does NOT change auto-mode behaviour (still per-name OBD2
+  /// fallback) — it only adds the held value + staleness signal.
+  static const _coreHold = Duration(seconds: 90);
+  static const _stickyNames = {
+    'speed', 'pack_voltage', 'pack_current', 'gear_enum',
+    'soc_display', 'soc_battery', 'odometer', 'trip_a', 'trip_b',
+    'probe_highest_temp', 'motor_temp', 'inverter_temp',
+  };
+  final Map<String, ({double value, DateTime at})> _lastGood = {};
+
+  /// Last good value held across short dropouts / bad frames, or null if
+  /// never received or the hold expired. Used by both the temp getters
+  /// and (in halOnly mode) the overlapping-core getters.
+  double? _heldValue(String name, Duration hold) {
+    final s = _lastGood[name];
     if (s == null) return null;
     if (!_running) return null;
-    if (DateTime.now().difference(s.at) > _tempHold) return null;
+    if (DateTime.now().difference(s.at) > hold) return null;
     return s.value;
   }
+
+  /// Back-compat shim for the +73 temp getters.
+  double? _tempValue(String name) => _heldValue(name, _tempHold);
 
   /// Latest raw value for a consumed name, or null if never received.
   double? halValue(String name) => _latest[name]?.value;
@@ -149,10 +179,36 @@ class HalTelemetryService extends ChangeNotifier {
     return DateTime.now().difference(s.at) <= w;
   }
 
-  /// Source policy gate: mode permits HAL AND a fresh value exists.
-  bool _useHal(String name) {
+  /// v0.1.29+74: the displayed HAL value is stale — i.e. we are showing a
+  /// held value that is older than its freshness window. The widget stays
+  /// populated (held), but the UI should dim it to signal "ageing". Only
+  /// meaningful while a HAL value is actually on display.
+  bool isStale(String name) {
     if (_mode == HalSourceMode.obd2Only) return false;
-    return halFresh(name);
+    if (_lastGood[name] == null) return false;
+    return !halFresh(name);
+  }
+
+  /// Source policy gate: does the UI show HAL for this name?
+  /// v0.1.29+74 (discrete sources, Approach 1):
+  ///   - obd2Only : never (false).
+  ///   - halOnly  : yes whenever we have a held value within _coreHold —
+  ///                even if momentarily stale (UI dims via [isStale]).
+  ///                This is what keeps HAL feeling like a complete
+  ///                interface with no gaps.
+  ///   - auto     : UNCHANGED legacy behaviour — HAL only while genuinely
+  ///                fresh, else per-name OBD2 fallback. Kept as a safety
+  ///                net; the UI no longer offers Auto, but persisted
+  ///                'auto' prefs still resolve here harmlessly.
+  bool _useHal(String name) {
+    switch (_mode) {
+      case HalSourceMode.obd2Only:
+        return false;
+      case HalSourceMode.halOnly:
+        return _heldValue(name, _coreHold) != null;
+      case HalSourceMode.auto:
+        return halFresh(name);
+    }
   }
 
   // ── speed (kept from the +64 pilot — same names, same semantics) ──
@@ -233,6 +289,24 @@ class HalTelemetryService extends ChangeNotifier {
   double? get halInverterTempC => _tempValue('inverter_temp');
   bool get useHalForInverterTemp => _tempValue('inverter_temp') != null;
 
+  // ── odometer + trip meters (v0.1.29+74). All from BYDAutoStatistic-
+  //    Device, decoder applies ×0.1 so values are already in km. Held via
+  //    the sticky cache (monotonic, slow). odometer is part of the cross-
+  //    mode core (also readable from OBD2 791/0026); trip_a/trip_b are
+  //    HAL-only cluster trip meters shown in the driver HAL split. ──
+
+  double? get halOdometerKm => _heldValue('odometer', _coreHold);
+  // 0x49502010 = STATISTIC_TOTAL_MILEAGE, decoder applies ×0.1 → km.
+  // Sanity-check HAL vs OBD2 791/0026 once while parked (values must match
+  // at a standstill); both should equal the cluster odometer.
+  bool get useHalForOdometer => _useHal('odometer');
+
+  double? get halTripAKm => _heldValue('trip_a', _coreHold);
+  bool get useHalForTripA => _useHal('trip_a');
+
+  double? get halTripBKm => _heldValue('trip_b', _coreHold);
+  bool get useHalForTripB => _useHal('trip_b');
+
 
   /// Raw event stream (all decoders), for the dev HAL Test screen. The
   /// service is the SINGLE owner of the native subscription; HAL Test
@@ -266,6 +340,15 @@ class HalTelemetryService extends ChangeNotifier {
   Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
     _mode = _modeFromString(prefs.getString('hal_source_mode'));
+    // v0.1.29+74: discrete-source migration. The UI no longer offers Auto.
+    // Anyone with a persisted 'auto' (the old default) is moved to halOnly
+    // — which behaves like the old auto for the common case (HAL live) but
+    // holds values across gaps instead of silently swapping to OBD2. The
+    // 'auto' enum value still resolves safely in _useHal as a net.
+    if (_mode == HalSourceMode.auto) {
+      _mode = HalSourceMode.halOnly;
+      await prefs.setString('hal_source_mode', _modeToString(_mode));
+    }
     // Start the stream unless the user pinned OBD2-only. On a phone the
     // platform returns null and we simply stay on OBD2 — no harm.
     if (_mode != HalSourceMode.obd2Only) {
@@ -315,7 +398,7 @@ class HalTelemetryService extends ChangeNotifier {
     // count as fresh while running, so leaving them would lie after a
     // restart with the car in a different state.
     _latest.clear();
-    _lastGoodTemp.clear();
+    _lastGood.clear();
   }
 
   void _onEvent(HalEvent e) {
@@ -334,10 +417,11 @@ class HalTelemetryService extends ChangeNotifier {
     final d = v.toDouble();
     if (d < guard.$1 || d > guard.$2) return; // frame-misalignment junk
     _latest[e.name] = (value: d, at: DateTime.now());
-    // v0.1.29+73: slow temps also feed the sticky cache so the cards hold
-    // the last good reading across dropouts / bad frames (no flicker).
-    if (_tempNames.contains(e.name)) {
-      _lastGoodTemp[e.name] = (value: d, at: DateTime.now());
+    // v0.1.29+73/+74: sticky-held names (temps + overlapping core) feed
+    // the _lastGood cache so the widgets hold the last good reading across
+    // dropouts / bad frames (no flicker; halOnly mode shows held values).
+    if (_stickyNames.contains(e.name)) {
+      _lastGood[e.name] = (value: d, at: DateTime.now());
     }
     // No notifyListeners() per event — at ~15 Hz aggregate that would
     // over-rebuild. The widgets already rebuild on the OBD2

@@ -1261,9 +1261,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
             value: _matchSpeedometer,
             onChanged: _setMatchSpeedometer,
           ),
-          // v0.1.29+64: data-source selector (SPEED pilot). Auto prefers the
-          // HAL stream when live; HAL-only / OBD2-only force a source for
-          // side-by-side verification. Reads/writes HalTelemetryService.
+          // v0.1.29+64: data-source selector. v0.1.29+74: DISCRETE choice
+          // — HAL or OBD2 only (Auto removed from the UI). Each mode is a
+          // complete interface: overlapping core stays in place (held +
+          // dimmed when stale), mode-specific params fill the rest. The
+          // 'auto' enum value is kept internally as a back-compat net for
+          // any persisted 'auto' pref but is no longer offered here.
           Builder(builder: (context) {
             final hal = context.watch<HalTelemetryService>();
             return Column(
@@ -1273,17 +1276,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   leading: const Icon(Icons.cable, color: Colors.grey),
                   title: Text(S.of('settings.datasource.title')),
                   subtitle: Text(
-                    hal.mode != HalSourceMode.obd2Only && !hal.running
+                    hal.mode == HalSourceMode.halOnly && !hal.running
                         ? S.of('settings.datasource.hal_unavailable')
                         : S.of('settings.datasource.subtitle'),
                   ),
-                ),
-                RadioListTile<HalSourceMode>(
-                  dense: true,
-                  title: Text(S.of('settings.datasource.auto')),
-                  value: HalSourceMode.auto,
-                  groupValue: hal.mode,
-                  onChanged: (m) => hal.setMode(m!),
                 ),
                 RadioListTile<HalSourceMode>(
                   dense: true,
