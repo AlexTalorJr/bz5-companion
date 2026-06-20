@@ -78,7 +78,15 @@ class _DriverContent extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final svc = context.watch<ConnectionService>();
+    final hal = context.watch<HalTelemetryService>();
     final hasTrip = svc.currentTripId != null;
+    // v0.1.29+75: in halOnly mode the middle trip band splits in two —
+    // left keeps the (OBD2-derived) TripMetricsPanel, right shows the
+    // HAL-exclusive drive panel. Gate on useHalForTripA: it is true only
+    // when the source is pinned to HAL AND a held trip_a reading exists,
+    // i.e. exactly when the HAL half has something to show. In obd2Only
+    // the band stays full-width and unchanged.
+    final halSplit = hal.useHalForTripA;
 
     return Padding(
       padding: const EdgeInsets.all(16),
@@ -102,10 +110,22 @@ class _DriverContent extends StatelessWidget {
           ),
           if (hasTrip) ...[
             const SizedBox(height: 12),
-            // Middle zone: 6 trip metrics in a 2×3 grid.
-            const Expanded(
+            // Middle zone: trip metrics. OBD2 → full-width TripMetricsPanel
+            // (6 cells + cost). HAL → split: left TripMetricsPanel (same
+            // widget, shared with dashboard — NOT modified), right the
+            // HAL-exclusive drive panel. flex:3 band height is unchanged;
+            // only the horizontal real estate is shared.
+            Expanded(
               flex: 3,
-              child: TripMetricsPanel(),
+              child: halSplit
+                  ? const Row(
+                      children: [
+                        Expanded(child: TripMetricsPanel()),
+                        SizedBox(width: 12),
+                        Expanded(child: HalExtrasPanel()),
+                      ],
+                    )
+                  : const TripMetricsPanel(),
             ),
           ],
           const SizedBox(height: 12),
@@ -654,15 +674,9 @@ class _BottomStatusStrip extends StatelessWidget {
       final cur = svc.readNumeric('790', '002F');
       return cur != null ? 'Bat ${cur.toInt()}°C' : 'Bat —';
     })();
-    // Motor / inverter temps are HAL-only (no OBD2 source) — show "—"
-    // when the HAL stream is stale (honesty rule).
-    final motorTempStr = (hal.useHalForMotorTemp && hal.halMotorTempC != null)
-        ? 'Mot ${hal.halMotorTempC!.toInt()}°C'
-        : 'Mot —';
-    final invTempStr =
-        (hal.useHalForInverterTemp && hal.halInverterTempC != null)
-            ? 'Inv ${hal.halInverterTempC!.toInt()}°C'
-            : 'Inv —';
+    // v0.1.29+75: motor / inverter temps moved OUT of this ambient strip
+    // into HalExtrasPanel (the HAL trip-split half). Bat stays here — it is
+    // the one temperature available in BOTH sources, so it is cross-mode.
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
@@ -679,10 +693,6 @@ class _BottomStatusStrip extends StatelessWidget {
             Text(soh != null ? 'SOH ${soh.toInt()} %' : 'SOH —'),
             const _Sep(),
             Text(batTempStr),
-            const _Sep(),
-            Text(motorTempStr),
-            const _Sep(),
-            Text(invTempStr),
             const _Sep(),
             Text(odo != null
                 ? '${S.of('drv.odo')} ${odo.toStringAsFixed(1)} km'

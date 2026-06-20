@@ -96,6 +96,13 @@ class HalTelemetryService extends ChangeNotifier {
     'odometer': Duration(seconds: 10),
     'trip_a': Duration(seconds: 10),
     'trip_b': Duration(seconds: 10),
+    // v0.1.29+75: drive-side motor signals (BYDAutoEngineDevice). Fast,
+    // live drive data — rpm/torque/power update with the powertrain, so
+    // the window is tight (1.5 s) like speed; the sticky hold still keeps
+    // the driver HAL split populated across brief gaps (dims via isStale).
+    'motor_rpm': Duration(milliseconds: 1500),
+    'motor_torque': Duration(milliseconds: 1500),
+    'motor_power': Duration(milliseconds: 1500),
   };
   static const Set<String> _eventDriven = {'soc_display', 'soc_battery'};
 
@@ -121,6 +128,13 @@ class HalTelemetryService extends ChangeNotifier {
     'odometer': (0, 1000000),
     'trip_a': (0, 100000),
     'trip_b': (0, 100000),
+    // v0.1.29+75: motor signals. rpm 0..25000 (nameplate max ~16000, head-
+    // room above); torque ±400 Nm (peak 330 Nm nameplate, signed for
+    // regen); power ±250 kW (peak 208 ≈ 200 kW spec, signed for regen).
+    // Guards drop frame-misalignment junk before display.
+    'motor_rpm': (0, 25000),
+    'motor_torque': (-400, 400),
+    'motor_power': (-250, 250),
   };
 
   final Map<String, ({double value, DateTime at})> _latest = {};
@@ -149,6 +163,9 @@ class HalTelemetryService extends ChangeNotifier {
     'speed', 'pack_voltage', 'pack_current', 'gear_enum',
     'soc_display', 'soc_battery', 'odometer', 'trip_a', 'trip_b',
     'probe_highest_temp', 'motor_temp', 'inverter_temp',
+    // v0.1.29+75: motor signals held across brief drive-stream gaps so
+    // the driver HAL split stays populated (dims via isStale when ageing).
+    'motor_rpm', 'motor_torque', 'motor_power',
   };
   final Map<String, ({double value, DateTime at})> _lastGood = {};
 
@@ -306,6 +323,23 @@ class HalTelemetryService extends ChangeNotifier {
 
   double? get halTripBKm => _heldValue('trip_b', _coreHold);
   bool get useHalForTripB => _useHal('trip_b');
+
+  // ── motor signals (v0.1.29+75). BYDAutoEngineDevice, HAL-only (no OBD2
+  //    source): motor_rpm 0x28A00008 (RPM, slope 79.3 RPM per km/h vs
+  //    speed r=0.968, recon-confirmed), motor_torque 0x28A00018 (Nm,
+  //    signed — drive +, regen −, peak 330 Nm nameplate), motor_power
+  //    0x15100020 = ENGINE_POWER (kW, signed, peak 208 ≈ 200 kW spec;
+  //    confirmed power, NOT a current proxy). Shown only in the driver HAL
+  //    trip-split; held via the sticky cache and dimmed by isStale. ──
+
+  double? get halMotorRpm => _heldValue('motor_rpm', _coreHold);
+  bool get useHalForMotorRpm => _useHal('motor_rpm');
+
+  double? get halMotorTorqueNm => _heldValue('motor_torque', _coreHold);
+  bool get useHalForMotorTorque => _useHal('motor_torque');
+
+  double? get halMotorPowerKw => _heldValue('motor_power', _coreHold);
+  bool get useHalForMotorPower => _useHal('motor_power');
 
 
   /// Raw event stream (all decoders), for the dev HAL Test screen. The

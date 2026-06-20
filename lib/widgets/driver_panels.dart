@@ -510,3 +510,115 @@ Color consumptionColor(double kwh100km) {
   if (kwh100km < 22) return Colors.yellowAccent;
   return Colors.orangeAccent;
 }
+
+/// v0.1.29+75: HAL-exclusive drive panel — the right half of the driver
+/// middle band when the source is pinned to HAL (halOnly). Mirrors
+/// [TripMetricsPanel]'s Card + header + Expanded-row structure so the two
+/// halves read as one band. Shows HAL-only / drive-side data that has no
+/// place in the OBD2 trip panel:
+///
+///   trip A · trip B        (cluster trip meters, HAL-only)
+///   motor rpm · torque     (BYDAutoEngineDevice)
+///   motor power · —        (BYDAutoEngineDevice, signed kW)
+///   motor temp · inverter  (distinct drive-side sensors, promoted +72)
+///
+/// Honesty: a value held past its freshness window (HalTelemetryService
+/// .isStale) is DIMMED rather than blanked — the panel stays populated so
+/// HAL feels like a complete interface, but an ageing reading is visibly
+/// greyed. A value with no held reading at all shows '—'.
+///
+/// This widget is driver-wide only (never compact): it lives inside an
+/// Expanded() inside the Row that splits the middle band, so it uses
+/// Expanded() inside its own Column exactly like TripMetricsPanel's wide
+/// mode. It does NOT touch TripMetricsPanel (shared with the dashboard).
+class HalExtrasPanel extends StatelessWidget {
+  const HalExtrasPanel({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final hal = context.watch<HalTelemetryService>();
+
+    // (value text, dim) for a held HAL signal. `value` null → '—', not
+    // dimmed (nothing held to age). Otherwise dim iff isStale(name).
+    ({String text, bool dim}) v(
+            String name, double? value, String Function(double) fmt) =>
+        value == null
+            ? (text: '—', dim: false)
+            : (text: fmt(value), dim: hal.isStale(name));
+
+    final tripA =
+        v('trip_a', hal.halTripAKm, (x) => x.toStringAsFixed(1));
+    final tripB =
+        v('trip_b', hal.halTripBKm, (x) => x.toStringAsFixed(1));
+    final rpm =
+        v('motor_rpm', hal.halMotorRpm, (x) => x.toStringAsFixed(0));
+    final torque = v(
+        'motor_torque', hal.halMotorTorqueNm, (x) => x.toStringAsFixed(0));
+    final mPower = v(
+        'motor_power', hal.halMotorPowerKw, (x) => x.toStringAsFixed(0));
+    // motor/inverter temp use the +72 temp getters (held via _tempHold).
+    final motorTemp = v(
+        'motor_temp', hal.halMotorTempC, (x) => x.toStringAsFixed(0));
+    final invTemp = v('inverter_temp', hal.halInverterTempC,
+        (x) => x.toStringAsFixed(0));
+
+    Widget c(({String text, bool dim}) d, String unit, String labelKey) {
+      return Expanded(
+        child: TripCell(
+          value: d.text,
+          unit: unit,
+          label: S.of(labelKey),
+          valueFontSize: 30,
+          labelFontSize: 11,
+          unitFontSize: 13,
+          // Held-but-ageing → dimmed grey; fresh → default white.
+          valueColor: d.dim ? Colors.grey.shade600 : null,
+        ),
+      );
+    }
+
+    Widget r(List<Widget> cells) => Expanded(child: Row(children: cells));
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 14, 20, 14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.electric_bolt, size: 14, color: Colors.grey),
+                const SizedBox(width: 6),
+                Text(S.of('drv.hal_extras'),
+                    style: const TextStyle(
+                        fontSize: 11,
+                        letterSpacing: 1.5,
+                        color: Colors.grey)),
+              ],
+            ),
+            const SizedBox(height: 8),
+            r([
+              c(tripA, 'km', 'drv.cell.trip_a'),
+              c(tripB, 'km', 'drv.cell.trip_b'),
+            ]),
+            Divider(height: 16, color: Colors.white24),
+            r([
+              c(rpm, 'rpm', 'drv.cell.motor_rpm'),
+              c(torque, 'Nm', 'drv.cell.motor_torque'),
+            ]),
+            Divider(height: 16, color: Colors.white24),
+            r([
+              c(mPower, 'kW', 'drv.cell.motor_power'),
+              c(motorTemp, '°C', 'drv.cell.motor_temp'),
+            ]),
+            Divider(height: 16, color: Colors.white24),
+            r([
+              c(invTemp, '°C', 'drv.cell.inverter_temp'),
+              const Expanded(child: SizedBox.shrink()),
+            ]),
+          ],
+        ),
+      ),
+    );
+  }
+}
