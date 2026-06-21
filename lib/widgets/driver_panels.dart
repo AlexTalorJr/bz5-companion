@@ -520,18 +520,21 @@ Color consumptionColor(double kwh100km) {
 ///   motor power            (BYDAutoEngineDevice, signed kW)
 ///   motor temp · inverter  (distinct drive-side sensors, promoted +72)
 ///
-/// Layout (v0.1.29+76 fix, revised): a COMPACT 2-COLUMN grid of stacked
-/// cells (value on top, small label under) — NOT the 2×N Expanded grid
-/// used in +75, and not the one-column list (too tall for the short
-/// split-half band). The +75 grid put four Expanded TripCell rows into the
-/// flex:3 band; in the narrow split half each row got ~half the height a
-/// TripCell needs, so the bottom label of one row overlapped the value of
-/// the next (owner field photo, "дизайн секции поехал"). Here the cells
-/// are CONTENT-SIZED (no Expanded), laid out in fixed rows of two, so they
-/// occupy only their natural height and cannot overlap; the value uses a
-/// FittedBox so a long number shrinks instead of pushing anything. Seven
-/// signals → four rows (last row's second slot is empty). Wrapped in a
-/// scroll view as a guard if the band is ever shorter than the content.
+/// Layout (v0.1.29+77): a COMPACT 3-COLUMN × 3-ROW grid of stacked cells
+/// (value on top, small label under). History: +75 used four Expanded
+/// TripCell rows — in the narrow split half each row got ~half the height
+/// it needed and bottom labels overlapped the next value's row ("дизайн
+/// секции поехал"). +76 switched to content-sized 2-column cells (no
+/// overlap) but seven signals made FOUR rows, and the real device band is
+/// shorter than the nominal flex:3 (the power graph in the top zone eats
+/// into it), so the bottom three values fell under a scroll. +77 drops to
+/// THREE rows by going 3-wide (3+3+1) and shrinks the value font 24→18 dp
+/// with tighter vertical padding, so all seven fit WITHOUT scrolling on
+/// the 1280×800 head unit. Cells stay content-sized (no Expanded height),
+/// so they still cannot overlap; the value uses a FittedBox so a long
+/// number (e.g. trip B "2985.7") shrinks rather than pushing the layout,
+/// and the label ellipsises if too wide for the ~80 dp column. The scroll
+/// view is kept only as a last-resort guard (should never trigger now).
 ///
 /// Honesty: a value held past its freshness window
 /// (HalTelemetryService.isStale) is DIMMED rather than blanked — the panel
@@ -557,7 +560,8 @@ class HalExtrasPanel extends StatelessWidget {
     // One compact stacked cell: value·unit on top, label beneath. Content-
     // sized (the Column rows below do NOT stretch it), so cells can never
     // overlap however short the band is. Returned wrapped in Expanded so
-    // the two cells in a row share the half's width evenly.
+    // the cells in a row share the half's width evenly. Fonts are sized for
+    // the 3-wide grid (~80 dp columns): value 18, unit 10, label 10.
     Widget cell(
         String labelKey, ({String text, bool dim}) d, String unit) {
       final valueColor = d.dim ? Colors.grey.shade600 : Colors.white;
@@ -576,45 +580,48 @@ class HalExtrasPanel extends StatelessWidget {
                 children: [
                   Text(d.text,
                       style: TextStyle(
-                          fontSize: 24,
+                          fontSize: 18,
                           fontWeight: FontWeight.w300,
                           color: valueColor)),
                   if (unit.isNotEmpty) ...[
-                    const SizedBox(width: 3),
+                    const SizedBox(width: 2),
                     Text(unit,
                         style: TextStyle(
-                            fontSize: 12,
+                            fontSize: 10,
                             color:
                                 d.dim ? Colors.grey.shade700 : Colors.grey)),
                   ],
                 ],
               ),
             ),
-            const SizedBox(height: 1),
             Text(S.of(labelKey),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(
-                    fontSize: 11, color: Colors.grey, letterSpacing: 0.3)),
+                    fontSize: 10, color: Colors.grey, letterSpacing: 0.2)),
           ],
         ),
       );
     }
 
-    // Build rows of two cells. 12 dp gutter between the columns.
-    Widget gridRow(List<Widget> cells) => Padding(
-          padding: const EdgeInsets.symmetric(vertical: 6),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              cells[0],
-              const SizedBox(width: 12),
-              cells.length > 1
-                  ? cells[1]
-                  : const Expanded(child: SizedBox.shrink()),
-            ],
-          ),
-        );
+    // Build a row of up to three cells, padding empty trailing slots so
+    // columns stay aligned. 10 dp gutter between columns.
+    Widget gridRow(List<Widget> cells) {
+      final slots = <Widget>[];
+      for (var i = 0; i < 3; i++) {
+        if (i > 0) slots.add(const SizedBox(width: 10));
+        slots.add(i < cells.length
+            ? cells[i]
+            : const Expanded(child: SizedBox.shrink()));
+      }
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 5),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: slots,
+        ),
+      );
+    }
 
     final tripA =
         cell('drv.cell.trip_a',
@@ -666,11 +673,9 @@ class HalExtrasPanel extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    gridRow([tripA, tripB]),
+                    gridRow([tripA, tripB, rpm]),
                     const Divider(height: 1, color: Colors.white12),
-                    gridRow([rpm, torque]),
-                    const Divider(height: 1, color: Colors.white12),
-                    gridRow([mPower, motorTemp]),
+                    gridRow([torque, mPower, motorTemp]),
                     const Divider(height: 1, color: Colors.white12),
                     gridRow([invTemp]),
                   ],
