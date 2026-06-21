@@ -512,25 +512,33 @@ Color consumptionColor(double kwh100km) {
 }
 
 /// v0.1.29+75: HAL-exclusive drive panel — the right half of the driver
-/// middle band when the source is pinned to HAL (halOnly). Mirrors
-/// [TripMetricsPanel]'s Card + header + Expanded-row structure so the two
-/// halves read as one band. Shows HAL-only / drive-side data that has no
-/// place in the OBD2 trip panel:
+/// middle band when the source is pinned to HAL (halOnly). Shows HAL-only
+/// drive-side data that has no place in the OBD2 trip panel:
 ///
 ///   trip A · trip B        (cluster trip meters, HAL-only)
 ///   motor rpm · torque     (BYDAutoEngineDevice)
-///   motor power · —        (BYDAutoEngineDevice, signed kW)
+///   motor power            (BYDAutoEngineDevice, signed kW)
 ///   motor temp · inverter  (distinct drive-side sensors, promoted +72)
 ///
-/// Honesty: a value held past its freshness window (HalTelemetryService
-/// .isStale) is DIMMED rather than blanked — the panel stays populated so
-/// HAL feels like a complete interface, but an ageing reading is visibly
-/// greyed. A value with no held reading at all shows '—'.
+/// Layout (v0.1.29+76 fix, revised): a COMPACT 2-COLUMN grid of stacked
+/// cells (value on top, small label under) — NOT the 2×N Expanded grid
+/// used in +75, and not the one-column list (too tall for the short
+/// split-half band). The +75 grid put four Expanded TripCell rows into the
+/// flex:3 band; in the narrow split half each row got ~half the height a
+/// TripCell needs, so the bottom label of one row overlapped the value of
+/// the next (owner field photo, "дизайн секции поехал"). Here the cells
+/// are CONTENT-SIZED (no Expanded), laid out in fixed rows of two, so they
+/// occupy only their natural height and cannot overlap; the value uses a
+/// FittedBox so a long number shrinks instead of pushing anything. Seven
+/// signals → four rows (last row's second slot is empty). Wrapped in a
+/// scroll view as a guard if the band is ever shorter than the content.
 ///
-/// This widget is driver-wide only (never compact): it lives inside an
-/// Expanded() inside the Row that splits the middle band, so it uses
-/// Expanded() inside its own Column exactly like TripMetricsPanel's wide
-/// mode. It does NOT touch TripMetricsPanel (shared with the dashboard).
+/// Honesty: a value held past its freshness window
+/// (HalTelemetryService.isStale) is DIMMED rather than blanked — the panel
+/// stays populated so HAL feels like a complete interface, but an ageing
+/// reading is visibly greyed. A value with no held reading shows '—'.
+///
+/// Does NOT touch TripMetricsPanel (shared with the dashboard).
 class HalExtrasPanel extends StatelessWidget {
   const HalExtrasPanel({super.key});
 
@@ -538,7 +546,7 @@ class HalExtrasPanel extends StatelessWidget {
   Widget build(BuildContext context) {
     final hal = context.watch<HalTelemetryService>();
 
-    // (value text, dim) for a held HAL signal. `value` null → '—', not
+    // (value text, dim) for a held HAL signal. value null → '—', not
     // dimmed (nothing held to age). Otherwise dim iff isStale(name).
     ({String text, bool dim}) v(
             String name, double? value, String Function(double) fmt) =>
@@ -546,44 +554,97 @@ class HalExtrasPanel extends StatelessWidget {
             ? (text: '—', dim: false)
             : (text: fmt(value), dim: hal.isStale(name));
 
-    final tripA =
-        v('trip_a', hal.halTripAKm, (x) => x.toStringAsFixed(1));
-    final tripB =
-        v('trip_b', hal.halTripBKm, (x) => x.toStringAsFixed(1));
-    final rpm =
-        v('motor_rpm', hal.halMotorRpm, (x) => x.toStringAsFixed(0));
-    final torque = v(
-        'motor_torque', hal.halMotorTorqueNm, (x) => x.toStringAsFixed(0));
-    final mPower = v(
-        'motor_power', hal.halMotorPowerKw, (x) => x.toStringAsFixed(0));
-    // motor/inverter temp use the +72 temp getters (held via _tempHold).
-    final motorTemp = v(
-        'motor_temp', hal.halMotorTempC, (x) => x.toStringAsFixed(0));
-    final invTemp = v('inverter_temp', hal.halInverterTempC,
-        (x) => x.toStringAsFixed(0));
-
-    Widget c(({String text, bool dim}) d, String unit, String labelKey) {
+    // One compact stacked cell: value·unit on top, label beneath. Content-
+    // sized (the Column rows below do NOT stretch it), so cells can never
+    // overlap however short the band is. Returned wrapped in Expanded so
+    // the two cells in a row share the half's width evenly.
+    Widget cell(
+        String labelKey, ({String text, bool dim}) d, String unit) {
+      final valueColor = d.dim ? Colors.grey.shade600 : Colors.white;
       return Expanded(
-        child: TripCell(
-          value: d.text,
-          unit: unit,
-          label: S.of(labelKey),
-          valueFontSize: 30,
-          labelFontSize: 11,
-          unitFontSize: 13,
-          // Held-but-ageing → dimmed grey; fresh → default white.
-          valueColor: d.dim ? Colors.grey.shade600 : null,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: Alignment.centerLeft,
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.baseline,
+                textBaseline: TextBaseline.alphabetic,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(d.text,
+                      style: TextStyle(
+                          fontSize: 24,
+                          fontWeight: FontWeight.w300,
+                          color: valueColor)),
+                  if (unit.isNotEmpty) ...[
+                    const SizedBox(width: 3),
+                    Text(unit,
+                        style: TextStyle(
+                            fontSize: 12,
+                            color:
+                                d.dim ? Colors.grey.shade700 : Colors.grey)),
+                  ],
+                ],
+              ),
+            ),
+            const SizedBox(height: 1),
+            Text(S.of(labelKey),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                    fontSize: 11, color: Colors.grey, letterSpacing: 0.3)),
+          ],
         ),
       );
     }
 
-    Widget r(List<Widget> cells) => Expanded(child: Row(children: cells));
+    // Build rows of two cells. 12 dp gutter between the columns.
+    Widget gridRow(List<Widget> cells) => Padding(
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              cells[0],
+              const SizedBox(width: 12),
+              cells.length > 1
+                  ? cells[1]
+                  : const Expanded(child: SizedBox.shrink()),
+            ],
+          ),
+        );
+
+    final tripA =
+        cell('drv.cell.trip_a',
+            v('trip_a', hal.halTripAKm, (x) => x.toStringAsFixed(1)), 'km');
+    final tripB = cell('drv.cell.trip_b',
+        v('trip_b', hal.halTripBKm, (x) => x.toStringAsFixed(1)), 'km');
+    final rpm = cell('drv.cell.motor_rpm',
+        v('motor_rpm', hal.halMotorRpm, (x) => x.toStringAsFixed(0)), 'rpm');
+    final torque = cell(
+        'drv.cell.motor_torque',
+        v('motor_torque', hal.halMotorTorqueNm, (x) => x.toStringAsFixed(0)),
+        'Nm');
+    final mPower = cell(
+        'drv.cell.motor_power',
+        v('motor_power', hal.halMotorPowerKw, (x) => x.toStringAsFixed(0)),
+        'kW');
+    final motorTemp = cell('drv.cell.motor_temp',
+        v('motor_temp', hal.halMotorTempC, (x) => x.toStringAsFixed(0)), '°C');
+    final invTemp = cell(
+        'drv.cell.inverter_temp',
+        v('inverter_temp', hal.halInverterTempC,
+            (x) => x.toStringAsFixed(0)),
+        '°C');
 
     return Card(
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(20, 14, 20, 14),
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
+          mainAxisSize: MainAxisSize.min,
           children: [
             Row(
               children: [
@@ -596,26 +657,26 @@ class HalExtrasPanel extends StatelessWidget {
                         color: Colors.grey)),
               ],
             ),
-            const SizedBox(height: 8),
-            r([
-              c(tripA, 'km', 'drv.cell.trip_a'),
-              c(tripB, 'km', 'drv.cell.trip_b'),
-            ]),
-            Divider(height: 16, color: Colors.white24),
-            r([
-              c(rpm, 'rpm', 'drv.cell.motor_rpm'),
-              c(torque, 'Nm', 'drv.cell.motor_torque'),
-            ]),
-            Divider(height: 16, color: Colors.white24),
-            r([
-              c(mPower, 'kW', 'drv.cell.motor_power'),
-              c(motorTemp, '°C', 'drv.cell.motor_temp'),
-            ]),
-            Divider(height: 16, color: Colors.white24),
-            r([
-              c(invTemp, '°C', 'drv.cell.inverter_temp'),
-              const Expanded(child: SizedBox.shrink()),
-            ]),
+            const SizedBox(height: 4),
+            // Scroll guard: if the band is ever shorter than the rows, the
+            // grid scrolls instead of overflowing/overlapping.
+            Flexible(
+              child: SingleChildScrollView(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    gridRow([tripA, tripB]),
+                    const Divider(height: 1, color: Colors.white12),
+                    gridRow([rpm, torque]),
+                    const Divider(height: 1, color: Colors.white12),
+                    gridRow([mPower, motorTemp]),
+                    const Divider(height: 1, color: Colors.white12),
+                    gridRow([invTemp]),
+                  ],
+                ),
+              ),
+            ),
           ],
         ),
       ),
