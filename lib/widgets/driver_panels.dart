@@ -169,6 +169,41 @@ class SpeedAndStatusStrip extends StatelessWidget {
       ),
     );
 
+    // v0.1.29+78: brake-light indicator. The real stop-lamp state
+    // (0x33100012) is UNREACHABLE for our uid (recon p086: class_not_found
+    // + permission not granted + binder null), so this is DERIVED, not the
+    // lamp wire. HalTelemetryService.brakeRegenActive encapsulates the
+    // rule: motor_torque < −50 Nm AND pack_current < −60 A (charging) —
+    // both required so it tracks "braking hard enough on regen that the
+    // stop lamps are lit per ECE R13H" without twitching at the coast/regen
+    // boundary. HAL-only by nature: in OBD2-only mode neither signal is
+    // available so the bar never appears (honest); a stale HAL stream also
+    // clears it rather than freezing it red.
+    final bool brakeRegenActive = hal.brakeRegenActive;
+    // Fixed-height slot so the bar never shifts the speed/status layout;
+    // only its opacity animates between hidden and lit.
+    final double barSlotHeight = compact ? 4.0 : 6.0;
+    final brakeBar = SizedBox(
+      height: barSlotHeight,
+      child: AnimatedOpacity(
+        opacity: brakeRegenActive ? 1.0 : 0.0,
+        duration: const Duration(milliseconds: 120),
+        child: Container(
+          decoration: BoxDecoration(
+            color: const Color(0xFFFF3B30),
+            borderRadius: BorderRadius.circular(barSlotHeight / 2),
+            boxShadow: const [
+              BoxShadow(
+                color: Color(0x80FF3B30),
+                blurRadius: 8,
+                spreadRadius: 0.5,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
     return Card(
       child: Padding(
         padding: padding,
@@ -191,6 +226,9 @@ class SpeedAndStatusStrip extends StatelessWidget {
             // and Expanded(child: speedRow) here lets the FittedBox
             // grow into available vertical room.
             if (compact) speedRow else Expanded(child: speedRow),
+            // v0.1.29+78: red regen-brake bar, directly under the speed.
+            const SizedBox(height: 6),
+            brakeBar,
             const SizedBox(height: 8),
             statusRow,
           ],
