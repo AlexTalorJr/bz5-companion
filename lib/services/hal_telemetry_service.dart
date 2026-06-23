@@ -341,6 +341,34 @@ class HalTelemetryService extends ChangeNotifier {
   double? get halMotorPowerKw => _heldValue('motor_power', _coreHold);
   bool get useHalForMotorPower => _useHal('motor_power');
 
+  // ── brake-light indicator (v0.1.29+78). The real stop-lamp state
+  //    (LIGHT_CMD_STOP_LIGHT_STATE 0x33100012) is UNREACHABLE for our uid:
+  //    recon p086 closed it three ways (class_not_found, BYDAUTO_LIGHT_
+  //    COMMON not granted, all binders null). So this is NOT the lamp wire
+  //    — it is DERIVED. ECE R13H requires the stop lamps lit under regen
+  //    deceleration above ~1.3 m/s²; recon's 2026-06-21 braking run showed
+  //    that condition corresponds to motor_torque < −50 Nm AND a charging
+  //    pack_current. We require BOTH to fire — torque alone twitches near
+  //    the −48/−56 Nm coast/regen boundary, but pairing it with a clear
+  //    charge current (pack_current < −60 A; discharge-positive convention,
+  //    so regen is negative) removes the boundary false-positives while
+  //    keeping every real regen episode (run data: −97/−134, −117/−124,
+  //    −56/−83 Nm/A — both signals well past the thresholds together).
+  //    HAL-only by nature: neither torque nor a fast pack_current is
+  //    available in OBD2-only mode, so the indicator simply does not fire
+  //    there (honest — no source, no claim). Returns false if either
+  //    signal is unavailable or stale (gated via _useHal). ──
+  static const double _brakeTorqueNm = -50;
+  static const double _brakeCurrentA = -60;
+
+  bool get brakeRegenActive {
+    if (!_useHal('motor_torque') || !_useHal('pack_current')) return false;
+    final t = halValue('motor_torque');
+    final i = halValue('pack_current');
+    if (t == null || i == null) return false;
+    return t < _brakeTorqueNm && i < _brakeCurrentA;
+  }
+
 
   /// Raw event stream (all decoders), for the dev HAL Test screen. The
   /// service is the SINGLE owner of the native subscription; HAL Test
