@@ -620,6 +620,7 @@ class HalExtrasPanel extends StatelessWidget {
                       style: TextStyle(
                           fontSize: 18,
                           fontWeight: FontWeight.w300,
+                          height: 1.0,
                           color: valueColor)),
                   if (unit.isNotEmpty) ...[
                     const SizedBox(width: 2),
@@ -632,11 +633,15 @@ class HalExtrasPanel extends StatelessWidget {
                 ],
               ),
             ),
+            const SizedBox(height: 2),
             Text(S.of(labelKey),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(
-                    fontSize: 10, color: Colors.grey, letterSpacing: 0.2)),
+                    fontSize: 10,
+                    height: 1.0,
+                    color: Colors.grey,
+                    letterSpacing: 0.2)),
           ],
         ),
       );
@@ -653,7 +658,7 @@ class HalExtrasPanel extends StatelessWidget {
             : const Expanded(child: SizedBox.shrink()));
       }
       return Padding(
-        padding: const EdgeInsets.symmetric(vertical: 5),
+        padding: const EdgeInsets.symmetric(vertical: 3),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: slots,
@@ -686,7 +691,7 @@ class HalExtrasPanel extends StatelessWidget {
 
     return Card(
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+        padding: const EdgeInsets.fromLTRB(16, 10, 16, 8),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           mainAxisSize: MainAxisSize.min,
