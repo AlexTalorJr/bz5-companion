@@ -103,11 +103,14 @@ class HalTelemetryService extends ChangeNotifier {
     'motor_rpm': Duration(milliseconds: 1500),
     'motor_torque': Duration(milliseconds: 1500),
     'motor_power': Duration(milliseconds: 1500),
-    // v0.1.29+80: brake-pedal toggle. A live, fast signal (pushed with the
-    // Gearbox wave); tight 1.5 s window so a STALE pressed-frame can't keep
-    // the brake-light bar lit after the pedal is released. Deliberately NOT
-    // in _stickyNames — a sticky hold would make the bar stick "pressed".
-    'brake_pedal': Duration(milliseconds: 1500),
+    // v0.1.29+80/+81: brake-pedal toggle. The signal pushes at ~1.4 Hz
+    // (HAL Test, owner photo) → ~700 ms between frames. A 1.5 s window left
+    // almost no jitter margin (a single late frame would false-clear a held
+    // press, flickering the bar off mid-brake), so +81 widens it to 3 s.
+    // Still deliberately NOT in _stickyNames — a release frame (value 0)
+    // clears it promptly; the 3 s only bounds the case where frames stop
+    // entirely. A sticky hold, by contrast, would latch it "pressed".
+    'brake_pedal': Duration(seconds: 3),
   };
   static const Set<String> _eventDriven = {'soc_display', 'soc_battery'};
 
@@ -391,8 +394,17 @@ class HalTelemetryService extends ChangeNotifier {
   /// True if the brake pedal is currently reported pressed by a FRESH HAL
   /// frame (GEARBOX_BRAKE_PEDAL, 0/1). Not sticky-held — a released pedal
   /// must clear promptly.
+  ///
+  /// v0.1.29+81 fix: must NOT gate on _useHal here. In halOnly, _useHal
+  /// resolves via _heldValue → _lastGood, which is only populated for
+  /// _stickyNames; brake_pedal is deliberately non-sticky, so _lastGood
+  /// is always empty for it and _useHal would always be false — the whole
+  /// pedal branch was dead (bar never lit on brake, despite the signal
+  /// pushing live at ~1.4 Hz on HAL Test). The correct gate for an instant
+  /// (non-held) signal is: mode allows HAL AND a fresh raw frame exists.
   bool get halBrakePedalPressed {
-    if (!_useHal('brake_pedal') || !halFresh('brake_pedal')) return false;
+    if (_mode == HalSourceMode.obd2Only) return false;
+    if (!halFresh('brake_pedal')) return false;
     final p = halValue('brake_pedal');
     return p != null && p >= 0.5;
   }
