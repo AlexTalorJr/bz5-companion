@@ -103,6 +103,11 @@ class HalTelemetryService extends ChangeNotifier {
     'motor_rpm': Duration(milliseconds: 1500),
     'motor_torque': Duration(milliseconds: 1500),
     'motor_power': Duration(milliseconds: 1500),
+    // v0.1.29+80: brake-pedal toggle. A live, fast signal (pushed with the
+    // Gearbox wave); tight 1.5 s window so a STALE pressed-frame can't keep
+    // the brake-light bar lit after the pedal is released. Deliberately NOT
+    // in _stickyNames — a sticky hold would make the bar stick "pressed".
+    'brake_pedal': Duration(milliseconds: 1500),
   };
   static const Set<String> _eventDriven = {'soc_display', 'soc_battery'};
 
@@ -135,6 +140,11 @@ class HalTelemetryService extends ChangeNotifier {
     'motor_rpm': (0, 25000),
     'motor_torque': (-400, 400),
     'motor_power': (-250, 250),
+    // v0.1.29+80: brake-pedal toggle (GEARBOX_BRAKE_PEDAL, already decoded
+    // by the vendored DecoderTable and pushed via the Gearbox subscription;
+    // adding it to _range is what makes the service actually CONSUME it).
+    // 0 = released, 1 = pressed. Guard 0..1 drops any junk.
+    'brake_pedal': (0, 1),
   };
 
   final Map<String, ({double value, DateTime at})> _latest = {};
@@ -341,28 +351,60 @@ class HalTelemetryService extends ChangeNotifier {
   double? get halMotorPowerKw => _heldValue('motor_power', _coreHold);
   bool get useHalForMotorPower => _useHal('motor_power');
 
-  // ── brake-light indicator (v0.1.29+78). The real stop-lamp state
-  //    (LIGHT_CMD_STOP_LIGHT_STATE 0x33100012) is UNREACHABLE for our uid:
-  //    recon p086 closed it three ways (class_not_found, BYDAUTO_LIGHT_
-  //    COMMON not granted, all binders null). So this is NOT the lamp wire
-  //    — it is DERIVED. ECE R13H requires the stop lamps lit under regen
-  //    deceleration above ~1.3 m/s²; recon's 2026-06-21 braking run showed
-  //    that condition corresponds to motor_torque < −50 Nm AND a charging
-  //    pack_current. We require BOTH to fire — torque alone twitches near
-  //    the −48/−56 Nm coast/regen boundary, but pairing it with a clear
-  //    charge current (pack_current < −60 A; discharge-positive convention,
-  //    so regen is negative) removes the boundary false-positives while
-  //    keeping every real regen episode (run data: −97/−134, −117/−124,
-  //    −56/−83 Nm/A — both signals well past the thresholds together).
-  //    HAL-only by nature: neither torque nor a fast pack_current is
-  //    available in OBD2-only mode, so the indicator simply does not fire
-  //    there (honest — no source, no claim). Returns false if either
-  //    signal is unavailable or stale (gated via _useHal). ──
+  // ── brake-light indicator (v0.1.29+78, reworked +80). The real stop-lamp
+  //    state (LIGHT_CMD_STOP_LIGHT_STATE 0x33100012) is UNREACHABLE for our
+  //    uid: recon p086/p087 closed it for good (class_not_found on the HAL
+  //    class, BYDAUTO_LIGHT COMMON+GET both granted=false, all three light
+  //    binders null; the Bodywork 0x06200020 alternative is dead too since
+  //    p078). So this bar is DERIVED, not the lamp wire — flagged as such.
+  //
+  //    Two independent triggers, OR'd (v0.1.29+80):
+  //
+  //    (A) brake_pedal == 1 — UNCONDITIONAL. Foot physically on the brake is
+  //        a 100%-reliable "the car is braking", so we light the bar without
+  //        qualification. GEARBOX_BRAKE_PEDAL is granted and pushed with the
+  //        Gearbox wave (it shows live on HAL Test). This covers ordinary
+  //        friction braking that the regen pair might miss.
+  //
+  //    (B) regen pair — motor_torque < −50 Nm AND pack_current < −60 A
+  //        (discharge-positive, so regen is negative). This is the case the
+  //        pedal signal CANNOT cover: hard one-pedal regen with the foot OFF
+  //        the brake. BOTH are required inside this branch — torque alone
+  //        twitches at the −48/−56 Nm coast/regen boundary; pairing it with a
+  //        clear charge current removes those false positives (run data
+  //        2026-06-21: −97/−134, −117/−124, −56/−83 Nm/A — both well past
+  //        the thresholds together).
+  //
+  //    +80 freshness fix — the root cause of the bar never lighting on the
+  //    drive: the old code read halValue() = the RAW _latest with NO age
+  //    check, so it would test a stale coast-frame (e.g. −10 Nm captured
+  //    ~400 ms before regen built up) and, with torque/current arriving at
+  //    different rates (~1.5 s vs ~2.2 Hz windows), the two raw latests
+  //    rarely sat inside the regen window together on a short (1–2 s) brake.
+  //    We now gate every input through halFresh(name) (per-name age window)
+  //    so only a genuinely-current frame counts; a signal that has gone
+  //    stale no longer "hangs" at its last value. HAL-only by nature: in
+  //    OBD2-only mode none of these are present, so the bar never fires. ──
   static const double _brakeTorqueNm = -50;
   static const double _brakeCurrentA = -60;
 
+  /// True if the brake pedal is currently reported pressed by a FRESH HAL
+  /// frame (GEARBOX_BRAKE_PEDAL, 0/1). Not sticky-held — a released pedal
+  /// must clear promptly.
+  bool get halBrakePedalPressed {
+    if (!_useHal('brake_pedal') || !halFresh('brake_pedal')) return false;
+    final p = halValue('brake_pedal');
+    return p != null && p >= 0.5;
+  }
+
   bool get brakeRegenActive {
-    if (!_useHal('motor_torque') || !_useHal('pack_current')) return false;
+    // (A) foot on the brake — unconditional, fresh frame only.
+    if (halBrakePedalPressed) return true;
+    // (B) hard one-pedal regen with foot off the brake. Both signals must
+    // be fresh (age-guarded) AND past their thresholds — no stale latest.
+    final torqueOk = _useHal('motor_torque') && halFresh('motor_torque');
+    final currentOk = _useHal('pack_current') && halFresh('pack_current');
+    if (!torqueOk || !currentOk) return false;
     final t = halValue('motor_torque');
     final i = halValue('pack_current');
     if (t == null || i == null) return false;
