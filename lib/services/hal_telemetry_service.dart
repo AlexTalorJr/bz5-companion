@@ -228,6 +228,58 @@ class HalTelemetryService extends ChangeNotifier {
   };
   final Map<String, ({double value, DateTime at})> _lastGood = {};
 
+  // ─── HAL trip tracker (v0.1.29+85, Design C) ────────────────────────
+  //
+  // A SECOND trip tracker that lives entirely here, mirroring the OBD2
+  // ConnectionService trip math so the driver/dashboard look identical in
+  // halOnly mode with no BLE dongle. The OBD2 tracker (ConnectionService)
+  // is NOT touched — it keeps owning the database, history and the
+  // honest single-sourced aggregates. This one is display-only:
+  //
+  //   distance     ← Δ HAL trip_a (cluster trip meter A)
+  //   energy       ← (startSoc − nowSoc) × capacity, the SAME ΔSOC×kWh
+  //                  method ConnectionService uses (batteryCapacityKwh)
+  //   consumption  ← energy / distance × 100
+  //   duration     ← wall clock since start
+  //   peak / avg   ← accumulated from HAL speed via the ~1 s tick below
+  //
+  // Start: gear_enum ≠ Park (1) AND the first valid HAL SOC has arrived
+  //   (latches _halTripStartSoc on that frame, so the first seconds of
+  //   energy are anchored honestly to a real reading).
+  // Stop / segmentation: parked (gear == P) longer than the SAME
+  //   thresholds OBD2 uses (_kHalParkConfirm debounce + _kHalParkClose).
+  //   On close we reset the aggregates so the next drive starts clean.
+  //
+  // Battery capacity duplicated here as a const (Bz5Model.batteryCapacityKwh
+  // = 65.28) to avoid importing ConnectionService into this service — same
+  // value, kept in sync by hand if the pack variant ever changes.
+  static const double _halPackCapacityKwh = 65.28;
+  static const double _halMovingKmh = 1.0; // > this counts as moving
+  static const Duration _kHalParkConfirm = Duration(seconds: 30);
+  static const Duration _kHalParkClose = Duration(minutes: 10);
+
+  bool _halTripActive = false;
+  DateTime? _halTripStartedAt;
+  double? _halTripStartSoc;     // latched start SOC (whole %, smoothed via EMA)
+  double? _halTripStartTripA;   // latched start odo-trip (km) from trip_a
+  double? _halPeakSpeedKmh;
+  double _halSpeedSum = 0;      // moving-sample speed sum (for avg)
+  int _halSpeedSamples = 0;     // moving-sample count
+  // EMA-smoothed energy so a whole-% SOC step (~0.65 kWh on this pack)
+  // doesn't make the energy cell jump. v0.1.29+85 uses whole SOC only;
+  // the fractional BigData SOC (0x044C) is a later step once recon p090
+  // adds it to the frame_trace whitelist (~1 Hz). The EMA hides the steps
+  // in the meantime.
+  double? _halEnergyEma;
+  static const double _halEnergyEmaAlpha = 0.15;
+  // Park-segmentation debounce/clock, same shape as the OBD2 tracker.
+  DateTime? _halParkConfirmStart;
+  DateTime? _halParkedSince;
+  // ~1 s tick that samples HAL speed into peak/avg while a trip is live.
+  // Lives with the stream — started on first trip start, cancelled in
+  // _stopStream() so a stopped stream never keeps accumulating.
+  Timer? _halTripTick;
+
   /// Last good value held across short dropouts / bad frames, or null if
   /// never received or the hold expired. Used by both the temp getters
   /// and (in halOnly mode) the overlapping-core getters.
@@ -516,6 +568,174 @@ class HalTelemetryService extends ChangeNotifier {
     return t < _brakeTorqueNm && i < _brakeCurrentA;
   }
 
+  // ─── HAL trip tracker logic (v0.1.29+85) ────────────────────────────
+  //
+  // Driven once per HAL frame from _onEvent (cheap — just reads held
+  // values) plus the ~1 s tick for speed accumulation. Mirrors the OBD2
+  // ConnectionService trip lifecycle; see the field block above.
+
+  /// Current HAL SOC (whole %), preferring soc_display, then soc_battery.
+  /// Null until a SOC frame has arrived. Same source as halSocPct.
+  double? get _halSocNow {
+    final d = _heldValue('soc_display', _coreHold);
+    if (d != null) return d;
+    return _heldValue('soc_battery', _coreHold);
+  }
+
+  /// Run the start/stop state machine. Called from _onEvent after a frame
+  /// is consumed; no-ops when HAL is not the live driving source.
+  void _updateHalTrip() {
+    // Only meaningful as a display tracker when HAL is the pinned, live
+    // source (halOnly + stream up). In obd2Only / phone this stays idle
+    // and the UI keeps reading the OBD2 tracker.
+    if (!halDriveActive) {
+      if (_halTripActive) _closeHalTrip();
+      return;
+    }
+    final gear = _heldValue('gear_enum', _coreHold);
+    final soc = _halSocNow;
+    final inPark = gear != null && gear.round() == 1; // 1 = Park
+
+    if (!_halTripActive) {
+      // Start: not in Park AND a valid SOC has arrived (latch the start).
+      if (gear != null && !inPark && soc != null) {
+        _startHalTrip(soc);
+      }
+      return;
+    }
+
+    // Active trip — handle park-based segmentation (same thresholds as
+    // the OBD2 tracker: debounce P, then close after the park window).
+    if (!inPark) {
+      _halParkConfirmStart = null;
+      _halParkedSince = null;
+      return;
+    }
+    final now = DateTime.now();
+    _halParkConfirmStart ??= now;
+    if (now.difference(_halParkConfirmStart!) < _kHalParkConfirm) return;
+    _halParkedSince ??= now;
+    if (now.difference(_halParkedSince!) >= _kHalParkClose) {
+      _closeHalTrip();
+    }
+  }
+
+  void _startHalTrip(double startSoc) {
+    _resetHalTripAggregates();
+    _halTripActive = true;
+    _halTripStartedAt = DateTime.now();
+    _halTripStartSoc = startSoc;
+    _halTripStartTripA = _heldValue('trip_a', _coreHold); // may be null early
+    // Kick the speed tick if it isn't already running.
+    _halTripTick ??= Timer.periodic(
+        const Duration(seconds: 1), (_) => _onHalTripTick());
+  }
+
+  void _closeHalTrip() {
+    _halTripActive = false;
+    _halTripStartedAt = null;
+    _halTripStartSoc = null;
+    _halTripStartTripA = null;
+    _halParkConfirmStart = null;
+    _halParkedSince = null;
+    _resetHalTripAggregates();
+    _halTripTick?.cancel();
+    _halTripTick = null;
+  }
+
+  void _resetHalTripAggregates() {
+    _halPeakSpeedKmh = null;
+    _halSpeedSum = 0;
+    _halSpeedSamples = 0;
+    _halEnergyEma = null;
+  }
+
+  /// ~1 s tick: sample HAL speed into peak + moving-average accumulators
+  /// while a trip is live. Mirrors the OBD2 moving>1.0 km/h gate.
+  void _onHalTripTick() {
+    if (!_halTripActive) return;
+    final s = _heldValue('speed', _coreHold);
+    if (s == null) return;
+    if (_halPeakSpeedKmh == null || s > _halPeakSpeedKmh!) {
+      _halPeakSpeedKmh = s;
+    }
+    if (s > _halMovingKmh) {
+      _halSpeedSum += s;
+      _halSpeedSamples++;
+    }
+  }
+
+  // ── HAL trip getters: SAME names as the OBD2 ConnectionService getters,
+  //    so TripMetricsPanel can swap source invisibly (like speed/SOC). ──
+
+  /// True while the HAL trip tracker holds a live trip. The UI pairs this
+  /// with halDriveActive to decide whether to read HAL or OBD2 trip data.
+  bool get halTripActive => _halTripActive;
+
+  /// Synthetic trip flag for the panel's "trip exists?" checks. v0.1.29+85
+  /// writes no DB row in halOnly (history comes in the next patch), so
+  /// there is no real id — the panel shows the label "trip" without a
+  /// number. Non-null while a HAL trip is live so the null-guards pass.
+  Object? get halCurrentTripMarker => _halTripActive ? 'trip' : null;
+
+  /// Distance so far = Δ trip_a (cluster trip meter A). Null until both a
+  /// start anchor and a current reading exist and the delta is sane.
+  double? get halTripDistanceKm {
+    if (!_halTripActive) return null;
+    final start = _halTripStartTripA;
+    final cur = _heldValue('trip_a', _coreHold);
+    // trip_a can be null at the very start (frame not yet seen). Once it
+    // arrives, latch it as the start so distance reads from zero.
+    if (start == null) {
+      if (cur != null) _halTripStartTripA = cur;
+      return cur != null ? 0.0 : null;
+    }
+    if (cur == null || cur < start) return null;
+    return cur - start;
+  }
+
+  /// Energy used so far (kWh) = (startSoc − nowSoc) × capacity, the SAME
+  /// ΔSOC×kWh method as ConnectionService.tripEnergyUsedPreciseKwh. EMA-
+  /// smoothed so the whole-% SOC step doesn't make the value jump.
+  double? get halTripEnergyUsedKwh {
+    if (!_halTripActive) return null;
+    final start = _halTripStartSoc;
+    final now = _halSocNow;
+    if (start == null || now == null || now >= start) {
+      return _halEnergyEma; // hold last smoothed value through transient
+    }
+    final raw = (start - now) * _halPackCapacityKwh / 100.0;
+    _halEnergyEma = _halEnergyEma == null
+        ? raw
+        : _halEnergyEma! + _halEnergyEmaAlpha * (raw - _halEnergyEma!);
+    return _halEnergyEma;
+  }
+
+  /// Consumption so far (kWh/100km) = energy / distance × 100. Null below
+  /// 0.1 km to match the OBD2 getter's guard.
+  double? get halTripAvgConsumptionKwh100km {
+    final dist = halTripDistanceKm;
+    final energy = halTripEnergyUsedKwh;
+    if (dist == null || energy == null || dist < 0.1) return null;
+    return (energy / dist) * 100.0;
+  }
+
+  /// Duration so far. Null if no trip.
+  Duration? get halTripDuration {
+    if (!_halTripActive || _halTripStartedAt == null) return null;
+    return DateTime.now().difference(_halTripStartedAt!);
+  }
+
+  /// Peak speed seen this trip (km/h). Null until the first sample.
+  double? get halTripPeakSpeedKmh => _halPeakSpeedKmh;
+
+  /// Live moving-average speed (km/h), moving samples only. Null until the
+  /// trip has at least one moving sample.
+  double? get halTripCurrentAvgMovingKmh {
+    if (!_halTripActive || _halSpeedSamples == 0) return null;
+    return _halSpeedSum / _halSpeedSamples;
+  }
+
 
   /// Raw event stream (all decoders), for the dev HAL Test screen. The
   /// service is the SINGLE owner of the native subscription; HAL Test
@@ -623,6 +843,9 @@ class HalTelemetryService extends ChangeNotifier {
     // restart with the car in a different state.
     _latest.clear();
     _lastGood.clear();
+    // v0.1.29+85: a stopped stream must not keep a HAL trip "open" or let
+    // the 1 s tick accumulate against a dead stream. Close it cleanly.
+    _closeHalTrip();
   }
 
   void _onEvent(HalEvent e) {
@@ -652,6 +875,10 @@ class HalTelemetryService extends ChangeNotifier {
     // ConnectionService poll cadence; the resolvers read our latest
     // values at paint time. A coalesced notify keeps displays lively
     // without flooding.
+    // v0.1.29+85: drive the HAL trip state machine off the same frames
+    // (cheap — it only reads held values). Start/stop/segment happens as
+    // gear/SOC frames arrive; speed accumulation is on the 1 s tick.
+    _updateHalTrip();
     _scheduleNotify();
   }
 
@@ -666,6 +893,7 @@ class HalTelemetryService extends ChangeNotifier {
   @override
   void dispose() {
     _notifyTimer?.cancel();
+    _halTripTick?.cancel();
     _stopStream();
     super.dispose();
   }
