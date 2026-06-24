@@ -103,6 +103,17 @@ class _DriverContent extends StatelessWidget {
     // i.e. exactly when the HAL half has something to show. In obd2Only
     // the band stays full-width and unchanged.
     final halSplit = hal.useHalForTripA;
+    // v0.1.29+84: the motor band must survive without an OBD2 trip. In
+    // halOnly there is no BLE dongle → currentTripId is null → hasTrip was
+    // false → the whole middle band (incl. HalExtrasPanel with motor data)
+    // disappeared. Now show the band whenever a trip exists OR HAL is the
+    // live driving source. Cases below:
+    //   hasTrip + halSplit          → split (TripMetrics | HalExtras)  [unchanged]
+    //   hasTrip + !halSplit         → full-width TripMetrics            [unchanged]
+    //   !hasTrip + halDriveActive   → full-width HalExtras (NEW: halOnly drive)
+    //   !hasTrip + !halDriveActive  → no band (parked, no data)         [unchanged]
+    final halMotorOnly = !hasTrip && hal.halDriveActive;
+    final showBand = hasTrip || halMotorOnly;
 
     return Padding(
       padding: const EdgeInsets.all(16),
@@ -113,7 +124,7 @@ class _DriverContent extends StatelessWidget {
           // empty band the owner circled) | gear + SOC stack (right, back
           // to its pre-+67 compact form).
           Expanded(
-            flex: hasTrip ? 5 : 7,
+            flex: showBand ? 5 : 7,
             child: const Row(
               children: [
                 Expanded(flex: 3, child: SpeedAndStatusStrip()),
@@ -124,24 +135,27 @@ class _DriverContent extends StatelessWidget {
               ],
             ),
           ),
-          if (hasTrip) ...[
+          if (showBand) ...[
             const SizedBox(height: 12),
             // Middle zone: trip metrics. OBD2 → full-width TripMetricsPanel
-            // (6 cells + cost). HAL → split: left TripMetricsPanel (same
-            // widget, shared with dashboard — NOT modified), right the
-            // HAL-exclusive drive panel. flex:3 band height is unchanged;
-            // only the horizontal real estate is shared.
+            // (6 cells + cost). HAL+trip → split: left TripMetricsPanel
+            // (same widget, shared with dashboard — NOT modified), right the
+            // HAL-exclusive drive panel. halOnly without a trip → HalExtras
+            // full-width (TripMetrics would be all "—" with no OBD2 trip).
+            // flex:3 band height is unchanged.
             Expanded(
               flex: 3,
-              child: halSplit
-                  ? const Row(
-                      children: [
-                        Expanded(child: TripMetricsPanel()),
-                        SizedBox(width: 12),
-                        Expanded(child: HalExtrasPanel()),
-                      ],
-                    )
-                  : const TripMetricsPanel(),
+              child: halMotorOnly
+                  ? const HalExtrasPanel()
+                  : halSplit
+                      ? const Row(
+                          children: [
+                            Expanded(child: TripMetricsPanel()),
+                            SizedBox(width: 12),
+                            Expanded(child: HalExtrasPanel()),
+                          ],
+                        )
+                      : const TripMetricsPanel(),
             ),
           ],
           const SizedBox(height: 12),
@@ -664,9 +678,14 @@ class _BottomStatusStrip extends StatelessWidget {
     final hal = context.watch<HalTelemetryService>();
     final soh = svc.readNumeric('790', '0029');
     final odo = hal.useHalForOdometer ? hal.halOdometerKm : svc.readNumeric('791', '0026');
-    final spread = (svc.globalMaxCellMv != null && svc.globalMinCellMv != null)
-        ? svc.globalMaxCellMv! - svc.globalMinCellMv!
-        : null;
+    // v0.1.29+84: cell spread — HAL BigData cell_v pair when available
+    // (halOnly drive, no OBD2 cells), else OBD2 global min/max. Invisible
+    // substitution, same widget/unit, no HAL label (like speed/SOC).
+    final double? spread = hal.useHalForCellSpread
+        ? hal.halCellSpreadMv
+        : (svc.globalMaxCellMv != null && svc.globalMinCellMv != null)
+            ? (svc.globalMaxCellMv! - svc.globalMinCellMv!).toDouble()
+            : null;
 
     // v0.1.29+67: power moved out of this strip into its own _PowerCard
     // (gear/power/SOC stack) — a 14 pt line was unreadable at driver
@@ -715,7 +734,7 @@ class _BottomStatusStrip extends StatelessWidget {
                 : '${S.of('drv.odo')} —'),
             const _Sep(),
             Text(spread != null
-                ? '${S.of('drv.cell_spread')} ${spread.abs()} mV'
+                ? '${S.of('drv.cell_spread')} ${spread.abs().round()} mV'
                 : '${S.of('drv.cell_spread')} —'),
           ],
         ),

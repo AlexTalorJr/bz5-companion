@@ -72,6 +72,16 @@ class HalTelemetryService extends ChangeNotifier {
   bool _running = false;
   bool get running => _running;
 
+  /// v0.1.29+84: HAL is the active driving source — pinned to halOnly AND
+  /// the stream is up. The driver screen's middle band (motor rpm/torque/
+  /// power, motor/inverter temp via HalExtrasPanel) was previously gated on
+  /// an OBD2 trip (currentTripId), so in halOnly without a BLE dongle the
+  /// whole band — and all motor data — vanished even though the signals
+  /// flow. This getter lets the band show on live HAL alone. The panel
+  /// itself is honest per-signal (held→shown, stale→dimmed, absent→"—"),
+  /// so showing it with some cells empty on a stationary car is fine.
+  bool get halDriveActive => _mode == HalSourceMode.halOnly && _running;
+
   HalStartStatus? _status;
   HalStartStatus? get status => _status;
 
@@ -118,6 +128,16 @@ class HalTelemetryService extends ChangeNotifier {
     // halFresh, so this window is no longer the gate. Kept (used by isStale/
     // halFresh elsewhere); 3 s is harmless given the value is held sticky.
     'brake_pedal': Duration(seconds: 3),
+    // v0.1.29+84: BigData-borne battery signals (recon confirmed flowing
+    // via DecodedStreamSink on v0.10.68, ground-truth-matched). cell_v
+    // lo/hi update with balancing — moderately fast, 6 s like pack_voltage.
+    // cell_idx tracks the same frames. insulation is slow (Statistic), so a
+    // generous 30 s window avoids flicker between sparse updates.
+    'cell_v_lowest': Duration(seconds: 6),
+    'cell_v_highest': Duration(seconds: 6),
+    'cell_idx_lowest': Duration(seconds: 6),
+    'cell_idx_highest': Duration(seconds: 6),
+    'insulation_resistance': Duration(seconds: 30),
   };
   static const Set<String> _eventDriven = {'soc_display', 'soc_battery'};
 
@@ -155,6 +175,16 @@ class HalTelemetryService extends ChangeNotifier {
     // adding it to _range is what makes the service actually CONSUME it).
     // 0 = released, 1 = pressed. Guard 0..1 drops any junk.
     'brake_pedal': (0, 1),
+    // v0.1.29+84: BigData battery signals. cell_v LFP 3.10–3.44 V observed
+    // (recon) → guard 2.5..4.0 drops misalignment junk. cell_idx 1..136
+    // (pack is 136S) → guard 0..200. insulation arrives RAW (~13272–15919,
+    // recon confirms scale ×0.001 NOT applied upstream) so the guard is in
+    // RAW units: 1000..100000 (→ 1..100 MΩ after the getter scales it).
+    'cell_v_lowest': (2.5, 4.0),
+    'cell_v_highest': (2.5, 4.0),
+    'cell_idx_lowest': (0, 200),
+    'cell_idx_highest': (0, 200),
+    'insulation_resistance': (1000, 100000),
   };
 
   final Map<String, ({double value, DateTime at})> _latest = {};
@@ -369,6 +399,47 @@ class HalTelemetryService extends ChangeNotifier {
 
   double? get halMotorPowerKw => _heldValue('motor_power', _coreHold);
   bool get useHalForMotorPower => _useHal('motor_power');
+
+  // ── BigData battery signals (v0.1.29+84). Recon confirmed these flow via
+  //    DecodedStreamSink on v0.10.68 and ground-truth-matched them, so no
+  //    recon patch is needed — only the allowlist + these getters. Used to
+  //    fill the halOnly dashboard cells that were OBD2-only (cell spread,
+  //    insulation), via invisible source substitution like speed/SOC.
+  //
+  //    cell_v_lowest 0x45400010 / cell_v_highest 0x45400030 (DBL, V,
+  //    BYDAutoEnergyDevice) — the pair gives cell spread = max − min without
+  //    the 136-cell UDS poll. cell_idx_* 0x45400008/0x45400028 (INT, 1..136)
+  //    name which cell. insulation_resistance 0x47300018 (Statistic) arrives
+  //    RAW (~13272) — scale ×0.001 → MΩ is applied HERE (recon does not
+  //    apply it upstream). ──
+
+  double? get halCellVLowest => _heldValue('cell_v_lowest', _coreHold);
+  double? get halCellVHighest => _heldValue('cell_v_highest', _coreHold);
+
+  /// Cell spread in mV from the HAL min/max pair, or null if either is
+  /// absent. (max − min) V × 1000 → mV, matching the OBD2 cell-spread unit.
+  double? get halCellSpreadMv {
+    final lo = halCellVLowest;
+    final hi = halCellVHighest;
+    if (lo == null || hi == null) return null;
+    final mv = (hi - lo) * 1000.0;
+    return mv < 0 ? 0 : mv;
+  }
+
+  bool get useHalForCellSpread =>
+      _useHal('cell_v_lowest') && _useHal('cell_v_highest');
+
+  double? get halCellIdxLowest => _heldValue('cell_idx_lowest', _coreHold);
+  double? get halCellIdxHighest => _heldValue('cell_idx_highest', _coreHold);
+
+  /// Insulation resistance in MΩ. Raw value is scaled ×0.001 here (recon
+  /// emits it unscaled, e.g. 13272 → 13.27 MΩ).
+  double? get halInsulationMOhm {
+    final raw = _heldValue('insulation_resistance', _coreHold);
+    return raw == null ? null : raw * 0.001;
+  }
+
+  bool get useHalForInsulation => _useHal('insulation_resistance');
 
   // ── brake-light indicator (v0.1.29+78, reworked +80). The real stop-lamp
   //    state (LIGHT_CMD_STOP_LIGHT_STATE 0x33100012) is UNREACHABLE for our
