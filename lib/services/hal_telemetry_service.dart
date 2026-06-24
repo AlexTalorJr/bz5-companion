@@ -103,13 +103,10 @@ class HalTelemetryService extends ChangeNotifier {
     'motor_rpm': Duration(milliseconds: 1500),
     'motor_torque': Duration(milliseconds: 1500),
     'motor_power': Duration(milliseconds: 1500),
-    // v0.1.29+80/+81: brake-pedal toggle. The signal pushes at ~1.4 Hz
-    // (HAL Test, owner photo) → ~700 ms between frames. A 1.5 s window left
-    // almost no jitter margin (a single late frame would false-clear a held
-    // press, flickering the bar off mid-brake), so +81 widens it to 3 s.
-    // Still deliberately NOT in _stickyNames — a release frame (value 0)
-    // clears it promptly; the 3 s only bounds the case where frames stop
-    // entirely. A sticky hold, by contrast, would latch it "pressed".
+    // v0.1.29+82: brake_pedal is EDGE-triggered (frame on change only) and
+    // now STICKY — halBrakePedalPressed reads the held _lastGood value, not
+    // halFresh, so this window is no longer the gate. Kept (used by isStale/
+    // halFresh elsewhere); 3 s is harmless given the value is held sticky.
     'brake_pedal': Duration(seconds: 3),
   };
   static const Set<String> _eventDriven = {'soc_display', 'soc_battery'};
@@ -179,6 +176,15 @@ class HalTelemetryService extends ChangeNotifier {
     // v0.1.29+75: motor signals held across brief drive-stream gaps so
     // the driver HAL split stays populated (dims via isStale when ageing).
     'motor_rpm', 'motor_torque', 'motor_power',
+    // v0.1.29+82: brake_pedal is EDGE-triggered — the framework pushes a
+    // frame only on CHANGE (1 on press, 0 on release), nothing while the
+    // pedal is held. +81 treated it as a level signal with a 3 s freshness
+    // window, so the bar went dark ~3 s into a held brake (no refresh frame
+    // arrived). Owner-confirmed: a 0 frame DOES arrive on release. So hold
+    // the last value sticky and let the explicit 0 clear it — the bar now
+    // stays lit for the whole brake and drops the instant 0 lands.
+    // _stopStream() clears _lastGood, so no cross-session latch.
+    'brake_pedal',
   };
   final Map<String, ({double value, DateTime at})> _lastGood = {};
 
@@ -389,28 +395,34 @@ class HalTelemetryService extends ChangeNotifier {
   //    stale no longer "hangs" at its last value. HAL-only by nature: in
   //    OBD2-only mode none of these are present, so the bar never fires. ──
   static const double _brakeTorqueNm = -50;
-  static const double _brakeCurrentA = -60;
+  // v0.1.29+82: loosened −60 → −45 A. recon run 09:56 (HAL↔OBD2 journal)
+  // logged the weakest real regen episode at −48 Nm / −64 A and a faint
+  // coast at the −50/−64 boundary; with torque pinned at −50 the AND gate
+  // could miss soft one-pedal regen on "D". −45 A widens the current side
+  // while keeping both-required, so coast noise (small −I, near-zero torque)
+  // still can't trip it.
+  static const double _brakeCurrentA = -45;
 
-  /// True if the brake pedal is currently reported pressed by a FRESH HAL
-  /// frame (GEARBOX_BRAKE_PEDAL, 0/1). Not sticky-held — a released pedal
-  /// must clear promptly.
+  /// True if the brake pedal is currently reported pressed, per the LAST
+  /// known HAL frame (GEARBOX_BRAKE_PEDAL, 0/1).
   ///
-  /// v0.1.29+81 fix: must NOT gate on _useHal here. In halOnly, _useHal
-  /// resolves via _heldValue → _lastGood, which is only populated for
-  /// _stickyNames; brake_pedal is deliberately non-sticky, so _lastGood
-  /// is always empty for it and _useHal would always be false — the whole
-  /// pedal branch was dead (bar never lit on brake, despite the signal
-  /// pushing live at ~1.4 Hz on HAL Test). The correct gate for an instant
-  /// (non-held) signal is: mode allows HAL AND a fresh raw frame exists.
+  /// v0.1.29+82: brake_pedal is EDGE-triggered — a frame arrives only on
+  /// change (1 press / 0 release), nothing while held. +81 gated on
+  /// halFresh() with a 3 s window, so a held brake went dark ~3 s in (no
+  /// refresh frame). Now brake_pedal is sticky (_lastGood holds the last
+  /// value), and we read that held value: it stays "pressed" for the whole
+  /// brake and clears the instant the explicit 0 release-frame lands.
+  /// _heldValue gates on _running and a generous hold, so a stopped stream
+  /// (which also clears _lastGood) won't latch the bar between sessions.
   bool get halBrakePedalPressed {
     if (_mode == HalSourceMode.obd2Only) return false;
-    if (!halFresh('brake_pedal')) return false;
-    final p = halValue('brake_pedal');
+    final p = _heldValue('brake_pedal', _coreHold);
     return p != null && p >= 0.5;
   }
 
   bool get brakeRegenActive {
-    // (A) foot on the brake — unconditional, fresh frame only.
+    // (A) foot on the brake — unconditional, last-known sticky value
+    // (held through the press; clears on the explicit 0 release-frame).
     if (halBrakePedalPressed) return true;
     // (B) hard one-pedal regen with foot off the brake. Both signals must
     // be fresh (age-guarded) AND past their thresholds — no stale latest.
