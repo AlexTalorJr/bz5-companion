@@ -27,6 +27,7 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'hal_telemetry_channel.dart';
+import 'native_car_channel.dart';
 
 enum HalSourceMode { auto, halOnly, obd2Only }
 
@@ -58,6 +59,15 @@ class HalTelemetryService extends ChangeNotifier {
 
   HalSourceMode _mode = HalSourceMode.auto;
   HalSourceMode get mode => _mode;
+
+  // v0.1.29+83: platform gate. HAL only exists on the BYD head unit (the
+  // BYDAutoBodyworkDevice framework class is present there and absent on a
+  // phone). Probed once in init() via the same reflection NativeDetector
+  // uses — no CAN I/O, .kt untouched. When false (phone), halOnly is not a
+  // real option: the UI hides the HAL radio and the startup gate never
+  // unblocks on it. Truth source for "can this device do HAL at all".
+  bool _isHeadUnit = false;
+  bool get canUseHal => _isHeadUnit;
 
   bool _running = false;
   bool get running => _running;
@@ -475,6 +485,21 @@ class HalTelemetryService extends ChangeNotifier {
     // 'auto' enum value still resolves safely in _useHal as a net.
     if (_mode == HalSourceMode.auto) {
       _mode = HalSourceMode.halOnly;
+      await prefs.setString('hal_source_mode', _modeToString(_mode));
+    }
+    // v0.1.29+83: platform probe. isNativeAvailable() is a cheap reflection
+    // check (Class.forName on the BYD framework) — true on the head unit,
+    // false on a phone. Never throws (platform side swallows). On a phone
+    // HAL is physically impossible, so force obd2Only: this keeps a stray
+    // persisted 'halOnly' from stranding the user on a dead screen, and the
+    // Settings UI drops the HAL radio when !canUseHal.
+    try {
+      _isHeadUnit = await NativeCarChannel.instance.isNativeAvailable();
+    } catch (_) {
+      _isHeadUnit = false;
+    }
+    if (!_isHeadUnit && _mode == HalSourceMode.halOnly) {
+      _mode = HalSourceMode.obd2Only;
       await prefs.setString('hal_source_mode', _modeToString(_mode));
     }
     // Start the stream unless the user pinned OBD2-only. On a phone the

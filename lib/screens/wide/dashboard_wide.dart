@@ -32,36 +32,47 @@ class DashboardWideScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final svc = context.watch<ConnectionService>();
+    final hal = context.watch<HalTelemetryService>();
     // v0.1.29+60: re-render on language switch (per-screen subscription
     // — const home subtree blocks MaterialApp-level rebuilds).
     context.watch<LocaleService>();
     final connected = svc.status == ConnectionStatus.connected;
+    // v0.1.29+83 startup-gate: on the head unit a halOnly session needs no
+    // BLE dongle — HAL feeds the screen. Block only when OBD2 is actually
+    // required: not connected AND not a live HAL-capable halOnly session.
+    final halActive = hal.canUseHal && hal.mode == HalSourceMode.halOnly;
+    final blocked = !connected && !halActive;
+    // Polling is an OBD2 concept — hide the toggle in halOnly.
+    final showPolling = hal.mode != HalSourceMode.halOnly;
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('BZ5 Companion · Dashboard'),
         actions: [
-          IconButton(
-            icon: Icon(svc.isPolling ? Icons.pause_circle : Icons.play_circle),
-            iconSize: 32,
-            tooltip: svc.isPolling
-                ? S.of('dashw.pause_polling')
-                : S.of('dashw.start_polling'),
-            onPressed: !connected
-                ? null
-                : () {
-                    if (svc.isPolling) {
-                      svc.stopPolling();
-                    } else {
-                      svc.startPolling();
-                    }
-                  },
-          ),
-          const SizedBox(width: 12),
+          if (showPolling) ...[
+            IconButton(
+              icon: Icon(svc.isPolling ? Icons.pause_circle : Icons.play_circle),
+              iconSize: 32,
+              tooltip: svc.isPolling
+                  ? S.of('dashw.pause_polling')
+                  : S.of('dashw.start_polling'),
+              onPressed: !connected
+                  ? null
+                  : () {
+                      if (svc.isPolling) {
+                        svc.stopPolling();
+                      } else {
+                        svc.startPolling();
+                      }
+                    },
+            ),
+            const SizedBox(width: 12),
+          ],
         ],
       ),
-      body: !connected
-          ? const _NotConnectedHero()
+      body: blocked
+          ? _NotConnectedHero(
+              halDead: hal.mode == HalSourceMode.halOnly && !hal.running)
           : Padding(
               padding: const EdgeInsets.all(16),
               child: Row(
@@ -85,7 +96,11 @@ class DashboardWideScreen extends StatelessWidget {
 // ─────────────────────────── Empty / disconnected ──────────────────────────
 
 class _NotConnectedHero extends StatelessWidget {
-  const _NotConnectedHero();
+  // v0.1.29+83: halDead = halOnly chosen but the HAL stream isn't running.
+  // In that case "connect over BT" is a lie (the user picked HAL), so show
+  // a HAL-stream message + a sync-disabled icon instead.
+  const _NotConnectedHero({this.halDead = false});
+  final bool halDead;
 
   @override
   Widget build(BuildContext context) {
@@ -93,12 +108,19 @@ class _NotConnectedHero extends StatelessWidget {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          const Icon(Icons.bluetooth_disabled, size: 96, color: Colors.grey),
+          Icon(halDead ? Icons.sync_disabled : Icons.bluetooth_disabled,
+              size: 96, color: Colors.grey),
           const SizedBox(height: 24),
-          Text(S.of('common.not_connected_title'),
+          Text(
+              halDead
+                  ? S.of('settings.datasource.hal_unavailable')
+                  : S.of('common.not_connected_title'),
               style: Theme.of(context).textTheme.headlineMedium),
           const SizedBox(height: 12),
-          Text(S.of('common.not_connected_hint'),
+          Text(
+              halDead
+                  ? S.of('datasource.hal_dead_hint')
+                  : S.of('common.not_connected_hint'),
               style: Theme.of(context).textTheme.bodyLarge?.copyWith(
                     color: Colors.grey,
                   )),
