@@ -252,22 +252,43 @@ class TripMetricsPanel extends StatelessWidget {
     // v0.1.27: watch cost settings so the cost cell rebuilds when the
     // user edits the tariff or currency.
     final cost = context.watch<CostSettings>();
+    // v0.1.29+85 (Design C): in halOnly with a live HAL trip there is no
+    // OBD2 dongle, so the OBD2 trip getters are all null. Read the HAL
+    // trip tracker instead — same getter shapes, invisible source swap
+    // (exactly like speed/SOC). In every other case (obd2Only, or HAL not
+    // driving) we read the OBD2 ConnectionService as before.
+    final hal = context.watch<HalTelemetryService>();
+    final useHalTrip = hal.halDriveActive && hal.halTripActive;
 
-    final dist = svc.tripDistanceKm;
-    // v0.1.29+60: while a trip is active but no movement happened yet,
-    // tripDistanceKm is still null — show an honest 0.0 instead of a
-    // floating dash (owner field photo: '— km' looked broken).
-    final distStr = dist != null
-        ? dist.toStringAsFixed(1)
-        : (svc.currentTripId != null ? '0.0' : '—');
+    final dist = useHalTrip ? hal.halTripDistanceKm : svc.tripDistanceKm;
+    // While a trip is active but no movement happened yet, distance is
+    // still null — show an honest 0.0 instead of a floating dash.
+    // OBD2 keys this on currentTripId; the HAL trip uses its own marker.
+    final distStr = useHalTrip
+        ? (dist != null
+            ? dist.toStringAsFixed(1)
+            : (hal.halCurrentTripMarker != null ? '0.0' : '—'))
+        : (dist != null
+            ? dist.toStringAsFixed(1)
+            : (svc.currentTripId != null ? '0.0' : '—'));
     // v0.1.24: precise-SOC-based energy/consumption (1FFD-derived) so
     // values update each poll cycle smoothly. Integer SOC versions
     // step in 0.65 kWh chunks which made short trips look frozen.
-    final energyUsed = svc.tripEnergyUsedPreciseKwh;
-    final consumption = svc.tripAvgConsumptionPreciseKwh100km;
-    final dur = svc.tripDuration;
-    final peakKmh = svc.tripPeakSpeedKmh;
-    final avgMovingKmh = svc.tripCurrentAvgMovingKmh;
+    // (HAL side uses whole SOC + EMA smoothing — see HalTelemetryService.)
+    final energyUsed = useHalTrip
+        ? hal.halTripEnergyUsedKwh
+        : svc.tripEnergyUsedPreciseKwh;
+    final consumption = useHalTrip
+        ? hal.halTripAvgConsumptionKwh100km
+        : svc.tripAvgConsumptionPreciseKwh100km;
+    final dur = useHalTrip ? hal.halTripDuration : svc.tripDuration;
+    final peakKmh = useHalTrip ? hal.halTripPeakSpeedKmh : svc.tripPeakSpeedKmh;
+    final avgMovingKmh =
+        useHalTrip ? hal.halTripCurrentAvgMovingKmh : svc.tripCurrentAvgMovingKmh;
+
+    // Trip-id label: OBD2 shows "#<id>" from the DB row; halOnly writes no
+    // DB row in +85 (history is the next patch), so it shows just "trip".
+    final tripIdLabel = useHalTrip ? 'trip' : '#${svc.currentTripId ?? "—"}';
 
     // First 2 min: consumption hidden (too noisy).
     final tripAgeSec = dur?.inSeconds ?? 0;
@@ -392,7 +413,7 @@ class TripMetricsPanel extends StatelessWidget {
                         letterSpacing: 1.5,
                         color: Colors.grey)),
                 const SizedBox(width: 10),
-                Text('#${svc.currentTripId ?? "—"}',
+                Text(tripIdLabel,
                     style: TextStyle(
                         fontSize: compact ? 10 : 11, color: Colors.grey)),
                 const Spacer(),

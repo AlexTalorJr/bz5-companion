@@ -95,25 +95,19 @@ class _DriverContent extends StatelessWidget {
   Widget build(BuildContext context) {
     final svc = context.watch<ConnectionService>();
     final hal = context.watch<HalTelemetryService>();
-    final hasTrip = svc.currentTripId != null;
-    // v0.1.29+75: in halOnly mode the middle trip band splits in two —
-    // left keeps the (OBD2-derived) TripMetricsPanel, right shows the
-    // HAL-exclusive drive panel. Gate on useHalForTripA: it is true only
-    // when the source is pinned to HAL AND a held trip_a reading exists,
-    // i.e. exactly when the HAL half has something to show. In obd2Only
-    // the band stays full-width and unchanged.
-    final halSplit = hal.useHalForTripA;
-    // v0.1.29+84: the motor band must survive without an OBD2 trip. In
-    // halOnly there is no BLE dongle → currentTripId is null → hasTrip was
-    // false → the whole middle band (incl. HalExtrasPanel with motor data)
-    // disappeared. Now show the band whenever a trip exists OR HAL is the
-    // live driving source. Cases below:
-    //   hasTrip + halSplit          → split (TripMetrics | HalExtras)  [unchanged]
-    //   hasTrip + !halSplit         → full-width TripMetrics            [unchanged]
-    //   !hasTrip + halDriveActive   → full-width HalExtras (NEW: halOnly drive)
-    //   !hasTrip + !halDriveActive  → no band (parked, no data)         [unchanged]
-    final halMotorOnly = !hasTrip && hal.halDriveActive;
-    final showBand = hasTrip || halMotorOnly;
+    final hasObdTrip = svc.currentTripId != null;
+    // v0.1.29+85 (Design C): a live HAL trip (halOnly, stream up, tracker
+    // started) is now a first-class trip for this band. We want it to look
+    // identical to an OBD2 trip — the split layout from trip #41: left the
+    // shared TripMetricsPanel (now HAL-sourced via invisible substitution),
+    // right the HAL-exclusive HalExtrasPanel.
+    final halTrip = hal.halDriveActive && hal.halTripActive;
+    final hasTrip = hasObdTrip || halTrip;
+    // Split layout (TripMetrics | HalExtras) when EITHER an OBD2 trip with
+    // a held HAL trip_a (the +75 case) OR a live HAL trip (Design C). In
+    // obd2Only the band stays full-width TripMetrics, unchanged.
+    final halSplit = hal.useHalForTripA || halTrip;
+    final showBand = hasTrip;
 
     return Padding(
       padding: const EdgeInsets.all(16),
@@ -137,25 +131,23 @@ class _DriverContent extends StatelessWidget {
           ),
           if (showBand) ...[
             const SizedBox(height: 12),
-            // Middle zone: trip metrics. OBD2 → full-width TripMetricsPanel
-            // (6 cells + cost). HAL+trip → split: left TripMetricsPanel
-            // (same widget, shared with dashboard — NOT modified), right the
-            // HAL-exclusive drive panel. halOnly without a trip → HalExtras
-            // full-width (TripMetrics would be all "—" with no OBD2 trip).
+            // Middle zone: trip metrics. obd2Only → full-width
+            // TripMetricsPanel (6 cells + cost). HAL trip (or OBD2 trip
+            // with a held HAL trip_a) → split: left TripMetricsPanel (same
+            // shared widget; HAL-sourced via invisible substitution), right
+            // the HAL-exclusive drive panel — the trip #41 layout.
             // flex:3 band height is unchanged.
             Expanded(
               flex: 3,
-              child: halMotorOnly
-                  ? const HalExtrasPanel()
-                  : halSplit
-                      ? const Row(
-                          children: [
-                            Expanded(child: TripMetricsPanel()),
-                            SizedBox(width: 12),
-                            Expanded(child: HalExtrasPanel()),
-                          ],
-                        )
-                      : const TripMetricsPanel(),
+              child: halSplit
+                  ? const Row(
+                      children: [
+                        Expanded(child: TripMetricsPanel()),
+                        SizedBox(width: 12),
+                        Expanded(child: HalExtrasPanel()),
+                      ],
+                    )
+                  : const TripMetricsPanel(),
             ),
           ],
           const SizedBox(height: 12),
