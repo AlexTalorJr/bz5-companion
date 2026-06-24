@@ -73,6 +73,10 @@ class S {
     'settings.datasource.hal': 'HAL only (head unit native)',
     'settings.datasource.obd2': 'OBD2 only (BLE adapter)',
     'settings.datasource.hal_unavailable': 'HAL stream not available here',
+    'settings.datasource.hal_no_platform':
+        'HAL needs the car head unit — this device uses OBD2 only',
+    'datasource.hal_dead_hint':
+        'HAL stream is down — Settings → switch to OBD2, or restart the app',
     'settings.section.cost': 'Cost',
     'settings.section.cloud': 'Cloud',
     'settings.section.vehicle': 'Vehicle',
@@ -732,6 +736,10 @@ class S {
     'settings.datasource.hal': 'Только HAL (нативный head unit)',
     'settings.datasource.obd2': 'Только OBD2 (BLE адаптер)',
     'settings.datasource.hal_unavailable': 'HAL-стрим здесь недоступен',
+    'settings.datasource.hal_no_platform':
+        'HAL доступен только на голове авто — здесь только OBD2',
+    'datasource.hal_dead_hint':
+        'HAL-стрим не идёт — Настройки → переключитесь на OBD2 или перезапустите приложение',
     'settings.section.cost': 'Стоимость',
     'settings.section.cloud': 'Облако',
     'settings.section.vehicle': 'Автомобиль',

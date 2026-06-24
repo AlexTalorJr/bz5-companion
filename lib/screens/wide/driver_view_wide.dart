@@ -36,19 +36,28 @@ class DriverViewWideScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final svc = context.watch<ConnectionService>();
+    final hal = context.watch<HalTelemetryService>();
     // v0.1.29+60: language switch re-renders this tab (const home
     // subtree blocks MaterialApp-level rebuilds — see LocaleService).
     context.watch<LocaleService>();
     final connected = svc.status == ConnectionStatus.connected;
-    if (!connected) {
-      return const _NotConnectedHero();
+    // v0.1.29+83 startup-gate: a halOnly session on the head unit drives
+    // this screen from HAL with no BLE dongle. Block only when OBD2 is
+    // genuinely required (not a live HAL-capable halOnly session).
+    final halActive = hal.canUseHal && hal.mode == HalSourceMode.halOnly;
+    if (!connected && !halActive) {
+      return _NotConnectedHero(
+          halDead: hal.mode == HalSourceMode.halOnly && !hal.running);
     }
     return const _DriverContent();
   }
 }
 
 class _NotConnectedHero extends StatelessWidget {
-  const _NotConnectedHero();
+  // v0.1.29+83: see dashboard_wide — halDead means halOnly is selected but
+  // the HAL stream isn't running, so the BT prompt would be misleading.
+  const _NotConnectedHero({this.halDead = false});
+  final bool halDead;
 
   @override
   Widget build(BuildContext context) {
@@ -56,12 +65,19 @@ class _NotConnectedHero extends StatelessWidget {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          const Icon(Icons.bluetooth_disabled, size: 96, color: Colors.grey),
+          Icon(halDead ? Icons.sync_disabled : Icons.bluetooth_disabled,
+              size: 96, color: Colors.grey),
           const SizedBox(height: 24),
-          Text(S.of('common.not_connected_title'),
+          Text(
+              halDead
+                  ? S.of('settings.datasource.hal_unavailable')
+                  : S.of('common.not_connected_title'),
               style: Theme.of(context).textTheme.headlineMedium),
           const SizedBox(height: 12),
-          Text(S.of('common.not_connected_hint'),
+          Text(
+              halDead
+                  ? S.of('datasource.hal_dead_hint')
+                  : S.of('common.not_connected_hint'),
               style: Theme.of(context)
                   .textTheme
                   .bodyLarge

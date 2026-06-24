@@ -1276,18 +1276,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   leading: const Icon(Icons.cable, color: Colors.grey),
                   title: Text(S.of('settings.datasource.title')),
                   subtitle: Text(
-                    hal.mode == HalSourceMode.halOnly && !hal.running
-                        ? S.of('settings.datasource.hal_unavailable')
-                        : S.of('settings.datasource.subtitle'),
+                    // v0.1.29+83: three states. No HAL platform (phone) →
+                    // explain OBD2-only. HAL selected but stream dead →
+                    // unavailable. Otherwise the normal subtitle.
+                    !hal.canUseHal
+                        ? S.of('settings.datasource.hal_no_platform')
+                        : hal.mode == HalSourceMode.halOnly && !hal.running
+                            ? S.of('settings.datasource.hal_unavailable')
+                            : S.of('settings.datasource.subtitle'),
                   ),
                 ),
-                RadioListTile<HalSourceMode>(
-                  dense: true,
-                  title: Text(S.of('settings.datasource.hal')),
-                  value: HalSourceMode.halOnly,
-                  groupValue: hal.mode,
-                  onChanged: (m) => hal.setMode(m!),
-                ),
+                // v0.1.29+83: HAL radio only on a real head unit. On a phone
+                // the BYD framework is absent, so halOnly is not offered and
+                // OBD2 is the sole choice (forced in init() too).
+                if (hal.canUseHal)
+                  RadioListTile<HalSourceMode>(
+                    dense: true,
+                    title: Text(S.of('settings.datasource.hal')),
+                    value: HalSourceMode.halOnly,
+                    groupValue: hal.mode,
+                    onChanged: (m) => hal.setMode(m!),
+                  ),
                 RadioListTile<HalSourceMode>(
                   dense: true,
                   title: Text(S.of('settings.datasource.obd2')),
