@@ -138,7 +138,17 @@ class HalTelemetryService extends ChangeNotifier {
     'cell_idx_lowest': Duration(seconds: 6),
     'cell_idx_highest': Duration(seconds: 6),
     'insulation_resistance': Duration(seconds: 30),
+    // v0.1.29+86: fractional SOC from BigData 0x044C (recon p091 decode
+    // record → soc_precise, DBL = u16LE[10]×0.1). Confirmed by Друг 3 to
+    // arrive once per ~30 s on the CAN bus (NOT 1 Hz — frame is genuinely
+    // sparse; whitelist did not raise the rate). Window set to 75 s — a
+    // 2.5× cushion over the 30 s cadence so a single dropped frame does
+    // not expire it (continuous-tight windows would falsely flap it).
+    'soc_precise': Duration(seconds: 75),
   };
+  // soc_precise is NOT event-driven — it arrives on a steady ~30 s tick,
+  // so it lives in _continuousWindow above, not in _eventDriven (those are
+  // the integer-SOC change-only frames). See halSocForTrip below.
   static const Set<String> _eventDriven = {'soc_display', 'soc_battery'};
 
   // Range guards per name — same role as the 0..220 speed guard from the
@@ -185,6 +195,12 @@ class HalTelemetryService extends ChangeNotifier {
     'cell_idx_lowest': (0, 200),
     'cell_idx_highest': (0, 200),
     'insulation_resistance': (1000, 100000),
+    // v0.1.29+86: fractional SOC (soc_precise) is a percentage. Recon
+    // already validates frame integrity upstream (length==14 AND the
+    // b[10]+b[13]==325 checksum AND 0..100) and emits null on failure, so
+    // anything that reaches us is in-range; this guard is the same belt-
+    // and-braces 0..100 we use for the integer SOC names.
+    'soc_precise': (0, 100),
   };
 
   final Map<String, ({double value, DateTime at})> _latest = {};
@@ -225,6 +241,10 @@ class HalTelemetryService extends ChangeNotifier {
     // stays lit for the whole brake and drops the instant 0 lands.
     // _stopStream() clears _lastGood, so no cross-session latch.
     'brake_pedal',
+    // v0.1.29+86: soc_precise held sticky like the other core signals so a
+    // brief gap between the ~30 s frames keeps the trip energy populated
+    // (dims via isStale when ageing past its 75 s window).
+    'soc_precise',
   };
   final Map<String, ({double value, DateTime at})> _lastGood = {};
 
@@ -574,13 +594,30 @@ class HalTelemetryService extends ChangeNotifier {
   // values) plus the ~1 s tick for speed accumulation. Mirrors the OBD2
   // ConnectionService trip lifecycle; see the field block above.
 
-  /// Current HAL SOC (whole %), preferring soc_display, then soc_battery.
-  /// Null until a SOC frame has arrived. Same source as halSocPct.
-  double? get _halSocNow {
-    final d = _heldValue('soc_display', _coreHold);
+  /// SOC (%) for the trip energy calc, halOnly. Priority:
+  ///   1. soc_precise — fractional, ~30 s cadence (recon p091, 0x044C).
+  ///      Preferred: finer resolution AND 10× more frequent than (2).
+  ///   2. soc_display / soc_battery — integer, ~5 min cadence (0x2D300030).
+  ///      Fallback used until soc_precise is flowing (pre-p091) or if it
+  ///      drops out.
+  ///
+  /// soc_precise is read through its 75 s held window (a dropped 30 s frame
+  /// still counts). The INTEGER SOC is read via halValue (latest, no
+  /// expiry) on purpose: it arrives only ~every 5 min, so any age-based
+  /// window would null it out between frames (exactly the +85 start bug).
+  /// The value is monotonic battery state — the latest reading is always
+  /// the current truth, so holding it indefinitely while the stream is up
+  /// is correct. Cleared on _stopStream like everything else.
+  double? get halSocForTrip {
+    final p = _heldValue('soc_precise', _socPreciseHold);
+    if (p != null) return p;
+    if (!_running) return null;
+    final d = halValue('soc_display');
     if (d != null) return d;
-    return _heldValue('soc_battery', _coreHold);
+    return halValue('soc_battery');
   }
+
+  static const _socPreciseHold = Duration(seconds: 75);
 
   /// Run the start/stop state machine. Called from _onEvent after a frame
   /// is consumed; no-ops when HAL is not the live driving source.
@@ -593,16 +630,32 @@ class HalTelemetryService extends ChangeNotifier {
       return;
     }
     final gear = _heldValue('gear_enum', _coreHold);
-    final soc = _halSocNow;
+    final soc = halSocForTrip;
     final inPark = gear != null && gear.round() == 1; // 1 = Park
 
     if (!_halTripActive) {
-      // Start: not in Park AND a valid SOC has arrived (latch the start).
-      if (gear != null && !inPark && soc != null) {
-        _startHalTrip(soc);
+      // v0.1.29+86: start on gear ≠ Park ALONE — do NOT wait for SOC.
+      // The integer SOC can take up to ~5 min to arrive and soc_precise up
+      // to ~30 s; gating the whole trip section on it left the driver with
+      // no trip panel for minutes after pulling away (the bug Alex saw with
+      // no dongle). Distance/duration/speed all come from continuously-
+      // flowing signals, so the section is useful immediately. The start
+      // SOC is latched LATER, on the first valid frame (see below), and
+      // until then the energy cell shows "—" honestly.
+      if (gear != null && !inPark) {
+        _startHalTrip();
       }
       return;
     }
+
+    // Late-latch the start SOC: the trip began without one, so capture the
+    // first valid SOC that arrives as the energy baseline. Energy reads "—"
+    // until this fires, then counts from here.
+    if (_halTripStartSoc == null && soc != null) {
+      _halTripStartSoc = soc;
+    }
+    // trip_a may also have been null at start — latch it once it arrives so
+    // distance reads from zero (handled in halTripDistanceKm).
 
     // Active trip — handle park-based segmentation (same thresholds as
     // the OBD2 tracker: debounce P, then close after the park window).
@@ -620,11 +673,11 @@ class HalTelemetryService extends ChangeNotifier {
     }
   }
 
-  void _startHalTrip(double startSoc) {
+  void _startHalTrip() {
     _resetHalTripAggregates();
     _halTripActive = true;
     _halTripStartedAt = DateTime.now();
-    _halTripStartSoc = startSoc;
+    _halTripStartSoc = null;      // latched later, on first valid SOC frame
     _halTripStartTripA = _heldValue('trip_a', _coreHold); // may be null early
     // Kick the speed tick if it isn't already running.
     _halTripTick ??= Timer.periodic(
@@ -696,12 +749,17 @@ class HalTelemetryService extends ChangeNotifier {
 
   /// Energy used so far (kWh) = (startSoc − nowSoc) × capacity, the SAME
   /// ΔSOC×kWh method as ConnectionService.tripEnergyUsedPreciseKwh. EMA-
-  /// smoothed so the whole-% SOC step doesn't make the value jump.
+  /// smoothed so a coarse SOC step doesn't make the value jump.
+  ///
+  /// v0.1.29+86: the start SOC is latched late (on the first valid frame
+  /// after pull-away), so until then _halTripStartSoc is null and this
+  /// returns null → the cell shows "—" honestly rather than a fake 0.
   double? get halTripEnergyUsedKwh {
     if (!_halTripActive) return null;
     final start = _halTripStartSoc;
-    final now = _halSocNow;
-    if (start == null || now == null || now >= start) {
+    if (start == null) return null; // start SOC not captured yet → "—"
+    final now = halSocForTrip;
+    if (now == null || now >= start) {
       return _halEnergyEma; // hold last smoothed value through transient
     }
     final raw = (start - now) * _halPackCapacityKwh / 100.0;
@@ -875,9 +933,9 @@ class HalTelemetryService extends ChangeNotifier {
     // ConnectionService poll cadence; the resolvers read our latest
     // values at paint time. A coalesced notify keeps displays lively
     // without flooding.
-    // v0.1.29+85: drive the HAL trip state machine off the same frames
-    // (cheap — it only reads held values). Start/stop/segment happens as
-    // gear/SOC frames arrive; speed accumulation is on the 1 s tick.
+    // v0.1.29+85/+86: drive the HAL trip state machine off the same frames
+    // (cheap — it only reads held values). Start fires on gear≠Park alone;
+    // the start SOC latches later on the first soc_precise/integer frame.
     _updateHalTrip();
     _scheduleNotify();
   }
