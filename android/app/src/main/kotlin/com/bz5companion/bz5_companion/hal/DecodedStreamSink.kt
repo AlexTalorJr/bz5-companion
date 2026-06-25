@@ -66,15 +66,31 @@ class DecodedStreamSink(
     // the stream is ours; vendored files unchanged, SHA intact).
     //
     // Frame layout (recon-confirmed): [0..1]=0x0000, [2..3]=CAN_ID (BE),
-    // [4..]=payload. For 0x044C: SOC% = u16LE(b[10],b[11]) × 0.1. Integrity
-    // is double-checked: length must be 14, and b[10]+b[13] == 325 (a frame
-    // checksum byte Друг 3 found constant across 89 frames / two sessions).
-    // Formula validated on a wide SOC range (71.6–77.8%, RMSE 0.065% vs UDS
-    // 790/1FFD). Cadence ~30 s (bus-limited; not 1 Hz). Anything failing the
-    // length / checksum / 0..100 range yields null (frame dropped silently).
+    // [4..]=payload. For 0x044C: SOC% = u16LE(b[10],b[11]) × 0.1. Formula
+    // validated on a wide SOC range (71.6–77.8%, RMSE 0.065% vs UDS
+    // 790/1FFD) and on a real frame (SOC 65.2%, recon 16:13). Cadence is
+    // SLOW — ~2 frames per 30 s (≈ every 15 s), bus-limited, NOT 1 Hz; the
+    // pipeline must treat its absence on a given tick as normal, never an
+    // error. A frame is identified by header [0:1]==0 + CAN-ID, NOT by the
+    // event subtype (that is 0x99000020 for the entire BigData channel and
+    // cannot distinguish 0x044C). The frame is always 14 bytes and never
+    // out of range across 89 frames / two sessions (Друг 3), so length +
+    // header + CAN-ID + 0..100 range is sufficient validation.
     private val bigDataSubtype: Long = 0x99000020L
     private val socPreciseCanId: Int = 0x044C
-    private val socPreciseChecksum: Int = 325
+
+    // v0.1.29+88: raw BigData diagnostic logging. For these CAN-IDs the sink
+    // emits an EXTRA event (name="bigdata_raw") carrying the full frame hex,
+    // so an export can be diffed against recon line-by-line and so we can
+    // confirm whether a frame (e.g. 0x044C) arrives at all — separating
+    // "frame doesn't arrive" from "frame arrives but filter/decode drops it".
+    // Whitelist only (Друг 3's set) — BigData is ~60 events/s across 103
+    // CAN-IDs, logging everything raw would bloat the DB (~5–6k rows / 90 s).
+    // No rollup of the rest in this version (separate task if a full CAN
+    // overview is ever needed). The decoded signals (incl. soc_precise) are
+    // logged separately on the Dart side, per-name throttled.
+    private val bigDataRawWhitelist: Set<Int> =
+        setOf(0x02D3, 0x044B, 0x044C, 0x0478, 0x0681, 0x0682)
 
     /** Detach from the Dart sink. Idempotent. Safe to call from any thread. */
     fun detach() {
@@ -108,6 +124,10 @@ class DecodedStreamSink(
             // do: fractional SOC out of the BigData frame. Everything else
             // with no decoder stays dropped, exactly as before.
             if (subtype == bigDataSubtype && bufData != null) {
+                // v0.1.29+88: for whitelisted CAN-IDs, emit a raw-frame
+                // diagnostic event (full hex) so the export can be diffed
+                // against recon and frame arrival can be confirmed.
+                maybeEmitBigDataRaw(bufData, subtype, timestampMs)
                 val soc = extractSocPrecise(bufData)
                 if (soc != null) {
                     queue.add(socPreciseEventMap(soc, subtype, timestampMs))
@@ -131,16 +151,28 @@ class DecodedStreamSink(
 
     /**
      * Pull fractional SOC (%) out of a BigData raw frame, or null if this
-     * frame is not 0x044C, is malformed, or fails the integrity / range
-     * checks. See the field block at the top of the class for the layout
-     * and the provenance of the formula and checksum.
+     * frame is not 0x044C, is malformed, or is out of range. See the field
+     * block at the top of the class for the layout and the formula source.
      *
      * No OBD2 arithmetic here — this is a raw-frame field extraction
      * (u16LE × 0.1), not the pre-decoded HAL contract that forbids manual
      * pack_current scaling.
+     *
+     * v0.1.29+87: identify the frame the robust way recon does — header
+     * bytes `[0:1]`==0x0000 then CAN-ID from `[2:3]` — instead of trusting
+     * the event subtype (which is always 0x99000020 for the whole BigData
+     * channel and so cannot tell 0x044C apart anyway). The earlier
+     * `b[10]+b[13]`==325 "checksum" gate was REMOVED: on a real confirmed
+     * frame (SOC 65.2%, recon 16:13) that sum is 310, not 325 — the
+     * constant was wrong and the gate silently dropped every valid frame
+     * (root cause of "no soc_precise on the car"). Recon reports the frame
+     * is always 14 bytes and never out of range across 89 frames / two
+     * sessions, so length + header + CAN-ID + 0..100 is enough.
      */
     private fun extractSocPrecise(bufData: ByteArray): Double? {
         if (bufData.size < 14) return null
+        // Header gate: BigData frames start 0x0000, then CAN-ID big-endian.
+        if (bufData[0].toInt() != 0 || bufData[1].toInt() != 0) return null
         val canId = ((bufData[2].toInt() and 0xff) shl 8) or
             (bufData[3].toInt() and 0xff)
         if (canId != socPreciseCanId) return null
@@ -148,11 +180,52 @@ class DecodedStreamSink(
         val lo = bufData[10].toInt() and 0xff
         val hi = bufData[11].toInt() and 0xff
         val soc = ((hi shl 8) or lo) * 0.1
-        // Integrity: constant frame checksum b[10] + b[13] == 325.
-        val checksum = (bufData[10].toInt() and 0xff) + (bufData[13].toInt() and 0xff)
-        if (checksum != socPreciseChecksum) return null
         if (soc < 0.0 || soc > 100.0) return null
         return soc
+    }
+
+    /**
+     * v0.1.29+88: if this BigData frame's CAN-ID is whitelisted, queue a
+     * raw-frame diagnostic event carrying the full hex. The Dart side
+     * recognises name=="bigdata_raw" and writes it to hal_samples with
+     * source='bigdata'. Schema matches what recon logs so the two can be
+     * diffed: can_id_hex (from `buf[2:3]`), buf_hex (full frame), buf_size,
+     * subtype (masked unsigned). int/double are sentinels for BigData (the
+     * real data is in the buffer) and are not forwarded here.
+     */
+    private fun maybeEmitBigDataRaw(
+        bufData: ByteArray,
+        subtype: Long,
+        timestampMs: Long,
+    ) {
+        if (bufData.size < 4) return
+        if (bufData[0].toInt() != 0 || bufData[1].toInt() != 0) return
+        val canId = ((bufData[2].toInt() and 0xff) shl 8) or
+            (bufData[3].toInt() and 0xff)
+        if (canId !in bigDataRawWhitelist) return
+        queue.add(
+            mapOf(
+                "name" to "bigdata_raw",
+                "unit" to "",
+                "value" to null,
+                "key" to "BYDAutoBigDataDevice_canDataCollect",
+                "subtype" to subtype,
+                "ts" to timestampMs,
+                // diagnostic extras (Dart routes these into hal_samples):
+                "can_id_hex" to String.format("0x%04X", canId),
+                "buf_hex" to toHex(bufData),
+                "buf_size" to bufData.size,
+            )
+        )
+        if (drainScheduled.compareAndSet(false, true)) {
+            mainHandler.post { drain() }
+        }
+    }
+
+    private fun toHex(b: ByteArray): String {
+        val sb = StringBuilder(b.size * 2)
+        for (x in b) sb.append(String.format("%02X", x.toInt() and 0xff))
+        return sb.toString()
     }
 
     /**

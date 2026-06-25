@@ -343,21 +343,28 @@ if int(pv) >= 37:
     cloud_src = (root / 'lib/services/cloud_sync_service.dart').read_text()
     detail_src = (root / 'lib/screens/trip_detail.dart').read_text()
 
-    # D1. schema migration: version bumped to 8, additive addColumn step.
-    if "int get schemaVersion => 8;" in db_src:
-        ok("D1 schemaVersion bumped to 8")
+    # D1. schema migration: version bumped to 9 (v0.1.29+87 hal_samples),
+    # additive createTable step. Prior steps (incl. from<8 trips.extra)
+    # remain present and additive.
+    if "int get schemaVersion => 9;" in db_src:
+        ok("D1 schemaVersion bumped to 9")
     else:
-        fail("D1 schemaVersion not 8")
+        fail("D1 schemaVersion not 9")
     if "if (from < 8)" in db_src and "m.addColumn(trips, trips.extra)" in db_src:
         ok("D1 migration adds trips.extra (additive)")
     else:
         fail("D1 from<8 addColumn(trips.extra) missing")
-    # additive only — must NOT drop/recreate trips in the new step
-    seg = db_src[db_src.find("if (from < 8)"):db_src.find("if (from < 8)") + 200]
-    if "deleteTable" in seg or "drop" in seg.lower():
-        fail("D1 from<8 step is destructive (drop/delete) — must be additive")
+    if "if (from < 9)" in db_src and "m.createTable(halSamples)" in db_src:
+        ok("D1 migration adds hal_samples (additive)")
     else:
-        ok("D1 from<8 step is non-destructive")
+        fail("D1 from<9 createTable(halSamples) missing")
+    # additive only — must NOT drop/recreate tables in the new steps
+    for marker in ("if (from < 8)", "if (from < 9)"):
+        seg = db_src[db_src.find(marker):db_src.find(marker) + 200]
+        if "deleteTable" in seg or "drop" in seg.lower():
+            fail(f"D1 {marker} step is destructive (drop/delete) — must be additive")
+        else:
+            ok(f"D1 {marker} step is non-destructive")
 
     # D2. extra written only when non-null (don't null existing on partial)
     if "extra != null ? Value(extra) : const Value.absent()" in db_src:
