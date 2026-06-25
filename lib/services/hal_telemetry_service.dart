@@ -159,6 +159,11 @@ class HalTelemetryService extends ChangeNotifier {
     // 2.5× cushion over the 30 s cadence so a single dropped frame does
     // not expire it (continuous-tight windows would falsely flap it).
     'soc_precise': Duration(seconds: 75),
+    // v0.1.29+90: BigData BMS signals. soh (0x02D3 b[10]) arrives ~1 Hz —
+    // a short 10 s window is enough. battery_temp_bigdata (0x044C b[7])
+    // shares 0x044C's ~30 s cadence → 75 s window like soc_precise.
+    'soh': Duration(seconds: 10),
+    'battery_temp_bigdata': Duration(seconds: 75),
   };
   // soc_precise is NOT event-driven — it arrives on a steady ~30 s tick,
   // so it lives in _continuousWindow above, not in _eventDriven (those are
@@ -215,6 +220,10 @@ class HalTelemetryService extends ChangeNotifier {
     // anything that reaches us is in-range; this guard is the same belt-
     // and-braces 0..100 we use for the integer SOC names.
     'soc_precise': (0, 100),
+    // v0.1.29+90: SOH percent (0x02D3 b[10], =97 confirmed). battery_temp
+    // from BigData (0x044C b[7], °C = raw−40) shares the temp guard band.
+    'soh': (0, 100),
+    'battery_temp_bigdata': (-40, 150),
   };
 
   final Map<String, ({double value, DateTime at})> _latest = {};
@@ -259,6 +268,11 @@ class HalTelemetryService extends ChangeNotifier {
     // brief gap between the ~30 s frames keeps the trip energy populated
     // (dims via isStale when ageing past its 75 s window).
     'soc_precise',
+    // v0.1.29+90: SOH + BigData battery temp held sticky across frame gaps
+    // (soh ~1 Hz, battery_temp_bigdata ~30 s) so the dashboard cells don't
+    // flicker to "—" between frames.
+    'soh',
+    'battery_temp_bigdata',
   };
   final Map<String, ({double value, DateTime at})> _lastGood = {};
 
@@ -397,15 +411,23 @@ class HalTelemetryService extends ChangeNotifier {
   double? get halGear => halValue('gear_enum');
   bool get useHalForGear => _useHal('gear_enum');
 
-  // ── SOC (soc_display = instrument-cluster %, live-verified equal to
-  //    the cluster AND to soc_battery at 32% on 2026-06-11; prefer the
-  //    cluster value, fall back to the raw BMS one) ──
-
-  double? get halSocPct => _useHal('soc_display')
-      ? halValue('soc_display')
-      : halValue('soc_battery');
+  // ── SOC. v0.1.29+90: PREFER the fractional soc_precise (BigData 0x044C,
+  //    u16LE[10]×0.1, ~30 s cadence) so the displayed % carries the tenth
+  //    (53.2, not 53) — Alex's standing rule: fractional SOC everywhere.
+  //    Falls back to the integer cluster value (soc_display, live-verified
+  //    = cluster) then soc_battery only when soc_precise hasn't arrived yet.
+  //    soc_precise is held ~75 s so it spans its own gaps. (Trip energy uses
+  //    halSocForTrip, which has the same precise-first preference.)
+  double? get halSocPct {
+    final p = _heldValue('soc_precise', _socPreciseHold);
+    if (p != null) return p;
+    if (_useHal('soc_display')) return halValue('soc_display');
+    return halValue('soc_battery');
+  }
   bool get useHalForSoc =>
-      _useHal('soc_display') || _useHal('soc_battery');
+      _heldValue('soc_precise', _socPreciseHold) != null ||
+      _useHal('soc_display') ||
+      _useHal('soc_battery');
 
   // ── power (derived: HAL pack_current × HAL pack_voltage). Both
   //    sources are discharge-positive (same convention as the OBD2
@@ -442,14 +464,32 @@ class HalTelemetryService extends ChangeNotifier {
   //    .avgTemp); motor/inverter have no OBD2 source, so their card cells
   //    show "—" when HAL is stale (honesty rule). ──
 
-  double? get halBatteryTempC => _tempValue('probe_highest_temp');
-  bool get useHalForBatteryTemp => _tempValue('probe_highest_temp') != null;
+  // Battery temp: confirmed probe 0x47800010 (exact = cluster) FIRST; it is
+  // event-driven and sleeps at standstill, so when it's silent fall back to
+  // the BigData candidate 0x044C b[7] (°C = raw−40, matched OBD2 002F at 98%
+  // over a narrow range — held ~30 s). v0.1.29+90: the fallback keeps the
+  // cell populated in halOnly when the probe hasn't fired (the dash Alex
+  // saw). Probe still wins whenever present, so accuracy is unchanged when
+  // it's awake; the candidate only fills the gaps.
+  double? get halBatteryTempC {
+    final probe = _tempValue('probe_highest_temp');
+    if (probe != null) return probe;
+    return _heldValue('battery_temp_bigdata', _socPreciseHold);
+  }
+  bool get useHalForBatteryTemp => halBatteryTempC != null;
 
   double? get halMotorTempC => _tempValue('motor_temp');
   bool get useHalForMotorTemp => _tempValue('motor_temp') != null;
 
   double? get halInverterTempC => _tempValue('inverter_temp');
   bool get useHalForInverterTemp => _tempValue('inverter_temp') != null;
+
+  // ── SOH (v0.1.29+90). state-of-health % from the BigData BMS frame
+  //    0x02D3 b[10] (direct read, =97 matched OBD2 790/0029, ~1 Hz). This
+  //    is the ONLY HAL source of SOH — without it halOnly shows "SOH —"
+  //    (OBD2 790/0029 needs the dongle). Held sticky (~1 Hz, 10 s window).
+  double? get halSoh => _heldValue('soh', _coreHold);
+  bool get useHalForSoh => _heldValue('soh', _coreHold) != null;
 
   // ── odometer + trip meters (v0.1.29+74). All from BYDAutoStatistic-
   //    Device, decoder applies ×0.1 so values are already in km. Held via

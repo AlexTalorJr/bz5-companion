@@ -15,6 +15,7 @@ import com.bz5companion.bz5_companion.hal.CompanionDecoderOverrides
 import com.bz5companion.bz5_companion.hal.DecodedStreamSink
 import com.bz5companion.bz5_companion.hal.LiveTelemetrySubscriber
 import com.bz5companion.bz5_companion.hal.TargetRegistry
+import com.bz5companion.bz5_companion.hal.TargetSpec
 
 /**
  * Native bridge for talking to BYD/DiLink 5.0 car framework from Flutter.
@@ -591,7 +592,32 @@ class BydNativePlugin : FlutterPlugin, ActivityAware, MethodChannel.MethodCallHa
                                 CompanionDecoderOverrides.extraStatisticFids
                         )
                     else spec
-                }
+                } +
+                // v0.1.29+89: BigData CAN-collect trigger + data channel.
+                // streamingTargets() (the companion 8-target subset) omits
+                // BYDAutoPowerDevice and BYDAutoBigDataDevice, so the GB32960
+                // CAN-collect never starts and 0x99000020 frames (incl. our
+                // 0x044C fractional SOC) never flow — confirmed by an export
+                // showing 5403 HAL rows but ZERO BigData rows / no Power
+                // device. recon starts the collect by subscribing Power with
+                // canDataCollect fids 0x99000037+0x99000003 (the patch-046
+                // breakthrough set), with BigData 0x99000020 as the data
+                // channel. We layer both on here, in companion code, WITHOUT
+                // editing the vendored registry (Друг 3: same registerListener,
+                // no special call, no uid/permission dependency — Power is the
+                // trigger that was simply missing from our subset).
+                listOf(
+                    TargetSpec(
+                        "BYDAutoPowerDevice_canDataCollect",
+                        "android.hardware.bydauto.power.BYDAutoPowerDevice",
+                        intArrayOf(0x99000037.toInt(), 0x99000003.toInt()),
+                    ),
+                    TargetSpec(
+                        "BYDAutoBigDataDevice_canDataCollect",
+                        "android.hardware.bydauto.bigdata.BYDAutoBigDataDevice",
+                        intArrayOf(0x99000020.toInt()),
+                    ),
+                )
                 val subscriber = LiveTelemetrySubscriber(
                     appContext,
                     streamSink,
