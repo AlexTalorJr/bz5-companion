@@ -79,6 +79,23 @@ class DecodedStreamSink(
     private val bigDataSubtype: Long = 0x99000020L
     private val socPreciseCanId: Int = 0x044C
 
+    // v0.1.29+90: additional companion-side extractions from BigData frames,
+    // all confirmed against ground-truth in the recon HANDOFF (Друг 3's
+    // synchronous 30-min drive, 2026-06-24/25). These close halOnly dashes
+    // that OBD2-only signals leave blank without a dongle:
+    //   • SOH from 0x02D3 b[10]  — direct read, =97 matched OBD2 (TWÉRDO),
+    //     arrives ~1 Hz (0x02D3 is a fast BMS frame). Closes "SOH —".
+    //   • battery_temp from 0x044C b[7] — °C = raw−40, matched OBD2 002F at
+    //     98%; a CANDIDATE (only verified over a narrow 24–26°C range), used
+    //     as a FALLBACK behind the confirmed probe 0x47800010 which is exact
+    //     but sleeps at standstill. So the cell never goes blank: probe when
+    //     awake, else this. We log it so wider-range behaviour can be checked.
+    //   • soc_precise from 0x044C u16LE[10]×0.1 — fractional SOC (existing).
+    private val socFrameCanId: Int = 0x044C      // soc_precise + battery_temp
+    private val bmsFrameCanId: Int = 0x02D3      // SOH
+    private val socPreciseTempByte: Int = 7      // 0x044C b[7], °C = raw−40
+    private val sohByte: Int = 10                // 0x02D3 b[10], direct %
+
     // v0.1.29+88: raw BigData diagnostic logging. For these CAN-IDs the sink
     // emits an EXTRA event (name="bigdata_raw") carrying the full frame hex,
     // so an export can be diffed against recon line-by-line and so we can
@@ -119,22 +136,17 @@ class DecodedStreamSink(
         )
 
         if (dv == null) {
-            // v0.1.29+86: the base table dropped it (BUFDATA → null). Before
-            // we discard, try the one companion-side byte-level extraction we
-            // do: fractional SOC out of the BigData frame. Everything else
-            // with no decoder stays dropped, exactly as before.
+            // v0.1.29+86/+90: the base table dropped it (BUFDATA → null).
+            // Before discarding, run the companion-side byte-level extractions
+            // we do on BigData frames (soc_precise, SOH, battery_temp). Each
+            // emits its own named signal. Everything else with no decoder
+            // stays dropped, exactly as before.
             if (subtype == bigDataSubtype && bufData != null) {
-                // v0.1.29+88: for whitelisted CAN-IDs, emit a raw-frame
-                // diagnostic event (full hex) so the export can be diffed
-                // against recon and frame arrival can be confirmed.
+                // For whitelisted CAN-IDs, emit a raw-frame diagnostic event
+                // (full hex) so the export can be diffed against recon and
+                // frame arrival can be confirmed (+88).
                 maybeEmitBigDataRaw(bufData, subtype, timestampMs)
-                val soc = extractSocPrecise(bufData)
-                if (soc != null) {
-                    queue.add(socPreciseEventMap(soc, subtype, timestampMs))
-                    if (drainScheduled.compareAndSet(false, true)) {
-                        mainHandler.post { drain() }
-                    }
-                }
+                emitBigDataSignals(bufData, subtype, timestampMs)
             }
             return
         }
@@ -147,42 +159,91 @@ class DecodedStreamSink(
         }
     }
 
-    // ─── COMPANION-AUTHORED: BigData byte-level extraction (v0.1.29+86) ──
+    // ─── COMPANION-AUTHORED: BigData byte-level extraction (v0.1.29+86/+90) ──
 
     /**
-     * Pull fractional SOC (%) out of a BigData raw frame, or null if this
-     * frame is not 0x044C, is malformed, or is out of range. See the field
-     * block at the top of the class for the layout and the formula source.
+     * Extract every companion-side signal carried inside BigData raw frames
+     * and queue each as its own named event. Called for any BigData frame
+     * (subtype 0x99000020); each extractor self-gates on its CAN-ID so only
+     * the relevant frame produces a value.
      *
-     * No OBD2 arithmetic here — this is a raw-frame field extraction
-     * (u16LE × 0.1), not the pre-decoded HAL contract that forbids manual
-     * pack_current scaling.
+     * Frames are identified the robust way recon does — header `[0:1]`==0x0000
+     * then CAN-ID from `[2:3]` — NOT by the event subtype (always 0x99000020
+     * for the whole BigData channel, so it can't tell frames apart). All
+     * offsets/formulas are ground-truth-confirmed (see the field block up top
+     * and the recon HANDOFF). No OBD2 arithmetic — these are raw-frame field
+     * reads (e.g. u16LE×0.1), not the pre-decoded HAL contract.
      *
-     * v0.1.29+87: identify the frame the robust way recon does — header
-     * bytes `[0:1]`==0x0000 then CAN-ID from `[2:3]` — instead of trusting
-     * the event subtype (which is always 0x99000020 for the whole BigData
-     * channel and so cannot tell 0x044C apart anyway). The earlier
-     * `b[10]+b[13]`==325 "checksum" gate was REMOVED: on a real confirmed
-     * frame (SOC 65.2%, recon 16:13) that sum is 310, not 325 — the
-     * constant was wrong and the gate silently dropped every valid frame
-     * (root cause of "no soc_precise on the car"). Recon reports the frame
-     * is always 14 bytes and never out of range across 89 frames / two
-     * sessions, so length + header + CAN-ID + 0..100 is enough.
+     *   0x044C → soc_precise  = u16LE[10] × 0.1        (fractional SOC, %)
+     *   0x044C → battery_temp_bigdata = b[7] − 40      (°C, CANDIDATE fallback)
+     *   0x02D3 → soh          = b[10]                  (%, direct, TWÉRDO)
      */
-    private fun extractSocPrecise(bufData: ByteArray): Double? {
-        if (bufData.size < 14) return null
-        // Header gate: BigData frames start 0x0000, then CAN-ID big-endian.
-        if (bufData[0].toInt() != 0 || bufData[1].toInt() != 0) return null
+    private fun emitBigDataSignals(bufData: ByteArray, subtype: Long, timestampMs: Long) {
+        if (bufData.size < 4) return
+        if (bufData[0].toInt() != 0 || bufData[1].toInt() != 0) return
         val canId = ((bufData[2].toInt() and 0xff) shl 8) or
             (bufData[3].toInt() and 0xff)
-        if (canId != socPreciseCanId) return null
-        // u16LE over absolute bytes [10],[11].
-        val lo = bufData[10].toInt() and 0xff
-        val hi = bufData[11].toInt() and 0xff
-        val soc = ((hi shl 8) or lo) * 0.1
-        if (soc < 0.0 || soc > 100.0) return null
-        return soc
+        var queued = false
+
+        if (canId == socFrameCanId && bufData.size >= 14) {
+            // soc_precise = u16LE[10] × 0.1
+            val lo = bufData[10].toInt() and 0xff
+            val hi = bufData[11].toInt() and 0xff
+            val soc = ((hi shl 8) or lo) * 0.1
+            if (soc in 0.0..100.0) {
+                queue.add(bigDataSignalMap("soc_precise", "%", soc, subtype, timestampMs))
+                queued = true
+            }
+            // battery_temp_bigdata = b[7] − 40 (CANDIDATE; Dart treats it as
+            // a fallback behind the confirmed probe). Plausible pack range.
+            val tC = (bufData[socPreciseTempByte].toInt() and 0xff) - 40
+            if (tC in -40..90) {
+                queue.add(bigDataSignalMap(
+                    "battery_temp_bigdata", "°C", tC.toDouble(), subtype, timestampMs))
+                queued = true
+            }
+        }
+
+        if (canId == bmsFrameCanId && bufData.size >= 14) {
+            // SOH = b[10], direct percent (=97 matched OBD2, TWÉRDO).
+            val soh = bufData[sohByte].toInt() and 0xff
+            if (soh in 0..100) {
+                queue.add(bigDataSignalMap("soh", "%", soh.toDouble(), subtype, timestampMs))
+                queued = true
+            }
+        }
+
+        if (queued && drainScheduled.compareAndSet(false, true)) {
+            mainHandler.post { drain() }
+        }
     }
+
+    /**
+     * Build a Flutter event map for a BigData-extracted signal. Mirrors
+     * [toEventMap]'s contract ({name, unit, value, key, subtype, ts}) so the
+     * Dart side routes it like any other signal. The canonical key is built
+     * from the BigData target + subtype via the same vendored helpers the
+     * decoder path uses, so the Dart allowlist/freshness see a normal name.
+     */
+    private fun bigDataSignalMap(
+        name: String,
+        unit: String,
+        value: Double,
+        subtype: Long,
+        timestampMs: Long,
+    ): Map<String, Any?> =
+        mapOf(
+            "name" to name,
+            "unit" to unit,
+            "value" to value,
+            "key" to TelemetryDecoderTable.key(
+                TelemetryDecoderTable.normalizeTargetKey(
+                    "android.hardware.bydauto.bigdata.BYDAutoBigDataDevice"),
+                subtype,
+            ),
+            "subtype" to subtype,
+            "ts" to timestampMs,
+        )
 
     /**
      * v0.1.29+88: if this BigData frame's CAN-ID is whitelisted, queue a
@@ -227,31 +288,6 @@ class DecodedStreamSink(
         for (x in b) sb.append(String.format("%02X", x.toInt() and 0xff))
         return sb.toString()
     }
-
-    /**
-     * Build the Flutter event map for soc_precise. Mirrors [toEventMap]'s
-     * contract ({name, unit, value, key, subtype, ts}) so the Dart side
-     * routes it like any other signal. The canonical key is built from the
-     * BigData target + subtype via the same vendored helpers the decoder
-     * path uses, so allowlist/freshness on the Dart side see a normal name.
-     */
-    private fun socPreciseEventMap(
-        soc: Double,
-        subtype: Long,
-        timestampMs: Long,
-    ): Map<String, Any?> =
-        mapOf(
-            "name" to "soc_precise",
-            "unit" to "%",
-            "value" to soc,
-            "key" to TelemetryDecoderTable.key(
-                TelemetryDecoderTable.normalizeTargetKey(
-                    "android.hardware.bydauto.bigdata.BYDAutoBigDataDevice"),
-                subtype,
-            ),
-            "subtype" to subtype,
-            "ts" to timestampMs,
-        )
 
     // onTargetEvent: per-target lifecycle / health signal (REGISTERED_OK,
     // REGISTER_FAILED, etc). Unused in phase 1 (mutually-exclusive sources

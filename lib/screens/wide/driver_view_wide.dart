@@ -668,7 +668,10 @@ class _BottomStatusStrip extends StatelessWidget {
   Widget build(BuildContext context) {
     final svc = context.watch<ConnectionService>();
     final hal = context.watch<HalTelemetryService>();
-    final soh = svc.readNumeric('790', '0029');
+    // v0.1.29+90: SOH — HAL BigData 0x02D3 b[10] when available (halOnly,
+    // no dongle → OBD2 790/0029 is blank), else OBD2. Invisible source
+    // substitution, same widget, no HAL label (like speed/SOC).
+    final soh = hal.useHalForSoh ? hal.halSoh : svc.readNumeric('790', '0029');
     final odo = hal.useHalForOdometer ? hal.halOdometerKm : svc.readNumeric('791', '0026');
     // v0.1.29+84: cell spread — HAL BigData cell_v pair when available
     // (halOnly drive, no OBD2 cells), else OBD2 global min/max. Invisible
