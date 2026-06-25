@@ -144,8 +144,13 @@ class _BZ5AppState extends State<BZ5App> with WidgetsBindingObserver {
         // v0.1.29+64: HAL push-telemetry (SPEED overlapping pilot). Owns
         // the live HAL stream + source mode; feeds the DISPLAYED speedo
         // only — trip aggregates stay on OBD2 ConnectionService.
+        // v0.1.29+87: pass the DB + a current-trip-id reader so the HAL
+        // stream is throttle-logged to hal_samples for diagnostics.
         ChangeNotifierProvider<HalTelemetryService>(
-          create: (_) => HalTelemetryService()..init(),
+          create: (_) => HalTelemetryService(
+            diagDb: widget.db,
+            currentTripId: () => widget.svc.currentTripId,
+          )..init(),
         ),
       ],
       child: MaterialApp(

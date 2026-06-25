@@ -256,17 +256,61 @@ class CanRawLines extends Table {
   BoolColumn get parsed => boolean().withDefault(const Constant(false))();
 }
 
+/// v0.1.29+87: diagnostic capture of the HAL telemetry stream — the
+/// second data source — so an export can show what HAL/BigData actually
+/// delivered, at what rate, from which signal. Until now ONLY UDS samples
+/// ([Samples]: ecuTx/did/rawHex) were persisted; HAL lived purely in
+/// memory and vanished, which made it impossible to verify on the car why
+/// a HAL-fed value (e.g. soc_precise) wasn't flowing. This table closes
+/// that blind spot.
+///
+/// Two kinds of row, distinguished by [source]:
+///   - 'hal'     — a decoded HAL signal: [name] + [numericValue]/[textValue].
+///                 targetKey/subtype identify the framework origin.
+///   - 'bigdata' — a raw BigData CAN frame: [canId] + [rawHex] (full frame
+///                 hex incl. the 4-byte header). [name] is null. Lets us
+///                 confirm a frame (e.g. 0x044C) arrived at all and inspect
+///                 its bytes offline.
+///
+/// WRITE IS THROTTLED at the call site (see HalTelemetryService) — the HAL
+/// stream is ~15 Hz aggregate and writing every frame would bloat the DB
+/// (recon's lesson: raw 24 h = gigabytes). Decoded signals are sampled at
+/// most once per few seconds per name; BigData raw is whitelisted to a few
+/// CAN-IDs of interest, not the whole stream.
+@DataClassName('HalSample')
+class HalSamples extends Table {
+  IntColumn get id => integer().autoIncrement()();
+  IntColumn get tripId => integer().nullable()();
+  DateTimeColumn get timestamp => dateTime()();
+  /// 'hal' (decoded signal) or 'bigdata' (raw CAN frame).
+  TextColumn get source => text()();
+  /// Framework target, e.g. "BYDAutoStatisticDevice". Null for raw frames
+  /// where only the CAN-ID is meaningful.
+  TextColumn get targetKey => text().nullable()();
+  /// HAL subtype/fid as uppercase hex (e.g. "2D300030"), or null.
+  TextColumn get subtype => text().nullable()();
+  /// Decoded signal name (e.g. "soc_precise", "speed"). Null for raw frames.
+  TextColumn get name => text().nullable()();
+  /// CAN-ID for raw BigData frames (e.g. "044C"). Null for decoded signals.
+  TextColumn get canId => text().nullable()();
+  /// Full raw frame hex for 'bigdata' rows. Null for decoded signals.
+  TextColumn get rawHex => text().nullable()();
+  RealColumn get numericValue => real().nullable()();
+  TextColumn get textValue => text().nullable()();
+}
+
 @DriftDatabase(tables: [
   Samples, Trips, Snapshots,
   SweepRuns, SweepResults,
   LiveLogSessions, LiveLogEntries,
   CanMonitorSessions, CanFrames, CanRawLines,
+  HalSamples,
 ])
 class AppDatabase extends _$AppDatabase {
   AppDatabase() : super(_openConnection());
 
   @override
-  int get schemaVersion => 8;
+  int get schemaVersion => 9;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -333,6 +377,12 @@ class AppDatabase extends _$AppDatabase {
           // before (the UI falls back to raw samples when extra is null).
           if (from < 8) {
             await m.addColumn(trips, trips.extra);
+          }
+          // v8 → v9 (v0.1.29+87): HAL/BigData diagnostic capture table.
+          // Additive only — pre-existing tables untouched, existing data
+          // behaves exactly as before.
+          if (from < 9) {
+            await m.createTable(halSamples);
           }
         },
       );
@@ -624,6 +674,53 @@ class AppDatabase extends _$AppDatabase {
     return query.get();
   }
 
+  // ───────────────────── HAL diagnostic samples (+87) ─────────────────
+
+  /// Insert one decoded HAL signal row (source='hal'). Throttled at the
+  /// call site — see HalTelemetryService.
+  Future<int> insertHalSignal({
+    int? tripId,
+    required String targetKey,
+    required String subtype,
+    required String name,
+    double? numeric,
+    String? text,
+  }) {
+    return into(halSamples).insert(HalSamplesCompanion(
+      tripId: Value(tripId),
+      timestamp: Value(DateTime.now()),
+      source: const Value('hal'),
+      targetKey: Value(targetKey),
+      subtype: Value(subtype),
+      name: Value(name),
+      numericValue: Value(numeric),
+      textValue: Value(text),
+    ));
+  }
+
+  /// Insert one raw BigData CAN frame row (source='bigdata'). Whitelisted
+  /// to CAN-IDs of interest at the call site.
+  Future<int> insertBigDataFrame({
+    int? tripId,
+    required String canId,
+    required String rawHex,
+  }) {
+    return into(halSamples).insert(HalSamplesCompanion(
+      tripId: Value(tripId),
+      timestamp: Value(DateTime.now()),
+      source: const Value('bigdata'),
+      canId: Value(canId),
+      rawHex: Value(rawHex),
+    ));
+  }
+
+  Future<List<HalSample>> getHalSamplesForTrip(int tripId, {String? source}) {
+    final query = select(halSamples)..where((s) => s.tripId.equals(tripId));
+    if (source != null) query.where((s) => s.source.equals(source));
+    query.orderBy([(s) => OrderingTerm(expression: s.timestamp)]);
+    return query.get();
+  }
+
   /// v0.1.29+38: the most recent numeric sample value for a given DID in
   /// a trip, or null if none. Used at trip finalization as a fallback for
   /// end_odometer / end_soc when the in-memory _latestValues cache is
@@ -810,6 +907,20 @@ class AppDatabase extends _$AppDatabase {
   Future<int> countAllSamples() async {
     final cnt = countAll();
     final row = await (selectOnly(samples)..addColumns([cnt])).getSingle();
+    return row.read(cnt) ?? 0;
+  }
+
+  /// v0.1.29+87: all HAL diagnostic samples, oldest first, for export.
+  Future<List<HalSample>> getAllHalSamples({int? limit}) {
+    final q = select(halSamples)
+      ..orderBy([(s) => OrderingTerm(expression: s.timestamp)]);
+    if (limit != null) q.limit(limit);
+    return q.get();
+  }
+
+  Future<int> countAllHalSamples() async {
+    final cnt = countAll();
+    final row = await (selectOnly(halSamples)..addColumns([cnt])).getSingle();
     return row.read(cnt) ?? 0;
   }
 

@@ -212,6 +212,16 @@ class ExportService {
           utf8.encode(_samplesToCsv(samples)),
         ));
       }
+      // v0.1.29+87: HAL/BigData diagnostic samples. The .sqlite copy above
+      // already carries the hal_samples table, but emit a CSV too so the
+      // HAL stream is readable without opening the DB.
+      final halSamples = await db.getAllHalSamples();
+      counts['hal_samples'] = halSamples.length;
+      archive.addFile(ArchiveFile(
+        'hal_samples.csv',
+        0,
+        utf8.encode(_halSamplesToCsv(halSamples)),
+      ));
     }
 
     onProgress?.call('metadata');
@@ -409,6 +419,29 @@ class ExportService {
         s.ecuTx,
         s.did,
         s.rawHex,
+        s.numericValue ?? '',
+        _csvEscape(s.textValue ?? ''),
+      ].join(','));
+    }
+    return buf.toString();
+  }
+
+  /// v0.1.29+87: HAL/BigData diagnostic samples CSV.
+  String _halSamplesToCsv(List<HalSample> samples) {
+    final buf = StringBuffer();
+    buf.writeln(
+        'id,timestamp,trip_id,source,target_key,subtype,name,can_id,raw_hex,numeric,text');
+    for (final s in samples) {
+      buf.writeln([
+        s.id,
+        s.timestamp.toIso8601String(),
+        s.tripId ?? '',
+        s.source,
+        s.targetKey ?? '',
+        s.subtype ?? '',
+        s.name ?? '',
+        s.canId ?? '',
+        s.rawHex ?? '',
         s.numericValue ?? '',
         _csvEscape(s.textValue ?? ''),
       ].join(','));

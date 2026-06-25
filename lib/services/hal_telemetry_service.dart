@@ -26,6 +26,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../data/database.dart';
 import 'hal_telemetry_channel.dart';
 import 'native_car_channel.dart';
 
@@ -56,6 +57,19 @@ String _modeToString(HalSourceMode m) {
 class HalTelemetryService extends ChangeNotifier {
   final _hal = HalTelemetryChannel.instance;
   StreamSubscription<HalEvent>? _sub;
+
+  // v0.1.29+87: optional diagnostic sink. When [_diagDb] is set, the HAL
+  // stream is throttle-logged to the hal_samples table so an export can
+  // show what HAL/BigData actually delivered (closing the blind spot where
+  // HAL lived only in memory). Null in tests / if not wired — logging is
+  // then simply skipped. [_currentTripId] lets rows be tagged with the
+  // active OBD2 trip when one exists, without importing ConnectionService.
+  final AppDatabase? _diagDb;
+  final int? Function()? _currentTripId;
+
+  HalTelemetryService({AppDatabase? diagDb, int? Function()? currentTripId})
+      : _diagDb = diagDb,
+        _currentTripId = currentTripId;
 
   HalSourceMode _mode = HalSourceMode.auto;
   HalSourceMode get mode => _mode;
@@ -907,6 +921,16 @@ class HalTelemetryService extends ChangeNotifier {
   }
 
   void _onEvent(HalEvent e) {
+    // v0.1.29+88: raw BigData diagnostic frames (whitelisted CAN-IDs) come
+    // through as name=="bigdata_raw" carrying the full frame hex. They are
+    // NOT a consumed signal and carry no value — log them straight to
+    // hal_samples (source='bigdata') and return BEFORE the range-guard, so
+    // they never touch _latest / the trip state machine. This is the row
+    // recon diffs against, and the one that answers "did 0x044C arrive?".
+    if (e.name == 'bigdata_raw') {
+      _logBigDataRaw(e);
+      return;
+    }
     // v0.1.29+66: consume the overlapping-wave allowlist (speed,
     // pack_voltage, pack_current, gear_enum, soc_display, soc_battery).
     // v0.1.29+72: + battery/drive temps (probe_highest_temp, motor_temp,
@@ -928,6 +952,11 @@ class HalTelemetryService extends ChangeNotifier {
     if (_stickyNames.contains(e.name)) {
       _lastGood[e.name] = (value: d, at: DateTime.now());
     }
+    // v0.1.29+87/+88: diagnostic capture — throttle-log this decoded signal
+    // to hal_samples with its real target/subtype (parsed from e.key) so an
+    // export shows the real HAL stream and matches recon's schema. Throttled
+    // per-name so the ~15 Hz stream doesn't bloat the DB. No-op without DB.
+    _logHalDiag(e, d);
     // No notifyListeners() per event — at ~15 Hz aggregate that would
     // over-rebuild. The widgets already rebuild on the OBD2
     // ConnectionService poll cadence; the resolvers read our latest
@@ -938,6 +967,64 @@ class HalTelemetryService extends ChangeNotifier {
     // the start SOC latches later on the first soc_precise/integer frame.
     _updateHalTrip();
     _scheduleNotify();
+  }
+
+  // ── HAL diagnostic logging (+87/+88) ──
+  //
+  // Per-name throttle so a high-rate signal writes at most once per window.
+  // soc_precise is slow (~1 frame / 15 s) so it is NOT throttled away — the
+  // window is short enough that every soc_precise frame is captured. The
+  // map holds the last-logged time per signal name.
+  static const Duration _halDiagThrottle = Duration(seconds: 3);
+  final Map<String, DateTime> _halDiagLastLog = {};
+
+  /// Split a canonical key "targetKey|0xSUBTYPE" into its parts.
+  /// Returns ('targetKey', 'SUBTYPE') or (key, '') if it doesn't match.
+  (String, String) _splitKey(String key) {
+    final i = key.indexOf('|0x');
+    if (i < 0) return (key, '');
+    return (key.substring(0, i), key.substring(i + 3));
+  }
+
+  void _logHalDiag(HalEvent e, double value) {
+    final db = _diagDb;
+    if (db == null) return; // diagnostics not wired
+    final now = DateTime.now();
+    final last = _halDiagLastLog[e.name];
+    if (last != null && now.difference(last) < _halDiagThrottle) return;
+    _halDiagLastLog[e.name] = now;
+    final (target, subtypeHex) = _splitKey(e.key);
+    final tid = _currentTripId?.call();
+    // Fire-and-forget; never let a logging failure disturb the stream.
+    db
+        .insertHalSignal(
+          tripId: tid,
+          targetKey: target,
+          subtype: subtypeHex,
+          name: e.name,
+          numeric: value,
+        )
+        .catchError((_) => 0);
+  }
+
+  /// v0.1.29+88: log a raw BigData frame (source='bigdata'). NOT throttled —
+  /// only whitelisted CAN-IDs reach here (gated platform-side), so volume is
+  /// already bounded. This is the row Друг 3 diffs against recon and the one
+  /// that confirms whether a frame (e.g. 0x044C) actually arrives.
+  void _logBigDataRaw(HalEvent e) {
+    final db = _diagDb;
+    if (db == null) return;
+    final canId = e.canIdHex;
+    final buf = e.bufHex;
+    if (canId == null || buf == null) return;
+    final tid = _currentTripId?.call();
+    db
+        .insertBigDataFrame(
+          tripId: tid,
+          canId: canId,
+          rawHex: buf,
+        )
+        .catchError((_) => 0);
   }
 
   Timer? _notifyTimer;

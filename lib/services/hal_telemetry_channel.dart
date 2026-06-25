@@ -61,6 +61,12 @@ class HalEvent {
   /// Source timestamp (ms since boot/epoch as the framework reports it).
   final int ts;
 
+  /// v0.1.29+88: diagnostic extras, present only on raw BigData frames
+  /// (name=="bigdata_raw"). Null for normal decoded signals.
+  final String? canIdHex;
+  final String? bufHex;
+  final int? bufSize;
+
   const HalEvent({
     required this.name,
     required this.unit,
@@ -68,6 +74,9 @@ class HalEvent {
     required this.key,
     required this.subtype,
     required this.ts,
+    this.canIdHex,
+    this.bufHex,
+    this.bufSize,
   });
 
   factory HalEvent.fromMap(Map<Object?, Object?> m) => HalEvent(
@@ -77,6 +86,9 @@ class HalEvent {
         key: (m['key'] as String?) ?? '',
         subtype: (m['subtype'] as num?)?.toInt() ?? 0,
         ts: (m['ts'] as num?)?.toInt() ?? 0,
+        canIdHex: m['can_id_hex'] as String?,
+        bufHex: m['buf_hex'] as String?,
+        bufSize: (m['buf_size'] as num?)?.toInt(),
       );
 
   @override
