@@ -49,6 +49,33 @@ class DecodedStreamSink(
     private val drainScheduled = AtomicBoolean(false)
     private val mainHandler = Handler(Looper.getMainLooper())
 
+    // ─── COMPANION-AUTHORED: fractional SOC from BigData (v0.1.29+86) ───
+    //
+    // 0x044C is a CAN-ID INSIDE the BigData raw frame (channel
+    // BYDAutoBigDataDevice, subtype 0x99000020), NOT a standalone fid. The
+    // vendored TelemetryDecoderTable cannot reach into the frame to pull
+    // bytes [10:11] (its decode() returns null for BUFDATA — "caller does
+    // format-specific decode"), and the override map only does scale/offset
+    // on whole fids. So the byte-level extraction lives HERE, in the sink we
+    // own, exactly where bufData is in hand.
+    //
+    // companion already SUBSCRIBES to this channel — the vendored
+    // TargetRegistry.streamingTargets includes BYDAutoBigDataDevice_canData-
+    // Collect (fid 0x99000020), so the frame already arrives at onRawEvent.
+    // No recon change is needed (Друг 3 confirmed: emission is companion-side,
+    // the stream is ours; vendored files unchanged, SHA intact).
+    //
+    // Frame layout (recon-confirmed): [0..1]=0x0000, [2..3]=CAN_ID (BE),
+    // [4..]=payload. For 0x044C: SOC% = u16LE(b[10],b[11]) × 0.1. Integrity
+    // is double-checked: length must be 14, and b[10]+b[13] == 325 (a frame
+    // checksum byte Друг 3 found constant across 89 frames / two sessions).
+    // Formula validated on a wide SOC range (71.6–77.8%, RMSE 0.065% vs UDS
+    // 790/1FFD). Cadence ~30 s (bus-limited; not 1 Hz). Anything failing the
+    // length / checksum / 0..100 range yields null (frame dropped silently).
+    private val bigDataSubtype: Long = 0x99000020L
+    private val socPreciseCanId: Int = 0x044C
+    private val socPreciseChecksum: Int = 325
+
     /** Detach from the Dart sink. Idempotent. Safe to call from any thread. */
     fun detach() {
         sink = null
@@ -73,7 +100,24 @@ class DecodedStreamSink(
         // suffixes) internally, so we pass targetKey through untouched.
         val dv = TelemetryDecoderTable.decode(
             targetKey, subtype, intValue, doubleValue, bufData, timestampMs, overrides
-        ) ?: return
+        )
+
+        if (dv == null) {
+            // v0.1.29+86: the base table dropped it (BUFDATA → null). Before
+            // we discard, try the one companion-side byte-level extraction we
+            // do: fractional SOC out of the BigData frame. Everything else
+            // with no decoder stays dropped, exactly as before.
+            if (subtype == bigDataSubtype && bufData != null) {
+                val soc = extractSocPrecise(bufData)
+                if (soc != null) {
+                    queue.add(socPreciseEventMap(soc, subtype, timestampMs))
+                    if (drainScheduled.compareAndSet(false, true)) {
+                        mainHandler.post { drain() }
+                    }
+                }
+            }
+            return
+        }
 
         queue.add(dv.toEventMap(targetKey, subtype))
 
@@ -82,6 +126,59 @@ class DecodedStreamSink(
             mainHandler.post { drain() }
         }
     }
+
+    // ─── COMPANION-AUTHORED: BigData byte-level extraction (v0.1.29+86) ──
+
+    /**
+     * Pull fractional SOC (%) out of a BigData raw frame, or null if this
+     * frame is not 0x044C, is malformed, or fails the integrity / range
+     * checks. See the field block at the top of the class for the layout
+     * and the provenance of the formula and checksum.
+     *
+     * No OBD2 arithmetic here — this is a raw-frame field extraction
+     * (u16LE × 0.1), not the pre-decoded HAL contract that forbids manual
+     * pack_current scaling.
+     */
+    private fun extractSocPrecise(bufData: ByteArray): Double? {
+        if (bufData.size < 14) return null
+        val canId = ((bufData[2].toInt() and 0xff) shl 8) or
+            (bufData[3].toInt() and 0xff)
+        if (canId != socPreciseCanId) return null
+        // u16LE over absolute bytes [10],[11].
+        val lo = bufData[10].toInt() and 0xff
+        val hi = bufData[11].toInt() and 0xff
+        val soc = ((hi shl 8) or lo) * 0.1
+        // Integrity: constant frame checksum b[10] + b[13] == 325.
+        val checksum = (bufData[10].toInt() and 0xff) + (bufData[13].toInt() and 0xff)
+        if (checksum != socPreciseChecksum) return null
+        if (soc < 0.0 || soc > 100.0) return null
+        return soc
+    }
+
+    /**
+     * Build the Flutter event map for soc_precise. Mirrors [toEventMap]'s
+     * contract ({name, unit, value, key, subtype, ts}) so the Dart side
+     * routes it like any other signal. The canonical key is built from the
+     * BigData target + subtype via the same vendored helpers the decoder
+     * path uses, so allowlist/freshness on the Dart side see a normal name.
+     */
+    private fun socPreciseEventMap(
+        soc: Double,
+        subtype: Long,
+        timestampMs: Long,
+    ): Map<String, Any?> =
+        mapOf(
+            "name" to "soc_precise",
+            "unit" to "%",
+            "value" to soc,
+            "key" to TelemetryDecoderTable.key(
+                TelemetryDecoderTable.normalizeTargetKey(
+                    "android.hardware.bydauto.bigdata.BYDAutoBigDataDevice"),
+                subtype,
+            ),
+            "subtype" to subtype,
+            "ts" to timestampMs,
+        )
 
     // onTargetEvent: per-target lifecycle / health signal (REGISTERED_OK,
     // REGISTER_FAILED, etc). Unused in phase 1 (mutually-exclusive sources
