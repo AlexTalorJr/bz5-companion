@@ -965,6 +965,15 @@ class HalTelemetryService extends ChangeNotifier {
           avgMovingSpeedKmh: avgMoving,
           movingSeconds: movingSecs,
         )
+        // v0.1.29+93: freeze the speed-distribution histogram onto the row
+        // from this trip's hal_samples speed series, so the chart renders in
+        // history AND survives a DB wipe + cloud restore (mirrors the OBD2
+        // endTrip path, which writes extra inline). Computed here because the
+        // hal_samples read is async and can't be done at the synchronous
+        // snapshot point above. Best-effort; null (no HAL speed samples)
+        // leaves extra untouched.
+        .then((_) => db.computeHalSpeedHistogramJson(id))
+        .then((extraJson) => db.updateTripExtra(id, extraJson))
         .then((_) => refreshTotalDriveEnergy())
         .catchError((_) {});
   }

@@ -612,6 +612,51 @@ class AppDatabase extends _$AppDatabase {
     return TripExtra.encode(speedHist: hist);
   }
 
+  /// v0.1.29+93: HAL-source speed samples for a trip, oldest first. A HAL
+  /// trip (head unit, no dongle) records speed into hal_samples as
+  /// name='speed' (source='hal'), NOT into the OBD2 `samples` table as
+  /// 740/0008 — so the OBD2 getSamplesForTrip above returns nothing for it.
+  /// This is the HAL-side equivalent the speed-distribution chart falls back
+  /// to. Speed is the same physical quantity from a different source (the
+  /// cluster value, live-verified vs OBD2 to 1-3 km/h), so the histogram is
+  /// directly comparable — only the sample cadence differs (the diagnostic
+  /// log is throttled, so the HAL series is coarser than the OBD2 poll, but
+  /// the distribution shape is preserved).
+  Future<List<HalSample>> getHalSpeedSamplesForTrip(int tripId) {
+    return (select(halSamples)
+          ..where((s) =>
+              s.tripId.equals(tripId) &
+              s.source.equals('hal') &
+              s.name.equals('speed'))
+          ..orderBy([(s) => OrderingTerm.asc(s.timestamp)]))
+        .get();
+  }
+
+  /// v0.1.29+93: mirror of computeSpeedHistogramJson for a HAL trip — build
+  /// the canonical extra-JSON from hal_samples speed rows so the chart
+  /// survives a DB wipe + cloud restore exactly like an OBD2 trip. Same
+  /// shared buildSpeedHistogram / bins, so the rendered chart is identical
+  /// in form regardless of source. Returns null when the trip has no HAL
+  /// speed samples (then the caller leaves extra untouched).
+  Future<String?> computeHalSpeedHistogramJson(int tripId) async {
+    final speedSamples = await getHalSpeedSamplesForTrip(tripId);
+    if (speedSamples.isEmpty) return null;
+    final hist = buildSpeedHistogram(speedSamples.map((s) => s.numericValue));
+    return TripExtra.encode(speedHist: hist);
+  }
+
+  /// v0.1.29+93: write just the `extra` column for a trip (the speed-
+  /// histogram JSON). Used by the HAL finalize path, which computes the
+  /// histogram from hal_samples AFTER endTrip has written the row — endTrip
+  /// can't carry it because the async hal_samples read isn't done at the
+  /// synchronous snapshot point. No-op-safe: a null leaves the column alone.
+  Future<void> updateTripExtra(int tripId, String? extraJson) async {
+    if (extraJson == null) return;
+    await (update(trips)..where((t) => t.id.equals(tripId))).write(
+      TripsCompanion(extra: Value(extraJson)),
+    );
+  }
+
   Future<List<Trip>> getRecentTrips({int limit = 50}) {
     return (select(trips)
           ..orderBy(
