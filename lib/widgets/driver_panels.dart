@@ -77,9 +77,17 @@ class SpeedAndStatusStrip extends StatelessWidget {
         ? hal.halPackVoltage
         : svc.packVoltageFromCells;
     final hvBus = svc.hvBusV;
-    final batTemp = svc.readNumeric('790', '002F');
+    // v0.1.29+91: battery temp prefers HAL (probe → BigData fallback) so the
+    // cell is populated in halOnly without a dongle; OBD2 002F otherwise.
+    final batTemp =
+        hal.useHalForBatteryTemp ? hal.halBatteryTempC : svc.readNumeric('790', '002F');
     final pdu1 = svc.readNumeric('740', '0010');
     final pdu2 = svc.readNumeric('740', '0011');
+    // v0.1.29+91: PDU has no HAL source. In halOnly show inverter temp (HAL
+    // 0x3DB00008) in that slot instead of a blank; with the dongle keep the
+    // PDU T1/T2 readout exactly as before (halInvActive gates the swap).
+    final halInvActive = hal.useHalForInverterTemp;
+    final inverterTempC = hal.halInverterTempC;
 
     final hvColor = (hvBus != null && hvBus < 390)
         ? Colors.redAccent
@@ -156,11 +164,15 @@ class SpeedAndStatusStrip extends StatelessWidget {
               size: iconSize, color: Colors.deepOrangeAccent),
           SizedBox(width: compact ? 3 : 4),
           Text(
-              pdu1 != null && pdu2 != null
-                  ? 'PDU ${pdu1.toInt()}°/${pdu2.toInt()}°'
-                  : pdu1 != null
-                      ? 'PDU ${pdu1.toInt()}°/—'
-                      : 'PDU —',
+              halInvActive
+                  ? (inverterTempC != null
+                      ? 'Inv ${inverterTempC.toInt()}°'
+                      : 'Inv —')
+                  : (pdu1 != null && pdu2 != null
+                      ? 'PDU ${pdu1.toInt()}°/${pdu2.toInt()}°'
+                      : pdu1 != null
+                          ? 'PDU ${pdu1.toInt()}°/—'
+                          : 'PDU —'),
               style: TextStyle(
                   fontSize: statusFontSize,
                   fontWeight: FontWeight.w400,
@@ -283,8 +295,11 @@ class TripMetricsPanel extends StatelessWidget {
         : svc.tripAvgConsumptionPreciseKwh100km;
     final dur = useHalTrip ? hal.halTripDuration : svc.tripDuration;
     final peakKmh = useHalTrip ? hal.halTripPeakSpeedKmh : svc.tripPeakSpeedKmh;
-    final avgMovingKmh =
-        useHalTrip ? hal.halTripCurrentAvgMovingKmh : svc.tripCurrentAvgMovingKmh;
+    // v0.1.29+91: overall average speed INCLUDING stops (distance ÷ elapsed),
+    // replacing the moving-only average which read too high on stop-heavy
+    // trips. Label changed to "avg speed" to match.
+    final avgSpeedKmh =
+        useHalTrip ? hal.halTripCurrentAvgSpeedKmh : svc.tripCurrentAvgSpeedKmh;
 
     // Trip-id label: OBD2 shows "#<id>" from the DB row; halOnly writes no
     // DB row in +85 (history is the next patch), so it shows just "trip".
@@ -384,11 +399,11 @@ class TripMetricsPanel extends StatelessWidget {
         ),
         Expanded(
           child: TripCell(
-              value: avgMovingKmh != null
-                  ? avgMovingKmh.toStringAsFixed(0)
+              value: avgSpeedKmh != null
+                  ? avgSpeedKmh.toStringAsFixed(0)
                   : '—',
               unit: 'km/h',
-              label: S.of('drv.cell.avg_moving'),
+              label: S.of('drv.cell.avg_speed'),
               valueFontSize: cellFontSize,
               labelFontSize: labelFontSize,
               unitFontSize: unitFontSize),

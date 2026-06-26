@@ -313,6 +313,25 @@ class HalTelemetryService extends ChangeNotifier {
   double? _halPeakSpeedKmh;
   double _halSpeedSum = 0;      // moving-sample speed sum (for avg)
   int _halSpeedSamples = 0;     // moving-sample count
+  // v0.1.29+91: DB-backed HAL trip. _halTripDbId holds the Trips row id
+  // opened on start (db.startTrip), written on close (db.endTrip) — the
+  // SAME contract the OBD2 tracker uses, so halOnly drives populate history
+  // and feed the cumulative-energy total. connection.dart is NOT touched:
+  // this write path lives entirely here (honesty AA2: connection.dart stays
+  // HAL-free). The write is best-effort/async; a DB failure never disturbs
+  // the live tracker or the stream. Null when no DB or no live HAL trip.
+  int? _halTripDbId;
+  double? _halTripStartOdo;     // latched start odometer (km) for the row
+  // Lightweight min/max accumulators so the persisted row is as complete as
+  // the OBD2 one (these mirror ConnectionService's _tripMin*/_tripMax*).
+  // Updated on each frame in _accumulateHalTripStats; reset on start/close.
+  double? _halTripMinTempC;
+  double? _halTripMaxTempC;
+  double? _halTripMaxCellSpreadMv;
+  double? _halTripMinSoc;
+  double? _halTripMaxSoc;
+  double? _halTripPeakPowerKw;  // most-positive power (discharge)
+  double? _halTripPeakRegenKw;  // most-negative power (regen), stored signed
   // EMA-smoothed energy so a whole-% SOC step (~0.65 kWh on this pack)
   // doesn't make the energy cell jump. v0.1.29+85 uses whole SOC only;
   // the fractional BigData SOC (0x044C) is a later step once recon p090
@@ -327,6 +346,30 @@ class HalTelemetryService extends ChangeNotifier {
   // Lives with the stream — started on first trip start, cancelled in
   // _stopStream() so a stopped stream never keeps accumulating.
   Timer? _halTripTick;
+
+  // v0.1.29+91: cached lifetime cumulative drive energy (kWh) = SUM over all
+  // Trips rows. Read synchronously by the dashboard cell at paint; refreshed
+  // async from the DB on init and whenever a HAL trip closes. Null until the
+  // first refresh completes (cell shows "—"). This is "energy spent driving"
+  // (sum of per-trip ΔSOC consumption), not a net battery balance.
+  double? _totalDriveEnergyKwh;
+  double? get totalDriveEnergyKwh => _totalDriveEnergyKwh;
+
+  /// Refresh the cached cumulative drive energy from the DB (best-effort).
+  /// Cheap single-row SUM; notifies listeners on change so the cell repaints.
+  Future<void> refreshTotalDriveEnergy() async {
+    final db = _diagDb;
+    if (db == null) return;
+    try {
+      final v = await db.totalDriveEnergyKwh();
+      if (v != _totalDriveEnergyKwh) {
+        _totalDriveEnergyKwh = v;
+        notifyListeners();
+      }
+    } catch (_) {
+      // best-effort — cell stays on its last value / "—"
+    }
+  }
 
   /// Last good value held across short dropouts / bad frames, or null if
   /// never received or the hold expired. Used by both the temp getters
@@ -707,9 +750,25 @@ class HalTelemetryService extends ChangeNotifier {
     // until this fires, then counts from here.
     if (_halTripStartSoc == null && soc != null) {
       _halTripStartSoc = soc;
+      // v0.1.29+91: back-fill the DB row's start_soc once we have it (the row
+      // was opened with a null anchor). Same pattern as the OBD2 tracker's
+      // updateTripStartAnchors. Best-effort; null odo leaves that column be.
+      _backfillHalTripStart();
     }
     // trip_a may also have been null at start — latch it once it arrives so
     // distance reads from zero (handled in halTripDistanceKm).
+    // v0.1.29+91: also latch the absolute start odometer for the DB row if it
+    // was null at start; once present, back-fill the row anchor.
+    if (_halTripStartOdo == null) {
+      final odoNow = _heldValue('odometer', _coreHold);
+      if (odoNow != null) {
+        _halTripStartOdo = odoNow;
+        _backfillHalTripStart();
+      }
+    }
+
+    // v0.1.29+91: fold this frame into the persisted-row min/max accumulators.
+    _accumulateHalTripStats();
 
     // Active trip — handle park-based segmentation (same thresholds as
     // the OBD2 tracker: debounce P, then close after the park window).
@@ -733,21 +792,134 @@ class HalTelemetryService extends ChangeNotifier {
     _halTripStartedAt = DateTime.now();
     _halTripStartSoc = null;      // latched later, on first valid SOC frame
     _halTripStartTripA = _heldValue('trip_a', _coreHold); // may be null early
+    // v0.1.29+91: latch the absolute odometer at start, used ONLY for the
+    // row's start_odometer column (so history shows the odometer at trip
+    // start). The trip DISTANCE itself comes from halTripDistanceKm = Δ trip_a
+    // (cluster trip meter), the same value the live dashboard shows — so the
+    // persisted distance matches what was on screen during the drive.
+    _halTripStartOdo = _heldValue('odometer', _coreHold); // may be null early
+    // Open the DB row best-effort. _halTripDbId stays null on failure (or no
+    // DB) and the close path simply skips the write — the live tracker is
+    // unaffected either way. startSoc/startOdo may be null this early; they
+    // are back-filled on close from the latched values if they arrive later.
+    _openHalTripRow();
     // Kick the speed tick if it isn't already running.
     _halTripTick ??= Timer.periodic(
         const Duration(seconds: 1), (_) => _onHalTripTick());
   }
 
+  /// v0.1.29+91: open a Trips row for the live HAL trip (best-effort/async).
+  /// Mirrors db.startTrip used by the OBD2 tracker. Guards against double-open.
+  Future<void> _openHalTripRow() async {
+    final db = _diagDb;
+    if (db == null || _halTripDbId != null) return;
+    try {
+      final id = await db.startTrip(
+        startSoc: _halTripStartSoc,
+        startOdo: _halTripStartOdo,
+      );
+      // Only adopt the id if a trip is still live (a close may have raced).
+      if (_halTripActive) {
+        _halTripDbId = id;
+      }
+    } catch (_) {
+      // best-effort — no DB row, history just won't include this drive
+    }
+  }
+
+  /// v0.1.29+91: back-fill the HAL trip row's start_soc / start_odometer once
+  /// those anchors arrive (they may be null at open time). Mirrors the OBD2
+  /// tracker's updateTripStartAnchors. Best-effort/async; no-op without a row.
+  Future<void> _backfillHalTripStart() async {
+    final db = _diagDb;
+    final id = _halTripDbId;
+    if (db == null || id == null) return;
+    try {
+      await db.updateTripStartAnchors(
+        id,
+        startSoc: _halTripStartSoc,
+        startOdo: _halTripStartOdo,
+      );
+    } catch (_) {
+      // best-effort
+    }
+  }
+
   void _closeHalTrip() {
+    // v0.1.29+91: persist the row BEFORE clearing state — finalize reads the
+    // live getters/accumulators, which the resets below would wipe. The write
+    // itself is async/best-effort and detached from this synchronous reset so
+    // the lifecycle (and the stream) never blocks on the DB.
+    _finalizeHalTripRow();
     _halTripActive = false;
     _halTripStartedAt = null;
     _halTripStartSoc = null;
     _halTripStartTripA = null;
+    _halTripStartOdo = null;
     _halParkConfirmStart = null;
     _halParkedSince = null;
     _resetHalTripAggregates();
     _halTripTick?.cancel();
     _halTripTick = null;
+    _halTripDbId = null;
+  }
+
+  /// v0.1.29+91: write the HAL trip's final aggregates to its Trips row via
+  /// db.endTrip — the SAME call the OBD2 tracker uses. Snapshots every value
+  /// it needs synchronously (BEFORE _closeHalTrip's resets run), then fires
+  /// the async write. No-op when there is no DB row (open failed / no DB).
+  /// Any present field is written; anything the HAL tracker doesn't know
+  /// stays null (honest — no fabricated values), exactly like an orphan
+  /// recovery on the OBD2 side.
+  void _finalizeHalTripRow() {
+    final db = _diagDb;
+    final id = _halTripDbId;
+    if (db == null || id == null) return;
+    // Snapshot now — these getters/accumulators are wiped by _closeHalTrip.
+    final endSoc = halSocForTrip;
+    final endOdo = _heldValue('odometer', _coreHold);
+    final distanceKm = halTripDistanceKm;       // Δ trip_a (live display delta)
+    final energyKwh = halTripEnergyUsedKwh;     // ΔSOC × capacity (EMA)
+    final consumption = halTripAvgConsumptionKwh100km;
+    final peakSpeed = _halPeakSpeedKmh;
+    final avgMoving = halTripCurrentAvgMovingKmh;
+    // v0.1.29+91: movingSeconds = seconds spent MOVING (speed > 1 km/h),
+    // NOT the full trip duration. _halSpeedSamples is exactly that — one
+    // increment per 1 s tick while moving — mirroring the OBD2 tracker's
+    // _tripMovingMs ~/ 1000. Trip duration is derived separately by the UI
+    // from endedAt − startedAt, so it must NOT be written here (writing the
+    // full duration would make trip_detail show "[whole trip] / —" for the
+    // moving/idle split, which is wrong).
+    final movingSecs = _halSpeedSamples > 0 ? _halSpeedSamples : null;
+    final minTemp = _halTripMinTempC;
+    final maxTemp = _halTripMaxTempC;
+    final maxSpread = _halTripMaxCellSpreadMv;
+    final minSoc = _halTripMinSoc;
+    final maxSoc = _halTripMaxSoc;
+    final peakPower = _halTripPeakPowerKw;
+    final peakRegen = _halTripPeakRegenKw;
+    // Fire-and-forget; a DB error must never disturb the stream/lifecycle.
+    db
+        .endTrip(
+          id,
+          endSoc: endSoc,
+          endOdo: endOdo,
+          distanceKm: distanceKm,
+          energyUsedKwh: energyKwh,
+          avgConsumptionKwh100km: consumption,
+          minBatteryTempC: minTemp,
+          maxBatteryTempC: maxTemp,
+          maxCellSpreadMv: maxSpread,
+          minSoc: minSoc,
+          maxSoc: maxSoc,
+          peakSpeedKmh: peakSpeed,
+          peakPowerKw: peakPower,
+          peakRegenKw: peakRegen,
+          avgMovingSpeedKmh: avgMoving,
+          movingSeconds: movingSecs,
+        )
+        .then((_) => refreshTotalDriveEnergy())
+        .catchError((_) {});
   }
 
   void _resetHalTripAggregates() {
@@ -755,6 +927,59 @@ class HalTelemetryService extends ChangeNotifier {
     _halSpeedSum = 0;
     _halSpeedSamples = 0;
     _halEnergyEma = null;
+    // v0.1.29+91: min/max accumulators for the persisted row.
+    _halTripMinTempC = null;
+    _halTripMaxTempC = null;
+    _halTripMaxCellSpreadMv = null;
+    _halTripMinSoc = null;
+    _halTripMaxSoc = null;
+    _halTripPeakPowerKw = null;
+    _halTripPeakRegenKw = null;
+  }
+
+  /// v0.1.29+91: fold the current frame into the trip min/max accumulators
+  /// (temp, cell spread, SOC, peak power/regen) so db.endTrip writes a row
+  /// as complete as the OBD2 one. Called from _updateHalTrip while a trip is
+  /// live; reads only held values, so it's cheap. Each field self-guards on
+  /// availability — a missing signal simply doesn't update its accumulator.
+  void _accumulateHalTripStats() {
+    final t = halBatteryTempC;
+    if (t != null) {
+      _halTripMinTempC = _halTripMinTempC == null
+          ? t
+          : (t < _halTripMinTempC! ? t : _halTripMinTempC);
+      _halTripMaxTempC = _halTripMaxTempC == null
+          ? t
+          : (t > _halTripMaxTempC! ? t : _halTripMaxTempC);
+    }
+    final spread = halCellSpreadMv;
+    if (spread != null) {
+      _halTripMaxCellSpreadMv = _halTripMaxCellSpreadMv == null
+          ? spread
+          : (spread > _halTripMaxCellSpreadMv! ? spread : _halTripMaxCellSpreadMv);
+    }
+    final soc = halSocForTrip;
+    if (soc != null) {
+      _halTripMinSoc =
+          _halTripMinSoc == null ? soc : (soc < _halTripMinSoc! ? soc : _halTripMinSoc);
+      _halTripMaxSoc =
+          _halTripMaxSoc == null ? soc : (soc > _halTripMaxSoc! ? soc : _halTripMaxSoc);
+    }
+    final p = halPowerKw;
+    if (p != null) {
+      // v0.1.29+91: peakPowerKw stores the peak DISCHARGE magnitude (positive),
+      // matching the OBD2 tracker which writes pwr.abs() into this column and
+      // the UI which renders it unsigned. Discharge is positive in halPowerKw
+      // (V×I, discharge-positive), so only positive samples update peak power;
+      // an all-coast/regen trip leaves it null rather than writing a negative.
+      if (p > 0 && (_halTripPeakPowerKw == null || p > _halTripPeakPowerKw!)) {
+        _halTripPeakPowerKw = p;
+      }
+      // peakRegenKw stays SIGNED most-negative (regen), exactly like OBD2.
+      if (p < 0 && (_halTripPeakRegenKw == null || p < _halTripPeakRegenKw!)) {
+        _halTripPeakRegenKw = p;
+      }
+    }
   }
 
   /// ~1 s tick: sample HAL speed into peak + moving-average accumulators
@@ -842,10 +1067,24 @@ class HalTelemetryService extends ChangeNotifier {
   double? get halTripPeakSpeedKmh => _halPeakSpeedKmh;
 
   /// Live moving-average speed (km/h), moving samples only. Null until the
-  /// trip has at least one moving sample.
+  /// trip has at least one moving sample. (Internal / parity with OBD2.)
   double? get halTripCurrentAvgMovingKmh {
     if (!_halTripActive || _halSpeedSamples == 0) return null;
     return _halSpeedSum / _halSpeedSamples;
+  }
+
+  /// v0.1.29+91: live OVERALL average speed (km/h), INCLUDING stops —
+  /// distance ÷ wall-clock elapsed. Shown in the driver "avg speed" cell in
+  /// halOnly (mirrors ConnectionService.tripCurrentAvgSpeedKmh). distance is
+  /// Δ trip_a; elapsed is the HAL trip wall clock. Null until both exist and
+  /// elapsed is non-zero.
+  double? get halTripCurrentAvgSpeedKmh {
+    final dist = halTripDistanceKm;
+    final dur = halTripDuration;
+    if (dist == null || dur == null) return null;
+    final secs = dur.inSeconds;
+    if (secs <= 0 || dist <= 0) return null;
+    return dist / secs * 3600.0;
   }
 
 
@@ -910,6 +1149,8 @@ class HalTelemetryService extends ChangeNotifier {
     if (_mode != HalSourceMode.obd2Only) {
       await _startStream();
     }
+    // v0.1.29+91: prime the cumulative drive-energy cell from existing trips.
+    await refreshTotalDriveEnergy();
     notifyListeners();
   }
 

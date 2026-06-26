@@ -484,13 +484,27 @@ class _MiddleColumn extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final soh = svc.readNumeric('790', '0029');
-    final tempRaw = svc.readNumeric('790', '002F');
-    final odo = svc.readNumeric('791', '0026');
-    final cycles = svc.cycleCount;
-    // v0.1.29+66: gear and the live speed cell prefer HAL when fresh
-    // (gear_enum ~3.4 Hz / speed ~8 Hz, both live-verified vs cluster).
+    // v0.1.29+66/+91: gear/speed/SOH/temp/odo prefer HAL when fresh (all
+    // live-verified vs cluster); declared first so the resolvers below can
+    // use it.
     final hal = context.watch<HalTelemetryService>();
+    final soh = hal.useHalForSoh ? hal.halSoh : svc.readNumeric('790', '0029');
+    final tempRaw = hal.useHalForBatteryTemp
+        ? hal.halBatteryTempC
+        : svc.readNumeric('790', '002F');
+    final odo =
+        hal.useHalForOdometer ? hal.halOdometerKm : svc.readNumeric('791', '0026');
+    // v0.1.29+91: the "Cycles" cell (790/0B02) was a meaningless static
+    // counter on this vehicle (never changed; not charge cycles) — replaced
+    // by lifetime cumulative drive energy (kWh), SUM over all trips, same in
+    // both sources (HAL trips are now persisted too). Null → "—".
+    final totalEnergy = hal.totalDriveEnergyKwh;
+    // v0.1.29+91: inverter temp from HAL (0x3DB00008) for the PDU slot in
+    // halOnly — the PDU UDS DIDs (740/0010-0011) need the dongle, so without
+    // it that card was blank. With the dongle the card keeps showing PDU
+    // T1/T2 exactly as before (the card itself switches on halInvActive).
+    final halInvActive = hal.useHalForInverterTemp;
+    final inverterTempC = hal.halInverterTempC;
     final gear = hal.useHalForGear
         ? hal.halGear
         : svc.readNumeric('791', '0009');
@@ -559,10 +573,13 @@ class _MiddleColumn extends StatelessWidget {
                     const SizedBox(width: 12),
                     Expanded(
                       child: _SmallMetricCard(
-                        icon: Icons.refresh,
+                        icon: Icons.bolt,
                         color: Colors.purpleAccent,
-                        label: S.of('dash.cycles'),
-                        value: cycles != null ? '$cycles' : '—',
+                        label: S.of('dash.total_energy'),
+                        value: totalEnergy != null
+                            ? totalEnergy.toStringAsFixed(1)
+                            : '—',
+                        unit: 'kWh',
                       ),
                     ),
                   ],
@@ -589,7 +606,20 @@ class _MiddleColumn extends StatelessWidget {
                     ),
                     const SizedBox(width: 12),
                     Expanded(
-                      child: _PduTempsCard(t1: pduTemp1, t2: pduTemp2),
+                      // v0.1.29+91: halOnly → inverter temp (HAL); with dongle
+                      // → PDU T1/T2 as before. PDU has no HAL source, so the
+                      // slot carries the nearest available power-electronics
+                      // temperature instead of a blank when there's no dongle.
+                      child: halInvActive
+                          ? _SmallMetricCard(
+                              icon: Icons.thermostat,
+                              color: Colors.deepOrangeAccent,
+                              label: S.of('dash.inverter'),
+                              value: inverterTempC != null
+                                  ? '${inverterTempC.toInt()}°C'
+                                  : '—',
+                            )
+                          : _PduTempsCard(t1: pduTemp1, t2: pduTemp2),
                     ),
                   ],
                 ),
