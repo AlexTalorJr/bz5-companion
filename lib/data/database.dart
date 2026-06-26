@@ -620,6 +620,21 @@ class AppDatabase extends _$AppDatabase {
         .get();
   }
 
+  /// v0.1.29+91: lifetime cumulative drive energy (kWh) = SUM(energy_used_kwh)
+  /// across every trip row (OBD2 AND HAL — they share this table; HAL trips
+  /// are written by HalTelemetryService on the head unit). Carried over from
+  /// trip to trip by definition (it's a running total of per-trip energy).
+  /// Returns 0.0 when there are no trips / no energy recorded yet. NOTE: this
+  /// is a sum of per-trip CONSUMPTION (ΔSOC-derived); it does not subtract
+  /// charging between trips, so it is "energy spent driving", not a net
+  /// battery balance — the label reflects that.
+  Future<double> totalDriveEnergyKwh() async {
+    final expr = trips.energyUsedKwh.sum();
+    final q = selectOnly(trips)..addColumns([expr]);
+    final row = await q.getSingleOrNull();
+    return row?.read(expr) ?? 0.0;
+  }
+
   Future<List<Trip>> getAllTrips() {
     return (select(trips)
           ..orderBy(

@@ -321,6 +321,9 @@ class DerivedMetricsCard extends StatelessWidget {
     // v0.1.27: watch cost settings so the Total cost row rebuilds
     // reactively when the user edits cost_per_kwh in Settings.
     final cost = context.watch<CostSettings>();
+    // v0.1.29+91: wall-clock trip duration for the overall-average-speed row.
+    final tripDuration =
+        (trip.endedAt ?? DateTime.now()).difference(trip.startedAt);
 
     final dist = trip.distanceKm ??
         ((trip.endOdometer != null && trip.startOdometer != null)
@@ -386,10 +389,15 @@ class DerivedMetricsCard extends StatelessWidget {
           trip.peakSpeedKmh != null
               ? '${trip.peakSpeedKmh!.toStringAsFixed(0)} km/h'
               : '—'),
-      // v0.1.22: new trip metrics enabled by speed DID + precise SOC.
-      _MetricRow(S.of('trip.m_avg_moving'),
-          trip.avgMovingSpeedKmh != null
-              ? '${trip.avgMovingSpeedKmh!.toStringAsFixed(0)} km/h'
+      // v0.1.22 / v0.1.29+91: overall average speed INCLUDING stops, computed
+      // from the stored distance and wall-clock duration (distance ÷ elapsed).
+      // The moving-only average (avgMovingSpeedKmh column) is no longer shown
+      // here — the moving/idle split below already conveys time-in-motion.
+      _MetricRow(S.of('trip.m_avg_speed'),
+          (trip.distanceKm != null &&
+                  trip.distanceKm! > 0 &&
+                  tripDuration.inSeconds > 0)
+              ? '${(trip.distanceKm! / tripDuration.inSeconds * 3600.0).toStringAsFixed(0)} km/h'
               : '—'),
       _MetricRow(S.of('trip.m_time_moving'),
           (trip.movingSeconds != null || trip.idleSeconds != null)

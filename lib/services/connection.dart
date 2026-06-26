@@ -1802,11 +1802,25 @@ class ConnectionService extends ChangeNotifier {
   }
 
   /// v0.1.23: live current-trip avg speed (moving samples only).
-  /// Used by Driver view "avg moving" trip-metric cell. Null until
-  /// the trip has at least one moving sample.
+  /// Used internally / by export. Null until the trip has a moving sample.
   double? get tripCurrentAvgMovingKmh {
     if (_currentTripId == null || _tripSpeedSamples == 0) return null;
     return _tripSpeedSum / _tripSpeedSamples;
+  }
+
+  /// v0.1.29+91: live current-trip OVERALL average speed (km/h), INCLUDING
+  /// stops — distance ÷ wall-clock elapsed. This is the figure shown in the
+  /// driver "avg speed" cell (the moving-only average above excluded idle
+  /// time, which made a city trip with lights/jams read too high). Pure OBD2
+  /// (odometer-derived distance + trip wall clock); no HAL. Null until both a
+  /// distance and a non-zero elapsed exist.
+  double? get tripCurrentAvgSpeedKmh {
+    final dist = tripDistanceKm;
+    final dur = tripDuration;
+    if (dist == null || dur == null) return null;
+    final secs = dur.inSeconds;
+    if (secs <= 0 || dist <= 0) return null;
+    return dist / secs * 3600.0;
   }
 
   List<EcuSpec> get _ecusToPoll {
