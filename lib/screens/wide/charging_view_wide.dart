@@ -55,6 +55,8 @@ class ChargingViewWide extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            _ChargingLogBar(svc: svc),
+            const SizedBox(height: 12),
             Expanded(flex: 4, child: _TopHeroRow(svc: svc, wide: true)),
             const SizedBox(height: 12),
             Expanded(flex: 5, child: _ChartsRow(svc: svc, wide: true)),
@@ -71,12 +73,93 @@ class ChargingViewWide extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          _ChargingLogBar(svc: svc),
+          const SizedBox(height: 12),
           _TopHeroRow(svc: svc, wide: false),
           const SizedBox(height: 12),
           _ChartsRow(svc: svc, wide: false),
           const SizedBox(height: 12),
           _BottomSummaryStrip(svc: svc),
         ],
+      ),
+    );
+  }
+}
+
+// ───────────────────── Charge-log control bar (+94) ─────────────────────
+
+/// Manual start/stop for the per-module UDS charge log, plus a live status
+/// readout. The button is the PRIMARY trigger — pressed BEFORE plugging in so
+/// the baseline + pack_I sign-flip (recon's sync anchor) are captured; an
+/// auto-start on the isCharging transition is a fallback that misses that
+/// pre-onset window. While active, shows row count + measured per-block
+/// cadence so it's obvious data is flowing before committing to the drive.
+class _ChargingLogBar extends StatelessWidget {
+  final ConnectionService svc;
+  const _ChargingLogBar({required this.svc});
+
+  @override
+  Widget build(BuildContext context) {
+    final active = svc.chargingLogActive;
+    final rows = svc.chargingLogRowsWritten;
+    final pass = svc.chargingBlockAvgPassSeconds;
+    return Card(
+      color: active ? Colors.green.shade900.withValues(alpha: 0.35) : null,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        child: Row(
+          children: [
+            Icon(
+              active ? Icons.fiber_manual_record : Icons.battery_charging_full,
+              size: 18,
+              color: active ? Colors.greenAccent : Colors.grey,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    active
+                        ? S.of('chg.log.active')
+                        : S.of('chg.log.idle'),
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: active ? Colors.greenAccent : null,
+                    ),
+                  ),
+                  if (active)
+                    Text(
+                      S
+                          .of('chg.log.stats')
+                          .replaceFirst('{rows}', '$rows')
+                          .replaceFirst(
+                              '{pass}', pass?.toStringAsFixed(1) ?? '—'),
+                      style: const TextStyle(
+                          fontSize: 11, color: Colors.grey),
+                    )
+                  else
+                    Text(
+                      S.of('chg.log.hint'),
+                      style: const TextStyle(
+                          fontSize: 11, color: Colors.grey),
+                    ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 10),
+            active
+                ? FilledButton.tonal(
+                    onPressed: svc.stopChargingLog,
+                    child: Text(S.of('chg.log.stop')),
+                  )
+                : FilledButton(
+                    onPressed: () => svc.startChargingLog(),
+                    child: Text(S.of('chg.log.start')),
+                  ),
+          ],
+        ),
       ),
     );
   }

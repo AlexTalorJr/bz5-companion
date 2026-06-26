@@ -246,6 +246,41 @@ class ConnectionService extends ChangeNotifier {
   int? _chargingSessionStartCounter;
   double? _chargingSessionStartSocPct;
 
+  // ── v0.1.29+94: per-module UDS charge logger ──
+  //
+  // Captures the full module block (20 cell voltages 016D…01B7 + 20 module
+  // temps 0171…01BB) plus pack_I (790/0009) and pack context (1FFD/0029/
+  // 002F/sum-of-cells) into the samples table under one charging_session_id,
+  // for recon to align against its CAN trace on a DC/AC charge.
+  //
+  // Trigger (per the recon handoff): primarily a manual button — Alex starts
+  // the log BEFORE plugging in, so the baseline (current ~0) and the pack_I
+  // sign-flip at current onset are both captured (that flip is recon's sync
+  // anchor; a current-based auto-trigger would start AFTER the flip and miss
+  // it). Auto-start on the isCharging transition is a safety net only (if the
+  // button was forgotten — it records the charge but misses the pre-onset
+  // baseline). Stop: button, or isCharging→idle.
+  bool _chargingLogActive = false;
+  bool get chargingLogActive => _chargingLogActive;
+  String? _chargingLogSessionId;
+  String? get chargingLogSessionId => _chargingLogSessionId;
+  bool _chargingLogStartedManually = false;
+  DateTime? _chargingLogStartedAt;
+  DateTime? _lastChargingModulePollAt;
+  int _chargingLogRowsWritten = 0;
+  int get chargingLogRowsWritten => _chargingLogRowsWritten;
+  // Effective per-module update cadence, measured live (recon needs this
+  // number for its alignment windows). One full block pass = all 40 module
+  // DIDs read once; we record the wall-clock of each completed pass.
+  DateTime? _lastChargingBlockDoneAt;
+  int _chargingBlockPassCount = 0;
+  double? _chargingBlockAvgPassSeconds;
+  double? get chargingBlockAvgPassSeconds => _chargingBlockAvgPassSeconds;
+  // How aggressively to repeat the module block while logging. Voltages move
+  // faster than temps on DC, so we pass the whole block as fast as the BLE
+  // link allows, floored here to avoid starving the rest of the poll loop.
+  static const Duration _chargingModulePollInterval = Duration(seconds: 2);
+
   /// Минимальный интервал между записями в _b00History если значение не
   /// поменялось. При flat counter добавляем snapshot раз в 10 секунд —
   /// этого достаточно для интерполяции значения в произвольный момент окна,
@@ -2150,6 +2185,13 @@ class ConnectionService extends ChangeNotifier {
         final fastPick = _pickWithRoundRobin(_fastTasks);
         if (fastPick != null) await _runTask(fastPick);
 
+        // v0.1.29+94: per-module charge logger. Self-throttled to
+        // _chargingModulePollInterval and a no-op unless a charge log is
+        // active, so it costs nothing while driving/parked. Runs here, in
+        // the hot path, so the module block is captured as densely as the
+        // BLE link allows during a charge.
+        await _pollChargingModules();
+
         // Housekeeping (unchanged from pre-+53).
         _updatePowerCalculations();
         await _maybeStartTrip();
@@ -2996,6 +3038,9 @@ class ConnectionService extends ChangeNotifier {
         _chargingSessionStartCounter = null;
         _chargingSessionStartSocPct = null;
         _wasCharging = false;
+        // v0.1.29+94: auto-stop the per-module charge log on
+        // isCharging→idle (covers both manual and auto-started sessions).
+        if (_chargingLogActive) stopChargingLog();
       }
       return;
     }
@@ -3006,6 +3051,12 @@ class ConnectionService extends ChangeNotifier {
       _chargingSessionStartCounter = currentCounter;
       _chargingSessionStartSocPct = socPrecisePct ?? readNumeric('790', '0005');
       _wasCharging = true;
+      // v0.1.29+94: safety-net auto-start of the per-module charge log if the
+      // user didn't press the button. This starts AFTER current onset, so it
+      // misses the pre-onset baseline + the pack_I sign-flip (recon's sync
+      // anchor) — that's why the manual button (started before plug-in) is
+      // the primary path. Records the charge itself either way.
+      if (!_chargingLogActive) startChargingLog(manual: false);
     }
 
     // Throttle samples to _chargingHistoryInterval.
@@ -3171,6 +3222,222 @@ class ConnectionService extends ChangeNotifier {
       }
       notifyListeners();
     }
+  }
+
+  // ── v0.1.29+94: per-module UDS charge logger ──
+
+  /// The 20 module-temperature DIDs (0171…01BB, 2 sensors × 10 modules),
+  /// interleaved module-by-module to match the voltage list order. °C =
+  /// raw − 40 (handled by the registry decoder). M6 (0199/019B) returns
+  /// 0xFF on this car — hardware (no sensor), not a fault; the decoder
+  /// yields null for it and we store null, exactly like the live path.
+  static const _moduleTempDids = [
+    '0171', '0173', // M1 t1,t2
+    '0179', '017B', // M2
+    '0181', '0183', // M3
+    '0189', '018B', // M4
+    '0191', '0193', // M5
+    '0199', '019B', // M6 (0xFF — not reported)
+    '01A1', '01A3', // M7
+    '01A9', '01AB', // M8
+    '01B1', '01B3', // M9
+    '01B9', '01BB', // M10
+  ];
+
+  /// Pack-context DIDs logged alongside the module block so recon can pin the
+  /// modules to pack state: precise SOC (1FFD), SOH (0029), canonical battery
+  /// temp (002F), and pack current (0009 — the sync anchor; its sign flips at
+  /// charge-current onset). All on the BMS (790/798). Sum-of-cells pack
+  /// voltage is logged separately (it's computed, not a single DID read).
+  static const _chargingContextDids = [
+    '1FFD', // precise SOC
+    '0029', // SOH
+    '002F', // battery temp (canonical)
+    '0009', // pack current — recon sync anchor
+  ];
+
+  /// Start the per-module charge log. Manual entry point (button): Alex calls
+  /// this BEFORE plugging in, so the baseline + pack_I sign-flip are captured.
+  /// Idempotent — a second call while active is a no-op. The session id is a
+  /// timestamp string, unique per session and human-readable in the export.
+  void startChargingLog({bool manual = true}) {
+    if (_chargingLogActive) return;
+    final now = DateTime.now();
+    _chargingLogActive = true;
+    _chargingLogStartedManually = manual;
+    _chargingLogStartedAt = now;
+    _chargingLogSessionId = 'chg_${now.toIso8601String()}';
+    _chargingLogRowsWritten = 0;
+    _lastChargingModulePollAt = null;
+    _lastChargingBlockDoneAt = null;
+    _chargingBlockPassCount = 0;
+    _chargingBlockAvgPassSeconds = null;
+    debugPrint('Charging log STARTED (${manual ? "manual" : "auto"}) '
+        'session=$_chargingLogSessionId');
+    notifyListeners();
+  }
+
+  /// Stop the per-module charge log. Button, or auto on isCharging→idle.
+  void stopChargingLog() {
+    if (!_chargingLogActive) return;
+    debugPrint('Charging log STOPPED session=$_chargingLogSessionId '
+        'rows=$_chargingLogRowsWritten '
+        'avgPass=${_chargingBlockAvgPassSeconds?.toStringAsFixed(1)}s');
+    _chargingLogActive = false;
+    _chargingLogStartedManually = false;
+    _chargingLogSessionId = null;
+    _chargingLogStartedAt = null;
+    _lastChargingModulePollAt = null;
+    notifyListeners();
+  }
+
+  /// v0.1.29+94: find a BMS (790) DidSpec by id from the registry, or null
+  /// if not defined. All DIDs the charge logger reads live on the BMS ECU
+  /// (790/798), so a single-ECU lookup is enough — no rx-from-tx mapping
+  /// needed.
+  DidSpec? _bmsDidSpec(String did) {
+    for (final s in bmsEcu.dids) {
+      if (s.did == did) return s;
+    }
+    return null;
+  }
+
+  /// Read the full module block (20 V + 20 T) + pack context once and write
+  /// every value to the samples table under the active charging_session_id,
+  /// with raw_hex + decoded numeric + timestamp. Called from the poll loop
+  /// while a charge log is active, throttled to [_chargingModulePollInterval].
+  /// Best-effort per DID — a read that fails or times out is skipped (no row),
+  /// never aborts the pass. After a full pass it updates the measured
+  /// effective cadence (recon's alignment-window input).
+  Future<void> _pollChargingModules() async {
+    if (!_chargingLogActive || _client == null) return;
+    final sid = _chargingLogSessionId;
+    if (sid == null) return;
+    final now = DateTime.now();
+    if (_lastChargingModulePollAt != null &&
+        now.difference(_lastChargingModulePollAt!) <
+            _chargingModulePollInterval) {
+      return;
+    }
+    _lastChargingModulePollAt = now;
+
+    var wrote = 0;
+
+    // 20 cell voltages (016D…01B7). These are DidCategory.cells, skipped by
+    // the main poll loop, so this is the ONLY path that persists them.
+    for (final did in _cellDids) {
+      final spec = _bmsDidSpec(did);
+      if (spec == null) continue;
+      try {
+        final r = await _client!
+            .readDid(did, tx: '790', rx: '798')
+            .timeout(const Duration(milliseconds: 1000));
+        final payload = r?.payloadAfterUdsRead;
+        if (r == null || payload == null) continue;
+        final decoded = decodeDid(spec, payload);
+        await db.insertChargingSample(
+          chargingSessionId: sid,
+          ecuTx: '790',
+          did: did,
+          rawHex: r.rawHex,
+          numeric: decoded?.numeric,
+          text: decoded?.text,
+        );
+        wrote++;
+      } catch (_) {}
+    }
+
+    // 20 module temps (0171…01BB). M6 0xFF → decoder returns null numeric →
+    // stored as null (not a fault), per recon's instruction.
+    for (final did in _moduleTempDids) {
+      final spec = _bmsDidSpec(did);
+      if (spec == null) continue;
+      try {
+        final r = await _client!
+            .readDid(did, tx: '790', rx: '798')
+            .timeout(const Duration(milliseconds: 1000));
+        final payload = r?.payloadAfterUdsRead;
+        if (r == null || payload == null) continue;
+        final decoded = decodeDid(spec, payload);
+        await db.insertChargingSample(
+          chargingSessionId: sid,
+          ecuTx: '790',
+          did: did,
+          rawHex: r.rawHex,
+          numeric: decoded?.numeric,
+          text: decoded?.text,
+        );
+        wrote++;
+      } catch (_) {}
+    }
+
+    // Pack context (1FFD/0029/002F/0009). pack_I (0009) is the sync anchor.
+    for (final did in _chargingContextDids) {
+      final spec = _bmsDidSpec(did);
+      if (spec == null) continue;
+      try {
+        final r = await _client!
+            .readDid(did, tx: '790', rx: '798')
+            .timeout(const Duration(milliseconds: 1000));
+        final payload = r?.payloadAfterUdsRead;
+        if (r == null || payload == null) continue;
+        // 790/0009 pack current is offset-signed and decoded specially in the
+        // service; the registry decoder handles the rest. Use the same
+        // packCurrentA accessor value when this is the current DID so the
+        // logged number matches what the app shows, falling back to the
+        // registry decode otherwise.
+        final decoded = decodeDid(spec, payload);
+        double? numeric = decoded?.numeric;
+        if (did == '0009') {
+          numeric = _packCurrentA ?? numeric;
+        }
+        await db.insertChargingSample(
+          chargingSessionId: sid,
+          ecuTx: '790',
+          did: did,
+          rawHex: r.rawHex,
+          numeric: numeric,
+          text: decoded?.text,
+        );
+        wrote++;
+      } catch (_) {}
+    }
+
+    // Sum-of-cells pack voltage — computed, not a single DID. Log it as a
+    // synthetic row (did '0FFF' = "pack V from cells", raw empty) so the
+    // export carries pack V next to the modules without a fragile DID guess.
+    final packLive = packVoltageFromCells;
+    if (packLive != null) {
+      try {
+        await db.insertChargingSample(
+          chargingSessionId: sid,
+          ecuTx: '790',
+          did: '0FFF',
+          rawHex: '',
+          numeric: packLive,
+          text: 'pack_v_sum_of_cells',
+        );
+        wrote++;
+      } catch (_) {}
+    }
+
+    _chargingLogRowsWritten += wrote;
+
+    // Measure effective per-block cadence (one pass = all module DIDs once).
+    final passEnd = DateTime.now();
+    if (_lastChargingBlockDoneAt != null) {
+      final dt = passEnd.difference(_lastChargingBlockDoneAt!).inMilliseconds /
+          1000.0;
+      _chargingBlockPassCount++;
+      _chargingBlockAvgPassSeconds = _chargingBlockAvgPassSeconds == null
+          ? dt
+          : (_chargingBlockAvgPassSeconds! * (_chargingBlockPassCount - 1) +
+                  dt) /
+              _chargingBlockPassCount;
+    }
+    _lastChargingBlockDoneAt = passEnd;
+
+    notifyListeners();
   }
 
   /// v0.1.3: poll DID-ов которые не входят в EcuSpec реестр.

@@ -410,12 +410,14 @@ class ExportService {
 
   String _samplesToCsv(List<Sample> samples) {
     final buf = StringBuffer();
-    buf.writeln('id,timestamp,trip_id,ecu_tx,did,raw_hex,numeric,text');
+    buf.writeln(
+        'id,timestamp,trip_id,charging_session_id,ecu_tx,did,raw_hex,numeric,text');
     for (final s in samples) {
       buf.writeln([
         s.id,
         s.timestamp.toIso8601String(),
         s.tripId ?? '',
+        _csvEscape(s.chargingSessionId ?? ''),
         s.ecuTx,
         s.did,
         s.rawHex,
