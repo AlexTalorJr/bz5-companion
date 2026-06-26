@@ -640,7 +640,12 @@ class SpeedHistogramCard extends StatefulWidget {
 }
 
 class SpeedHistogramCardState extends State<SpeedHistogramCard> {
-  late Future<List<Sample>> _samples;
+  // v0.1.29+93: raw speed VALUES (km/h), not OBD2 Sample rows, so the source
+  // can be either the OBD2 `samples` 740/0008 series OR — for a HAL trip
+  // (head unit, no dongle) that never wrote 740/0008 — the hal_samples
+  // name='speed' series. The histogram is built from values alone, so it
+  // doesn't care which table they came from.
+  late Future<List<double?>> _samples;
 
   @override
   void initState() {
@@ -664,9 +669,19 @@ class SpeedHistogramCardState extends State<SpeedHistogramCard> {
     }
   }
 
-  Future<List<Sample>> _loadSamples() async {
+  /// v0.1.29+93: speed values for the trip. Try the OBD2 740/0008 series
+  /// first (dongle trips); if empty, fall back to the HAL speed series
+  /// (hal_samples name='speed') so a HAL-only trip on the head unit also
+  /// gets a distribution chart. Same physical quantity either way.
+  Future<List<double?>> _loadSamples() async {
     final db = Provider.of<ConnectionService>(context, listen: false).db;
-    return db.getSamplesForTrip(widget.tripId, ecuTx: '740', did: '0008');
+    final obd2 =
+        await db.getSamplesForTrip(widget.tripId, ecuTx: '740', did: '0008');
+    if (obd2.isNotEmpty) {
+      return obd2.map((s) => s.numericValue).toList();
+    }
+    final hal = await db.getHalSpeedSamplesForTrip(widget.tripId);
+    return hal.map((s) => s.numericValue).toList();
   }
 
   /// v0.1.29+30: when there are no 740/0008 speed samples, load a
@@ -700,13 +715,13 @@ class SpeedHistogramCardState extends State<SpeedHistogramCard> {
             const SizedBox(height: 12),
             SizedBox(
               height: 180,
-              child: FutureBuilder<List<Sample>>(
+              child: FutureBuilder<List<double?>>(
                 future: _samples,
                 builder: (ctx, snap) {
                   if (!snap.hasData) {
                     return const Center(child: CircularProgressIndicator());
                   }
-                  final samples = snap.data!;
+                  final values = snap.data!;
 
                   // v0.1.29+37: resolve the histogram counts from raw
                   // samples when present, else fall back to the
@@ -714,12 +729,14 @@ class SpeedHistogramCardState extends State<SpeedHistogramCard> {
                   // cloud restore where samples are gone). Same 15×10km/h
                   // bins either way (shared binSpeed), so the chart is
                   // visually identical regardless of source.
+                  // v0.1.29+93: `values` are raw speeds from EITHER the OBD2
+                  // 740/0008 series or the HAL speed series — the builder
+                  // doesn't care which.
                   const binSize = speedBinSize;
                   const binCount = speedBinCount;
                   List<int>? counts;
-                  if (samples.isNotEmpty) {
-                    counts = buildSpeedHistogram(
-                        samples.map((s) => s.numericValue));
+                  if (values.isNotEmpty) {
+                    counts = buildSpeedHistogram(values);
                   } else {
                     final ex = TripExtra.parse(widget.trip?.extra);
                     if (ex.hasSpeedHistogram) {
