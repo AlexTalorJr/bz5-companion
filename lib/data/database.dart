@@ -646,6 +646,88 @@ class AppDatabase extends _$AppDatabase {
     return (select(trips)..where((t) => t.id.equals(id))).getSingleOrNull();
   }
 
+  // ───────────────── HAL trip orphan recovery (+92) ─────────────────
+  //
+  // A HAL trip (written by HalTelemetryService on the head unit) is opened
+  // with startTrip and finalised with endTrip on a clean Park-and-wait close.
+  // But the normal way a drive ENDS is ignition-off, which kills the HU
+  // process before the Park-window timer (which only ticks while HAL frames
+  // keep arriving) can fire _closeHalTrip. The row is then left endedAt=NULL
+  // forever, and the next drive opens a SECOND active row on top of it — the
+  // "two ACTIVE trips" Alex saw (#42 stayed open at ignition-off, #43 opened
+  // next start).
+  //
+  // The OBD2 side already recovers its own orphans (getOrphanedTrips +
+  // forceCloseTrip in connection.dart), but that path is BLE-gated (never
+  // runs on a dongle-less head unit) and forceCloseTrip reads the OBD2
+  // `samples` table — a HAL orphan has none, so it can't recover the real
+  // end time or aggregates. These helpers are the HAL-side equivalent, run
+  // from HalTelemetryService.init() on the head unit.
+
+  /// Open trip rows (endedAt IS NULL), oldest first. Used by
+  /// HalTelemetryService._recoverOrphanHalTrips at startup. The caller
+  /// excludes the live trip in Dart (it is null at init() time anyway), so
+  /// the query itself stays a single trivial predicate.
+  Future<List<Trip>> getOpenTrips() {
+    return (select(trips)
+          ..where((t) => t.endedAt.isNull())
+          ..orderBy([(t) => OrderingTerm.asc(t.startedAt)]))
+        .get();
+  }
+
+  /// Newest hal_samples timestamp for a trip, or null if the row has no HAL
+  /// samples. This is the REAL end-of-drive instant for variant A: the last
+  /// moment the HAL stream produced a frame before ignition-off. Recovery
+  /// uses it as endedAt so a recovered trip's duration reflects when it
+  /// actually ended, not when the app next happened to start.
+  Future<DateTime?> lastHalSampleTimeForTrip(int tripId) async {
+    final row = await (select(halSamples)
+          ..where((s) => s.tripId.equals(tripId))
+          ..orderBy([(s) => OrderingTerm.desc(s.timestamp)])
+          ..limit(1))
+        .getSingleOrNull();
+    return row?.timestamp;
+  }
+
+  /// Count hal_samples tagged to a trip (companion to the OBD2
+  /// countSamplesForTrip). Lets recovery distinguish an empty pup (no HAL
+  /// samples, nothing worth keeping) from a real drive that simply wasn't
+  /// closed cleanly.
+  Future<int> countHalSamplesForTrip(int tripId) async {
+    final cnt = countAll();
+    final row = await (selectOnly(halSamples)
+          ..addColumns([cnt])
+          ..where(halSamples.tripId.equals(tripId)))
+        .getSingle();
+    return row.read(cnt) ?? 0;
+  }
+
+  /// Close an orphaned HAL trip at an EXPLICIT end timestamp (variant A),
+  /// leaving every summary field exactly as it is. endTrip() can't be used
+  /// here because it hard-codes endedAt = DateTime.now(); a recovered orphan
+  /// must carry its real last-sample time instead. Aggregates are left
+  /// untouched (null for a power-off orphan that never finalised) — honest,
+  /// no fabricated values, same spirit as the OBD2 forceCloseTrip.
+  /// [note] is appended to the row so history can mark it as recovered.
+  Future<void> closeHalOrphanAt(int tripId, DateTime endTs,
+      {String? note}) async {
+    await (update(trips)..where((t) => t.id.equals(tripId))).write(
+      TripsCompanion(
+        endedAt: Value(endTs),
+        notes: note != null ? Value(note) : const Value.absent(),
+      ),
+    );
+  }
+
+  /// Delete a single trip row by id. Used by HAL orphan recovery to drop an
+  /// empty pup (an orphan with no distance and no samples — a row that would
+  /// otherwise show "Nh, all dashes" in history and contribute nothing to
+  /// the cumulative-energy SUM). Scoped to one id; the bulk wipe path is
+  /// separate. Returns the number of rows removed (0 or 1).
+  Future<int> deleteTrip(int id) {
+    return (delete(trips)..where((t) => t.id.equals(id))).go();
+  }
+
   /// v0.1.29+35: trips whose startedAt falls in [from, to], oldest first.
   /// Backs the Trends period aggregation (cumulative + per-period charts).
   /// Ordered ascending so the aggregator can walk them chronologically

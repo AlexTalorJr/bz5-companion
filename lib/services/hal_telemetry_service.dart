@@ -371,6 +371,53 @@ class HalTelemetryService extends ChangeNotifier {
     }
   }
 
+  /// v0.1.29+92: sweep HAL trips left open by a previous run and resolve each
+  /// one. Runs once at init() on the head unit, BEFORE this session opens any
+  /// new trip, so `_halTripDbId` is still null and every open row is a true
+  /// orphan (never the live drive). Two outcomes per row, matching the agreed
+  /// policy:
+  ///
+  ///   • empty pup (no distance AND no HAL samples) → DELETE. A power-off that
+  ///     happened seconds after pulling away leaves a row with nothing in it;
+  ///     keeping it would show "Nh — — —" in history and add nothing to the
+  ///     cumulative-energy SUM. Drop it.
+  ///   • real drive (has samples) → CLOSE at its last HAL-sample timestamp
+  ///     (variant A: the real end-of-drive instant), leaving aggregates as
+  ///     they are. We do NOT fabricate distance/energy from raw hal_samples
+  ///     here — those rows are diagnostic signal/CAN dumps, not the OBD2
+  ///     sample series forceCloseTrip recovers from, and inventing aggregates
+  ///     would violate the honesty rule. The row simply stops being ACTIVE
+  ///     and shows what it legitimately captured (often just duration).
+  ///
+  /// Idempotent: a second run finds nothing open. Best-effort throughout —
+  /// any failure is logged and swallowed so startup never blocks on the DB.
+  Future<void> _recoverOrphanHalTrips() async {
+    final db = _diagDb;
+    if (db == null) return;
+    try {
+      final open = await db.getOpenTrips();
+      for (final t in open) {
+        // Never touch the live drive (null this early, but guard anyway).
+        if (_halTripDbId != null && t.id == _halTripDbId) continue;
+        final samples = await db.countHalSamplesForTrip(t.id);
+        final isEmptyPup = t.distanceKm == null && samples == 0;
+        if (isEmptyPup) {
+          await db.deleteTrip(t.id);
+          debugPrint('HAL recovery: deleted empty orphan Trip #${t.id} '
+              '(started ${t.startedAt})');
+          continue;
+        }
+        final endTs = await db.lastHalSampleTimeForTrip(t.id) ??
+            t.startedAt.add(const Duration(seconds: 1));
+        await db.closeHalOrphanAt(t.id, endTs, note: 'auto-closed: orphaned');
+        debugPrint('HAL recovery: closed orphan Trip #${t.id} '
+            '(started ${t.startedAt}) → endedAt=$endTs');
+      }
+    } catch (e) {
+      debugPrint('HAL orphan recovery failed (non-fatal): $e');
+    }
+  }
+
   /// Last good value held across short dropouts / bad frames, or null if
   /// never received or the hold expired. Used by both the temp getters
   /// and (in halOnly mode) the overlapping-core getters.
@@ -1144,6 +1191,18 @@ class HalTelemetryService extends ChangeNotifier {
       _mode = HalSourceMode.obd2Only;
       await prefs.setString('hal_source_mode', _modeToString(_mode));
     }
+    // v0.1.29+92: recover HAL trips orphaned by a previous ignition-off,
+    // BEFORE starting the stream (so it runs before _updateHalTrip can open
+    // this session's trip — _halTripDbId is still null, every open row is a
+    // true orphan). A clean close needs the Park-window timer to fire, but
+    // that timer only ticks while HAL frames arrive — ignition-off kills the
+    // process first, so the row is left open and the next drive stacks a
+    // second ACTIVE trip on top (the bug Alex saw: #42 stuck ACTIVE, #43
+    // opened over it). Head-unit only (phones never open HAL trips).
+    // Best-effort; a failure must not block startup.
+    if (_isHeadUnit) {
+      await _recoverOrphanHalTrips();
+    }
     // Start the stream unless the user pinned OBD2-only. On a phone the
     // platform returns null and we simply stay on OBD2 — no harm.
     if (_mode != HalSourceMode.obd2Only) {
@@ -1275,7 +1334,11 @@ class HalTelemetryService extends ChangeNotifier {
     if (last != null && now.difference(last) < _halDiagThrottle) return;
     _halDiagLastLog[e.name] = now;
     final (target, subtypeHex) = _splitKey(e.key);
-    final tid = _currentTripId?.call();
+    // v0.1.29+92: tag with the live HAL trip's own row id when one is open,
+    // so the rows form a per-trip series (orphan recovery reads the last
+    // such timestamp as the real end-of-drive). Fall back to the OBD2 trip
+    // id (the +91 behaviour) when there's a dongle trip but no HAL row.
+    final tid = _halTripDbId ?? _currentTripId?.call();
     // Fire-and-forget; never let a logging failure disturb the stream.
     db
         .insertHalSignal(
@@ -1298,7 +1361,8 @@ class HalTelemetryService extends ChangeNotifier {
     final canId = e.canIdHex;
     final buf = e.bufHex;
     if (canId == null || buf == null) return;
-    final tid = _currentTripId?.call();
+    // v0.1.29+92: same per-trip tagging as the decoded path above.
+    final tid = _halTripDbId ?? _currentTripId?.call();
     db
         .insertBigDataFrame(
           tripId: tid,
