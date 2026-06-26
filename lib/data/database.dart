@@ -27,6 +27,13 @@ class Samples extends Table {
   TextColumn get rawHex => text()();
   RealColumn get numericValue => real().nullable()();
   TextColumn get textValue => text().nullable()();
+  // v0.1.29+94: tags a sample as belonging to a charging-log session
+  // (per-module UDS capture during DC/AC charge). Null for normal trip /
+  // ad-hoc samples. A trip sample has tripId set; a charging sample has
+  // chargingSessionId set; the two are mutually exclusive in practice
+  // (charging happens with no active trip). Lets recon filter the charge
+  // block out of the export by one column.
+  TextColumn get chargingSessionId => text().nullable()();
 }
 
 @DataClassName('Trip')
@@ -310,7 +317,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase() : super(_openConnection());
 
   @override
-  int get schemaVersion => 9;
+  int get schemaVersion => 10;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -383,6 +390,12 @@ class AppDatabase extends _$AppDatabase {
           // behaves exactly as before.
           if (from < 9) {
             await m.createTable(halSamples);
+          }
+          // v9 → v10 (v0.1.29+94): samples.charging_session_id for the
+          // per-module UDS charge logger. Additive, nullable — existing
+          // sample rows get NULL (they're trip / ad-hoc samples, unchanged).
+          if (from < 10) {
+            await m.addColumn(samples, samples.chargingSessionId);
           }
         },
       );
@@ -805,6 +818,42 @@ class AppDatabase extends _$AppDatabase {
       numericValue: Value(numeric),
       textValue: Value(text),
     ));
+  }
+
+  /// v0.1.29+94: insert a sample tagged to a charging-log session (per-module
+  /// UDS capture during charge). Same shape as insertSample but stamps
+  /// chargingSessionId instead of tripId — the row carries raw_hex + decoded
+  /// numeric + timestamp, exactly the format recon needs to align the module
+  /// block against its CAN trace.
+  Future<int> insertChargingSample({
+    required String chargingSessionId,
+    required String ecuTx,
+    required String did,
+    required String rawHex,
+    double? numeric,
+    String? text,
+  }) {
+    return into(samples).insert(SamplesCompanion(
+      chargingSessionId: Value(chargingSessionId),
+      timestamp: Value(DateTime.now()),
+      ecuTx: Value(ecuTx),
+      did: Value(did),
+      rawHex: Value(rawHex),
+      numericValue: Value(numeric),
+      textValue: Value(text),
+    ));
+  }
+
+  /// v0.1.29+94: count samples in a charging-log session — used by the
+  /// pre-drive export verification ("did the 20V+20T+pack_I block actually
+  /// get written?") and by the UI to show live row counts during a session.
+  Future<int> countChargingSamples(String chargingSessionId) async {
+    final cnt = countAll();
+    final row = await (selectOnly(samples)
+          ..addColumns([cnt])
+          ..where(samples.chargingSessionId.equals(chargingSessionId)))
+        .getSingle();
+    return row.read(cnt) ?? 0;
   }
 
   Future<List<Sample>> getSamplesForTrip(int tripId,
