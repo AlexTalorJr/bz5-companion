@@ -428,6 +428,17 @@ class ConnectionService extends ChangeNotifier {
   bool _wantTripCreation = false;
   int _pollCyclesSinceStart = 0;
 
+  /// v0.1.29+99: optional check — "does the HAL tracker own trip creation
+  /// right now?" Set from main() after the HAL service exists (the OBD2
+  /// ConnectionService is constructed first, so this can't be a constructor
+  /// arg). When it returns true, _maybeStartTrip suppresses OBD2 trip rows so
+  /// only ONE tracker writes Trips — fixing the two-simultaneous-ACTIVE-trips
+  /// bug when the dongle is connected in halOnly. Null by default → unchanged
+  /// behaviour (OBD2 owns trips), so this is a pure opt-in. Polling and the
+  /// charge logger are NOT affected — only trip-row creation. AA2 holds:
+  /// ConnectionService never references the HAL class, only this bool callback.
+  bool Function()? halOwnsTripCheck;
+
   // v5: rolling cell spread for stable display
   final List<int> _cellSpreadHistory = [];
   static const int _cellSpreadHistoryMax = 10;
@@ -2632,6 +2643,17 @@ class ConnectionService extends ChangeNotifier {
 
   Future<void> _maybeStartTrip() async {
     if (!_wantTripCreation) return;
+    // v0.1.29+99: if the HAL tracker owns trips in the current source mode
+    // (halOnly, or auto with a live stream), the OBD2 tracker must NOT open
+    // its own row — otherwise both write into Trips and history shows two
+    // simultaneous ACTIVE trips. Disarm so we don't re-check every cycle, and
+    // so a later shift into Park doesn't re-trigger. Polling continues; only
+    // the trip row is suppressed (per-cell samples + charge log are unaffected).
+    if (halOwnsTripCheck?.call() ?? false) {
+      _wantTripCreation = false;
+      debugPrint('Trip creation suppressed — HAL owns trips in this mode.');
+      return;
+    }
     if (_currentTripId != null) return;
     if (_pollCyclesSinceStart < 2) return;
     final hasOBC = readNumeric('782', '0057') != null;

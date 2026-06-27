@@ -96,6 +96,31 @@ class HalTelemetryService extends ChangeNotifier {
   /// so showing it with some cells empty on a stationary car is fine.
   bool get halDriveActive => _mode == HalSourceMode.halOnly && _running;
 
+  /// v0.1.29+99: does HAL own trip creation right now? Used by the OBD2
+  /// tracker (via a callback set in main) to suppress its own trip rows so
+  /// only ONE tracker writes Trips at a time — otherwise, with the dongle
+  /// connected in halOnly, both trackers opened a trip into the same table
+  /// and history showed two simultaneous "ACTIVE" trips (the #45 OBD2 +
+  /// #46 HAL pair seen on 2026-06-27).
+  ///
+  /// Policy (chosen by Alex):
+  ///   halOnly  → HAL always owns (true).
+  ///   obd2Only → OBD2 owns (false here; HAL doesn't open trips in this mode
+  ///              anyway, so this is belt-and-braces).
+  ///   auto     → HAL owns IF the stream is live, else OBD2 takes over.
+  /// Distinct from halDriveActive (which is display-only and halOnly-bound);
+  /// kept separate so the auto branch can't change what the dashboard shows.
+  bool get halOwnsTrip {
+    switch (_mode) {
+      case HalSourceMode.halOnly:
+        return true;
+      case HalSourceMode.obd2Only:
+        return false;
+      case HalSourceMode.auto:
+        return _running;
+    }
+  }
+
   HalStartStatus? _status;
   HalStartStatus? get status => _status;
 
