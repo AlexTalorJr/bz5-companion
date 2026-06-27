@@ -5,6 +5,7 @@ import '../services/locale_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../l10n/strings.dart';
+import 'dashboard.dart' show kAppVersion;
 
 /// v0.1.5: About screen — verified Toyota BZ5 battery pack specification
 /// derived from reverse engineering + cross-validation with manufacturer specs.
@@ -476,22 +477,26 @@ class _AppInfoCardState extends State<_AppInfoCard> {
       color: Colors.grey.shade900,
       child: InkWell(
         onTap: _onTap,
-        child: const Padding(
-          padding: EdgeInsets.all(16),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('APP',
+              const Text('APP',
                   style: TextStyle(
                       fontSize: 12,
                       letterSpacing: 1.5,
                       color: Colors.grey)),
-              SizedBox(height: 8),
-              _SpecRow('Source code',
+              const SizedBox(height: 8),
+              // v0.1.29+94: show the build version so "which version is on
+              // the car?" is answerable on-device (no more guessing whether
+              // a patch actually installed). Single source = kAppVersion.
+              _SpecRow('Version', kAppVersion),
+              const _SpecRow('Source code',
                   'github.com/AlexTalorJr/bz5-companion'),
-              _SpecRow('License', 'MIT'),
-              _SpecRow('Hardware', 'ELM327 BLE (e.g., Vgate iCar Pro)'),
-              _SpecRow('Protocol', 'ISO 15765-4 CAN 11/500'),
+              const _SpecRow('License', 'MIT'),
+              const _SpecRow('Hardware', 'ELM327 BLE (e.g., Vgate iCar Pro)'),
+              const _SpecRow('Protocol', 'ISO 15765-4 CAN 11/500'),
             ],
           ),
         ),
