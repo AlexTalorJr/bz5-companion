@@ -204,6 +204,12 @@ class BydNativePlugin : FlutterPlugin, ActivityAware, MethodChannel.MethodCallHa
                 // v0.1.29+61: HAL push-telemetry stream control.
                 "halStreamStart"       -> handleHalStreamStart(result)
                 "halStreamStop"        -> { stopHalStream(); result.success(true) }
+                // v0.1.29+100: read the byd car_status ContentProvider (service
+                // health / maintenance / fluid flags). No HAL, no UDS, no dongle
+                // — a plain ContentResolver query against a head-unit-local
+                // provider. Returns a key→value String map (one table). Phone
+                // has no such provider, so this only yields data on the HU.
+                "queryCarStatus"       -> handleQueryCarStatus(call, result)
                 else                -> result.notImplemented()
             }
         } catch (t: Throwable) {
@@ -653,6 +659,107 @@ class BydNativePlugin : FlutterPlugin, ActivityAware, MethodChannel.MethodCallHa
         halSubscriber = null
         try { halStreamSink?.detach() } catch (_: Throwable) {}
         halStreamSink = null
+    }
+
+    /**
+     * Read one table of the byd `car_status` ContentProvider into a flat
+     * key→value String map. The provider lives in the head-unit system
+     * image; on a phone it does not exist and the query returns null →
+     * we hand back an empty map so the Dart side shows an honest empty
+     * state rather than crashing.
+     *
+     * The provider rejects the bare authority ("Invalid URI") — a table
+     * path is mandatory. We default to `car_status` (the key/value health
+     * + maintenance table) but accept a `table` arg so the same endpoint
+     * can later read `dicare_record` (service-event log) without a new
+     * method.
+     *
+     * Read-only, side-effect-free. Cursor is always closed. Any throw is
+     * converted to a Flutter error by the onMethodCall wrapper.
+     */
+    private fun handleQueryCarStatus(call: MethodCall, result: MethodChannel.Result) {
+        val table = call.argument<String>("table") ?: "car_status"
+        // Whitelist the table segment — the provider only exposes these two,
+        // and this keeps the URI free of caller-supplied path tricks.
+        val safeTable = when (table) {
+            "car_status", "dicare_record" -> table
+            else -> {
+                result.error("BAD_ARGS", "unknown car_status table: $table", null)
+                return
+            }
+        }
+        Thread {
+            val out = mutableMapOf<String, Any?>()
+            val rows = mutableListOf<Map<String, String?>>()
+            var cursor: android.database.Cursor? = null
+            try {
+                val uri = android.net.Uri.parse(
+                    "content://com.byd.carStatusProvider/$safeTable"
+                )
+                cursor = appContext.contentResolver.query(uri, null, null, null, null)
+                if (cursor == null) {
+                    // Provider absent (phone) or refused — not an error, just
+                    // "no data on this device".
+                    out["table"] = safeTable
+                    out["available"] = false
+                    out["summary"] = "cursor=null (provider absent or refused)"
+                    out["kv"] = emptyMap<String, String>()
+                    out["rows"] = emptyList<Map<String, String?>>()
+                    result.success(out)
+                    return@Thread
+                }
+
+                val cols = try { cursor.columnNames.toList() } catch (_: Throwable) { emptyList() }
+                out["columns"] = cols
+
+                // The car_status table is key/value shaped (columns id/key/value).
+                // Build a convenience kv map when those columns are present;
+                // always also return the raw rows so dicare_record (which has a
+                // different schema) is usable through the same path.
+                val keyIdx = cursor.getColumnIndex("key")
+                val valIdx = cursor.getColumnIndex("value")
+                val kv = mutableMapOf<String, String>()
+
+                while (cursor.moveToNext()) {
+                    val row = mutableMapOf<String, String?>()
+                    for (i in 0 until cursor.columnCount) {
+                        val name = try { cursor.getColumnName(i) } catch (_: Throwable) { "col$i" }
+                        val v = try { cursor.getString(i) } catch (_: Throwable) { null }
+                        row[name] = v
+                    }
+                    rows += row
+                    if (keyIdx >= 0 && valIdx >= 0) {
+                        val k = try { cursor.getString(keyIdx) } catch (_: Throwable) { null }
+                        val v = try { cursor.getString(valIdx) } catch (_: Throwable) { null }
+                        if (k != null) kv[k] = v ?: ""
+                    }
+                }
+
+                out["table"] = safeTable
+                out["available"] = true
+                out["rowCount"] = rows.size
+                out["kv"] = kv
+                out["rows"] = rows
+                out["summary"] = "ok: ${rows.size} rows, ${kv.size} kv pairs"
+                result.success(out)
+            } catch (t: Throwable) {
+                BydLogger.e(TAG, "queryCarStatus[$safeTable] failed", t)
+                // Surface as an honest failure map rather than a hard error —
+                // the UI treats available=false the same whether the provider
+                // was missing or threw.
+                result.success(
+                    mapOf(
+                        "table" to safeTable,
+                        "available" to false,
+                        "summary" to "threw: ${t.javaClass.simpleName}: ${t.message?.take(180)}",
+                        "kv" to emptyMap<String, String>(),
+                        "rows" to emptyList<Map<String, String?>>(),
+                    )
+                )
+            } finally {
+                try { cursor?.close() } catch (_: Throwable) {}
+            }
+        }.start()
     }
 
     companion object {

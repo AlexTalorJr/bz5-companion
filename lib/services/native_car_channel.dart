@@ -280,6 +280,29 @@ class NativeCarChannel {
     return r.map((k, v) => MapEntry(k.toString(), v));
   }
 
+  /// v0.1.29+100: read one table of the byd `car_status` ContentProvider.
+  /// Returns the native result map (`available`, `kv`, `rows`, `summary`,
+  /// …) or null if the channel itself failed. The native side never
+  /// throws for a missing/refused provider — it returns `available=false`
+  /// — so a null here means the MethodChannel call genuinely broke.
+  ///
+  /// [table] defaults to `car_status` (key/value health + maintenance).
+  /// Pass `dicare_record` for the (currently empty) service-event log.
+  Future<Map<String, dynamic>?> queryCarStatus({String table = 'car_status'}) async {
+    try {
+      final r = await _method.invokeMethod<Map<Object?, Object?>>(
+        'queryCarStatus',
+        {'table': table},
+      );
+      if (r == null) return null;
+      return r.map((k, v) => MapEntry(k.toString(), v));
+    } on PlatformException {
+      // Treat a hard channel failure as "no data" — the Status screen
+      // shows an honest empty state rather than an error dialog.
+      return null;
+    }
+  }
+
   /// Broadcast stream of all subscription events. Multiple listeners
   /// share one underlying EventChannel handle.
   Stream<NativeEvent> get events {

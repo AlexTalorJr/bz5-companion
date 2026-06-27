@@ -170,5 +170,11 @@
              carserver's BinderProvider even with the right permission. -->
         <package android:name="com.byd.car.server" />
         <provider android:authorities="com.byd.car.server.provider.CarServiceProvider" />
+        <!-- v0.1.29+100: car_status service-health provider (Status screen).
+             Same Android 11+ package-visibility rule — without this entry
+             ContentResolver.query() can return null even though the provider
+             is exported and permission-free. Head-unit only; harmless on a
+             phone where the authority does not resolve. -->
+        <provider android:authorities="com.byd.carStatusProvider" />
     </queries>
 </manifest>

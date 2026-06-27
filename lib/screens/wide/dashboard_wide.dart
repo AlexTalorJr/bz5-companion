@@ -5,6 +5,8 @@ import '../../l10n/strings.dart';
 import '../../services/connection.dart';
 import '../../services/hal_telemetry_service.dart';
 import '../../services/locale_service.dart';
+import '../../services/car_status_service.dart';
+import '../status.dart';
 
 /// v0.1.4: Head-unit Dashboard.
 ///
@@ -967,8 +969,159 @@ class _RightColumn extends StatelessWidget {
             moduleCount: moduleCount ?? 10,
           ),
         ),
+        // v0.1.29+100: tap-through to the Status screen with a live health
+        // glance (no errors / N errors / —). Reads the car_status provider
+        // itself (head-unit only); on a phone the card simply hides. Fixed
+        // height so it doesn't steal flex from the modules list.
+        const SizedBox(height: 12),
+        const _StatusEntryCard(),
       ],
     );
+  }
+}
+
+/// v0.1.29+100: compact head-unit health glance + tap-through to the
+/// Status screen. Owns a short-lived [CarStatusService] (one fetch on
+/// build) because the card lives permanently on the dashboard while the
+/// full Status screen owns its own service instance. Head-unit only —
+/// dashboard_wide is only rendered on the HU; if the provider is absent
+/// the card renders nothing (shrinks to zero height).
+class _StatusEntryCard extends StatefulWidget {
+  const _StatusEntryCard();
+
+  @override
+  State<_StatusEntryCard> createState() => _StatusEntryCardState();
+}
+
+class _StatusEntryCardState extends State<_StatusEntryCard> {
+  final CarStatusService _service = CarStatusService();
+
+  @override
+  void initState() {
+    super.initState();
+    _service.refresh();
+  }
+
+  @override
+  void dispose() {
+    _service.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _service,
+      builder: (context, _) {
+        final st = _service.status;
+        // Provider absent (phone / refused) → nothing to show on the
+        // dashboard. The Status screen itself shows the honest empty state;
+        // the glance card just stays out of the way.
+        if (!st.available) return const SizedBox.shrink();
+
+        final healthy = st.isHealthy;
+        final unknown = !st.hasHealthSignal;
+        final n = st.issueNum;
+
+        final Color bg;
+        final Color fg;
+        final IconData icon;
+        final String title;
+        final String sub;
+
+        if (unknown) {
+          bg = Colors.grey.withValues(alpha: 0.15);
+          fg = Colors.grey;
+          icon = Icons.help_outline;
+          title = S.of('status.entry.title');
+          sub = S.of('status.health.unknown');
+        } else if (healthy) {
+          bg = Colors.green.withValues(alpha: 0.15);
+          fg = Colors.green;
+          icon = Icons.check_circle;
+          title = S.of('status.entry.title');
+          // "no errors · to service N km" — compact one-liner.
+          final remTxt = _remainingText(context, st);
+          sub = remTxt == null
+              ? S.of('status.health.ok')
+              : '${S.of('status.health.ok')} · $remTxt';
+        } else {
+          bg = Colors.red.withValues(alpha: 0.15);
+          fg = Colors.redAccent;
+          icon = Icons.error;
+          title = S.of('status.entry.title');
+          sub = S
+              .of('status.health.fault_sub')
+              .replaceFirst('{n}', '${n ?? '?'}');
+        }
+
+        return Card(
+          color: bg,
+          elevation: 0,
+          margin: EdgeInsets.zero,
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(10),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const StatusScreen()),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Row(
+                children: [
+                  Icon(icon, size: 28, color: fg),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(title,
+                            style: TextStyle(
+                                fontSize: 15,
+                                fontWeight: FontWeight.w600,
+                                color: fg)),
+                        const SizedBox(height: 1),
+                        Text(sub,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                                fontSize: 12,
+                                color: fg.withValues(alpha: 0.85))),
+                      ],
+                    ),
+                  ),
+                  Icon(Icons.chevron_right, size: 22, color: fg),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  String? _remainingText(BuildContext context, CarStatus st) {
+    final hal = context.read<HalTelemetryService>();
+    final svc = context.read<ConnectionService>();
+    final odo =
+        hal.useHalForOdometer ? hal.halOdometerKm : svc.readNumeric('791', '0026');
+    final rem = st.remainingKmToService(odo);
+    if (rem == null) return null;
+    return S
+        .of('status.entry.to_service')
+        .replaceFirst('{km}', _grouped(rem));
+  }
+
+  static String _grouped(int n) {
+    final s = n.abs().toString();
+    final buf = StringBuffer(n < 0 ? '-' : '');
+    for (int i = 0; i < s.length; i++) {
+      if (i > 0 && (s.length - i) % 3 == 0) buf.write('\u202F');
+      buf.write(s[i]);
+    }
+    return buf.toString();
   }
 }
 

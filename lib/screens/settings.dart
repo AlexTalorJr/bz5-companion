@@ -17,6 +17,7 @@ import '../services/bridge_diag_service.dart';
 import 'about.dart';
 import 'data_management.dart';
 import 'diagnostics.dart';
+import 'status.dart';
 import '../services/hal_telemetry_service.dart';
 import 'ecu_explorer.dart';
 import 'hal_test.dart';
@@ -1226,6 +1227,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   Widget build(BuildContext context) {
     final svc = context.watch<ConnectionService>();
+    // v0.1.29+100: head-unit signal for the Status entry tile below. Same
+    // truth source HAL uses ("are we on the HU?"). The car_status provider
+    // only exists on the head unit, so the tile is hidden on a phone.
+    final hal = context.watch<HalTelemetryService>();
     // v0.1.29+58: subscribe to language changes. MaterialApp's const
     // home subtree shields this screen from top-level rebuilds, so the
     // screen watches LocaleService itself — switching the language
@@ -1390,6 +1395,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
           // ════════════ Vehicle ════════════
           _SectionLabel(S.of('settings.section.vehicle')),
+          // v0.1.29+100: Status screen (car_status provider — health /
+          // maintenance / fluids). Head-unit only: the provider does not
+          // exist on a phone, so the tile is hidden there (canUseHal is the
+          // same "on the HU?" signal HAL gates on). No dongle required.
+          if (hal.canUseHal)
+            ListTile(
+              leading: const Icon(Icons.health_and_safety,
+                  color: Colors.greenAccent),
+              title: Text(S.of('status.title')),
+              subtitle: Text(S.of('status.subtitle')),
+              trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => const StatusScreen(),
+                ),
+              ),
+            ),
           ListTile(
             leading: const Icon(Icons.medical_information,
                 color: Colors.lightBlueAccent),
