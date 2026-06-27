@@ -301,9 +301,14 @@ class TripMetricsPanel extends StatelessWidget {
     final avgSpeedKmh =
         useHalTrip ? hal.halTripCurrentAvgSpeedKmh : svc.tripCurrentAvgSpeedKmh;
 
-    // Trip-id label: OBD2 shows "#<id>" from the DB row; halOnly writes no
-    // DB row in +85 (history is the next patch), so it shows just "trip".
-    final tripIdLabel = useHalTrip ? 'trip' : '#${svc.currentTripId ?? "—"}';
+    // Trip-id label: OBD2 shows "#<id>" from the DB row; the HAL trip now
+    // also owns a DB row (since +91), so show its real number too.
+    // v0.1.29+96: was the +85 placeholder literal 'trip' — replaced with the
+    // actual halTripDbId (#42 etc). Falls back to "#—" only in the brief
+    // window between trip-active and the row opening.
+    final tripIdLabel = useHalTrip
+        ? '#${hal.halTripDbId ?? "—"}'
+        : '#${svc.currentTripId ?? "—"}';
 
     // First 2 min: consumption hidden (too noisy).
     final tripAgeSec = dur?.inSeconds ?? 0;

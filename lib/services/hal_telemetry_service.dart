@@ -432,6 +432,28 @@ class HalTelemetryService extends ChangeNotifier {
   /// Back-compat shim for the +73 temp getters.
   double? _tempValue(String name) => _heldValue(name, _tempHold);
 
+  /// v0.1.29+96: STICKY gear for the trip state machine.
+  ///
+  /// gear_enum is purely event-driven on this car — the platform pushes a
+  /// frame only when the driver actually moves the selector. On a normal
+  /// drive that means one frame leaving Park, then nothing for the whole
+  /// trip (export 2026-06-27 showed gaps of 348 s / 1014 s / 1497 s between
+  /// gear frames). The display getters gate on _coreHold (90 s), which is
+  /// correct for a speedo cell but WRONG for the trip machine: after 90 s the
+  /// held gear expired to null, so _updateHalTrip saw neither "in Park" nor
+  /// "moving", the park-close timer kept resetting, and the trip panel
+  /// flickered / vanished (the bug Alex saw — trip screen disappearing).
+  ///
+  /// The fix: the selector position is genuinely sticky. Once HAL reports
+  /// Drive, the car IS in Drive until a NEW frame says otherwise — there is
+  /// no "staleness" to a gear lever. So the trip machine reads the last good
+  /// gear with no time window (only the _running guard, so a stopped stream
+  /// still resets it). Park is always an explicit frame, never an expiry.
+  double? get _stickyGear {
+    if (!_running) return null;
+    return _lastGood['gear_enum']?.value;
+  }
+
   /// Latest raw value for a consumed name, or null if never received.
   double? halValue(String name) => _latest[name]?.value;
 
@@ -773,7 +795,12 @@ class HalTelemetryService extends ChangeNotifier {
       if (_halTripActive) _closeHalTrip();
       return;
     }
-    final gear = _heldValue('gear_enum', _coreHold);
+    // v0.1.29+96: trip start/stop reads the STICKY gear (last good, no time
+    // window) — see _stickyGear. The old _heldValue(_coreHold) expired the
+    // gear to null between the rare selector frames and made the panel
+    // flicker. Display getters keep their _coreHold gating; only the trip
+    // machine changes.
+    final gear = _stickyGear;
     final soc = halSocForTrip;
     final inPark = gear != null && gear.round() == 1; // 1 = Park
 
@@ -1059,6 +1086,11 @@ class HalTelemetryService extends ChangeNotifier {
   /// True while the HAL trip tracker holds a live trip. The UI pairs this
   /// with halDriveActive to decide whether to read HAL or OBD2 trip data.
   bool get halTripActive => _halTripActive;
+
+  /// v0.1.29+96: the DB row id of the live HAL trip, or null before the row
+  /// opens / after it closes. Exposed so the driver panel can show the real
+  /// trip number ("#42") instead of the +85 placeholder literal "trip".
+  int? get halTripDbId => _halTripDbId;
 
   /// Synthetic trip flag for the panel's "trip exists?" checks. v0.1.29+85
   /// writes no DB row in halOnly (history comes in the next patch), so
