@@ -1444,9 +1444,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       label: Text(S.of('chg.log.start'),
                           style:
                               const TextStyle(color: Colors.lightGreenAccent)),
-                      onPressed: svc.status == ConnectionStatus.connected
-                          ? () => svc.startChargingLog(manual: true)
-                          : null,
+                      // v0.1.29+97: always tappable. The logger reads the
+                      // modules over UDS, which needs the dongle connected —
+                      // but a disabled grey button gave no clue WHY. Now the
+                      // button is live; if the dongle isn't connected it shows
+                      // an honest snackbar instead of doing nothing silently.
+                      // On a real charge the dongle is connected, so it just
+                      // starts.
+                      onPressed: () {
+                        if (svc.status == ConnectionStatus.connected) {
+                          svc.startChargingLog(manual: true);
+                        } else {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text(S.of('dtc.not_connected'))),
+                          );
+                        }
+                      },
                     ),
             );
           }),
