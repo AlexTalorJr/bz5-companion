@@ -332,6 +332,19 @@ class HalTelemetryService extends ChangeNotifier {
   double? _halTripMaxSoc;
   double? _halTripPeakPowerKw;  // most-positive power (discharge)
   double? _halTripPeakRegenKw;  // most-negative power (regen), stored signed
+  // v0.1.29+98: idle/regen accumulators so the persisted HAL row reaches
+  // full parity with the OBD2 one (history showed HAL trips missing the
+  // moving/idle split, regen energy and sample count). Both are summed in
+  // the 1 s tick: _halIdleSeconds counts ticks with speed ≤ _halMovingKmh
+  // (Ready-but-stationary, the same notion as the OBD2 tracker's
+  // _tripIdleMs), and _halRegenEnergyKwh integrates regen power (halPowerKw
+  // < 0) over time (kW × 1 s ÷ 3600 = kWh), mirroring OBD2's
+  // _tripRegenEnergyKwh. sampleCount is read async on close from
+  // db.countHalSamplesForTrip (the hal_samples row count for the trip),
+  // since OBD2 stores per-sample rows but HAL's per-sample stream lives in
+  // the hal_samples table.
+  int _halIdleSeconds = 0;
+  double _halRegenEnergyKwh = 0;
   // EMA-smoothed energy so a whole-% SOC step (~0.65 kWh on this pack)
   // doesn't make the energy cell jump. v0.1.29+85 uses whole SOC only;
   // the fractional BigData SOC (0x044C) is a later step once recon p090
@@ -965,6 +978,10 @@ class HalTelemetryService extends ChangeNotifier {
     // full duration would make trip_detail show "[whole trip] / —" for the
     // moving/idle split, which is wrong).
     final movingSecs = _halSpeedSamples > 0 ? _halSpeedSamples : null;
+    // v0.1.29+98: snapshot idle/regen accumulators now (wiped by reset on
+    // close, same as the others above).
+    final idleSecs = _halIdleSeconds > 0 ? _halIdleSeconds : null;
+    final regenKwh = _halRegenEnergyKwh > 0 ? _halRegenEnergyKwh : null;
     final minTemp = _halTripMinTempC;
     final maxTemp = _halTripMaxTempC;
     final maxSpread = _halTripMaxCellSpreadMv;
@@ -991,6 +1008,9 @@ class HalTelemetryService extends ChangeNotifier {
           peakRegenKw: peakRegen,
           avgMovingSpeedKmh: avgMoving,
           movingSeconds: movingSecs,
+          // v0.1.29+98: OBD2-parity fields — idle time and regen energy.
+          idleSeconds: idleSecs,
+          regenEnergyKwh: regenKwh,
         )
         // v0.1.29+93: freeze the speed-distribution histogram onto the row
         // from this trip's hal_samples speed series, so the chart renders in
@@ -1001,6 +1021,14 @@ class HalTelemetryService extends ChangeNotifier {
         // leaves extra untouched.
         .then((_) => db.computeHalSpeedHistogramJson(id))
         .then((extraJson) => db.updateTripExtra(id, extraJson))
+        // v0.1.29+98: backfill sample_count from the hal_samples row count
+        // for this trip. OBD2 increments sample_count per inserted sample; the
+        // HAL per-sample stream lives in hal_samples, so the equivalent count
+        // is read here (async, like the histogram) and written to the row.
+        // Without this, HAL trips showed sample_count = 0 in history despite
+        // thousands of hal_samples.
+        .then((_) => db.countHalSamplesForTrip(id))
+        .then((n) => db.updateTripSampleCount(id, n))
         .then((_) => refreshTotalDriveEnergy())
         .catchError((_) {});
   }
@@ -1018,6 +1046,9 @@ class HalTelemetryService extends ChangeNotifier {
     _halTripMaxSoc = null;
     _halTripPeakPowerKw = null;
     _halTripPeakRegenKw = null;
+    // v0.1.29+98: reset the idle/regen accumulators for the new trip.
+    _halIdleSeconds = 0;
+    _halRegenEnergyKwh = 0;
   }
 
   /// v0.1.29+91: fold the current frame into the trip min/max accumulators
@@ -1077,6 +1108,18 @@ class HalTelemetryService extends ChangeNotifier {
     if (s > _halMovingKmh) {
       _halSpeedSum += s;
       _halSpeedSamples++;
+    } else {
+      // v0.1.29+98: stationary-but-Ready second → idle time, the OBD2 parity
+      // counterpart of _halSpeedSamples (moving seconds). The trip tick only
+      // runs while a trip is active, so every non-moving tick is genuine idle.
+      _halIdleSeconds++;
+    }
+    // v0.1.29+98: integrate regen energy (negative power) over this 1 s tick.
+    // kW × (1 s / 3600) = kWh. Stored as a positive magnitude to match the
+    // OBD2 _tripRegenEnergyKwh column and the way the UI renders regen energy.
+    final pw = halPowerKw;
+    if (pw != null && pw < 0) {
+      _halRegenEnergyKwh += (-pw) / 3600.0;
     }
   }
 

@@ -670,6 +670,16 @@ class AppDatabase extends _$AppDatabase {
     );
   }
 
+  /// v0.1.29+98: write the sample_count for a trip. Used by the HAL trip
+  /// finaliser to backfill the count from hal_samples (the OBD2 tracker sets
+  /// this inline via endTrip's sampleCount arg; the HAL per-sample stream is
+  /// in hal_samples, so its count is read separately and written here).
+  Future<void> updateTripSampleCount(int tripId, int count) async {
+    await (update(trips)..where((t) => t.id.equals(tripId))).write(
+      TripsCompanion(sampleCount: Value(count)),
+    );
+  }
+
   Future<List<Trip>> getRecentTrips({int limit = 50}) {
     return (select(trips)
           ..orderBy(
