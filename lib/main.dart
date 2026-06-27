@@ -147,10 +147,21 @@ class _BZ5AppState extends State<BZ5App> with WidgetsBindingObserver {
         // v0.1.29+87: pass the DB + a current-trip-id reader so the HAL
         // stream is throttle-logged to hal_samples for diagnostics.
         ChangeNotifierProvider<HalTelemetryService>(
-          create: (_) => HalTelemetryService(
-            diagDb: widget.db,
-            currentTripId: () => widget.svc.currentTripId,
-          )..init(),
+          create: (_) {
+            final hal = HalTelemetryService(
+              diagDb: widget.db,
+              currentTripId: () => widget.svc.currentTripId,
+            );
+            // v0.1.29+99: wire the trip-ownership arbiter. The OBD2
+            // ConnectionService is built before HAL (above), so this is set
+            // here once HAL exists. With it, only ONE tracker writes Trips
+            // per source mode — halOnly/auto-live → HAL, obd2Only → OBD2 —
+            // killing the two-simultaneous-ACTIVE-trips bug. AA2 holds: svc
+            // receives a bool callback, never the HAL class.
+            widget.svc.halOwnsTripCheck = () => hal.halOwnsTrip;
+            hal.init();
+            return hal;
+          },
         ),
       ],
       child: MaterialApp(
