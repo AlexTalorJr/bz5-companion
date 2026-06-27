@@ -1402,6 +1402,54 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
             ),
           ),
+
+          // ── v0.1.29+96: per-module charge logger control ──
+          // The +94 logger (20 cell V 016D…01B7 + 20 module T 0171…01BB +
+          // pack_I 790/0009 + sum-of-cells, all UDS/dongle, under one
+          // charging_session_id) had its full backend + l10n + storage built
+          // but no UI trigger was ever wired — this ListTile is that trigger.
+          // It MUST live here (not on the charging screen) because the
+          // charging screen only appears once isCharging is already true,
+          // which is AFTER the pack_I sign-flip that is recon's sync anchor.
+          // Starting the log here, before plug-in, captures the baseline
+          // (current ~0) and the onset flip both.
+          Builder(builder: (context) {
+            final active = svc.chargingLogActive;
+            final rows = svc.chargingLogRowsWritten;
+            final pass = svc.chargingBlockAvgPassSeconds;
+            final passStr = pass != null ? pass.toStringAsFixed(1) : '—';
+            return ListTile(
+              leading: Icon(
+                active ? Icons.fiber_manual_record : Icons.battery_charging_full,
+                color: active ? Colors.redAccent : Colors.lightBlueAccent,
+              ),
+              title: Text(
+                  active ? S.of('chg.log.active') : S.of('chg.log.idle')),
+              subtitle: Text(active
+                  ? S
+                      .of('chg.log.stats')
+                      .replaceFirst('{rows}', '$rows')
+                      .replaceFirst('{pass}', passStr)
+                  : S.of('chg.log.hint')),
+              trailing: active
+                  ? TextButton.icon(
+                      icon: const Icon(Icons.stop, color: Colors.redAccent),
+                      label: Text(S.of('chg.log.stop'),
+                          style: const TextStyle(color: Colors.redAccent)),
+                      onPressed: () => svc.stopChargingLog(),
+                    )
+                  : TextButton.icon(
+                      icon: const Icon(Icons.play_arrow,
+                          color: Colors.lightGreenAccent),
+                      label: Text(S.of('chg.log.start'),
+                          style:
+                              const TextStyle(color: Colors.lightGreenAccent)),
+                      onPressed: svc.status == ConnectionStatus.connected
+                          ? () => svc.startChargingLog(manual: true)
+                          : null,
+                    ),
+            );
+          }),
           ListTile(
             leading: const Icon(Icons.info_outline,
                 color: Colors.lightBlueAccent),
