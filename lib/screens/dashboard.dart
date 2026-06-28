@@ -85,7 +85,9 @@ class _Connected extends StatelessWidget {
         : svc.readNumeric('791', '0009');
     final cells = svc.liveCells;
     final isCharging = svc.isCharging;
-    final rangeKm = svc.rangeEstimateKm;
+    // v0.1.29+102: EV range — HAL hybrid estimate when SOC is available via
+    // HAL (dongle-free), else OBD2. Invisible substitution like speed/SOC.
+    final rangeKm = hal.useHalForRange ? hal.halRangeKm : svc.rangeEstimateKm;
     final tripEnergy = svc.tripEnergyKwh;
     final cycles = svc.cycleCount;
     // v0.1.29+2: primary live pack V = sum-of-cells avg × N (BMS cell count).
@@ -1009,7 +1011,7 @@ class _LayoutDiagnostic extends StatelessWidget {
 
 /// Bump when changing the diagnostic format — helps cross-reference
 /// screenshots to specific app versions while iterating.
-const String _kDiagVersion = 'v0.1.29+101';
+const String _kDiagVersion = 'v0.1.29+102';
 
 /// v0.1.29+94: public alias of the build version string for display outside
 /// dashboard (e.g. the About screen's APP card). Single literal source — the

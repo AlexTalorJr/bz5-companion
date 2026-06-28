@@ -145,7 +145,8 @@ class _LeftColumn extends StatelessWidget {
     // same heroes, same places. See HalTelemetryService.
     final hal = context.watch<HalTelemetryService>();
     final soc = svc.readNumeric('790', '0005');
-    final rangeKm = svc.rangeEstimateKm;
+    // v0.1.29+102: EV range — HAL hybrid when SOC available via HAL, else OBD2.
+    final rangeKm = hal.useHalForRange ? hal.halRangeKm : svc.rangeEstimateKm;
     // v0.1.27+2: primary live pack V = sum-of-cells average × N
     // (N = BMS-reported series cell count, defaults to 136 for BZ5).
     // The previous primary (hvBusV via 790/0x0015) was confirmed unreliable

@@ -379,6 +379,12 @@ class S {
     'cells.spread_d': 'SPREAD Δ',
     'cells.modules_hdr': '{m} MODULES · {c} CELLS TOTAL',
     'cells.no_temp_sensor': 'no temp sensor',
+    // v0.1.29+102: HAL cumulative balance (BMS min/max pair, dongle-free).
+    'cells.hal_cumulative_note':
+        'BMS aggregate (no per-cell dongle). Pack min/max from the BMS.',
+    'cells.min_v': 'Min',
+    'cells.max_v': 'Max',
+    'cells.pack_temp': 'Pack temp',
 
     'hist.title': 'History',
     'hist.hdr': 'HISTORY',
@@ -1079,6 +1085,12 @@ class S {
     'cells.spread_d': 'РАЗБРОС Δ',
     'cells.modules_hdr': '{m} МОДУЛЕЙ · {c} ЯЧЕЕК ВСЕГО',
     'cells.no_temp_sensor': 'нет датчика темп.',
+    // v0.1.29+102: HAL-кумулятив (пара min/max от BMS, без донгла).
+    'cells.hal_cumulative_note':
+        'Данные BMS (без донгла, не по ячейкам). Min/max пакета от BMS.',
+    'cells.min_v': 'Мин',
+    'cells.max_v': 'Макс',
+    'cells.pack_temp': 'Темп. пакета',
 
     'hist.title': 'История',
     'hist.hdr': 'ИСТОРИЯ',

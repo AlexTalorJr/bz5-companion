@@ -430,6 +430,25 @@ DecodedValue? decodeDid(DidSpec spec, List<int>? payload) {
     return DecodedValue(rawBytes: payload);
   }
 
+  // v0.1.29+102: 790/0009 PACK CURRENT is offset-signed and has NO linear
+  // scale/offset in its DidSpec (a plain raw×scale+offset can't express the
+  // zero-offset). Previously the numeric was only correct when the service's
+  // _packCurrentA accessor was live (connection.dart charging-logger path);
+  // when that was null (DC / dongle absent / phone idle) the fallback reached
+  // this decoder and emitted RAW counts (~5024 = 0 A) into samples, poisoning
+  // any widget reading numeric pack_I. Decode it here so the numeric is ALWAYS
+  // amps regardless of _packCurrentA. Formula (Друг 3, DC 2026-06-28, anchored
+  // on gun-insert step): pack_I[A] = (u16BE − 5024) × 0.0993, discharge-
+  // POSITIVE (charge/regen negative). Bracket-guard the raw to drop frame junk
+  // before the offset subtraction.
+  if (spec.category == DidCategory.drive &&
+      spec.did == '0009' &&
+      payload.length == 2) {
+    if (raw < 0 || raw > 10000) return DecodedValue(rawBytes: payload);
+    final amps = (raw - 5024) * 0.0993;
+    return DecodedValue(numeric: amps, unit: 'A', rawBytes: payload);
+  }
+
   final phys = raw * spec.scale + spec.offset;
   return DecodedValue(numeric: phys, unit: spec.unit, rawBytes: payload);
 }
