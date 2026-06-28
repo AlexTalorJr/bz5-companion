@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../l10n/strings.dart';
 import '../services/connection.dart';
+import '../services/hal_telemetry_service.dart';
 import '../services/locale_service.dart';
 
 /// v0.1.2: Cells screen теперь имеет два режима — CELLS и THERMAL.
@@ -24,7 +25,15 @@ class _CellsScreenState extends State<CellsScreen> {
     final svc = context.watch<ConnectionService>();
     // v0.1.29+60: re-render on language switch (per-screen subscription).
     context.watch<LocaleService>();
+    // v0.1.29+102: HAL cumulative cell-balance fallback. In halOnly without a
+    // dongle liveCells is empty (per-cell 136 is UDS-only), but the recon
+    // BMS min/max pair (0x45400010/030) flows via BigData dongle-free. When
+    // there are no per-cell values BUT the HAL pair is available, show the
+    // cumulative view (min/max V + Δ + indices + pack temp) instead of the
+    // "no data" placeholder. Per-cell present → unchanged OBD2 per-module UI.
+    final hal = context.watch<HalTelemetryService>();
     final cells = svc.liveCells;
+    final showHalCumulative = cells.isEmpty && hal.useHalForCellSpread;
 
     return Scaffold(
       appBar: AppBar(
@@ -49,12 +58,133 @@ class _CellsScreenState extends State<CellsScreen> {
           ),
         ],
       ),
-      body: cells.isEmpty
-          ? Center(child: Text(S.of('cells.empty')))
-          : (_mode == 0 ? _CellsView(cells: cells) : _ThermalView(svc: svc)),
+      body: showHalCumulative
+          ? _HalCumulativeView(hal: hal)
+          : cells.isEmpty
+              ? Center(child: Text(S.of('cells.empty')))
+              : (_mode == 0
+                  ? _CellsView(cells: cells)
+                  : _ThermalView(svc: svc)),
     );
   }
 }
+
+// ─────────────────── HAL cumulative balance (v0.1.29+102) ───────────────────
+// Shown in halOnly/HAL-owned mode when per-cell 136 values are unavailable
+// (UDS-only) but the recon BMS min/max pair flows via BigData dongle-free.
+// This is the BMS aggregate (cell_v_lowest 0x45400010 / cell_v_highest
+// 0x45400030), NOT per-module spread — delta here is 3–10 mV (the canonical
+// pack balance), distinct from the per-module dongle spread (5–26 mV). HAL has
+// no per-module temperature lowest/highest (STATISTIC_*_BATTERY_TEMP is
+// request-only, not broadcast — confirmed on DC by Друг 3), so temperature is
+// shown as a single pack number (battery_temp_bigdata 0x044C b[12]), not min/
+// max/delta.
+class _HalCumulativeView extends StatelessWidget {
+  final HalTelemetryService hal;
+  const _HalCumulativeView({required this.hal});
+
+  @override
+  Widget build(BuildContext context) {
+    final loV = hal.halCellVLowest; // volts
+    final hiV = hal.halCellVHighest; // volts
+    final spreadMv = hal.halCellSpreadMv; // mV
+    final idxLo = hal.halCellIdxLowest;
+    final idxHi = hal.halCellIdxHighest;
+    final packTemp = hal.halBatteryTempC;
+
+    // Balance quality by the same mV thresholds the per-cell header uses, so
+    // the colour language is consistent across both views.
+    String quality;
+    Color color;
+    if (spreadMv == null) {
+      quality = '—';
+      color = Colors.grey;
+    } else if (spreadMv <= 20) {
+      quality = S.of('dash.excellent_cap');
+      color = Colors.green;
+    } else if (spreadMv <= 50) {
+      quality = S.of('dash.good_cap');
+      color = Colors.lightGreen;
+    } else if (spreadMv <= 100) {
+      quality = S.of('dash.fair_cap');
+      color = Colors.orange;
+    } else {
+      quality = S.of('dash.poor_cap');
+      color = Colors.red;
+    }
+
+    String mv(double? v) => v == null ? '—' : '${(v * 1000).toInt()} mV';
+    String idx(double? v) => v == null ? '' : '#${v.toInt()}';
+
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // Source note — honest about this being the BMS aggregate, not 136.
+          Text(
+            S.of('cells.hal_cumulative_note'),
+            style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+          ),
+          const SizedBox(height: 12),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceAround,
+                    children: [
+                      _StatColumn(
+                          label: '${S.of('cells.min_v')} ${idx(idxLo)}'.trim(),
+                          value: mv(loV)),
+                      _StatColumn(
+                          label: '${S.of('cells.max_v')} ${idx(idxHi)}'.trim(),
+                          value: mv(hiV)),
+                      _StatColumn(
+                          label: S.of('cells.spread_d'),
+                          value: spreadMv == null
+                              ? '—'
+                              : '${spreadMv.toInt()} mV',
+                          color: color),
+                    ],
+                  ),
+                  const Divider(height: 24),
+                  Text(
+                    S.of('cells.balance_fmt').replaceFirst('{q}', quality),
+                    style: TextStyle(
+                        fontSize: 16,
+                        color: color,
+                        fontWeight: FontWeight.w500),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          // Pack temperature — single number (no per-module min/max via HAL).
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceAround,
+                children: [
+                  _StatColumn(
+                    label: S.of('cells.pack_temp'),
+                    value: packTemp == null
+                        ? '—'
+                        : '+${packTemp.toInt()}°C',
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 
 // ─────────────────────── Cells view (legacy) ───────────────────────
 

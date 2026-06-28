@@ -569,7 +569,8 @@ class _SocCard extends StatelessWidget {
     final socInt = svc.readNumeric('790', '0005');
     final displaySoc = (hal.useHalForSoc ? hal.halSocPct : svc.socPrecisePct)
         ?? socInt;
-    final rangeKm = svc.rangeEstimateKm;
+    // v0.1.29+102: EV range — HAL hybrid when SOC available via HAL, else OBD2.
+    final rangeKm = hal.useHalForRange ? hal.halRangeKm : svc.rangeEstimateKm;
 
     // Same threshold band used elsewhere in the app for consistency.
     final pct = displaySoc ?? 0;

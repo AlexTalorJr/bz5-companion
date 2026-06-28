@@ -606,6 +606,47 @@ class HalTelemetryService extends ChangeNotifier {
       _useHal('soc_display') ||
       _useHal('soc_battery');
 
+  // ── EV range estimate (v0.1.29+102). The OBD2 path (connection.dart
+  //    rangeEstimateKm) needs readNumeric('790','0005') for SOC plus the
+  //    OBD2 trip-consumption history, so in halOnly without a dongle it
+  //    returns null and the SOC card shows "—". This HAL path mirrors the
+  //    SAME hybrid logic OBD2 uses, but sourced entirely from HAL so range
+  //    works dongle-free:
+  //      remaining kWh = halSocPct × capacity / 100
+  //      consumption   = live HAL-trip avg IF the trip is ≥5 min and the
+  //                      value is sane (5..50 kWh/100km), else the nominal
+  //                      constant (matches Bz5Model.avgConsumptionWhKm=144).
+  //    AA2: HAL never imports connection.dart, so the nominal is duplicated
+  //    here as a const (same as _halPackCapacityKwh above).
+  static const double _halNominalConsumptionWhKm = 144.0;
+
+  double? get halRangeKm {
+    final soc = halSocPct;
+    if (soc == null) return null;
+    final remainingKwh = _halPackCapacityKwh * soc / 100.0;
+
+    // Live HAL-trip consumption: only trust it once the trip is old enough
+    // for the ΔSOC/distance ratio to settle (≥5 min, same gate as the OBD2
+    // getter's tripAgeSec>300), and only inside the sane band.
+    final dur = halTripDuration;
+    final smoothed = halTripAvgConsumptionKwh100km;
+    if (dur != null &&
+        dur.inSeconds > 300 &&
+        smoothed != null &&
+        smoothed > 5 &&
+        smoothed < 50) {
+      return remainingKwh / smoothed * 100.0;
+    }
+
+    // Fallback: nominal constant (Wh/km → km).
+    return remainingKwh * 1000 / _halNominalConsumptionWhKm;
+  }
+
+  /// True when the HAL range estimate can be shown (SOC available via HAL).
+  /// The display substitutes hal.halRangeKm for svc.rangeEstimateKm under
+  /// this flag, invisibly, like speed/SOC/odometer.
+  bool get useHalForRange => halSocPct != null;
+
   // ── power (derived: HAL pack_current × HAL pack_voltage). Both
   //    sources are discharge-positive (same convention as the OBD2
   //    C33 path — see the vendored decoder-table header note), so the
