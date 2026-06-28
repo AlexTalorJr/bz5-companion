@@ -132,9 +132,13 @@ class CarStatusService extends ChangeNotifier {
   /// Fluid/tyre keys in the order Друг 3 documented them, with display
   /// labels resolved by the caller (we keep keys here; the UI maps to
   /// localized strings so this service stays l10n-free).
+  ///
+  /// v0.1.29+101: engine_oil and at_fluid are deliberately EXCLUDED. The
+  /// car_status provider is a generic BYD table that lists them for ICE/PHEV
+  /// models, but the BZ5 is a pure BEV — it has no engine oil and no
+  /// (multi-speed) transmission fluid, so showing those rows is misleading.
+  /// We only surface fluids the car actually has.
   static const List<String> fluidKeys = [
-    'dicare_engine_oil_no_prompt',
-    'dicare_at_fluid_no_prompt',
     'dicare_brake_fluid_no_prompt',
     'dicare_battery_coolant_no_prompt',
     'dicare_motor_coolant_no_prompt',
