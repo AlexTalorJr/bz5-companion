@@ -356,10 +356,9 @@ class _FluidsCard extends StatelessWidget {
   const _FluidsCard({required this.status});
 
   // Map provider keys → localized labels. Kept here (UI layer) so the
-  // service stays l10n-free.
+  // service stays l10n-free. v0.1.29+101: engine_oil/at_fluid dropped —
+  // the BZ5 is a BEV (see CarStatusService.fluidKeys).
   static const Map<String, String> _labelKeys = {
-    'dicare_engine_oil_no_prompt': 'status.fluid.engine_oil',
-    'dicare_at_fluid_no_prompt': 'status.fluid.at_fluid',
     'dicare_brake_fluid_no_prompt': 'status.fluid.brake_fluid',
     'dicare_battery_coolant_no_prompt': 'status.fluid.battery_coolant',
     'dicare_motor_coolant_no_prompt': 'status.fluid.motor_coolant',

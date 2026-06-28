@@ -85,15 +85,18 @@ class DecodedStreamSink(
     // that OBD2-only signals leave blank without a dongle:
     //   • SOH from 0x02D3 b[10]  — direct read, =97 matched OBD2 (TWÉRDO),
     //     arrives ~1 Hz (0x02D3 is a fast BMS frame). Closes "SOH —".
-    //   • battery_temp from 0x044C b[7] — °C = raw−40, matched OBD2 002F at
-    //     98%; a CANDIDATE (only verified over a narrow 24–26°C range), used
-    //     as a FALLBACK behind the confirmed probe 0x47800010 which is exact
-    //     but sleeps at standstill. So the cell never goes blank: probe when
-    //     awake, else this. We log it so wider-range behaviour can be checked.
+    //   • battery_temp from 0x044C b[12] — °C = raw−40. CONFIRMED on the DC
+    //     fast-charge session (recon, 2026-06-28): r=+0.986 vs the per-module
+    //     UDS ground-truth over a wide 33→43°C range, slope 1.04, RMSE 0.6°C.
+    //     v0.1.29+101: was b[7] until this DC validation — b[7] turned out
+    //     FLAT (32–34°C while the pack actually ran 33–43°C), i.e. NOT the
+    //     temperature. b[12] tracks the real pack temp. Used as a FALLBACK
+    //     behind the confirmed probe 0x47800010 (exact but sleeps at
+    //     standstill); this fills the cell when the probe is asleep.
     //   • soc_precise from 0x044C u16LE[10]×0.1 — fractional SOC (existing).
     private val socFrameCanId: Int = 0x044C      // soc_precise + battery_temp
     private val bmsFrameCanId: Int = 0x02D3      // SOH
-    private val socPreciseTempByte: Int = 7      // 0x044C b[7], °C = raw−40
+    private val socPreciseTempByte: Int = 12     // 0x044C b[12], °C = raw−40 (DC-confirmed, was b[7])
     private val sohByte: Int = 10                // 0x02D3 b[10], direct %
 
     // v0.1.29+88: raw BigData diagnostic logging. For these CAN-IDs the sink

@@ -330,6 +330,23 @@ class HalTelemetryService extends ChangeNotifier {
   static const double _halMovingKmh = 1.0; // > this counts as moving
   static const Duration _kHalParkConfirm = Duration(seconds: 30);
   static const Duration _kHalParkClose = Duration(minutes: 10);
+  // v0.1.29+101: charge-onset close. A HAL trip that doesn't close promptly
+  // when the car stops can swallow a charge that starts a few minutes later
+  // (observed: trip #45 ended at 4% SOC but the row showed 18% because a DC
+  // charge begun ~4 min after Park flowed into the still-open trip). OBD2 is
+  // immune because its isCharging gate (b00History) freezes its tracker —
+  // but isCharging is OBD2-only (needs the dongle reading 790/0B00) and is
+  // dead in halOnly, so the HAL tracker needs its OWN charge detector built
+  // from HAL data it already has: pack_current.
+  //
+  // Charge ≠ regen. Regen happens WHILE MOVING and is brief; a real charge
+  // is STATIONARY and sustained. Field check of trip #45 found regen bursts
+  // up to 40 s at -80 A while driving at 89 km/h — so current+time ALONE
+  // would false-fire mid-drive. The discriminator is speed: charge requires
+  // speed ≈ 0. So: (speed ≤ _halMovingKmh) AND (pack_current < threshold)
+  // held for the debounce → it's a charge, close the trip.
+  static const double _kHalChargeCurrentA = -10.0; // more negative = charging
+  static const Duration _kHalChargeConfirm = Duration(seconds: 20);
 
   bool _halTripActive = false;
   DateTime? _halTripStartedAt;
@@ -380,6 +397,16 @@ class HalTelemetryService extends ChangeNotifier {
   // Park-segmentation debounce/clock, same shape as the OBD2 tracker.
   DateTime? _halParkConfirmStart;
   DateTime? _halParkedSince;
+  // v0.1.29+101: charge-onset debounce clock — first sample of the current
+  // (stationary + charging-current) streak. Reset whenever the car moves or
+  // the current goes non-charging.
+  DateTime? _halChargeConfirmStart;
+  // v0.1.29+101: rolling snapshot of the LAST moment the car was moving,
+  // captured each tick while speed > _halMovingKmh. When a charge-onset
+  // close fires, the trip is finalized AS OF this snapshot (variant A:
+  // back-date to the stop) so the charge never contaminates end_soc /
+  // distance / energy. Null until the first moving sample.
+  _HalStopSnapshot? _halLastMovingSnapshot;
   // ~1 s tick that samples HAL speed into peak/avg while a trip is live.
   // Lives with the stream — started on first trip start, cancelled in
   // _stopStream() so a stopped stream never keeps accumulating.
@@ -882,14 +909,51 @@ class HalTelemetryService extends ChangeNotifier {
     // v0.1.29+91: fold this frame into the persisted-row min/max accumulators.
     _accumulateHalTripStats();
 
-    // Active trip — handle park-based segmentation (same thresholds as
-    // the OBD2 tracker: debounce P, then close after the park window).
-    if (!inPark) {
+    final now = DateTime.now();
+    final speed = halSpeedKmh;
+    final moving = speed != null && speed > _halMovingKmh;
+
+    // v0.1.29+101: while moving, keep a rolling snapshot of the trip end-state
+    // (time + SOC + odometer). If a charge-onset close fires later, we
+    // back-date the trip to this stop (variant A) so the charge never
+    // contaminates end_soc / distance / energy.
+    if (moving) {
+      _halLastMovingSnapshot = _HalStopSnapshot(
+        at: now,
+        soc: halSocForTrip,
+        odometerKm: _heldValue('odometer', _coreHold),
+      );
+    }
+
+    // v0.1.29+101: charge-onset close. Charge ≠ regen — regen is brief and
+    // happens WHILE MOVING, a charge is STATIONARY and sustained. So require
+    // BOTH stationary (speed ≈ 0) AND charging current, held for the debounce.
+    // This is the HAL-side equivalent of the OBD2 isCharging gate (which is
+    // dead in halOnly). On fire, finalize AS OF the last moving snapshot so
+    // the post-stop charge is excluded.
+    final packI = halValue('pack_current');
+    final chargingNow =
+        !moving && packI != null && packI < _kHalChargeCurrentA;
+    if (chargingNow) {
+      _halChargeConfirmStart ??= now;
+      if (now.difference(_halChargeConfirmStart!) >= _kHalChargeConfirm) {
+        _closeHalTrip(asOf: _halLastMovingSnapshot);
+        return;
+      }
+    } else {
+      _halChargeConfirmStart = null;
+    }
+
+    // Active trip — park-based segmentation (same thresholds as the OBD2
+    // tracker: debounce P, then close after the park window). v0.1.29+101:
+    // closing now requires Park AND stationary (speed ≈ 0), not Park alone —
+    // a stray Park frame while still rolling must not close a live trip.
+    final parkedStill = inPark && !moving;
+    if (!parkedStill) {
       _halParkConfirmStart = null;
       _halParkedSince = null;
       return;
     }
-    final now = DateTime.now();
     _halParkConfirmStart ??= now;
     if (now.difference(_halParkConfirmStart!) < _kHalParkConfirm) return;
     _halParkedSince ??= now;
@@ -957,12 +1021,14 @@ class HalTelemetryService extends ChangeNotifier {
     }
   }
 
-  void _closeHalTrip() {
+  void _closeHalTrip({_HalStopSnapshot? asOf}) {
     // v0.1.29+91: persist the row BEFORE clearing state — finalize reads the
     // live getters/accumulators, which the resets below would wipe. The write
     // itself is async/best-effort and detached from this synchronous reset so
     // the lifecycle (and the stream) never blocks on the DB.
-    _finalizeHalTripRow();
+    // v0.1.29+101: asOf (when non-null) back-dates the end-state to the last
+    // moving moment so a post-stop charge is excluded (variant A).
+    _finalizeHalTripRow(asOf: asOf);
     _halTripActive = false;
     _halTripStartedAt = null;
     _halTripStartSoc = null;
@@ -970,6 +1036,8 @@ class HalTelemetryService extends ChangeNotifier {
     _halTripStartOdo = null;
     _halParkConfirmStart = null;
     _halParkedSince = null;
+    _halChargeConfirmStart = null;
+    _halLastMovingSnapshot = null;
     _resetHalTripAggregates();
     _halTripTick?.cancel();
     _halTripTick = null;
@@ -983,13 +1051,19 @@ class HalTelemetryService extends ChangeNotifier {
   /// Any present field is written; anything the HAL tracker doesn't know
   /// stays null (honest — no fabricated values), exactly like an orphan
   /// recovery on the OBD2 side.
-  void _finalizeHalTripRow() {
+  void _finalizeHalTripRow({_HalStopSnapshot? asOf}) {
     final db = _diagDb;
     final id = _halTripDbId;
     if (db == null || id == null) return;
     // Snapshot now — these getters/accumulators are wiped by _closeHalTrip.
-    final endSoc = halSocForTrip;
-    final endOdo = _heldValue('odometer', _coreHold);
+    // v0.1.29+101: when asOf is supplied (charge-onset close), the end SOC and
+    // odometer come from the last moving moment, NOT the live (charging)
+    // values — otherwise the charge would inflate end_soc (the trip #45 bug:
+    // ended at 4% but recorded 18%). Distance/energy already derive from the
+    // trip_a / start-SOC deltas captured during driving, so they stay correct;
+    // only the absolute end anchors need the back-date.
+    final endSoc = asOf?.soc ?? halSocForTrip;
+    final endOdo = asOf?.odometerKm ?? _heldValue('odometer', _coreHold);
     final distanceKm = halTripDistanceKm;       // Δ trip_a (live display delta)
     final energyKwh = halTripEnergyUsedKwh;     // ΔSOC × capacity (EMA)
     final consumption = halTripAvgConsumptionKwh100km;
@@ -1036,6 +1110,10 @@ class HalTelemetryService extends ChangeNotifier {
           // v0.1.29+98: OBD2-parity fields — idle time and regen energy.
           idleSeconds: idleSecs,
           regenEnergyKwh: regenKwh,
+          // v0.1.29+101: back-date the end time when closing because a charge
+          // began (asOf = the stop). Null asOf → endTrip defaults to now, the
+          // normal clean/park close.
+          endedAt: asOf?.at,
         )
         // v0.1.29+93: freeze the speed-distribution histogram onto the row
         // from this trip's hal_samples speed series, so the chart renders in
@@ -1082,6 +1160,18 @@ class HalTelemetryService extends ChangeNotifier {
   /// live; reads only held values, so it's cheap. Each field self-guards on
   /// availability — a missing signal simply doesn't update its accumulator.
   void _accumulateHalTripStats() {
+    // v0.1.29+101: do not fold stats while stationary AND charging. A charge
+    // that begins after the car stops (before the charge-onset close fires
+    // its debounce) would otherwise inflate max_soc / temp into the trip
+    // (the #45 symptom: 18% max on a trip that ended at 4%). Driving regen is
+    // unaffected — this guard only trips when speed ≈ 0 and current is
+    // charge-level, i.e. a genuine plugged-in charge, never mid-drive regen.
+    final sp = halSpeedKmh;
+    final pi = halValue('pack_current');
+    final stationaryCharging = (sp == null || sp <= _halMovingKmh) &&
+        pi != null &&
+        pi < _kHalChargeCurrentA;
+    if (stationaryCharging) return;
     final t = halBatteryTempC;
     if (t != null) {
       _halTripMinTempC = _halTripMinTempC == null
@@ -1496,4 +1586,16 @@ class HalTelemetryService extends ChangeNotifier {
     _stopStream();
     super.dispose();
   }
+}
+
+/// v0.1.29+101: immutable snapshot of the trip's end-state as of the last
+/// moving moment, used to back-date a charge-onset close to the stop
+/// (variant A) so a charge that begins after the car parks never flows into
+/// the trip's end_soc / distance / energy. Captured each tick while moving;
+/// consumed by the charge-onset branch of _updateHalTrip.
+class _HalStopSnapshot {
+  final DateTime at;
+  final double? soc;
+  final double? odometerKm;
+  const _HalStopSnapshot({required this.at, this.soc, this.odometerKm});
 }

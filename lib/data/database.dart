@@ -577,10 +577,15 @@ class AppDatabase extends _$AppDatabase {
     double? energyFromSocKwh,
     // v0.1.29+37: precomputed restorable aggregates (speed histogram).
     String? extra,
+    // v0.1.29+101: optional explicit end time. Defaults to now (the OBD2
+    // tracker and every existing caller rely on that). The HAL charge-onset
+    // close passes the stop time so a trip that ends because a charge began
+    // is dated to when driving actually stopped, not when the close fired.
+    DateTime? endedAt,
   }) {
     return (update(trips)..where((t) => t.id.equals(id))).write(
       TripsCompanion(
-        endedAt: Value(DateTime.now()),
+        endedAt: Value(endedAt ?? DateTime.now()),
         endSoc: Value(endSoc),
         endOdometer: Value(endOdo),
         sampleCount:
