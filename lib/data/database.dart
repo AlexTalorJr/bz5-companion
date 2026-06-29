@@ -307,14 +307,19 @@ class HalSamples extends Table {
 }
 
 /// v0.1.29+104: persisted result of the independent coulomb-counted SOH
-/// estimate. A single row (id = 1, upserted) holding the LAST valid result —
-/// the Ah method yields one figure per qualifying charge session (ΔSOC ≥ 20%
+/// estimate. v0.1.29+105: now up to TWO rows — id=1 (UDS, dongle) and id=2
+/// (HAL, dongle-free) — each holding the LAST valid result for its estimator.
+/// The Ah method yields one figure per qualifying charge session (ΔSOC ≥ 20%
 /// and ≥ 90% current-coverage), so there is no time series to keep here; the
-/// dashboard just reads this latest value. Survives restarts. When no row
-/// exists yet, the UI falls back to the BMS-reported SOH (0x0029) with a
-/// "(BMS)" tag.
+/// dashboard reads the latest value, preferring HAL (id=2) over UDS (id=1).
+/// Survives restarts. When no row exists yet, the UI falls back to the
+/// BMS-reported SOH (0x0029) with a "(BMS)" tag.
 class SohEstimates extends Table {
-  /// Always 1 — single-row table, replaced on each new qualifying session.
+  /// Row id. Two independent estimators share this single table:
+  ///   id=1 → UDS coulomb count (ConnectionService, dongle-fed pack_current)
+  ///   id=2 → HAL coulomb count (HalTelemetryService, dongle-free pack_current)
+  /// Splitting by id keeps the two sources from blind last-write-wins over
+  /// each other; the dashboard prefers HAL (id=2) then UDS (id=1) then BMS.
   IntColumn get id => integer()();
   /// Independent SOH estimate, percent (full_Ah / batteryCapacityAh × 100).
   RealColumn get sohAhPct => real()();
@@ -323,6 +328,10 @@ class SohEstimates extends Table {
   /// SOC span covered by the session that produced it, percent — for
   /// transparency / debugging (a wider span is a more trustworthy estimate).
   RealColumn get deltaSocCovered => real()();
+  /// v0.1.29+105: which estimator produced this row ('uds' | 'hal'). Nullable
+  /// for backward compatibility — a pre-+105 row (always UDS) reads as null
+  /// and is treated as 'uds' by callers.
+  TextColumn get source => text().nullable()();
 
   @override
   Set<Column> get primaryKey => {id};
@@ -340,7 +349,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase() : super(_openConnection());
 
   @override
-  int get schemaVersion => 11;
+  int get schemaVersion => 12;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -426,6 +435,14 @@ class AppDatabase extends _$AppDatabase {
           // session writes a row, the UI falls back to BMS SOH (0x0029).
           if (from < 11) {
             await m.createTable(sohEstimates);
+          }
+          // v11 → v12 (v0.1.29+105): add soh_estimates.source so the UDS
+          // (id=1) and HAL (id=2) coulomb-count estimators can coexist in the
+          // single table without overwriting each other. Additive + nullable
+          // (addColumn) — any pre-existing id=1 row stays valid and reads as
+          // null → treated as 'uds' by callers.
+          if (from < 12) {
+            await m.addColumn(sohEstimates, sohEstimates.source);
           }
         },
       );
@@ -1373,25 +1390,33 @@ class AppDatabase extends _$AppDatabase {
   // overwrites the previous result, so the dashboard always reads the most
   // recent independent estimate.
 
-  /// Upsert the latest independent SOH estimate (replaces the single row).
+  /// Write an independent SOH estimate. [rowId] selects the estimator slot:
+  /// 1 = UDS (default, unchanged for the existing ConnectionService caller),
+  /// 2 = HAL. [source] tags the row ('uds' | 'hal'); defaults to 'uds' so the
+  /// pre-+105 ConnectionService call keeps its exact prior behaviour.
   Future<void> upsertSohEstimate({
     required double sohAhPct,
     required DateTime computedAt,
     required double deltaSocCovered,
+    int rowId = 1,
+    String source = 'uds',
   }) async {
     await into(sohEstimates).insertOnConflictUpdate(
       SohEstimatesCompanion(
-        id: const Value(1),
+        id: Value(rowId),
         sohAhPct: Value(sohAhPct),
         computedAt: Value(computedAt),
         deltaSocCovered: Value(deltaSocCovered),
+        source: Value(source),
       ),
     );
   }
 
-  /// Latest independent SOH estimate, or null if none computed yet.
-  Future<SohEstimate?> getLatestSohEstimate() {
-    return (select(sohEstimates)..where((r) => r.id.equals(1)))
+  /// Independent SOH estimate for the given estimator slot, or null if none
+  /// computed yet. [rowId] defaults to 1 (UDS) so the existing call is
+  /// unchanged; HAL reads rowId 2.
+  Future<SohEstimate?> getLatestSohEstimate({int rowId = 1}) {
+    return (select(sohEstimates)..where((r) => r.id.equals(rowId)))
         .getSingleOrNull();
   }
 }

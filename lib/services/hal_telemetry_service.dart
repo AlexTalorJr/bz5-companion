@@ -298,6 +298,20 @@ class HalTelemetryService extends ChangeNotifier {
     // flicker to "—" between frames.
     'soh',
     'battery_temp_bigdata',
+    // v0.1.29+105: cell-spread pair held sticky. REGRESSION FIX for +103.
+    // These four flow from BYDAutoEnergyDevice (DOUBLE, ~48 Hz, dongle-free
+    // via BigData) and pass the range guard in _onEvent → they land in
+    // _latest, but WITHOUT being in this set they were never copied to
+    // _lastGood. useHalForCellSpread → _useHal('cell_v_lowest') reads the
+    // held value (_lastGood) in halOnly, found null, and the dashboard_wide
+    // battery block fell through to the OBD2 branch — empty M1–M10 list +
+    // an "Экстремумы: загрузка…" that never resolved (OBD2 cell extremes are
+    // null with no dongle). Adding them here makes the held value populate,
+    // so the +103 HAL fork fires and shows the pack-temp panel + min/max V.
+    // The signal is physically present (Друг 3 confirmed) — it just wasn't
+    // being held. Same treatment as soh/battery_temp_bigdata above.
+    'cell_v_lowest', 'cell_v_highest',
+    'cell_idx_lowest', 'cell_idx_highest',
   };
   final Map<String, ({double value, DateTime at})> _lastGood = {};
 
@@ -327,6 +341,16 @@ class HalTelemetryService extends ChangeNotifier {
   // = 65.28) to avoid importing ConnectionService into this service — same
   // value, kept in sync by hand if the pack variant ever changes.
   static const double _halPackCapacityKwh = 65.28;
+  // v0.1.29+105: nominal pack capacity in Ah — the 100%-SOH reference for the
+  // HAL coulomb-counted SOH (full_Ah / this × 100). Duplicated here as a const
+  // (Bz5Model.batteryCapacityAh = 150.0) to avoid importing ConnectionService
+  // — same rationale as _halPackCapacityKwh above. The DC fast-charge session
+  // of 2026-06-28 integrated 38.2 Ah over a 25.9% SOC rise → 147.5 Ah full,
+  // against BMS SOH ~98%; 150.0 nominal resolves that to 98.3%. Keep in sync
+  // with ConnectionService.Bz5Model.batteryCapacityAh by hand.
+  static const double _halSohPackCapacityAh = 150.0;
+  static const double _kHalSohMinDeltaSocPct = 20.0; // min SOC span to accept
+  static const double _kHalSohMinCoverage = 0.90;    // min live-current frac
   static const double _halMovingKmh = 1.0; // > this counts as moving
   static const Duration _kHalParkConfirm = Duration(seconds: 30);
   static const Duration _kHalParkClose = Duration(minutes: 10);
@@ -437,6 +461,41 @@ class HalTelemetryService extends ChangeNotifier {
   // back-date to the stop) so the charge never contaminates end_soc /
   // distance / energy. Null until the first moving sample.
   _HalStopSnapshot? _halLastMovingSnapshot;
+  // ── v0.1.29+105: HAL coulomb-counted SOH charge-state machine ──────────
+  //
+  // INDEPENDENT of the trip machine above (Вариант A). The UDS SOH integral
+  // in connection.dart only runs while the OBD2 isCharging gate is true, and
+  // that gate reads 0x0B00 over UDS — DEAD in halOnly with no dongle. So this
+  // is the HAL-side equivalent: it detects a charge from HAL data alone
+  // (stationary + charging current, the same discriminator the +101 trip
+  // close uses) and integrates ∫|pack_current|·dt across the session. It does
+  // NOT depend on a trip being active — a real charge happens AFTER the car
+  // has parked and the trip has already closed, so this must run on its own.
+  //
+  // Driven from _updateHalCharge(), called from _onEvent alongside (NOT
+  // inside) _updateHalTrip, so it ticks regardless of trip state. On the
+  // charge→idle edge, if ΔSOC ≥ _kHalSohMinDeltaSocPct AND coverage ≥
+  // _kHalSohMinCoverage, full_Ah = accumAh / ΔSOC_frac and SOH% = full_Ah /
+  // _halSohPackCapacityAh × 100 is written to soh_estimates id=2 (source
+  // 'hal'). connection.dart is NOT touched — AA2 stays intact.
+  bool _halSohCharging = false;          // confirmed charging right now
+  // v0.1.29+105: anchor set (start SOC latched + integral running) on the
+  // FIRST charge-level frame, BEFORE the debounce confirms. This separates
+  // "session anchored / integrating" from "debounce satisfied" so the charge
+  // delivered during the 20 s debounce is counted in BOTH the Ah integral and
+  // the ΔSOC (latching the start SOC only after the debounce would exclude
+  // ~0.7% SOC of DC charge from ΔSOC and understate SOH).
+  bool _halSohSessionAnchored = false;
+  DateTime? _halSohChargeConfirmStart;   // debounce clock for charge onset
+  DateTime? _halSohStartedAt;            // session start (debounce satisfied)
+  double? _halSohStartSoc;               // SOC latched at session start
+  double _halSohChargeAhAccum = 0.0;     // ∫|I|·dt this session, Ah
+  DateTime? _halSohLastIntegrationAt;    // previous integration tick
+  double _halSohCoverageLiveSec = 0.0;   // seconds with a live pack_current
+  double _halSohCoverageTotalSec = 0.0;  // total seconds integrated
+  // Cached latest HAL SOH percent (id=2), hydrated on init, refreshed on each
+  // qualifying session close. Null until the first valid HAL charge session.
+  double? _halSohAhPctCached;
   // ~1 s tick that samples HAL speed into peak/avg while a trip is live.
   // Lives with the stream — started on first trip start, cancelled in
   // _stopStream() so a stopped stream never keeps accumulating.
@@ -738,6 +797,13 @@ class HalTelemetryService extends ChangeNotifier {
   //    (OBD2 790/0029 needs the dongle). Held sticky (~1 Hz, 10 s window).
   double? get halSoh => _heldValue('soh', _coreHold);
   bool get useHalForSoh => _heldValue('soh', _coreHold) != null;
+
+  /// v0.1.29+105: independent HAL coulomb-counted SOH percent (id=2), or null
+  /// until the first qualifying HAL charge session. This is the dongle-free
+  /// twin of ConnectionService.sohAhPct (UDS, id=1); the dashboard prefers
+  /// this over the UDS estimate and the BMS value (HAL-priority). Computed by
+  /// the _updateHalCharge state machine, hydrated by loadHalSohEstimate().
+  double? get halSohAhPct => _halSohAhPctCached;
 
   // ── odometer + trip meters (v0.1.29+74). All from BYDAutoStatistic-
   //    Device, decoder applies ×0.1 so values are already in km. Held via
@@ -1263,6 +1329,161 @@ class HalTelemetryService extends ChangeNotifier {
     _halRegenEnergyKwh = 0;
   }
 
+  // ── v0.1.29+105: HAL coulomb-counted SOH charge-state machine (Вариант A)
+  //
+  // Called every frame from _onEvent, INDEPENDENT of the trip machine. Mirrors
+  // the UDS integral in connection.dart (_maintainChargingHistory +
+  // _finalizeSohEstimate) but sources both the charge detection and the
+  // current from HAL, so it works in halOnly with no dongle. Charge detection
+  // reuses the +101 discriminator: stationary (speed ≈ 0) AND charge-level
+  // current (pack_current < _kHalChargeCurrentA), held for _kHalChargeConfirm
+  // — that rejects mid-drive regen (always moving) and brief glitches.
+  //
+  // Integration runs ∫|pack_current|·dt (Ah) every frame once a session is
+  // confirmed. Coverage = liveSec / totalSec (a frame with no pack_current
+  // contributes 0 Ah but still counts time, lowering coverage); a session
+  // with too many gaps is discarded. On the charge→idle edge the session is
+  // finalized (ΔSOC + coverage gates) and, if valid, written to id=2.
+  void _updateHalCharge() {
+    // Only run as the live HAL source (halOnly + stream up). In obd2Only /
+    // phone this stays idle; the UDS path in connection.dart owns SOH there.
+    // If we were mid-session and HAL is no longer the source, finalize what
+    // we have (the gates will discard a too-short one) and reset.
+    if (!halDriveActive) {
+      if (_halSohSessionAnchored) {
+        if (_halSohCharging) _finalizeHalSohEstimate();
+        _resetHalSohSession();
+      }
+      return;
+    }
+
+    final sp = halSpeedKmh;
+    final pi = halValue('pack_current');
+    final stationary = sp == null || sp <= _halMovingKmh;
+    final chargingLevel = pi != null && pi < _kHalChargeCurrentA;
+    final chargingNow = stationary && chargingLevel;
+
+    if (chargingNow) {
+      // Anchor on the FIRST charge-level frame so the start SOC and the
+      // integral both begin at plug-in, not 20 s later. _halSohChargeConfirm
+      // then gates VALIDITY (a brief glitch that doesn't last the debounce is
+      // discarded on the next non-charging frame before it ever counts).
+      final now = DateTime.now();
+      if (!_halSohSessionAnchored) {
+        _halSohSessionAnchored = true;
+        _halSohChargeConfirmStart = now;
+        _halSohStartedAt = now;
+        _halSohStartSoc = halSocForTrip;
+        _halSohChargeAhAccum = 0.0;
+        _halSohLastIntegrationAt = now; // seed only; first dt next frame
+        _halSohCoverageLiveSec = 0.0;
+        _halSohCoverageTotalSec = 0.0;
+        return;
+      }
+
+      // Promote anchored → confirmed once the debounce has elapsed. This flag
+      // only marks that the session is now trusted; integration has been
+      // running since the anchor frame regardless.
+      if (!_halSohCharging &&
+          _halSohChargeConfirmStart != null &&
+          now.difference(_halSohChargeConfirmStart!) >= _kHalChargeConfirm) {
+        _halSohCharging = true;
+      }
+
+      // Integrate ∫|I|·dt every frame from the anchor onward.
+      if (_halSohLastIntegrationAt != null) {
+        final dtSec =
+            now.difference(_halSohLastIntegrationAt!).inMilliseconds / 1000.0;
+        // Guard clock weirdness / suspends: ignore non-positive or > 30 s gaps
+        // (same bound as the UDS integral — a long gap isn't trustworthy to
+        // interpolate across).
+        if (dtSec > 0 && dtSec <= 30.0) {
+          _halSohCoverageTotalSec += dtSec;
+          // pi is guaranteed non-null here (chargingLevel), but re-read defen-
+          // sively in case a frame without it slips through a future edit.
+          final i = halValue('pack_current');
+          if (i != null) {
+            _halSohChargeAhAccum += i.abs() * dtSec / 3600.0;
+            _halSohCoverageLiveSec += dtSec;
+          }
+        }
+      }
+      _halSohLastIntegrationAt = now;
+    } else {
+      // Not charging this frame. If a session was anchored, the charge has
+      // ended (unplugged / driving away). Finalize only if it ever confirmed
+      // past the debounce; either way reset so the next charge starts clean.
+      // A glitch that anchored but never confirmed is dropped silently.
+      if (_halSohSessionAnchored) {
+        if (_halSohCharging) _finalizeHalSohEstimate();
+        _resetHalSohSession();
+      }
+    }
+  }
+
+  /// Compute + persist the HAL SOH from the just-finished charge session, to
+  /// soh_estimates id=2 (source 'hal'). Discards the session unless the SOC
+  /// span and current-coverage gates both pass. Mirrors
+  /// ConnectionService._finalizeSohEstimate exactly, but on HAL data.
+  void _finalizeHalSohEstimate() {
+    final startSoc = _halSohStartSoc;
+    if (startSoc == null) return;
+    final curSoc = halSocForTrip;
+    if (curSoc == null) return;
+    final deltaSocPct = curSoc - startSoc;
+    if (deltaSocPct < _kHalSohMinDeltaSocPct) return; // window too narrow
+    if (_halSohCoverageTotalSec <= 0) return;
+    final coverage = _halSohCoverageLiveSec / _halSohCoverageTotalSec;
+    if (coverage < _kHalSohMinCoverage) return; // too many current gaps
+    if (_halSohChargeAhAccum <= 0) return;
+    final fullAh = _halSohChargeAhAccum / (deltaSocPct / 100.0);
+    final sohPct = fullAh / _halSohPackCapacityAh * 100.0;
+    // Sanity clamp — outside this band means a bad session, so drop it.
+    if (sohPct < 50.0 || sohPct > 110.0) return;
+    _halSohAhPctCached = sohPct;
+    final db = _diagDb;
+    if (db != null) {
+      // Fire-and-forget; the cache is already updated so the UI reflects it
+      // immediately even if the write lags.
+      unawaited(db
+          .upsertSohEstimate(
+            sohAhPct: sohPct,
+            computedAt: DateTime.now(),
+            deltaSocCovered: deltaSocPct,
+            rowId: 2,
+            source: 'hal',
+          )
+          .catchError((_) {/* keep cache; retry next qualifying session */}));
+    }
+    notifyListeners();
+  }
+
+  /// Clear the HAL SOH session state for the next charge.
+  void _resetHalSohSession() {
+    _halSohCharging = false;
+    _halSohSessionAnchored = false;
+    _halSohChargeConfirmStart = null;
+    _halSohStartedAt = null;
+    _halSohStartSoc = null;
+    _halSohChargeAhAccum = 0.0;
+    _halSohLastIntegrationAt = null;
+    _halSohCoverageLiveSec = 0.0;
+    _halSohCoverageTotalSec = 0.0;
+  }
+
+  /// v0.1.29+105: hydrate the cached HAL SOH (id=2) from the DB at startup so
+  /// the dashboard shows the last computed value before any new session.
+  /// Best-effort — a missing/un-migrated DB just leaves the cache null and the
+  /// UI falls through to the UDS estimate / BMS.
+  Future<void> loadHalSohEstimate() async {
+    final db = _diagDb;
+    if (db == null) return;
+    try {
+      final row = await db.getLatestSohEstimate(rowId: 2);
+      if (row != null) _halSohAhPctCached = row.sohAhPct;
+    } catch (_) {/* no DB / not migrated yet — stay on fallback */}
+  }
+
   /// v0.1.29+91: fold the current frame into the trip min/max accumulators
   /// (temp, cell spread, SOC, peak power/regen) so db.endTrip writes a row
   /// as complete as the OBD2 one. Called from _updateHalTrip while a trip is
@@ -1537,6 +1758,9 @@ class HalTelemetryService extends ChangeNotifier {
     }
     // v0.1.29+91: prime the cumulative drive-energy cell from existing trips.
     await refreshTotalDriveEnergy();
+    // v0.1.29+105: hydrate the cached HAL SOH (id=2) so the dashboard shows
+    // the last computed value before any new charge session this run.
+    await loadHalSohEstimate();
     notifyListeners();
   }
 
@@ -1585,6 +1809,15 @@ class HalTelemetryService extends ChangeNotifier {
     // v0.1.29+85: a stopped stream must not keep a HAL trip "open" or let
     // the 1 s tick accumulate against a dead stream. Close it cleanly.
     _closeHalTrip();
+    // v0.1.29+105: same for the SOH charge session — finalize what we have
+    // (the gates discard a too-short one) and reset so a stopped stream never
+    // leaves a session dangling. _onEvent won't tick once the stream is down,
+    // so this is the only place a mid-charge stop gets cleaned up. Finalize
+    // only if the session confirmed past the debounce.
+    if (_halSohSessionAnchored) {
+      if (_halSohCharging) _finalizeHalSohEstimate();
+      _resetHalSohSession();
+    }
   }
 
   void _onEvent(HalEvent e) {
@@ -1633,6 +1866,10 @@ class HalTelemetryService extends ChangeNotifier {
     // (cheap — it only reads held values). Start fires on gear≠Park alone;
     // the start SOC latches later on the first soc_precise/integer frame.
     _updateHalTrip();
+    // v0.1.29+105: drive the independent HAL SOH charge-state machine off the
+    // same frames, ALONGSIDE the trip machine (not inside it) — a charge runs
+    // after the trip has closed, so this must tick regardless of trip state.
+    _updateHalCharge();
     _scheduleNotify();
   }
 

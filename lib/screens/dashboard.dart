@@ -80,7 +80,10 @@ class _Connected extends StatelessWidget {
     // qualifying charge session it falls back to the BMS value (0x0029),
     // tagged "(BMS)" so the source is honest. sohDisplay carries the formatted
     // string; sohIsAh distinguishes the two for any downstream styling.
-    final sohAh = svc.sohAhPct;
+    // v0.1.29+105: HAL coulomb-counted SOH (dongle-free, hal.halSohAhPct) is
+    // preferred ahead of the UDS estimate so a dongle-free charge produces a
+    // real SOH; UDS (svc.sohAhPct) stays as the dongle path, BMS last.
+    final sohAh = hal.halSohAhPct ?? svc.sohAhPct;
     final sohBms = svc.readNumeric('790', '0029');
     final String sohDisplay = sohAh != null
         ? '${sohAh.round()}%'
@@ -1020,7 +1023,7 @@ class _LayoutDiagnostic extends StatelessWidget {
 
 /// Bump when changing the diagnostic format — helps cross-reference
 /// screenshots to specific app versions while iterating.
-const String _kDiagVersion = 'v0.1.29+104';
+const String _kDiagVersion = 'v0.1.29+105';
 
 /// v0.1.29+94: public alias of the build version string for display outside
 /// dashboard (e.g. the About screen's APP card). Single literal source — the
