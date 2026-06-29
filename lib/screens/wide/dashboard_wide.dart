@@ -494,7 +494,9 @@ class _MiddleColumn extends StatelessWidget {
     // v0.1.29+104: SOH precedence — independent coulomb-counted estimate
     // (svc.sohAhPct, bare %) first; else HAL BigData SOH (bare %, unchanged);
     // else BMS 0x0029 tagged "(BMS)". sohDisplay is the formatted string.
-    final double? sohAh = svc.sohAhPct;
+    // v0.1.29+105: HAL coulomb-counted SOH (dongle-free) is preferred ahead of
+    // the UDS coulomb estimate, then the HAL BigData (0x02D3) SOH, then BMS.
+    final double? sohAh = hal.halSohAhPct ?? svc.sohAhPct;
     final double? sohHal = hal.useHalForSoh ? hal.halSoh : null;
     final double? sohBms = svc.readNumeric('790', '0029');
     final String sohDisplay = sohAh != null
