@@ -952,29 +952,53 @@ class _RightColumn extends StatelessWidget {
         ?? svc.readNumeric('790', '0005')
         ?? 50;
 
+    // v0.1.29+103: HAL cumulative branch. In halOnly without a dongle the
+    // OBD2 cell extremes (globalMin/MaxCellMv) and per-module snapshots are
+    // empty, so pre-+103 this panel showed "Pack extremes: loading…" forever
+    // plus an empty M1–M10 list (observed 2026-06-29). When the recon BMS
+    // min/max pair is available (dongle-free), feed extremes from HAL and
+    // HIDE the per-module list entirely (HAL has no per-module data — it is
+    // UDS-only). The +102 _HalCumulativeView in cells.dart is kept as-is in
+    // case a per-module HAL source is ever found.
+    final halCumulative = hal.useHalForCellSpread;
+    final exMinV = halCumulative
+        ? (hal.halCellVLowest != null ? hal.halCellVLowest! * 1000 : null)
+        : minV;
+    final exMaxV = halCumulative
+        ? (hal.halCellVHighest != null ? hal.halCellVHighest! * 1000 : null)
+        : maxV;
+    final exMinIdx = halCumulative ? hal.halCellIdxLowest?.toInt() : minIdx;
+    final exMaxIdx = halCumulative ? hal.halCellIdxHighest?.toInt() : maxIdx;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _PackExtremesPanel(
-          minV: minV,
-          maxV: maxV,
-          minIdx: minIdx,
-          maxIdx: maxIdx,
+          minV: exMinV,
+          maxV: exMaxV,
+          minIdx: exMinIdx,
+          maxIdx: exMaxIdx,
           cellCount: cellCount ?? 136,
           socPct: soc,
         ),
         const SizedBox(height: 12),
-        Expanded(
-          child: _ModulesListPanel(
-            modules: modules,
-            moduleCount: moduleCount ?? 10,
+        // Per-module list: OBD2 only. In HAL cumulative mode show a compact
+        // pack-temperature panel instead (single number — no per-module temp
+        // via HAL), so the column isn't an empty M1–M10 skeleton.
+        if (halCumulative)
+          _HalPackTempPanel(hal: hal)
+        else
+          Expanded(
+            child: _ModulesListPanel(
+              modules: modules,
+              moduleCount: moduleCount ?? 10,
+            ),
           ),
-        ),
+        const SizedBox(height: 12),
         // v0.1.29+100: tap-through to the Status screen with a live health
         // glance (no errors / N errors / —). Reads the car_status provider
         // itself (head-unit only); on a phone the card simply hides. Fixed
         // height so it doesn't steal flex from the modules list.
-        const SizedBox(height: 12),
         const _StatusEntryCard(),
       ],
     );
@@ -1292,6 +1316,36 @@ class _ExtremeTile extends StatelessWidget {
             style: const TextStyle(
                 fontSize: 11, color: Colors.grey, letterSpacing: 0.3)),
       ],
+    );
+  }
+}
+
+// v0.1.29+103: compact pack-temperature panel shown in HAL cumulative mode
+// in place of the per-module M1–M10 list (which has no HAL data source).
+// Single pack number from battery_temp_bigdata (0x044C b[12], the +101 fix),
+// resolved via useHalForBatteryTemp like the battery hero.
+class _HalPackTempPanel extends StatelessWidget {
+  final HalTelemetryService hal;
+  const _HalPackTempPanel({required this.hal});
+
+  @override
+  Widget build(BuildContext context) {
+    final t = hal.useHalForBatteryTemp ? hal.halBatteryTempC : null;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(S.of('cells.pack_temp'),
+                style: const TextStyle(
+                    fontSize: 11, letterSpacing: 1.0, color: Colors.grey)),
+            Text(t == null ? '—' : '+${t.toInt()}°C',
+                style: const TextStyle(
+                    fontSize: 20, fontWeight: FontWeight.w500)),
+          ],
+        ),
+      ),
     );
   }
 }
