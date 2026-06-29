@@ -672,7 +672,17 @@ class _BottomStatusStrip extends StatelessWidget {
     // v0.1.29+90: SOH — HAL BigData 0x02D3 b[10] when available (halOnly,
     // no dongle → OBD2 790/0029 is blank), else OBD2. Invisible source
     // substitution, same widget, no HAL label (like speed/SOC).
-    final soh = hal.useHalForSoh ? hal.halSoh : svc.readNumeric('790', '0029');
+    // v0.1.29+104: SOH precedence — independent coulomb-counted estimate
+    // (svc.sohAhPct, bare %) first; else HAL BigData 0x02D3 b[10] (bare %,
+    // unchanged); else OBD2 BMS 0x0029 tagged "(BMS)".
+    final double? sohAh = svc.sohAhPct;
+    final double? sohHal = hal.useHalForSoh ? hal.halSoh : null;
+    final double? sohBms = svc.readNumeric('790', '0029');
+    final String sohDisplay = sohAh != null
+        ? 'SOH ${sohAh.round()} %'
+        : (sohHal != null
+            ? 'SOH ${sohHal.toInt()} %'
+            : (sohBms != null ? 'SOH ${sohBms.toInt()} % (BMS)' : 'SOH —'));
     final odo = hal.useHalForOdometer ? hal.halOdometerKm : svc.readNumeric('791', '0026');
     // v0.1.29+84: cell spread — HAL BigData cell_v pair when available
     // (halOnly drive, no OBD2 cells), else OBD2 global min/max. Invisible
@@ -721,7 +731,7 @@ class _BottomStatusStrip extends StatelessWidget {
         child: Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Text(soh != null ? 'SOH ${soh.toInt()} %' : 'SOH —'),
+            Text(sohDisplay),
             const _Sep(),
             Text(batTempStr),
             const _Sep(),

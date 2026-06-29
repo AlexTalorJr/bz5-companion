@@ -318,11 +318,15 @@ class _ExperimentsCard extends StatelessWidget {
             _ExperimentItem(
               title: 'Independent SOH calculation',
               text:
-                  'The BMS reports SOH via 0x0029 (currently 98%). An '
-                  'independent estimate could be computed by tracking voltage '
-                  'sag under known discharge load (if a current DID is found) '
-                  'or by tracking ΔSOC vs Δcharge-counter over many cycles. '
-                  'Useful as a cross-check on BMS-reported value.',
+                  'As of +104 the app computes an independent SOH by '
+                  'coulomb-counting during charging: it integrates pack '
+                  'current (790/0009, dongle required) over a session and '
+                  'divides the accumulated Ah by the SOC gained to get full '
+                  'pack capacity, then by the 150 Ah nominal. A session counts '
+                  'only if it spans ≥ 20% SOC with ≥ 90% current-coverage; the '
+                  'latest qualifying result is shown as a bare percent on the '
+                  'dashboard. Until the first such session, the BMS value '
+                  '(0x0029) is shown instead, tagged "(BMS)".',
             ),
             _ExperimentItem(
               title: 'Charge counter calibration (0x0B00)',

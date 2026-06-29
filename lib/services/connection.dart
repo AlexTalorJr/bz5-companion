@@ -89,6 +89,16 @@ class Bz5Model {
   /// observation, so part-number lookup will be required).
   static const double batteryCapacityKwh = 65.28;
 
+  /// Pack nominal capacity, Ah — divisor for the independent coulomb-counted
+  /// SOH estimate (v0.1.29+104). The DC fast-charge session of 2026-06-28
+  /// integrated 38.2 Ah over a 25.9% SOC rise → 147.5 Ah full-pack capacity,
+  /// against a BMS-reported SOH of ~98%. 150.0 Ah nominal makes that session
+  /// resolve to 98.3%, matching the BMS within noise — so 150.0 is used as
+  /// the 100%-SOH reference. (136S LFP Blade; per-cell Ah not separately
+  /// confirmed, so the divisor is anchored to the empirical full-pack figure
+  /// rather than a cell datasheet.)
+  static const double batteryCapacityAh = 150.0;
+
   /// Pack voltage scale: DID 0x0015, raw × 0.02 V.
   /// Подтверждено на стоянке: на 100% SOC raw=18077 → 361.5 V (норма LFP),
   /// в поездке raw=17445-18077 → 348.9-361.5 V.
@@ -245,6 +255,23 @@ class ConnectionService extends ChangeNotifier {
   DateTime? _chargingSessionStartedAt;
   int? _chargingSessionStartCounter;
   double? _chargingSessionStartSocPct;
+
+  // ── v0.1.29+104: coulomb-counted SOH integral, accumulated live across a
+  // charge session. ∫|I|·dt (in Ah) is summed every loop tick from
+  // _packCurrentA (the ~2 Hz UDS 790/0009 value, which REQUIRES a dongle),
+  // BEFORE the charge-history throttle so we don't undersample. On session
+  // close, if ΔSOC ≥ _kSohMinDeltaSocPct AND current-coverage ≥
+  // _kSohMinCoverage, full_Ah = accumAh / ΔSOC_frac and SOH% = full_Ah /
+  // batteryCapacityAh × 100 is written to the DB (single-row soh_estimates).
+  // Coverage = liveSec / totalSec guards against dongle gaps (no _packCurrentA
+  // → that slice of time contributes 0 Ah, which would understate capacity);
+  // a session with too many gaps is discarded rather than written.
+  double _sohChargeAhAccum = 0.0;     // ∫|I|·dt this session, Ah
+  DateTime? _sohLastIntegrationAt;    // previous tick time
+  double _sohCoverageLiveSec = 0.0;   // seconds with a live _packCurrentA
+  double _sohCoverageTotalSec = 0.0;  // total seconds integrated
+  static const double _kSohMinDeltaSocPct = 20.0; // min SOC span for validity
+  static const double _kSohMinCoverage = 0.90;    // min live-current fraction
 
   // ── v0.1.29+94: per-module UDS charge logger ──
   //
@@ -721,6 +748,10 @@ class ConnectionService extends ChangeNotifier {
     // Driver view shows the user's preferred mode immediately on first
     // poll cycle (not just after they open Settings).
     refreshSpeedometerPref();
+    // v0.1.29+104: hydrate the cached independent SOH estimate from the DB
+    // so the dashboard shows the last computed value immediately on launch
+    // (before any new charge session). No-op / silent on a fresh install.
+    unawaited(loadSohEstimate());
   }
 
   ConnectionStatus get status => _status;
@@ -3053,6 +3084,11 @@ class ConnectionService extends ChangeNotifier {
 
     if (!charging) {
       if (_wasCharging) {
+        // v0.1.29+104: finalize the coulomb-counted SOH estimate BEFORE the
+        // session anchors are cleared below. Validity gates: SOC span ≥
+        // _kSohMinDeltaSocPct and current-coverage ≥ _kSohMinCoverage. The
+        // write is fire-and-forget; failure just leaves the previous estimate.
+        _finalizeSohEstimate();
         // Session just ended — clear so the next session starts fresh.
         _chargingHistory.clear();
         _lastChargingSampleAt = null;
@@ -3060,6 +3096,11 @@ class ConnectionService extends ChangeNotifier {
         _chargingSessionStartCounter = null;
         _chargingSessionStartSocPct = null;
         _wasCharging = false;
+        // v0.1.29+104: reset the SOH integral state for the next session.
+        _sohChargeAhAccum = 0.0;
+        _sohLastIntegrationAt = null;
+        _sohCoverageLiveSec = 0.0;
+        _sohCoverageTotalSec = 0.0;
         // v0.1.29+94: auto-stop the per-module charge log on
         // isCharging→idle (covers both manual and auto-started sessions).
         if (_chargingLogActive) stopChargingLog();
@@ -3073,6 +3114,12 @@ class ConnectionService extends ChangeNotifier {
       _chargingSessionStartCounter = currentCounter;
       _chargingSessionStartSocPct = socPrecisePct ?? readNumeric('790', '0005');
       _wasCharging = true;
+      // v0.1.29+104: (re)arm the SOH integral. Start clean; the first tick
+      // below just seeds _sohLastIntegrationAt (no dt yet), so no spurious Ah.
+      _sohChargeAhAccum = 0.0;
+      _sohLastIntegrationAt = now;
+      _sohCoverageLiveSec = 0.0;
+      _sohCoverageTotalSec = 0.0;
       // v0.1.29+94: safety-net auto-start of the per-module charge log if the
       // user didn't press the button. This starts AFTER current onset, so it
       // misses the pre-onset baseline + the pack_I sign-flip (recon's sync
@@ -3080,6 +3127,27 @@ class ConnectionService extends ChangeNotifier {
       // the primary path. Records the charge itself either way.
       if (!_chargingLogActive) startChargingLog(manual: false);
     }
+
+    // v0.1.29+104: integrate ∫|I|·dt EVERY tick (before the throttle return
+    // below, which only paces the history/sample writes). _packCurrentA is the
+    // ~2 Hz UDS pack current and requires a dongle; when it's null this slice
+    // contributes 0 Ah but still counts toward total time, lowering coverage.
+    if (_sohLastIntegrationAt != null) {
+      final dtSec =
+          now.difference(_sohLastIntegrationAt!).inMilliseconds / 1000.0;
+      // Guard against clock weirdness / long stalls: ignore non-positive or
+      // absurd gaps (> 30 s likely means the loop was suspended, not charging
+      // data we can trust to interpolate across).
+      if (dtSec > 0 && dtSec <= 30.0) {
+        _sohCoverageTotalSec += dtSec;
+        final i = _packCurrentA;
+        if (i != null) {
+          _sohChargeAhAccum += i.abs() * dtSec / 3600.0;
+          _sohCoverageLiveSec += dtSec;
+        }
+      }
+    }
+    _sohLastIntegrationAt = now;
 
     // Throttle samples to _chargingHistoryInterval.
     if (_lastChargingSampleAt != null &&
@@ -3805,6 +3873,59 @@ class ConnectionService extends ChangeNotifier {
     final delta = cur - _chargingSessionStartSocPct!;
     if (delta <= 0) return null;
     return delta;
+  }
+
+  // ─────────────── v0.1.29+104: coulomb-counted SOH ────────────────
+
+  /// Cached latest independent SOH estimate (percent), loaded from the DB on
+  /// init and refreshed whenever a qualifying session is finalized. Null until
+  /// the first valid session — UI falls back to BMS SOH (0x0029) with a tag.
+  double? _sohAhPctCached;
+
+  /// Independent (coulomb-counted) SOH percent, or null if none computed yet.
+  /// This is the value the dashboard prefers over BMS 0x0029.
+  double? get sohAhPct => _sohAhPctCached;
+
+  /// Load the persisted SOH estimate into the cache (called once at startup).
+  Future<void> loadSohEstimate() async {
+    try {
+      final row = await db.getLatestSohEstimate();
+      if (row != null) _sohAhPctCached = row.sohAhPct;
+    } catch (_) {/* no DB / not migrated yet — stay on BMS fallback */}
+  }
+
+  /// Compute and persist the independent SOH from the just-finished charge
+  /// session. Called from _maintainChargingHistory on the charging→idle edge,
+  /// BEFORE the session anchors are cleared. Discards the session unless the
+  /// SOC span and current-coverage gates both pass.
+  void _finalizeSohEstimate() {
+    final startSoc = _chargingSessionStartSocPct;
+    if (startSoc == null) return;
+    final curSoc = socPrecisePct ?? readNumeric('790', '0005');
+    if (curSoc == null) return;
+    final deltaSocPct = curSoc - startSoc;
+    if (deltaSocPct < _kSohMinDeltaSocPct) return; // window too narrow
+    if (_sohCoverageTotalSec <= 0) return;
+    final coverage = _sohCoverageLiveSec / _sohCoverageTotalSec;
+    if (coverage < _kSohMinCoverage) return; // too many dongle gaps
+    if (_sohChargeAhAccum <= 0) return;
+    final fullAh = _sohChargeAhAccum / (deltaSocPct / 100.0);
+    final sohPct = fullAh / Bz5Model.batteryCapacityAh * 100.0;
+    // Sanity clamp — a plausible SOH lives well inside this band; anything
+    // outside means a bad session (mis-integrated / SOC glitch), so drop it.
+    if (sohPct < 50.0 || sohPct > 110.0) return;
+    _sohAhPctCached = sohPct;
+    final coveredSoc = deltaSocPct;
+    // Fire-and-forget DB write; the in-memory cache is already updated so the
+    // dashboard reflects it immediately even if the write lags.
+    unawaited(db
+        .upsertSohEstimate(
+          sohAhPct: sohPct,
+          computedAt: DateTime.now(),
+          deltaSocCovered: coveredSoc,
+        )
+        .catchError((_) {/* keep cache; retry next qualifying session */}));
+    notifyListeners();
   }
 
   /// Phase of the active charging session based on max cell V and power.
