@@ -306,18 +306,41 @@ class HalSamples extends Table {
   TextColumn get textValue => text().nullable()();
 }
 
+/// v0.1.29+104: persisted result of the independent coulomb-counted SOH
+/// estimate. A single row (id = 1, upserted) holding the LAST valid result —
+/// the Ah method yields one figure per qualifying charge session (ΔSOC ≥ 20%
+/// and ≥ 90% current-coverage), so there is no time series to keep here; the
+/// dashboard just reads this latest value. Survives restarts. When no row
+/// exists yet, the UI falls back to the BMS-reported SOH (0x0029) with a
+/// "(BMS)" tag.
+class SohEstimates extends Table {
+  /// Always 1 — single-row table, replaced on each new qualifying session.
+  IntColumn get id => integer()();
+  /// Independent SOH estimate, percent (full_Ah / batteryCapacityAh × 100).
+  RealColumn get sohAhPct => real()();
+  /// When this estimate was computed (charge-session close time).
+  DateTimeColumn get computedAt => dateTime()();
+  /// SOC span covered by the session that produced it, percent — for
+  /// transparency / debugging (a wider span is a more trustworthy estimate).
+  RealColumn get deltaSocCovered => real()();
+
+  @override
+  Set<Column> get primaryKey => {id};
+}
+
 @DriftDatabase(tables: [
   Samples, Trips, Snapshots,
   SweepRuns, SweepResults,
   LiveLogSessions, LiveLogEntries,
   CanMonitorSessions, CanFrames, CanRawLines,
   HalSamples,
+  SohEstimates,
 ])
 class AppDatabase extends _$AppDatabase {
   AppDatabase() : super(_openConnection());
 
   @override
-  int get schemaVersion => 10;
+  int get schemaVersion => 11;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -396,6 +419,13 @@ class AppDatabase extends _$AppDatabase {
           // sample rows get NULL (they're trip / ad-hoc samples, unchanged).
           if (from < 10) {
             await m.addColumn(samples, samples.chargingSessionId);
+          }
+          // v10 → v11 (v0.1.29+104): soh_estimates single-row table for the
+          // independent coulomb-counted SOH result. Additive (createTable) —
+          // pre-existing tables untouched; until the first qualifying charge
+          // session writes a row, the UI falls back to BMS SOH (0x0029).
+          if (from < 11) {
+            await m.createTable(sohEstimates);
           }
         },
       );
@@ -1336,6 +1366,33 @@ class AppDatabase extends _$AppDatabase {
     final framesDeleted = await delete(canFrames).go();
     final sessionsDeleted = await delete(canMonitorSessions).go();
     return (sessionsDeleted, framesDeleted, rawDeleted);
+  }
+
+  // ─────────────────── SOH (coulomb-counted) ──────────────────────
+  // v0.1.29+104. Single-row table (id = 1): each qualifying charge session
+  // overwrites the previous result, so the dashboard always reads the most
+  // recent independent estimate.
+
+  /// Upsert the latest independent SOH estimate (replaces the single row).
+  Future<void> upsertSohEstimate({
+    required double sohAhPct,
+    required DateTime computedAt,
+    required double deltaSocCovered,
+  }) async {
+    await into(sohEstimates).insertOnConflictUpdate(
+      SohEstimatesCompanion(
+        id: const Value(1),
+        sohAhPct: Value(sohAhPct),
+        computedAt: Value(computedAt),
+        deltaSocCovered: Value(deltaSocCovered),
+      ),
+    );
+  }
+
+  /// Latest independent SOH estimate, or null if none computed yet.
+  Future<SohEstimate?> getLatestSohEstimate() {
+    return (select(sohEstimates)..where((r) => r.id.equals(1)))
+        .getSingleOrNull();
   }
 }
 

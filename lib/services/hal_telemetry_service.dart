@@ -330,6 +330,19 @@ class HalTelemetryService extends ChangeNotifier {
   static const double _halMovingKmh = 1.0; // > this counts as moving
   static const Duration _kHalParkConfirm = Duration(seconds: 30);
   static const Duration _kHalParkClose = Duration(minutes: 10);
+
+  // v0.1.29+104: speed-based trip-start fallback. The primary start path
+  // keys off the gear selector leaving Park (see _updateHalTrip), but
+  // gear_enum is EVENT-DRIVEN — a frame arrives only when the lever moves.
+  // If the app launches while the car is ALREADY rolling in D, no gear
+  // frame ever lands, _stickyGear stays null, and the gear path never
+  // fires — so the whole drive produces no trip (the bug Alex hit). This
+  // fallback starts the trip on sustained speed alone when gear is still
+  // unknown: speed > _halMovingKmh held for _kHalSpeedStartConfirm. Both
+  // paths funnel into _startHalTrip(), guarded by !_halTripActive, so they
+  // never double-start. Distance/duration then anchor from THIS moment
+  // (app launch), which is the accepted behaviour for this edge case.
+  static const Duration _kHalSpeedStartConfirm = Duration(milliseconds: 2500);
   // v0.1.29+101: charge-onset close. A HAL trip that doesn't close promptly
   // when the car stops can swallow a charge that starts a few minutes later
   // (observed: trip #45 ended at 4% SOC but the row showed 18% because a DC
@@ -412,6 +425,12 @@ class HalTelemetryService extends ChangeNotifier {
   // (stationary + charging-current) streak. Reset whenever the car moves or
   // the current goes non-charging.
   DateTime? _halChargeConfirmStart;
+  // v0.1.29+104: speed-based start debounce clock — first sample of the
+  // current (moving + gear-still-unknown) streak. Reset when speed drops to
+  // ≤ _halMovingKmh or once a gear frame arrives (then the gear path owns
+  // the start). See _kHalSpeedStartConfirm and the start block in
+  // _updateHalTrip.
+  DateTime? _halSpeedStartConfirmStart;
   // v0.1.29+101: rolling snapshot of the LAST moment the car was moving,
   // captured each tick while speed > _halMovingKmh. When a charge-onset
   // close fires, the trip is finalized AS OF this snapshot (variant A:
@@ -932,6 +951,36 @@ class HalTelemetryService extends ChangeNotifier {
       // until then the energy cell shows "—" honestly.
       if (gear != null && !inPark) {
         _startHalTrip();
+        _halSpeedStartConfirmStart = null;
+        return;
+      }
+
+      // v0.1.29+104: speed-based start fallback for the "launched while
+      // already rolling" case. gear_enum is event-driven, so if the lever
+      // hasn't moved since app start, gear is still null here and the path
+      // above can't fire. Start on sustained motion instead: speed >
+      // _halMovingKmh held for _kHalSpeedStartConfirm, but ONLY while gear
+      // is still unknown (gear == null) — once any gear frame arrives the
+      // gear path takes over and we drop this clock. Funnels into the same
+      // _startHalTrip(); the !_halTripActive guard above prevents any
+      // double-start. Distance/duration anchor from here (app launch).
+      if (gear == null) {
+        final sp = halSpeedKmh;
+        if (sp != null && sp > _halMovingKmh) {
+          _halSpeedStartConfirmStart ??= DateTime.now();
+          if (DateTime.now().difference(_halSpeedStartConfirmStart!) >=
+              _kHalSpeedStartConfirm) {
+            _startHalTrip();
+            _halSpeedStartConfirmStart = null;
+          }
+        } else {
+          // Dropped below the moving threshold before confirming — reset.
+          _halSpeedStartConfirmStart = null;
+        }
+      } else {
+        // A gear frame has arrived (gear != null but it's Park) — the gear
+        // path owns start/stop from now on; clear the speed clock.
+        _halSpeedStartConfirmStart = null;
       }
       return;
     }
@@ -1019,6 +1068,7 @@ class HalTelemetryService extends ChangeNotifier {
     _halTripActive = true;
     _halTripStartedAt = DateTime.now();
     _halTripStartSoc = null;      // latched later, on first valid SOC frame
+    _halSpeedStartConfirmStart = null; // v0.1.29+104: clear speed-start clock
     _halTripStartTripA = _heldValue('trip_a', _coreHold); // may be null early
     // v0.1.29+103: reset the distance accumulator / last-seen on trip start.
     _halTripDistAccumKm = 0;
@@ -1095,6 +1145,7 @@ class HalTelemetryService extends ChangeNotifier {
     _halParkConfirmStart = null;
     _halParkedSince = null;
     _halChargeConfirmStart = null;
+    _halSpeedStartConfirmStart = null; // v0.1.29+104: clear speed-start clock
     _halLastMovingSnapshot = null;
     _resetHalTripAggregates();
     _halTripTick?.cancel();

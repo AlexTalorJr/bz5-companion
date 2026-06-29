@@ -75,7 +75,16 @@ class _Connected extends StatelessWidget {
     // aggregates and everything recorded stay pure OBD2 (honesty rule).
     final hal = context.watch<HalTelemetryService>();
     final soc = svc.readNumeric('790', '0005');
-    final soh = svc.readNumeric('790', '0029');
+    // v0.1.29+104: SOH prefers the independent coulomb-counted estimate
+    // (svc.sohAhPct) when available, shown as a bare percent. Until the first
+    // qualifying charge session it falls back to the BMS value (0x0029),
+    // tagged "(BMS)" so the source is honest. sohDisplay carries the formatted
+    // string; sohIsAh distinguishes the two for any downstream styling.
+    final sohAh = svc.sohAhPct;
+    final sohBms = svc.readNumeric('790', '0029');
+    final String sohDisplay = sohAh != null
+        ? '${sohAh.round()}%'
+        : (sohBms != null ? '${sohBms.toInt()}% (BMS)' : '—');
     final tempRaw = svc.readNumeric('790', '002F');
     final cellMin = svc.readNumeric('790', '002B');
     final cellMax = svc.readNumeric('790', '002D');
@@ -247,7 +256,7 @@ class _Connected extends StatelessWidget {
               icon: Icons.favorite,
               color: Colors.green,
               label: 'SOH',
-              value: soh != null ? '${soh.toInt()}%' : '—',
+              value: sohDisplay,
             ),
             _MetricCard(
               icon: Icons.thermostat,
@@ -1011,7 +1020,7 @@ class _LayoutDiagnostic extends StatelessWidget {
 
 /// Bump when changing the diagnostic format — helps cross-reference
 /// screenshots to specific app versions while iterating.
-const String _kDiagVersion = 'v0.1.29+103';
+const String _kDiagVersion = 'v0.1.29+104';
 
 /// v0.1.29+94: public alias of the build version string for display outside
 /// dashboard (e.g. the About screen's APP card). Single literal source — the

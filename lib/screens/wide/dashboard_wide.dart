@@ -491,7 +491,17 @@ class _MiddleColumn extends StatelessWidget {
     // live-verified vs cluster); declared first so the resolvers below can
     // use it.
     final hal = context.watch<HalTelemetryService>();
-    final soh = hal.useHalForSoh ? hal.halSoh : svc.readNumeric('790', '0029');
+    // v0.1.29+104: SOH precedence — independent coulomb-counted estimate
+    // (svc.sohAhPct, bare %) first; else HAL BigData SOH (bare %, unchanged);
+    // else BMS 0x0029 tagged "(BMS)". sohDisplay is the formatted string.
+    final double? sohAh = svc.sohAhPct;
+    final double? sohHal = hal.useHalForSoh ? hal.halSoh : null;
+    final double? sohBms = svc.readNumeric('790', '0029');
+    final String sohDisplay = sohAh != null
+        ? '${sohAh.round()}%'
+        : (sohHal != null
+            ? '${sohHal.toInt()}%'
+            : (sohBms != null ? '${sohBms.toInt()}% (BMS)' : '—'));
     final tempRaw = hal.useHalForBatteryTemp
         ? hal.halBatteryTempC
         : svc.readNumeric('790', '002F');
@@ -544,7 +554,7 @@ class _MiddleColumn extends StatelessWidget {
                         icon: Icons.favorite,
                         color: Colors.green,
                         label: 'SOH',
-                        value: soh != null ? '${soh.toInt()}%' : '—',
+                        value: sohDisplay,
                       ),
                     ),
                     const SizedBox(width: 12),
