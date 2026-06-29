@@ -352,6 +352,17 @@ class HalTelemetryService extends ChangeNotifier {
   DateTime? _halTripStartedAt;
   double? _halTripStartSoc;     // latched start SOC (whole %, smoothed via EMA)
   double? _halTripStartTripA;   // latched start odo-trip (km) from trip_a
+  // v0.1.29+103: survive a user-reset of the native trip_a counter mid-trip.
+  // trip_a is the dashboard "Trip A" the driver can zero from the car's own
+  // UI. The HAL trip distance is Δtrip_a from a latched start, so a reset
+  // makes the live trip_a drop below the latched start and (pre-+103) the
+  // distance getter returned null forever — the dashboard showed 0.0 km while
+  // duration/energy kept counting (observed 2026-06-29). We now detect the
+  // drop, bank the distance covered up to the reset into an accumulator, and
+  // re-latch the start to the new (low) trip_a so counting continues from the
+  // new zero without losing the kilometres already driven.
+  double _halTripDistAccumKm = 0;   // banked km from before any trip_a reset
+  double? _halTripLastTripA;        // last seen trip_a (to bank on reset)
   double? _halPeakSpeedKmh;
   double _halSpeedSum = 0;      // moving-sample speed sum (for avg)
   int _halSpeedSamples = 0;     // moving-sample count
@@ -1009,6 +1020,9 @@ class HalTelemetryService extends ChangeNotifier {
     _halTripStartedAt = DateTime.now();
     _halTripStartSoc = null;      // latched later, on first valid SOC frame
     _halTripStartTripA = _heldValue('trip_a', _coreHold); // may be null early
+    // v0.1.29+103: reset the distance accumulator / last-seen on trip start.
+    _halTripDistAccumKm = 0;
+    _halTripLastTripA = _halTripStartTripA;
     // v0.1.29+91: latch the absolute odometer at start, used ONLY for the
     // row's start_odometer column (so history shows the odometer at trip
     // start). The trip DISTANCE itself comes from halTripDistanceKm = Δ trip_a
@@ -1074,6 +1088,9 @@ class HalTelemetryService extends ChangeNotifier {
     _halTripStartedAt = null;
     _halTripStartSoc = null;
     _halTripStartTripA = null;
+    // v0.1.29+103: clear distance accumulator / last-seen on trip close.
+    _halTripDistAccumKm = 0;
+    _halTripLastTripA = null;
     _halTripStartOdo = null;
     _halParkConfirmStart = null;
     _halParkedSince = null;
@@ -1306,11 +1323,30 @@ class HalTelemetryService extends ChangeNotifier {
     // trip_a can be null at the very start (frame not yet seen). Once it
     // arrives, latch it as the start so distance reads from zero.
     if (start == null) {
-      if (cur != null) _halTripStartTripA = cur;
+      if (cur != null) {
+        _halTripStartTripA = cur;
+        _halTripLastTripA = cur;
+      }
       return cur != null ? 0.0 : null;
     }
-    if (cur == null || cur < start) return null;
-    return cur - start;
+    if (cur == null) return null;
+    // v0.1.29+103: native trip_a was reset under us (dropped below the
+    // latched start by more than noise). Bank the distance driven up to the
+    // reset (last seen − start) and re-latch the start to the new low value
+    // so counting resumes from the new zero. ε guards against trip_a jitter
+    // triggering a false re-anchor. The kilometres already driven are kept
+    // in the accumulator, so distance never regresses to zero.
+    const double kEpsKm = 0.05;
+    if (cur < start - kEpsKm) {
+      final lastBeforeReset = _halTripLastTripA ?? start;
+      final banked = lastBeforeReset - start;
+      if (banked > 0) _halTripDistAccumKm += banked;
+      _halTripStartTripA = cur;
+      _halTripLastTripA = cur;
+      return _halTripDistAccumKm;
+    }
+    _halTripLastTripA = cur;
+    return _halTripDistAccumKm + (cur - start);
   }
 
   /// Energy used so far (kWh) = (startSoc − nowSoc) × capacity, the SAME
