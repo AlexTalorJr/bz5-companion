@@ -67,52 +67,67 @@ def fail(m):
 
 
 def parse_manifest():
-    """Return (version, {filename: sha})."""
+    """Return (default_version, {filename: (sha, version)}).
+
+    v0.1.29+107: each file line may carry its OWN version string after the
+    SHA — `<file>.kt  <sha64>  <version...>`. This is required because the
+    vendored files no longer share a single recon version (the 5 original
+    files are p078; the BZ3 engine is p100/v0.10.79). A line WITHOUT a
+    trailing version falls back to the manifest-wide `version:` line, so the
+    older 5-line format still parses unchanged.
+    """
     if not MANIFEST.exists():
         fail("HAL_SYNC.manifest missing")
         return None, {}
-    version = None
+    default_version = None
     files = {}
     for ln in MANIFEST.read_text().splitlines():
         ln = ln.strip()
         if not ln or ln.startswith('#'):
             continue
         if ln.startswith('version:'):
-            version = ln.split(':', 1)[1].strip()
+            default_version = ln.split(':', 1)[1].strip()
             continue
         if ln.startswith('commit:'):
             continue
-        m = re.match(r'^(\S+\.kt)\s+([0-9a-f]{64})$', ln)
+        # <file>.kt  <sha64>  [optional per-line version string]
+        m = re.match(r'^(\S+\.kt)\s+([0-9a-f]{64})(?:\s+(.+))?$', ln)
         if m:
-            files[m.group(1)] = m.group(2)
-    return version, files
+            per_line_ver = m.group(3).strip() if m.group(3) else None
+            files[m.group(1)] = (m.group(2), per_line_ver)
+    return default_version, files
 
 
 def check_vendoring():
-    version, files = parse_manifest()
-    if version is None:
+    default_version, files = parse_manifest()
+    if default_version is None:
         fail("manifest has no version: line")
         return
-    if len(files) != 5:
-        fail(f"manifest lists {len(files)} files, expected 5")
+    # v0.1.29+107: 6 vendored files — the original 5 (recon p078) plus the
+    # BZ3 engine Bz3TelemetrySubscriber.kt (recon p100 / v0.10.79).
+    if len(files) != 6:
+        fail(f"manifest lists {len(files)} files, expected 6")
         return
-    ok(f"manifest: version {version}, 5 files")
+    ok(f"manifest: default version {default_version}, 6 files")
 
-    for fname, sha in files.items():
+    for fname, (sha, per_line_ver) in files.items():
+        # the version this file's header must declare: its own if given,
+        # else the manifest-wide default.
+        ver = per_line_ver or default_version
         path = HAL_DIR / fname
         if not path.exists():
             warn(f"{fname} not yet vendored — copy per HAL_SYNC.manifest")
             continue
         body = path.read_text()
-        # header must declare the manifest version and SHA, package must match
-        if version not in body:
-            fail(f"{fname} header missing version '{version}'")
+        # header must declare this file's version and SHA, package must match
+        if ver not in body:
+            fail(f"{fname} header missing version '{ver}'")
         elif f"SHA256: {sha}" not in body:
             fail(f"{fname} header SHA mismatch (expected manifest {sha[:12]}…)")
         elif PKG not in body:
             fail(f"{fname} wrong package (expected {PKG})")
         else:
-            ok(f"{fname} vendored with matching header")
+            ok(f"{fname} vendored with matching header ({ver})")
 
 
 def check_sink():

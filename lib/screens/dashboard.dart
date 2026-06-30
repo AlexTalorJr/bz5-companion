@@ -17,31 +17,53 @@ class DashboardScreen extends StatelessWidget {
     final svc = context.watch<ConnectionService>();
     // v0.1.29+60: re-render on language switch (per-screen subscription).
     context.watch<LocaleService>();
+    // v0.1.29+107: this phone-layout dashboard is the MAIN screen on a
+    // vertically-mounted head unit (BZ3 falls to phone layout — see
+    // responsive.dart useHeadUnitLayout, which needs width > height). The
+    // +83 startup-gate fix shipped to the wide HU screens (dashboard_wide,
+    // driver_view_wide) but not here, so a BZ3 without a dongle was stuck on
+    // the "connect over BT" wall even though HAL data is flowing. Apply the
+    // same gate here: halOnly with HAL available is NOT blocked.
+    final hal = context.watch<HalTelemetryService>();
     final connected = svc.status == ConnectionStatus.connected;
+    final halActive = hal.canUseHal && hal.mode == HalSourceMode.halOnly;
+    final blocked = !connected && !halActive;
+    // Polling is an OBD2 concept; hide its toggle in halOnly.
+    final showPolling = hal.mode != HalSourceMode.halOnly;
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('BZ5 Companion'),
         actions: [
-          IconButton(
-            icon: Icon(svc.isPolling ? Icons.pause_circle : Icons.play_circle),
-            onPressed: !connected ? null : () {
-              if (svc.isPolling) {
-                svc.stopPolling();
-              } else {
-                svc.startPolling();
-              }
-            },
-          ),
+          if (showPolling)
+            IconButton(
+              icon: Icon(svc.isPolling ? Icons.pause_circle : Icons.play_circle),
+              onPressed: !connected ? null : () {
+                if (svc.isPolling) {
+                  svc.stopPolling();
+                } else {
+                  svc.startPolling();
+                }
+              },
+            ),
         ],
       ),
-      body: !connected ? const _NotConnected() : _Connected(svc: svc),
+      body: blocked
+          ? _NotConnected(
+              halDead: hal.mode == HalSourceMode.halOnly && !hal.running)
+          : _Connected(svc: svc),
     );
   }
 }
 
 class _NotConnected extends StatelessWidget {
-  const _NotConnected();
+  // v0.1.29+107: halDead = halOnly chosen but the HAL stream isn't running.
+  // Then "connect over BT" is a lie (the user picked HAL), so show a
+  // HAL-stream message + sync-disabled icon — mirrors dashboard_wide's
+  // _NotConnectedHero.
+  const _NotConnected({this.halDead = false});
+  final bool halDead;
+
   @override
   Widget build(BuildContext context) {
     return Center(
@@ -50,12 +72,20 @@ class _NotConnected extends StatelessWidget {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Icon(Icons.bluetooth_disabled, size: 80, color: Colors.grey),
+            Icon(halDead ? Icons.sync_disabled : Icons.bluetooth_disabled,
+                size: 80, color: Colors.grey),
             const SizedBox(height: 24),
-            Text(S.of('common.not_connected_title'),
+            Text(
+                halDead
+                    ? S.of('settings.datasource.hal_unavailable')
+                    : S.of('common.not_connected_title'),
                 style: Theme.of(context).textTheme.headlineSmall),
             const SizedBox(height: 12),
-            Text(S.of('dash.find_hint'), textAlign: TextAlign.center),
+            Text(
+                halDead
+                    ? S.of('datasource.hal_dead_hint')
+                    : S.of('dash.find_hint'),
+                textAlign: TextAlign.center),
           ],
         ),
       ),
@@ -1023,7 +1053,7 @@ class _LayoutDiagnostic extends StatelessWidget {
 
 /// Bump when changing the diagnostic format — helps cross-reference
 /// screenshots to specific app versions while iterating.
-const String _kDiagVersion = 'v0.1.29+106';
+const String _kDiagVersion = 'v0.1.29+107';
 
 /// v0.1.29+94: public alias of the build version string for display outside
 /// dashboard (e.g. the About screen's APP card). Single literal source — the

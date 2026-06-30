@@ -24,6 +24,7 @@ import '../services/car_status_service.dart';
 import '../services/connection.dart';
 import '../services/hal_telemetry_service.dart';
 import '../services/locale_service.dart';
+import '../services/native_car_channel.dart';
 import '../widgets/responsive.dart';
 
 class StatusScreen extends StatefulWidget {
@@ -102,6 +103,11 @@ class _StatusScreenState extends State<StatusScreen> {
                   _WideBody(status: st, odometerKm: odo)
                 else
                   _NarrowBody(status: st, odometerKm: odo),
+                const SizedBox(height: 12),
+                // v0.1.29+107: honesty row — which DiLink platform + HAL
+                // engine shape is active. Independent of the car_status
+                // provider, so it shows even when provider data is absent.
+                const _PlatformCard(),
                 const SizedBox(height: 16),
                 _SourceFooter(lastFetch: _service.lastFetch),
               ],
@@ -524,6 +530,109 @@ class _SourceFooter extends StatelessWidget {
               style: TextStyle(
                   fontSize: 11, color: Theme.of(context).disabledColor)),
         ],
+      ),
+    );
+  }
+}
+
+// ─── platform honesty (v0.1.29+107) ─────────────────────────────────────
+
+/// Small card showing the active DiLink platform + HAL engine shape, loaded
+/// once from the native side via [NativeCarChannel.halActivePlatform].
+/// This is a transparency aid (snaps the "why isn't X working" class of
+/// questions): it states whether we identified the head unit as BZ3 or BZ5,
+/// which engine (GETTERS vs FIELDS) is in use, and whether that was
+/// auto-detected or manually overridden. Renders nothing on a phone /
+/// non-head-unit (empty map).
+class _PlatformCard extends StatefulWidget {
+  const _PlatformCard();
+
+  @override
+  State<_PlatformCard> createState() => _PlatformCardState();
+}
+
+class _PlatformCardState extends State<_PlatformCard> {
+  Map<String, Object?>? _info;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final info = await NativeCarChannel.instance.halActivePlatform();
+    if (mounted) setState(() => _info = info);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final info = _info;
+    // Nothing yet, or not a head unit → render nothing (zero-height).
+    if (info == null || info.isEmpty) return const SizedBox.shrink();
+
+    final platformId = (info['platformId'] ?? 'UNKNOWN').toString();
+    final displayName = (info['displayName'] ?? '').toString();
+    final engineKind = (info['engineKind'] ?? '').toString();
+    final overrideId = info['overrideId'];
+
+    final isUnknown = platformId == 'UNKNOWN';
+    final label = isUnknown
+        ? S.of('status.platform.unknown')
+        : (displayName.isNotEmpty ? displayName : platformId);
+    final detectNote = (overrideId != null)
+        ? S.of('status.platform.override')
+        : S.of('status.platform.auto');
+
+    return Card(
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: Theme.of(context).dividerColor, width: 0.5),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        child: Row(
+          children: [
+            Icon(
+              isUnknown ? Icons.help_outline : Icons.memory,
+              size: 20,
+              color: Theme.of(context).colorScheme.primary,
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Text(
+                        '${S.of('status.platform.header')}: ',
+                        style: TextStyle(
+                            fontSize: 13,
+                            color: Theme.of(context).disabledColor),
+                      ),
+                      Flexible(
+                        child: Text(
+                          label,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              fontSize: 14, fontWeight: FontWeight.w600),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    '${S.of('status.platform.engine')}: $engineKind · $detectNote',
+                    style: TextStyle(
+                        fontSize: 12, color: Theme.of(context).disabledColor),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

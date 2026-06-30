@@ -58,6 +58,16 @@ class BydVinDetector {
     @Volatile private var frameworkPresentMemo: Boolean? = null
 
     /**
+     * v0.1.29+107: cheapest possible VIN read for platform identity — returns
+     * whatever VIN we already have in memory (fresh preferred, else cached),
+     * WITHOUT triggering any reflection or CAN round-trip. Never throws, never
+     * blocks. Used by DiLinkProfiles only as a WEAK match signal: on BZ5 the
+     * VIN reflection is known to throw (so this is usually null there), which
+     * is fine — fingerprint + SDK carry the platform match.
+     */
+    fun lastKnownVin(): String? = lastVinFresh ?: lastVinCached
+
+    /**
      * Cheap probe — does the BYD framework class exist on this device?
      * Result is cached across the process lifetime.
      */

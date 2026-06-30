@@ -5,9 +5,15 @@
 # their bodies in companion — re-sync from recon when divergence is needed
 # (see DECODER_CHANGELOG.md for the decoder delta process).
 #
+# v0.1.29+107: a 6th vendored file (Bz3TelemetrySubscriber.kt) joins them.
+# It comes from a DIFFERENT recon version (p100 / v0.10.79) than the original
+# five (p078), so the manifest now supports a PER-LINE version after the SHA:
+#     <file>.kt  <sha64>  [version string]
+# A line without a trailing version uses the manifest-wide `version:` default.
+#
 # tools/hal_sync_check.py reads this manifest:
 #   - if a listed file is ABSENT from this dir → WARN (not yet vendored)
-#   - if PRESENT → its checksum header must declare this same version + SHA
+#   - if PRESENT → its checksum header must declare its line's version + SHA
 #
 # Vendoring procedure (do once, on the Mac that has both repos):
 #   for each file below:
@@ -34,3 +40,5 @@ LiveTelemetrySubscriber.kt 925befca76c4d73065c6aa35a0f589846ab6bb74cf6a6213a09f4
 ReflectionCache.kt         9cf45133f4f36937c399265d7c95fb866757c56336468a71cdf32c2752a38625
 TargetRegistry.kt          4c260db27c4ac5abf6275668e8d137564a3090de97b7c390f424097d7964acf4
 TelemetryDecoderTable.kt   b26144b8299079a02d4ca346ee373a12d353a40835da5908103859d4a70ee3c9
+# 6th file — BZ3 GETTERS engine, different recon version (per-line override):
+Bz3TelemetrySubscriber.kt  dca150f550d55fd63a6a87e1f86534b814700c70426ff5fce8255ef974a29a16  recon v0.10.79
