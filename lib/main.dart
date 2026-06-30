@@ -151,6 +151,14 @@ class _BZ5AppState extends State<BZ5App> with WidgetsBindingObserver {
             final hal = HalTelemetryService(
               diagDb: widget.db,
               currentTripId: () => widget.svc.currentTripId,
+              // v0.1.29+106: HAL trip ownership keys off the dongle, not the
+              // mode. This bool callback reads ConnectionService.isBleConnected
+              // (HAL → connection is the allowed one-way direction, like
+              // currentTripId). dongle present → halOwnsTrip false → OBD2
+              // creates the trip; absent → HAL owns it in any mode (fixes the
+              // no-trip-in-auto-without-dongle bug). AA2 holds: a callback,
+              // never an import of the HAL class.
+              dongleConnected: () => widget.svc.isBleConnected,
             );
             // v0.1.29+99: wire the trip-ownership arbiter. The OBD2
             // ConnectionService is built before HAL (above), so this is set
