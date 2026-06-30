@@ -343,15 +343,16 @@ if int(pv) >= 37:
     cloud_src = (root / 'lib/services/cloud_sync_service.dart').read_text()
     detail_src = (root / 'lib/screens/trip_detail.dart').read_text()
 
-    # D1. schema migration: version bumped to 12 (v0.1.29+105
-    # soh_estimates.source), additive addColumn step. Prior steps remain
-    # present/additive: from<8 trips.extra, from<9 hal_samples, from<10
-    # samples.charging_session_id (+94), from<11 soh_estimates table (+104),
-    # from<12 soh_estimates.source (+105, splits UDS id=1 / HAL id=2).
-    if "int get schemaVersion => 12;" in db_src:
-        ok("D1 schemaVersion bumped to 12")
+    # D1. schema migration: version bumped to 13 (v0.1.29+106
+    # trips.last_alive_ts, watchdog checkpoint), additive addColumn step.
+    # Prior steps remain present/additive: from<8 trips.extra, from<9
+    # hal_samples, from<10 samples.charging_session_id (+94), from<11
+    # soh_estimates table (+104), from<12 soh_estimates.source (+105,
+    # splits UDS id=1 / HAL id=2), from<13 trips.last_alive_ts (+106).
+    if "int get schemaVersion => 13;" in db_src:
+        ok("D1 schemaVersion bumped to 13")
     else:
-        fail("D1 schemaVersion not 12")
+        fail("D1 schemaVersion not 13")
     if "if (from < 8)" in db_src and "m.addColumn(trips, trips.extra)" in db_src:
         ok("D1 migration adds trips.extra (additive)")
     else:
@@ -374,9 +375,14 @@ if int(pv) >= 37:
         ok("D1 migration adds soh_estimates.source (additive)")
     else:
         fail("D1 from<12 addColumn(sohEstimates.source) missing")
+    if "if (from < 13)" in db_src and \
+       "m.addColumn(trips, trips.lastAliveTs)" in db_src:
+        ok("D1 migration adds trips.last_alive_ts (additive)")
+    else:
+        fail("D1 from<13 addColumn(trips.lastAliveTs) missing")
     # additive only — must NOT drop/recreate tables in the new steps
     for marker in ("if (from < 8)", "if (from < 9)", "if (from < 10)",
-                   "if (from < 11)", "if (from < 12)"):
+                   "if (from < 11)", "if (from < 12)", "if (from < 13)"):
         seg = db_src[db_src.find(marker):db_src.find(marker) + 200]
         if "deleteTable" in seg or "drop" in seg.lower():
             fail(f"D1 {marker} step is destructive (drop/delete) — must be additive")

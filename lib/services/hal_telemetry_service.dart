@@ -66,10 +66,21 @@ class HalTelemetryService extends ChangeNotifier {
   // active OBD2 trip when one exists, without importing ConnectionService.
   final AppDatabase? _diagDb;
   final int? Function()? _currentTripId;
+  // v0.1.29+106: reads ConnectionService.isBleConnected — true when an ELM327
+  // dongle is physically connected RIGHT NOW. Trip ownership keys off this
+  // fact (NOT the source mode): dongle present → OBD2 owns the trip and the
+  // HAL tracker stays silent; dongle absent → HAL owns, in ANY mode. AA2-safe:
+  // a bool callback, never an import of ConnectionService (same one-way bridge
+  // as _currentTripId). Null in tests / if unwired → treated as "no dongle".
+  final bool Function()? _dongleConnected;
 
-  HalTelemetryService({AppDatabase? diagDb, int? Function()? currentTripId})
-      : _diagDb = diagDb,
-        _currentTripId = currentTripId;
+  HalTelemetryService({
+    AppDatabase? diagDb,
+    int? Function()? currentTripId,
+    bool Function()? dongleConnected,
+  })  : _diagDb = diagDb,
+        _currentTripId = currentTripId,
+        _dongleConnected = dongleConnected;
 
   HalSourceMode _mode = HalSourceMode.auto;
   HalSourceMode get mode => _mode;
@@ -103,23 +114,17 @@ class HalTelemetryService extends ChangeNotifier {
   /// and history showed two simultaneous "ACTIVE" trips (the #45 OBD2 +
   /// #46 HAL pair seen on 2026-06-27).
   ///
-  /// Policy (chosen by Alex):
-  ///   halOnly  → HAL always owns (true).
-  ///   obd2Only → OBD2 owns (false here; HAL doesn't open trips in this mode
-  ///              anyway, so this is belt-and-braces).
-  ///   auto     → HAL owns IF the stream is live, else OBD2 takes over.
-  /// Distinct from halDriveActive (which is display-only and halOnly-bound);
-  /// kept separate so the auto branch can't change what the dashboard shows.
-  bool get halOwnsTrip {
-    switch (_mode) {
-      case HalSourceMode.halOnly:
-        return true;
-      case HalSourceMode.obd2Only:
-        return false;
-      case HalSourceMode.auto:
-        return _running;
-    }
-  }
+  /// v0.1.29+106: ownership keys off the DONGLE, not the mode (Alex, 30 Jun).
+  ///   dongle connected  → OBD2 owns; HAL stays silent (only OBD2 can read
+  ///                       UDS, so it's the right owner whenever it's live).
+  ///   dongle absent      → HAL owns, in ANY mode — this fixes bug C, where
+  ///                       in `auto` with no dongle NEITHER tracker logged a
+  ///                       trip (HAL waited for halOnly, OBD2 was dead).
+  /// Gated on `_running` too, so a dead HAL stream doesn't claim ownership.
+  /// No duplicates: dongle present → only OBD2 can physically log; absent →
+  /// only HAL. The cumulative-energy SUM stays clean. Distinct from
+  /// halDriveActive (display-only, halOnly-bound) — the dashboard is unaffected.
+  bool get halOwnsTrip => _running && !(_dongleConnected?.call() ?? false);
 
   HalStartStatus? _status;
   HalStartStatus? get status => _status;
@@ -354,6 +359,10 @@ class HalTelemetryService extends ChangeNotifier {
   static const double _halMovingKmh = 1.0; // > this counts as moving
   static const Duration _kHalParkConfirm = Duration(seconds: 30);
   static const Duration _kHalParkClose = Duration(minutes: 10);
+  // v0.1.29+106: how often the active-trip watchdog flushes lastAliveTs + the
+  // aggregate snapshot to the row. 15 s is well inside the park-close window
+  // and cheap (one row update); on a kill, recovery is at most this stale.
+  static const Duration _kHalAliveFlush = Duration(seconds: 15);
 
   // v0.1.29+104: speed-based trip-start fallback. The primary start path
   // keys off the gear selector leaving Park (see _updateHalTrip), but
@@ -461,6 +470,15 @@ class HalTelemetryService extends ChangeNotifier {
   // back-date to the stop) so the charge never contaminates end_soc /
   // distance / energy. Null until the first moving sample.
   _HalStopSnapshot? _halLastMovingSnapshot;
+  // v0.1.29+106: watchdog flush clock. While a HAL trip is active, the trip's
+  // aggregate snapshot + a last-alive timestamp are written to the row every
+  // _kHalAliveFlush (on the speed ticks — no separate Timer). If the process is
+  // killed (head unit sleeps) the row keeps a recent snapshot, so orphan
+  // recovery can close it with full aggregates + a real end time instead of the
+  // old "ACTIVE for 2 h, all dashes" outcome. Crucially the watchdog never
+  // writes endedAt (that would let cloud-sync push a still-active trip early —
+  // the +19 bug), only lastAliveTs + the aggregates. Null until the first flush.
+  DateTime? _halLastAliveFlush;
   // ── v0.1.29+105: HAL coulomb-counted SOH charge-state machine ──────────
   //
   // INDEPENDENT of the trip machine above (Вариант A). The UDS SOH integral
@@ -561,11 +579,42 @@ class HalTelemetryService extends ChangeNotifier {
               '(started ${t.startedAt})');
           continue;
         }
+        // v0.1.29+106: two cases now.
+        //
+        //   (a) lastAliveTs present → the watchdog flushed before the kill, so
+        //       the row ALREADY holds correct aggregates (distance, energy,
+        //       min/max, …). We only need to stamp endedAt = lastAliveTs +
+        //       notes. closeHalOrphanAt touches just those two columns and
+        //       leaves aggregates alone — so this gives a full record with no
+        //       recompute. This is the main path (a normal drive / DC flushes
+        //       within _kHalAliveFlush).
+        //
+        //   (b) lastAliveTs null → an old pre-+106 row, or a kill before the
+        //       first flush. Aggregates weren't snapshotted, so fall back to
+        //       the last hal-sample time for endedAt and try a COARSE energy
+        //       reconstruction from soc_precise (ΔSOC × pack capacity). We do
+        //       NOT reconstruct distance — the throttled hal_samples can't give
+        //       an honest figure — so it stays whatever the row had (likely
+        //       null). energyUsedKwh is only written when the reconstruction
+        //       yields a value AND the row doesn't already have one.
+        if (t.lastAliveTs != null) {
+          await db.closeHalOrphanAt(t.id, t.lastAliveTs!,
+              note: 'auto-closed: orphaned');
+          debugPrint('HAL recovery: closed orphan Trip #${t.id} via watchdog '
+              'snapshot (started ${t.startedAt}) → endedAt=${t.lastAliveTs}');
+          continue;
+        }
         final endTs = await db.lastHalSampleTimeForTrip(t.id) ??
             t.startedAt.add(const Duration(seconds: 1));
-        await db.closeHalOrphanAt(t.id, endTs, note: 'auto-closed: orphaned');
+        double? energyKwh;
+        if (t.energyUsedKwh == null) {
+          energyKwh = await db.reconstructHalEnergyFromSamples(t.id);
+        }
+        await db.closeHalOrphanAt(t.id, endTs,
+            note: 'auto-closed: orphaned', energyUsedKwh: energyKwh);
         debugPrint('HAL recovery: closed orphan Trip #${t.id} '
-            '(started ${t.startedAt}) → endedAt=$endTs');
+            '(started ${t.startedAt}) → endedAt=$endTs'
+            '${energyKwh != null ? ', energy≈$energyKwh kWh (reconstructed)' : ''}');
       }
     } catch (e) {
       debugPrint('HAL orphan recovery failed (non-fatal): $e');
@@ -990,10 +1039,13 @@ class HalTelemetryService extends ChangeNotifier {
   /// Run the start/stop state machine. Called from _onEvent after a frame
   /// is consumed; no-ops when HAL is not the live driving source.
   void _updateHalTrip() {
-    // Only meaningful as a display tracker when HAL is the pinned, live
-    // source (halOnly + stream up). In obd2Only / phone this stays idle
-    // and the UI keeps reading the OBD2 tracker.
-    if (!halDriveActive) {
+    // v0.1.29+106: gate on OWNERSHIP (halOwnsTrip), not display (halDriveActive).
+    // HAL runs the trip whenever it owns it = stream live AND no dongle, in ANY
+    // mode (Alex, 30 Jun). This is what lets a trip get logged in `auto` with no
+    // dongle (bug C). halDriveActive stays display-only for the widgets — do NOT
+    // swap it here. When ownership is lost (dongle plugged in mid-drive, or the
+    // stream dies) close any open HAL trip and stand down.
+    if (!halOwnsTrip) {
       if (_halTripActive) _closeHalTrip();
       return;
     }
@@ -1080,6 +1132,49 @@ class HalTelemetryService extends ChangeNotifier {
     final speed = halSpeedKmh;
     final moving = speed != null && speed > _halMovingKmh;
 
+    // v0.1.29+106: watchdog flush. Every _kHalAliveFlush, stamp the row with a
+    // last-alive time + the current aggregate snapshot, WITHOUT setting endedAt
+    // (the trip stays ACTIVE; cloud-sync won't push it early). If the process
+    // is killed before a clean close, orphan recovery finds this fresh snapshot
+    // and finalizes the trip with real aggregates + endedAt = lastAliveTs,
+    // instead of leaving "ACTIVE 2 h / all dashes". Runs on the speed ticks
+    // (no separate Timer); the lastAliveTs tracks the last MOVING moment so it
+    // never drifts forward into a post-stop charge. Gated on a live DB row.
+    if (_halTripDbId != null &&
+        (_halLastAliveFlush == null ||
+            now.difference(_halLastAliveFlush!) >= _kHalAliveFlush)) {
+      _halLastAliveFlush = now;
+      final db = _diagDb;
+      final id = _halTripDbId;
+      if (db != null && id != null) {
+        final a = _collectHalTripAggregates();
+        final aliveTs = _halLastMovingSnapshot?.at ?? now;
+        db
+            .touchTripAlive(
+              id,
+              lastAliveTs: aliveTs,
+              endSoc: a.endSoc,
+              endOdo: a.endOdo,
+              distanceKm: a.distanceKm,
+              energyUsedKwh: a.energyKwh,
+              avgConsumptionKwh100km: a.consumption,
+              minBatteryTempC: a.minTemp,
+              maxBatteryTempC: a.maxTemp,
+              maxCellSpreadMv: a.maxSpread,
+              minSoc: a.minSoc,
+              maxSoc: a.maxSoc,
+              peakSpeedKmh: a.peakSpeed,
+              peakPowerKw: a.peakPower,
+              peakRegenKw: a.peakRegen,
+              avgMovingSpeedKmh: a.avgMoving,
+              movingSeconds: a.movingSecs,
+              idleSeconds: a.idleSecs,
+              regenEnergyKwh: a.regenKwh,
+            )
+            .catchError((_) {});
+      }
+    }
+
     // v0.1.29+101: while moving, keep a rolling snapshot of the trip end-state
     // (time + SOC + odometer). If a charge-onset close fires later, we
     // back-date the trip to this stop (variant A) so the charge never
@@ -1135,6 +1230,7 @@ class HalTelemetryService extends ChangeNotifier {
     _halTripStartedAt = DateTime.now();
     _halTripStartSoc = null;      // latched later, on first valid SOC frame
     _halSpeedStartConfirmStart = null; // v0.1.29+104: clear speed-start clock
+    _halLastAliveFlush = null;    // v0.1.29+106: flush promptly for the new trip
     _halTripStartTripA = _heldValue('trip_a', _coreHold); // may be null early
     // v0.1.29+103: reset the distance accumulator / last-seen on trip start.
     _halTripDistAccumKm = 0;
@@ -1213,10 +1309,52 @@ class HalTelemetryService extends ChangeNotifier {
     _halChargeConfirmStart = null;
     _halSpeedStartConfirmStart = null; // v0.1.29+104: clear speed-start clock
     _halLastMovingSnapshot = null;
+    _halLastAliveFlush = null;         // v0.1.29+106: clear watchdog clock
     _resetHalTripAggregates();
     _halTripTick?.cancel();
     _halTripTick = null;
     _halTripDbId = null;
+  }
+
+  /// v0.1.29+106: snapshot of every HAL-trip aggregate, taken at one instant
+  /// from the live getters/accumulators. Shared by the watchdog flush
+  /// (touchTripAlive) and the final write (_finalizeHalTripRow) so both derive
+  /// the SAME numbers — a watchdog snapshot then equals what a clean close
+  /// would have written, and orphan recovery just stamps endedAt onto a row
+  /// that already holds correct aggregates (no recompute, no fabrication).
+  /// All fields nullable: anything HAL doesn't know stays null (honest).
+  ///
+  /// `asOf` (charge-onset close): when supplied, end SOC/odometer come from the
+  /// last moving moment, not the live charging values — otherwise the charge
+  /// inflates end_soc (the #45 bug: ended 4% but recorded 18%). Distance/energy
+  /// derive from trip_a / start-SOC deltas captured while driving, so they stay
+  /// correct; only the absolute end anchors need the back-date.
+  _HalTripAgg _collectHalTripAggregates({_HalStopSnapshot? asOf}) {
+    return (
+      endSoc: asOf?.soc ?? halSocForTrip,
+      endOdo: asOf?.odometerKm ?? _heldValue('odometer', _coreHold),
+      distanceKm: halTripDistanceKm, // Δ trip_a (live display delta)
+      energyKwh: halTripEnergyUsedKwh, // ΔSOC × capacity (EMA)
+      consumption: halTripAvgConsumptionKwh100km,
+      peakSpeed: _halPeakSpeedKmh,
+      avgMoving: halTripCurrentAvgMovingKmh,
+      // movingSeconds = seconds spent MOVING (speed > 1 km/h), NOT the full
+      // trip duration — _halSpeedSamples is one increment per 1 s moving tick,
+      // mirroring the OBD2 tracker's _tripMovingMs ~/ 1000. Trip duration is
+      // derived by the UI from endedAt − startedAt, so it must NOT be written
+      // here (writing full duration would show "[whole trip] / —" for the
+      // moving/idle split, which is wrong).
+      movingSecs: _halSpeedSamples > 0 ? _halSpeedSamples : null,
+      idleSecs: _halIdleSeconds > 0 ? _halIdleSeconds : null,
+      regenKwh: _halRegenEnergyKwh > 0 ? _halRegenEnergyKwh : null,
+      minTemp: _halTripMinTempC,
+      maxTemp: _halTripMaxTempC,
+      maxSpread: _halTripMaxCellSpreadMv,
+      minSoc: _halTripMinSoc,
+      maxSoc: _halTripMaxSoc,
+      peakPower: _halTripPeakPowerKw,
+      peakRegen: _halTripPeakRegenKw,
+    );
   }
 
   /// v0.1.29+91: write the HAL trip's final aggregates to its Trips row via
@@ -1230,61 +1368,33 @@ class HalTelemetryService extends ChangeNotifier {
     final db = _diagDb;
     final id = _halTripDbId;
     if (db == null || id == null) return;
-    // Snapshot now — these getters/accumulators are wiped by _closeHalTrip.
-    // v0.1.29+101: when asOf is supplied (charge-onset close), the end SOC and
-    // odometer come from the last moving moment, NOT the live (charging)
-    // values — otherwise the charge would inflate end_soc (the trip #45 bug:
-    // ended at 4% but recorded 18%). Distance/energy already derive from the
-    // trip_a / start-SOC deltas captured during driving, so they stay correct;
-    // only the absolute end anchors need the back-date.
-    final endSoc = asOf?.soc ?? halSocForTrip;
-    final endOdo = asOf?.odometerKm ?? _heldValue('odometer', _coreHold);
-    final distanceKm = halTripDistanceKm;       // Δ trip_a (live display delta)
-    final energyKwh = halTripEnergyUsedKwh;     // ΔSOC × capacity (EMA)
-    final consumption = halTripAvgConsumptionKwh100km;
-    final peakSpeed = _halPeakSpeedKmh;
-    final avgMoving = halTripCurrentAvgMovingKmh;
-    // v0.1.29+91: movingSeconds = seconds spent MOVING (speed > 1 km/h),
-    // NOT the full trip duration. _halSpeedSamples is exactly that — one
-    // increment per 1 s tick while moving — mirroring the OBD2 tracker's
-    // _tripMovingMs ~/ 1000. Trip duration is derived separately by the UI
-    // from endedAt − startedAt, so it must NOT be written here (writing the
-    // full duration would make trip_detail show "[whole trip] / —" for the
-    // moving/idle split, which is wrong).
-    final movingSecs = _halSpeedSamples > 0 ? _halSpeedSamples : null;
-    // v0.1.29+98: snapshot idle/regen accumulators now (wiped by reset on
-    // close, same as the others above).
-    final idleSecs = _halIdleSeconds > 0 ? _halIdleSeconds : null;
-    final regenKwh = _halRegenEnergyKwh > 0 ? _halRegenEnergyKwh : null;
-    final minTemp = _halTripMinTempC;
-    final maxTemp = _halTripMaxTempC;
-    final maxSpread = _halTripMaxCellSpreadMv;
-    final minSoc = _halTripMinSoc;
-    final maxSoc = _halTripMaxSoc;
-    final peakPower = _halTripPeakPowerKw;
-    final peakRegen = _halTripPeakRegenKw;
+    // v0.1.29+106: collect the aggregate snapshot through the SHARED collector
+    // so the watchdog flush (touchTripAlive) and this final write derive every
+    // field identically — a recovered orphan then carries exactly what a clean
+    // close would have. See _collectHalTripAggregates for the per-field notes.
+    final a = _collectHalTripAggregates(asOf: asOf);
     // Fire-and-forget; a DB error must never disturb the stream/lifecycle.
     db
         .endTrip(
           id,
-          endSoc: endSoc,
-          endOdo: endOdo,
-          distanceKm: distanceKm,
-          energyUsedKwh: energyKwh,
-          avgConsumptionKwh100km: consumption,
-          minBatteryTempC: minTemp,
-          maxBatteryTempC: maxTemp,
-          maxCellSpreadMv: maxSpread,
-          minSoc: minSoc,
-          maxSoc: maxSoc,
-          peakSpeedKmh: peakSpeed,
-          peakPowerKw: peakPower,
-          peakRegenKw: peakRegen,
-          avgMovingSpeedKmh: avgMoving,
-          movingSeconds: movingSecs,
+          endSoc: a.endSoc,
+          endOdo: a.endOdo,
+          distanceKm: a.distanceKm,
+          energyUsedKwh: a.energyKwh,
+          avgConsumptionKwh100km: a.consumption,
+          minBatteryTempC: a.minTemp,
+          maxBatteryTempC: a.maxTemp,
+          maxCellSpreadMv: a.maxSpread,
+          minSoc: a.minSoc,
+          maxSoc: a.maxSoc,
+          peakSpeedKmh: a.peakSpeed,
+          peakPowerKw: a.peakPower,
+          peakRegenKw: a.peakRegen,
+          avgMovingSpeedKmh: a.avgMoving,
+          movingSeconds: a.movingSecs,
           // v0.1.29+98: OBD2-parity fields — idle time and regen energy.
-          idleSeconds: idleSecs,
-          regenEnergyKwh: regenKwh,
+          idleSeconds: a.idleSecs,
+          regenEnergyKwh: a.regenKwh,
           // v0.1.29+101: back-date the end time when closing because a charge
           // began (asOf = the stop). Null asOf → endTrip defaults to now, the
           // normal clean/park close.
@@ -1964,3 +2074,27 @@ class _HalStopSnapshot {
   final double? odometerKm;
   const _HalStopSnapshot({required this.at, this.soc, this.odometerKm});
 }
+
+/// v0.1.29+106: one HAL-trip aggregate snapshot. A Dart record (not a class)
+/// to keep it lightweight — produced by _collectHalTripAggregates and consumed
+/// by both the watchdog flush and the final endTrip write so the two agree
+/// field-for-field. Every field nullable: unknown stays null (honesty rule).
+typedef _HalTripAgg = ({
+  double? endSoc,
+  double? endOdo,
+  double? distanceKm,
+  double? energyKwh,
+  double? consumption,
+  double? peakSpeed,
+  double? avgMoving,
+  int? movingSecs,
+  int? idleSecs,
+  double? regenKwh,
+  double? minTemp,
+  double? maxTemp,
+  double? maxSpread,
+  double? minSoc,
+  double? maxSoc,
+  double? peakPower,
+  double? peakRegen,
+});

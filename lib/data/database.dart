@@ -82,6 +82,15 @@ class Trips extends Table {
   // mirrors the server-side trips.extra jsonb that the bridge already
   // accepts. Schema-versioned inside the JSON ("v":1), not by column.
   TextColumn get extra => text().nullable()();
+
+  // v0.1.29+106: watchdog "last alive" timestamp for an active HAL trip. The
+  // HAL tracker stamps this (plus the current aggregates) every ~15 s while a
+  // trip is live, WITHOUT setting endedAt — so the row stays ACTIVE and
+  // cloud-sync won't push it early, but a process kill (head unit sleep) leaves
+  // a recent checkpoint. Orphan recovery then closes the trip at this time with
+  // the aggregates already on the row, instead of "ACTIVE 2 h / all dashes".
+  // Local-only: NOT serialized into the trip JSON (server schema unchanged).
+  DateTimeColumn get lastAliveTs => dateTime().nullable()();
 }
 
 @DataClassName('Snapshot')
@@ -349,7 +358,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase() : super(_openConnection());
 
   @override
-  int get schemaVersion => 12;
+  int get schemaVersion => 13;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -443,6 +452,10 @@ class AppDatabase extends _$AppDatabase {
           // null → treated as 'uds' by callers.
           if (from < 12) {
             await m.addColumn(sohEstimates, sohEstimates.source);
+          }
+          if (from < 13) {
+            // v0.1.29+106: watchdog last-alive checkpoint for HAL trips.
+            await m.addColumn(trips, trips.lastAliveTs);
           }
         },
       );
@@ -830,13 +843,98 @@ class AppDatabase extends _$AppDatabase {
   /// no fabricated values, same spirit as the OBD2 forceCloseTrip.
   /// [note] is appended to the row so history can mark it as recovered.
   Future<void> closeHalOrphanAt(int tripId, DateTime endTs,
-      {String? note}) async {
+      {String? note, double? energyUsedKwh}) async {
     await (update(trips)..where((t) => t.id.equals(tripId))).write(
       TripsCompanion(
         endedAt: Value(endTs),
         notes: note != null ? Value(note) : const Value.absent(),
+        // v0.1.29+106: optional coarse energy reconstruction for a pre-watchdog
+        // orphan (lastAliveTs == null). Written only when supplied; null leaves
+        // the column untouched (no fabricated value on the watchdog path).
+        energyUsedKwh:
+            energyUsedKwh != null ? Value(energyUsedKwh) : const Value.absent(),
       ),
     );
+  }
+
+  /// v0.1.29+106: write the active HAL trip's last-alive checkpoint — a
+  /// lastAliveTs plus the current aggregate snapshot — WITHOUT touching
+  /// endedAt. The trip stays ACTIVE (endedAt still null), so cloud-sync won't
+  /// push it early (the +19 bug), but if the process is killed the row carries
+  /// a recent snapshot for orphan recovery to finalize from. Mirrors endTrip's
+  /// aggregate parameters, EXCEPT every column uses Value.absent() when its
+  /// argument is null, so a flush never NULLS an aggregate the row already has
+  /// (endTrip, by contrast, writes Value(null) — fine at close, wrong here).
+  Future<void> touchTripAlive(
+    int id, {
+    required DateTime lastAliveTs,
+    double? endSoc,
+    double? endOdo,
+    double? distanceKm,
+    double? energyUsedKwh,
+    double? avgConsumptionKwh100km,
+    double? minBatteryTempC,
+    double? maxBatteryTempC,
+    double? maxCellSpreadMv,
+    double? minSoc,
+    double? maxSoc,
+    double? peakSpeedKmh,
+    double? peakPowerKw,
+    double? peakRegenKw,
+    double? avgMovingSpeedKmh,
+    int? movingSeconds,
+    int? idleSeconds,
+    double? regenEnergyKwh,
+  }) {
+    Value<T> v<T>(T? x) => x != null ? Value(x) : const Value.absent();
+    return (update(trips)..where((t) => t.id.equals(id))).write(
+      TripsCompanion(
+        lastAliveTs: Value(lastAliveTs),
+        // NOTE: endedAt deliberately omitted — the trip must stay ACTIVE.
+        endSoc: v(endSoc),
+        endOdometer: v(endOdo),
+        distanceKm: v(distanceKm),
+        energyUsedKwh: v(energyUsedKwh),
+        avgConsumptionKwh100km: v(avgConsumptionKwh100km),
+        minBatteryTempC: v(minBatteryTempC),
+        maxBatteryTempC: v(maxBatteryTempC),
+        maxCellSpreadMv: v(maxCellSpreadMv),
+        minSoc: v(minSoc),
+        maxSoc: v(maxSoc),
+        peakSpeedKmh: v(peakSpeedKmh),
+        peakPowerKw: v(peakPowerKw),
+        peakRegenKw: v(peakRegenKw),
+        avgMovingSpeedKmh: v(avgMovingSpeedKmh),
+        movingSeconds: v(movingSeconds),
+        idleSeconds: v(idleSeconds),
+        regenEnergyKwh: v(regenEnergyKwh),
+      ),
+    );
+  }
+
+  /// v0.1.29+106: COARSE energy reconstruction for a pre-watchdog HAL orphan
+  /// (lastAliveTs == null, so no aggregate snapshot was taken). Reads the
+  /// trip's soc_precise hal_samples oldest→newest; if SOC fell by more than a
+  /// small epsilon, returns ΔSOC% × pack capacity / 100 (kWh). Returns null if
+  /// there are fewer than two samples or SOC didn't drop (a charge / noise) —
+  /// honest: no value rather than a fabricated one. Distance is intentionally
+  /// NOT reconstructed (the throttled samples can't give an honest figure).
+  Future<double?> reconstructHalEnergyFromSamples(int tripId) async {
+    final rows = await (select(halSamples)
+          ..where((s) => s.tripId.equals(tripId) & s.name.equals('soc_precise'))
+          ..orderBy([(s) => OrderingTerm.asc(s.timestamp)]))
+        .get();
+    final socs = rows
+        .map((r) => r.numericValue)
+        .whereType<double>()
+        .toList(growable: false);
+    if (socs.length < 2) return null;
+    final first = socs.first;
+    final last = socs.last;
+    const epsilon = 0.5; // %SOC — ignore flat/noisy series
+    if (first <= last + epsilon) return null;
+    const packCapacityKwh = 65.28; // LFP pack nominal (same as _halPackCapacityKwh)
+    return (first - last) * packCapacityKwh / 100.0;
   }
 
   /// Delete a single trip row by id. Used by HAL orphan recovery to drop an
