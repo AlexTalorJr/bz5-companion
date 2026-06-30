@@ -10,6 +10,7 @@ import 'dashboard.dart';
 import 'cells.dart';
 import 'history.dart';
 import 'settings.dart';
+import 'driver_view_tall.dart';
 import 'wide/head_unit_scaffold.dart';
 
 /// v0.1.4: HomeScreen now picks layout based on screen width.
@@ -25,6 +26,14 @@ class HomeScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     if (LayoutBreakpoints.useHeadUnitLayout(context)) {
       return const HeadUnitScaffold();
+    }
+    // v0.1.29+108: tall portrait head unit (BZ3 720×1106) gets its own
+    // scaffold — a Driver-first bottom-nav layout (not the phone dashboard,
+    // which is sparse on a 2:3 pane and gated trip on the OBD2 trip id).
+    // Evaluated AFTER useHeadUnitLayout so wide landscape BZ5 is never
+    // caught here.
+    if (LayoutBreakpoints.useTallHeadUnit(context)) {
+      return const _TallHomeScreen();
     }
     return const _PhoneHomeScreen();
   }
@@ -79,6 +88,86 @@ class _PhoneHomeScreenState extends State<_PhoneHomeScreen> {
             icon: const Icon(Icons.dashboard_outlined),
             selectedIcon: const Icon(Icons.dashboard),
             label: S.of('nav.dashboard'),
+          ),
+          NavigationDestination(
+            icon: const Icon(Icons.battery_4_bar_outlined),
+            selectedIcon: const Icon(Icons.battery_4_bar),
+            label: S.of('nav.cells'),
+          ),
+          NavigationDestination(
+            icon: const Icon(Icons.timeline_outlined),
+            selectedIcon: const Icon(Icons.timeline),
+            label: S.of('nav.history'),
+          ),
+          NavigationDestination(
+            icon: Badge(
+              isLabelVisible: svc.status != ConnectionStatus.connected,
+              backgroundColor: Colors.red,
+              child: const Icon(Icons.settings_outlined),
+            ),
+            selectedIcon: const Icon(Icons.settings),
+            label: S.of('nav.settings'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// v0.1.29+108: Tall portrait head-unit layout (BZ3 720×1106).
+///
+/// Mirrors [_PhoneHomeScreen] (bottom NavigationBar + IndexedStack +
+/// ChargingAwareBody) but with two BZ3-specific differences (owner-approved):
+///   1. DRIVER FIRST — `DriverViewTallScreen` is index 0, not the dashboard.
+///   2. DASHBOARD DROPPED — the old phone dashboard is removed from BZ3
+///      navigation entirely; the tall Driver replaces it as the main screen.
+///
+/// The phone layout (`_PhoneHomeScreen`) keeps Dashboard first and is not
+/// affected — this is a separate scaffold reached only via useTallHeadUnit.
+///
+/// IndexedStack keeps the Driver subtree alive across tab switches, so the
+/// _PowerCardTall ring buffer / sample timer survive navigation (same
+/// rationale as the wide HeadUnitScaffold).
+class _TallHomeScreen extends StatefulWidget {
+  const _TallHomeScreen();
+
+  @override
+  State<_TallHomeScreen> createState() => _TallHomeScreenState();
+}
+
+class _TallHomeScreenState extends State<_TallHomeScreen> {
+  int _index = 0;
+
+  static const _screens = [
+    DriverViewTallScreen(),
+    CellsScreen(),
+    HistoryScreen(),
+    SettingsScreen(),
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    final svc = context.watch<ConnectionService>();
+    context.watch<LocaleService>();
+    return Scaffold(
+      body: ChargingAwareBody(
+        // Auto-push charging view only when on the Driver tab (index 0) —
+        // the BZ3 equivalent of "sitting on the main screen when the cable
+        // goes in".
+        autoPushWhenVisible: _index == 0,
+        child: IndexedStack(
+          index: _index,
+          children: _screens,
+        ),
+      ),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _index,
+        onDestinationSelected: (i) => setState(() => _index = i),
+        destinations: [
+          NavigationDestination(
+            icon: const Icon(Icons.directions_car_outlined),
+            selectedIcon: const Icon(Icons.directions_car_filled),
+            label: S.of('nav.driving'),
           ),
           NavigationDestination(
             icon: const Icon(Icons.battery_4_bar_outlined),
