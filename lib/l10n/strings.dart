@@ -385,6 +385,14 @@ class S {
     'cells.min_v': 'Min',
     'cells.max_v': 'Max',
     'cells.pack_temp': 'Pack temp',
+    // v0.1.29+108: honest BZ3 battery-state screen (dongle-free). Title no
+    // longer promises a per-cell picture we can't deliver without a dongle.
+    'cells.tab_state': 'Battery state',
+    'cells.state_intro':
+        'Live battery summary from the BMS. Per-cell voltages need a dongle.',
+    'cells.spread_bar': 'Cell voltage spread',
+    'cells.soc': 'SOC',
+    'cells.soh': 'SOH',
 
     'hist.title': 'History',
     'hist.hdr': 'HISTORY',
@@ -1096,6 +1104,13 @@ class S {
     'cells.min_v': 'Мин',
     'cells.max_v': 'Макс',
     'cells.pack_temp': 'Темп. пакета',
+    // v0.1.29+108: честный экран состояния батареи на BZ3 (без донгла).
+    'cells.tab_state': 'Состояние батареи',
+    'cells.state_intro':
+        'Сводка по батарее от BMS в реальном времени. Напряжения по ячейкам — нужен донгл.',
+    'cells.spread_bar': 'Разброс напряжений ячеек',
+    'cells.soc': 'Заряд',
+    'cells.soh': 'Здоровье',
 
     'hist.title': 'История',
     'hist.hdr': 'ИСТОРИЯ',

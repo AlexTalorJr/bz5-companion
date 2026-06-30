@@ -39,4 +39,29 @@ class LayoutBreakpoints {
     final size = MediaQuery.of(context).size;
     return size.width >= headUnit && size.width > size.height;
   }
+
+  /// v0.1.29+108: True for a TALL PORTRAIT head unit (BZ3, 720×1106 dp).
+  ///
+  /// This sits between [useHeadUnitLayout] (wide landscape BZ5) and the
+  /// phone layout in home.dart's routing. A BZ3 unit is wide enough to want
+  /// the rich Driver screen but is portrait, so it fails [useHeadUnitLayout]
+  /// (which requires width > height) and would otherwise fall through to the
+  /// phone dashboard.
+  ///
+  /// Thresholds match the existing tall-dashboard detection in dashboard.dart
+  /// (`isTall: height >= 1000`, `isWide: width >= 720`), which is already
+  /// proven on the BZ3 hardware — plus an explicit portrait check so a wide
+  /// landscape device can never match here (it is caught by useHeadUnitLayout
+  /// first anyway, since this is evaluated AFTER it in home.dart).
+  ///
+  ///   - BZ3 720×1106  → 1106≥1000 ✓, 720≥720 ✓, portrait ✓  → true
+  ///   - phone 412×900 → width 412 < 720                       → false
+  ///   - BZ5 2175×1224 → caught by useHeadUnitLayout first; also portrait
+  ///     check (1224 < 2175) would make this false regardless.
+  static bool useTallHeadUnit(BuildContext context) {
+    final size = MediaQuery.of(context).size;
+    return size.height >= 1000 &&
+        size.width >= 720 &&
+        size.height > size.width;
+  }
 }

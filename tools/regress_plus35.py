@@ -2190,9 +2190,17 @@ if int(pv) >= 56:
     ban = open(ban_path).read() if os.path.exists(ban_path) else ""
 
     # U1. Phone nav slimmed to 4 destinations; ECU Explorer no longer a tab.
-    if home.count("NavigationDestination(") == 4 and \
+    #     v0.1.29+108: a second bottom-nav scaffold (_TallHomeScreen, BZ3
+    #     tall portrait) was added to home.dart, also 4 destinations and
+    #     Driver-first. So from +108 home.dart legitimately has 8
+    #     NavigationDestination( (2 scaffolds × 4). ECU Explorer stays out
+    #     of both.
+    _home_nav_want = 8 if int(pv) >= 108 else 4
+    if home.count("NavigationDestination(") == _home_nav_want and \
        "EcuExplorerScreen()" not in home:
-        ok("U1 phone nav is 4 tabs, ECU Explorer demoted")
+        ok("U1 phone nav 4 tabs"
+           + (" + tall scaffold 4 tabs" if int(pv) >= 108 else "")
+           + ", ECU Explorer demoted")
     else:
         fail("U1 phone nav wrong shape")
 
@@ -2238,9 +2246,14 @@ if int(pv) >= 56:
 
     # U5. ChargingAwareBody wired into BOTH scaffolds with auto-push
     #     restricted to tab index 0 (Driver / Dashboard).
-    if home.count("autoPushWhenVisible: _index == 0") == 1 and \
+    #     v0.1.29+108: the BZ3 tall scaffold (_TallHomeScreen in home.dart)
+    #     is a third ChargingAwareBody, also auto-push on its Driver tab
+    #     (index 0). So home.dart has 2 occurrences from +108 (phone + tall),
+    #     HU scaffold still 1.
+    _home_autopush_want = 2 if int(pv) >= 108 else 1
+    if home.count("autoPushWhenVisible: _index == 0") == _home_autopush_want and \
        hus.count("autoPushWhenVisible: _index == 0") == 1:
-        ok("U5 ChargingAwareBody in both scaffolds, auto-push only on tab 0")
+        ok("U5 ChargingAwareBody in all scaffolds, auto-push only on tab 0")
     else:
         fail("U5 ChargingAwareBody wiring wrong")
 

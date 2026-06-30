@@ -37,25 +37,35 @@ class _CellsScreenState extends State<CellsScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(S.of('cells.tab_balance')),
+        // v0.1.29+108: honest title. When we only have the BMS aggregate
+        // (BZ3, no dongle) the screen is a battery STATE summary, not a
+        // per-cell balance view — so it doesn't promise a picture we can't
+        // show. With per-cell data (dongle) the original balance title stays.
+        title: Text(
+            showHalCumulative ? S.of('cells.tab_state') : S.of('cells.tab_balance')),
         actions: [
-          // Сегментированный переключатель режима
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
-            child: SegmentedButton<int>(
-              segments: [
-                ButtonSegment(value: 0, label: Text(S.of('dash.cells_title'))),
-                ButtonSegment(
-                    value: 1, label: Text(S.of('cells.tab_thermal'))),
-              ],
-              selected: {_mode},
-              onSelectionChanged: (s) => setState(() => _mode = s.first),
-              style: ButtonStyle(
-                visualDensity: VisualDensity.compact,
-                textStyle: WidgetStateProperty.all(const TextStyle(fontSize: 11)),
+          // Сегментированный переключатель режима. Скрыт в HAL-сводке: без
+          // донгла нет ни поячеечной карты, ни термокарты — переключать
+          // нечего (v0.1.29+108).
+          if (!showHalCumulative)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
+              child: SegmentedButton<int>(
+                segments: [
+                  ButtonSegment(
+                      value: 0, label: Text(S.of('dash.cells_title'))),
+                  ButtonSegment(
+                      value: 1, label: Text(S.of('cells.tab_thermal'))),
+                ],
+                selected: {_mode},
+                onSelectionChanged: (s) => setState(() => _mode = s.first),
+                style: ButtonStyle(
+                  visualDensity: VisualDensity.compact,
+                  textStyle:
+                      WidgetStateProperty.all(const TextStyle(fontSize: 11)),
+                ),
               ),
             ),
-          ),
         ],
       ),
       body: showHalCumulative
@@ -85,6 +95,7 @@ class _HalCumulativeView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final svc = context.watch<ConnectionService>();
     final loV = hal.halCellVLowest; // volts
     final hiV = hal.halCellVHighest; // volts
     final spreadMv = hal.halCellSpreadMv; // mV
@@ -99,14 +110,11 @@ class _HalCumulativeView extends StatelessWidget {
     if (spreadMv == null) {
       quality = '—';
       color = Colors.grey;
-    } else if (spreadMv <= 20) {
+    } else if (spreadMv <= 30) {
       quality = S.of('dash.excellent_cap');
       color = Colors.green;
-    } else if (spreadMv <= 50) {
+    } else if (spreadMv <= 80) {
       quality = S.of('dash.good_cap');
-      color = Colors.lightGreen;
-    } else if (spreadMv <= 100) {
-      quality = S.of('dash.fair_cap');
       color = Colors.orange;
     } else {
       quality = S.of('dash.poor_cap');
@@ -116,73 +124,170 @@ class _HalCumulativeView extends StatelessWidget {
     String mv(double? v) => v == null ? '—' : '${(v * 1000).toInt()} mV';
     String idx(double? v) => v == null ? '' : '#${v.toInt()}';
 
-    return Padding(
+    // Cell / module counts — live BMS facts on BZ3 (packCellCount 790/0B03,
+    // 137 on this car; module count derived from packModuleCount or 10).
+    final cellCount = svc.packCellCount ?? 136;
+    final moduleCount = svc.packModuleCount ?? 10;
+
+    // SOC / SOH for the summary chips (HAL-preferred, dongle-free).
+    final double? socPct =
+        (hal.useHalForSoc ? hal.halSocPct : svc.socPrecisePct);
+    final double? sohAh = hal.halSohAhPct ?? svc.sohAhPct;
+    final double? sohHal = hal.useHalForSoh ? hal.halSoh : null;
+    final double? soh = sohAh ?? sohHal;
+
+    return ListView(
       padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          // Source note — honest about this being the BMS aggregate, not 136.
-          Text(
-            S.of('cells.hal_cumulative_note'),
-            style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
-          ),
-          const SizedBox(height: 12),
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceAround,
-                    children: [
-                      _StatColumn(
-                          label: '${S.of('cells.min_v')} ${idx(idxLo)}'.trim(),
-                          value: mv(loV)),
-                      _StatColumn(
-                          label: '${S.of('cells.max_v')} ${idx(idxHi)}'.trim(),
-                          value: mv(hiV)),
-                      _StatColumn(
-                          label: S.of('cells.spread_d'),
-                          value: spreadMv == null
-                              ? '—'
-                              : '${spreadMv.toInt()} mV',
-                          color: color),
-                    ],
+      children: [
+        // Positive, honest intro — what this screen IS, not an apology.
+        Text(
+          S.of('cells.state_intro'),
+          style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+        ),
+        const SizedBox(height: 12),
+
+        // Cell-voltage spread: min ↔ max bar with a mid marker, coloured by Δ.
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(S.of('cells.spread_bar'),
+                        style: const TextStyle(
+                            fontSize: 12,
+                            letterSpacing: 1.0,
+                            color: Colors.grey)),
+                    Text(
+                      spreadMv == null ? '—' : '${spreadMv.toInt()} mV',
+                      style: TextStyle(
+                          fontSize: 16,
+                          color: color,
+                          fontWeight: FontWeight.w600,
+                          fontFeatures: const [
+                            FontFeature.tabularFigures()
+                          ]),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                SizedBox(
+                  height: 14,
+                  child: CustomPaint(
+                    size: Size.infinite,
+                    painter: _SpreadBarPainter(color: color),
                   ),
-                  const Divider(height: 24),
-                  Text(
-                    S.of('cells.balance_fmt').replaceFirst('{q}', quality),
-                    style: TextStyle(
-                        fontSize: 16,
-                        color: color,
-                        fontWeight: FontWeight.w500),
-                  ),
-                ],
-              ),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    _StatColumn(
+                        label: '${S.of('cells.min_v')} ${idx(idxLo)}'.trim(),
+                        value: mv(loV)),
+                    _StatColumn(
+                        label: '${S.of('cells.max_v')} ${idx(idxHi)}'.trim(),
+                        value: mv(hiV)),
+                  ],
+                ),
+                const Divider(height: 24),
+                Text(
+                  S.of('cells.balance_fmt').replaceFirst('{q}', quality),
+                  style: TextStyle(
+                      fontSize: 16,
+                      color: color,
+                      fontWeight: FontWeight.w500),
+                ),
+              ],
             ),
           ),
-          const SizedBox(height: 12),
-          // Pack temperature — single number (no per-module min/max via HAL).
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceAround,
-                children: [
-                  _StatColumn(
-                    label: S.of('cells.pack_temp'),
-                    value: packTemp == null
-                        ? '—'
-                        : '+${packTemp.toInt()}°C',
-                  ),
-                ],
-              ),
+        ),
+        const SizedBox(height: 12),
+
+        // Pack-level chips: temp, SOC, SOH, and the cell/module count.
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceAround,
+                  children: [
+                    _StatColumn(
+                      label: S.of('cells.pack_temp'),
+                      value:
+                          packTemp == null ? '—' : '+${packTemp.toInt()}°C',
+                    ),
+                    _StatColumn(
+                      label: S.of('cells.soc'),
+                      value: socPct == null
+                          ? '—'
+                          : '${(socPct * 10).round() / 10}%',
+                    ),
+                    _StatColumn(
+                      label: S.of('cells.soh'),
+                      value: soh == null ? '—' : '${soh.round()}%',
+                    ),
+                  ],
+                ),
+                const Divider(height: 24),
+                Text(
+                  S
+                      .of('cells.modules_hdr')
+                      .replaceFirst('{m}', '$moduleCount')
+                      .replaceFirst('{c}', '$cellCount'),
+                  style: TextStyle(
+                      fontSize: 12,
+                      letterSpacing: 1.0,
+                      color: Colors.grey.shade500),
+                ),
+              ],
             ),
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
+}
+
+/// Simple horizontal min↔max spread bar with a centre (mean) marker.
+/// Purely indicative — the numeric Δ is shown above it; this gives the eye
+/// a quick read on balance health without 137 per-cell columns.
+class _SpreadBarPainter extends CustomPainter {
+  final Color color;
+  _SpreadBarPainter({required this.color});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final track = Paint()
+      ..color = Colors.white.withValues(alpha: 0.08)
+      ..style = PaintingStyle.fill;
+    canvas.drawRRect(
+        RRect.fromRectAndRadius(Offset.zero & size, const Radius.circular(7)),
+        track);
+
+    // Coloured fill spans the full width (the spread band); the mid marker
+    // sits at the centre (the mean between min and max).
+    final fill = Paint()..color = color.withValues(alpha: 0.55);
+    canvas.drawRRect(
+        RRect.fromRectAndRadius(
+            Rect.fromLTWH(0, size.height * 0.30, size.width, size.height * 0.40),
+            const Radius.circular(4)),
+        fill);
+
+    final markerX = size.width / 2;
+    final marker = Paint()
+      ..color = Colors.white.withValues(alpha: 0.85)
+      ..strokeWidth = 2;
+    canvas.drawLine(
+        Offset(markerX, 0), Offset(markerX, size.height), marker);
+  }
+
+  @override
+  bool shouldRepaint(_SpreadBarPainter old) => old.color != color;
 }
 
 
