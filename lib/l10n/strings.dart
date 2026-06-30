@@ -721,6 +721,11 @@ class S {
     'status.title': 'Status',
     'status.subtitle': 'Vehicle health, service, fluids',
     'status.refresh': 'Refresh',
+    'status.platform.header': 'Platform',
+    'status.platform.engine': 'Engine',
+    'status.platform.auto': 'auto-detected',
+    'status.platform.override': 'manual override',
+    'status.platform.unknown': 'Unrecognised DiLink',
     'status.loading': 'Loading…',
     'status.unavailable': 'Service data unavailable',
     'status.unavailable_sub':
@@ -1426,6 +1431,11 @@ class S {
     'status.title': 'Статус',
     'status.subtitle': 'Состояние авто, ТО, жидкости',
     'status.refresh': 'Обновить',
+    'status.platform.header': 'Платформа',
+    'status.platform.engine': 'Движок',
+    'status.platform.auto': 'определена автоматически',
+    'status.platform.override': 'ручной выбор',
+    'status.platform.unknown': 'Неизвестная DiLink',
     'status.loading': 'Загрузка…',
     'status.unavailable': 'Данные сервиса недоступны',
     'status.unavailable_sub':

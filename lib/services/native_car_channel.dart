@@ -60,6 +60,33 @@ class NativeCarChannel {
     }
   }
 
+  /// v0.1.29+107: report the active DiLink platform + HAL engine shape.
+  /// Returns a map: { active, platformId, displayName, engineKind,
+  /// reason, predictedPlatform, predictedEngine, fingerprint, androidSdk,
+  /// overrideId }. Empty map on a non-head-unit / failure (caller shows
+  /// nothing). Never throws to the UI.
+  Future<Map<String, Object?>> halActivePlatform() async {
+    try {
+      final r = await _method
+          .invokeMethod<Map<Object?, Object?>>('halActivePlatform');
+      if (r == null) return const {};
+      return r.map((k, v) => MapEntry(k.toString(), v));
+    } on PlatformException {
+      return const {};
+    }
+  }
+
+  /// v0.1.29+107: override the DiLink platform choice ("BZ3"/"BZ5"), or
+  /// pass null to clear and return to auto-detection. Takes effect on the
+  /// next halStreamStart.
+  Future<void> halSetPlatformOverride(String? id) async {
+    try {
+      await _method.invokeMethod<bool>('halSetPlatformOverride', {'id': id});
+    } on PlatformException {
+      // best-effort; ignored on phone / non-HU
+    }
+  }
+
   /// Read a one-shot DTC snapshot from the diag socket.
   ///
   /// [command] is one of `latest_diag_data` (active faults) or

@@ -13,7 +13,8 @@ import io.flutter.plugin.common.BinaryMessenger
 import java.util.concurrent.ConcurrentHashMap
 import com.bz5companion.bz5_companion.hal.CompanionDecoderOverrides
 import com.bz5companion.bz5_companion.hal.DecodedStreamSink
-import com.bz5companion.bz5_companion.hal.LiveTelemetrySubscriber
+import com.bz5companion.bz5_companion.hal.DiLinkProfiles
+import com.bz5companion.bz5_companion.hal.HalEngine
 import com.bz5companion.bz5_companion.hal.TargetRegistry
 import com.bz5companion.bz5_companion.hal.TargetSpec
 
@@ -90,8 +91,18 @@ class BydNativePlugin : FlutterPlugin, ActivityAware, MethodChannel.MethodCallHa
     // property-subscription events.
     private lateinit var halEventChannel: EventChannel
     @Volatile private var halSink: EventChannel.EventSink? = null
-    @Volatile private var halSubscriber: LiveTelemetrySubscriber? = null
+    // v0.1.29+107: the engine handle is now the platform-agnostic HalEngine
+    // (a thin adapter over the vendored BZ5 LiveTelemetrySubscriber or the
+    // vendored BZ3 Bz3TelemetrySubscriber). The BZ3-vs-BZ5 choice is made
+    // once at start() by DiLinkProfiles.selectProfile() on device shape.
+    @Volatile private var halEngine: HalEngine? = null
     @Volatile private var halStreamSink: DecodedStreamSink? = null
+    // Last platform selection, surfaced to Dart (honesty UI) via
+    // "halActivePlatform". Null until the first halStreamStart.
+    @Volatile private var lastSelection: DiLinkProfiles.Selection? = null
+    // Optional advanced-setting override of the platform id ("BZ3"/"BZ5").
+    // Set from Dart via "halSetPlatformOverride"; null = auto-detect.
+    @Volatile private var platformOverrideId: String? = null
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         appContext = binding.applicationContext
@@ -204,6 +215,13 @@ class BydNativePlugin : FlutterPlugin, ActivityAware, MethodChannel.MethodCallHa
                 // v0.1.29+61: HAL push-telemetry stream control.
                 "halStreamStart"       -> handleHalStreamStart(result)
                 "halStreamStop"        -> { stopHalStream(); result.success(true) }
+                // v0.1.29+107: DiLink platform identity for honesty UI +
+                // optional advanced-setting override of the engine choice.
+                "halActivePlatform"    -> result.success(buildActivePlatform())
+                "halSetPlatformOverride" -> {
+                    platformOverrideId = call.argument<String>("id")
+                    result.success(true)
+                }
                 // v0.1.29+100: read the byd car_status ContentProvider (service
                 // health / maintenance / fluid flags). No HAL, no UDS, no dongle
                 // — a plain ContentResolver query against a head-unit-local
@@ -559,10 +577,43 @@ class BydNativePlugin : FlutterPlugin, ActivityAware, MethodChannel.MethodCallHa
             "packageName"        to appContext.packageName,
             "androidSdk"         to android.os.Build.VERSION.SDK_INT,
             "device"             to "${android.os.Build.MANUFACTURER}/${android.os.Build.MODEL}",
+            // v0.1.29+107: fingerprint is the strongest DiLink platform marker
+            // (BZ3 = "qti/trinket/trinket:10/...", BZ5 = "TOYOTA SPACE"...).
+            "fingerprint"        to android.os.Build.FINGERPRINT,
         )
     }
 
     // ─── HAL push-telemetry control ────────────────────────────────────
+
+    /**
+     * v0.1.29+107: report the active DiLink platform + engine for honesty UI.
+     * Reflects the LAST selection made by halStreamStart (null fields before
+     * the first start). `predictedEngine` is what we would pick right now
+     * given current signals + override, so the StatusScreen can show a sane
+     * value even before the stream is started.
+     */
+    private fun buildActivePlatform(): Map<String, Any?> {
+        val sel = lastSelection
+        // Predict without side effects (no engine instantiation).
+        val predicted = DiLinkProfiles.selectProfile(
+            overrideId = platformOverrideId,
+            fingerprint = android.os.Build.FINGERPRINT,
+            sdk = android.os.Build.VERSION.SDK_INT,
+            vin = vinDetector.lastKnownVin(),
+        )
+        return mapOf(
+            "active"            to (halEngine != null),
+            "overrideId"        to platformOverrideId,
+            "platformId"        to (sel?.platformId ?: predicted.platformId),
+            "displayName"       to (sel?.displayName ?: predicted.displayName),
+            "engineKind"        to (sel?.engineKind?.name ?: predicted.engineKind.name),
+            "reason"            to (sel?.reason ?: predicted.reason),
+            "predictedPlatform" to predicted.platformId,
+            "predictedEngine"   to predicted.engineKind.name,
+            "fingerprint"       to android.os.Build.FINGERPRINT,
+            "androidSdk"        to android.os.Build.VERSION.SDK_INT,
+        )
+    }
 
     /**
      * Start the live HAL telemetry subscription. Requires Dart to already
@@ -624,14 +675,56 @@ class BydNativePlugin : FlutterPlugin, ActivityAware, MethodChannel.MethodCallHa
                         intArrayOf(0x99000020.toInt()),
                     ),
                 )
-                val subscriber = LiveTelemetrySubscriber(
+                // v0.1.29+107: pick the DiLink platform by device shape and
+                // instantiate the matching engine (BZ5/FIELDS or BZ3/GETTERS).
+                // Model is a fact about the hardware, not a user preference, so
+                // this is auto-detected here in the consumer (override only via
+                // advanced setting). The HAL/OBD2 source toggle is a SEPARATE
+                // layer and stays a user choice — do not conflate.
+                val selection = DiLinkProfiles.selectProfile(
+                    overrideId = platformOverrideId,
+                    fingerprint = android.os.Build.FINGERPRINT,
+                    sdk = android.os.Build.VERSION.SDK_INT,
+                    vin = vinDetector.lastKnownVin(),
+                )
+                lastSelection = selection
+                BydLogger.i(
+                    TAG,
+                    "DiLink platform: ${selection.platformId} " +
+                        "(engine=${selection.engineKind}, reason=${selection.reason})"
+                )
+
+                // PER-PROFILE Engine safety: if this profile flags
+                // unconditionalEngine (an unknown DiLink whose FeatureIds may
+                // not resolve), make sure the Engine device is present even if
+                // streamingTargets()'s fid-gate dropped it. Both known profiles
+                // are false (recon q1 confirmed BZ3 FeatureIds resolve), so this
+                // is a no-op for BZ3/BZ5 — purely future-proofing.
+                val engineTargets =
+                    if (selection.profile?.unconditionalEngine == true &&
+                        targets.none { it.key == "BYDAutoEngineDevice" }) {
+                        targets + TargetSpec(
+                            "BYDAutoEngineDevice",
+                            "android.hardware.bydauto.engine.BYDAutoEngineDevice",
+                            intArrayOf(
+                                0x28A00008.toInt(), 0x28A00018.toInt(),
+                                0x15100020.toInt(), 0x3DB00010.toInt(),
+                                0x3DB00008.toInt(),
+                            ),
+                        )
+                    } else {
+                        targets
+                    }
+
+                val engine = DiLinkProfiles.selectEngine(
+                    selection.engineKind,
                     appContext,
                     streamSink,
-                    targets,
+                    engineTargets,
                 )
-                val status = subscriber.start()
+                val status = engine.start()
                 halStreamSink = streamSink
-                halSubscriber = subscriber
+                halEngine = engine
                 BydLogger.i(TAG, "HAL stream started: $status")
                 // SubscriptionStatus is a data class — not channel-safe.
                 // Marshal to a plain Map the Dart side parses (HalStartStatus).
@@ -653,10 +746,10 @@ class BydNativePlugin : FlutterPlugin, ActivityAware, MethodChannel.MethodCallHa
 
     /** Stop the HAL subscription and detach the bridging sink. Idempotent. */
     private fun stopHalStream() {
-        try { halSubscriber?.stop() } catch (t: Throwable) {
-            BydLogger.e(TAG, "halSubscriber.stop failed", t)
+        try { halEngine?.stop() } catch (t: Throwable) {
+            BydLogger.e(TAG, "halEngine.stop failed", t)
         }
-        halSubscriber = null
+        halEngine = null
         try { halStreamSink?.detach() } catch (_: Throwable) {}
         halStreamSink = null
     }
