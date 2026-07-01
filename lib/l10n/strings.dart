@@ -67,21 +67,20 @@ class S {
     // Settings — screen & sections
     'settings.title': 'Settings',
     'settings.section.connection': 'Connection',
-    'settings.datasource.title': 'Data source',
+    'settings.datasource.title': 'Where data comes from',
     'settings.datasource.subtitle': 'Where live values come from',
     'settings.datasource.auto': 'Auto (prefer HAL, fall back to OBD2)',
-    'settings.datasource.hal': 'HAL only (head unit native)',
-    'settings.datasource.obd2': 'OBD2 only (BLE adapter)',
-    'settings.datasource.hal_unavailable': 'HAL stream not available here',
+    'settings.datasource.hal': 'From the car',
+    'settings.datasource.obd2': 'Through the adapter',
+    'settings.datasource.hal_unavailable': 'Car data is not available right now',
     'settings.datasource.hal_no_platform':
-        'HAL needs the car head unit — this device uses OBD2 only',
+        'On this device only the adapter is available',
     'datasource.hal_dead_hint':
         'HAL stream is down — Settings → switch to OBD2, or restart the app',
     'settings.section.cost': 'Cost',
-    'settings.section.cloud': 'Cloud',
     'settings.section.vehicle': 'Vehicle',
+    'settings.section.app': 'App',
     'settings.section.language': 'Язык / Language',
-    'settings.section.data': 'Data',
 
     // Settings — connection
     'settings.adapter.title': 'ELM327 BLE adapter',
@@ -89,15 +88,25 @@ class S {
     'settings.autoconnect.title': 'Auto-connect at startup',
     'settings.autoconnect.subtitle':
         'Connect to the remembered adapter when the app starts',
-    'settings.speedmatch.title': 'Speed match speedometer (+5%)',
-    'settings.speedmatch.subtitle':
-        'Show speed as on the stock instrument cluster '
-        '(per UN R39 it reads ~5% above true speed)',
     'settings.scan.busy': 'Scanning…',
     'settings.scan.start': 'Find adapter',
     'settings.scan.reconnect_last': 'Reconnect to last adapter',
     'settings.disconnect': 'Disconnect',
     'settings.connected_snack': 'Connected! Switch to Dashboard',
+    // v0.1.29+110: localized connection plaque (was raw enum names)
+    'settings.conn.connected': 'Connected',
+    'settings.conn.connecting': 'Connecting…',
+    'settings.conn.scanning': 'Searching…',
+    'settings.conn.error': 'Connection error',
+    'settings.conn.disconnected': 'Not connected',
+    'settings.conn.adapter': 'Adapter {addr}',
+    'settings.device.unknown': 'Unknown device',
+    // v0.1.29+110: Cloud services entry (О1) + 4-state menu summary
+    'settings.cloud_services.title': 'Cloud services',
+    'cloud.menu.connected': 'Connected',
+    'cloud.menu.disconnected': 'Not connected',
+    'cloud.menu.auth_error': 'Sign-in error',
+    'cloud.menu.paused': 'Paused',
 
     // Settings — language (v0.1.29+59: System mode removed — explicit
     // EN default / RU switch only)
@@ -793,36 +802,45 @@ class S {
     // Settings — screen & sections
     'settings.title': 'Настройки',
     'settings.section.connection': 'Подключение',
-    'settings.datasource.title': 'Источник данных',
+    'settings.datasource.title': 'Откуда брать данные',
     'settings.datasource.subtitle': 'Откуда брать живые значения',
     'settings.datasource.auto': 'Авто (HAL, при сбое — OBD2)',
-    'settings.datasource.hal': 'Только HAL (нативный head unit)',
-    'settings.datasource.obd2': 'Только OBD2 (BLE адаптер)',
-    'settings.datasource.hal_unavailable': 'HAL-стрим здесь недоступен',
+    'settings.datasource.hal': 'Из автомобиля',
+    'settings.datasource.obd2': 'Через адаптер',
+    'settings.datasource.hal_unavailable': 'Данные из автомобиля сейчас недоступны',
     'settings.datasource.hal_no_platform':
-        'HAL доступен только на голове авто — здесь только OBD2',
+        'На этом устройстве доступен только адаптер',
     'datasource.hal_dead_hint':
         'HAL-стрим не идёт — Настройки → переключитесь на OBD2 или перезапустите приложение',
     'settings.section.cost': 'Стоимость',
-    'settings.section.cloud': 'Облако',
     'settings.section.vehicle': 'Автомобиль',
+    'settings.section.app': 'Приложение',
     'settings.section.language': 'Язык / Language',
-    'settings.section.data': 'Данные',
 
     // Settings — connection
     'settings.adapter.not_connected': 'Не подключен',
     'settings.autoconnect.title': 'Автоподключение при запуске',
     'settings.autoconnect.subtitle':
         'Подключаться к запомненному адаптеру при запуске приложения',
-    'settings.speedmatch.title': 'Скорость как на приборке (+5%)',
-    'settings.speedmatch.subtitle':
-        'Показывать скорость как на штатной приборке '
-        '(приборка по закону UN R39 завышает на ~5%)',
     'settings.scan.busy': 'Поиск...',
     'settings.scan.start': 'Найти адаптер',
     'settings.scan.reconnect_last': 'Подключиться к последнему адаптеру',
     'settings.disconnect': 'Отключить',
     'settings.connected_snack': 'Подключено! Перейдите на Дашборд',
+    // v0.1.29+110: локализованная плашка статуса (были enum-имена)
+    'settings.conn.connected': 'Подключено',
+    'settings.conn.connecting': 'Подключение…',
+    'settings.conn.scanning': 'Поиск…',
+    'settings.conn.error': 'Ошибка подключения',
+    'settings.conn.disconnected': 'Не подключено',
+    'settings.conn.adapter': 'Адаптер {addr}',
+    'settings.device.unknown': 'Неизвестное устройство',
+    // v0.1.29+110: пункт «Облачные сервисы» (О1) + 4 состояния строки
+    'settings.cloud_services.title': 'Облачные сервисы',
+    'cloud.menu.connected': 'Подключены',
+    'cloud.menu.disconnected': 'Не подключены',
+    'cloud.menu.auth_error': 'Ошибка входа',
+    'cloud.menu.paused': 'На паузе',
 
     // About — hidden Advanced unlock (v0.1.29+59)
     'about.adv.progress': 'Ещё {n} тапов до Advanced',
@@ -845,7 +863,7 @@ class S {
     'dialog.currency.quick': 'Быстрый выбор:',
 
     // Settings — vehicle
-    'settings.dtc.subtitle': 'Считать коды ошибок со всех ECU (read-only)',
+    'settings.dtc.subtitle': 'Считать коды ошибок со всех ECU (только чтение)',
     'settings.about.title': 'О батарее / спецификация',
     'settings.about.subtitle':
         'Детали батареи BZ5, источники DID, эксперименты',

@@ -38,11 +38,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   List<ScanResult> _devices = [];
   bool _scanning = false;
   bool _autoConnect = false;
-  // v0.1.24: persistent toggle for matching the car's analog/digital
-  // speedometer reading (which by UN R39 reads ~5% higher than true
-  // wheel speed). When enabled, Driver view multiplies 740/0x0008
-  // by 1.05 before display.
-  bool _matchSpeedometer = false;
   // v0.1.29+59: Advanced (research tools) is hidden until unlocked by
   // 15 taps on the APP card in the About screen (Android dev-options
   // style). Persisted — once unlocked, stays unlocked.
@@ -59,7 +54,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (!mounted) return;
     setState(() {
       _autoConnect = prefs.getBool('auto_connect_enabled') ?? false;
-      _matchSpeedometer = prefs.getBool('match_speedometer') ?? false;
       _advancedUnlocked = prefs.getBool('advanced_unlocked') ?? false;
     });
   }
@@ -69,21 +63,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     await prefs.setBool('auto_connect_enabled', v);
     if (!mounted) return;
     setState(() => _autoConnect = v);
-  }
-
-  Future<void> _setMatchSpeedometer(bool v) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('match_speedometer', v);
-    if (!mounted) return;
-    setState(() => _matchSpeedometer = v);
-    // Tell ConnectionService to refresh — Driver view watches the
-    // service, and the multiplier is applied in the UI rather than
-    // in the service, so a notifyListeners forces the redraw.
-    if (mounted) {
-      // ignore: use_build_context_synchronously
-      Provider.of<ConnectionService>(context, listen: false)
-          .refreshSpeedometerPref();
-    }
   }
 
   // v0.1.27: cost settings editors. Both use a simple AlertDialog +
@@ -189,6 +168,865 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  // ── v0.1.29+15: Bridge diagnostic card ────────────────────────────
+  //
+  // The diag service shares the client_token with CloudSyncService,
+  // so its UI is minimalist: a header with status, a toggle, and a
+  // small stats line. No separate setup flow — registration happens
+  // inside Cloud backup.
+
+  Widget _buildBridgeDiagHeader(BridgeDiagService bd) {
+    final color = _bridgeDiagStatusColor(bd.status);
+    return ListTile(
+      leading: Icon(Icons.cell_tower, color: color),
+      title: Text(S.of('bridge.title')),
+      subtitle: Text(_bridgeDiagStatusLabel(bd)),
+    );
+  }
+
+  Widget _buildBridgeDiagBody(BuildContext context, BridgeDiagService bd) {
+    return Column(children: [
+      Padding(
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+        child: Text(
+          S.of('bridge.intro'),
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: Colors.white60,
+              ),
+        ),
+      ),
+      SwitchListTile(
+        title: Text(S.of('bridge.enable')),
+        // Block the toggle if not yet registered — the long-poll loop
+        // can't function without a token, and we share the token with
+        // Cloud backup.
+        value: bd.isEnabled,
+        onChanged: bd.isRegistered
+            ? (v) async {
+                // If user just enabled, refresh token from secure
+                // storage (CloudSyncService may have just finished
+                // setup in this same app session).
+                if (v) await bd.refreshTokenFromSharedStorage();
+                await bd.setEnabled(v);
+              }
+            : null,
+        secondary: const Icon(Icons.toggle_on),
+      ),
+      if (bd.isEnabled && bd.isRegistered) ...[
+        ListTile(
+          dense: true,
+          leading: const Icon(Icons.assignment_turned_in,
+              color: Colors.white54, size: 20),
+          title: Text(
+              S
+                  .of('bridge.stats')
+                  .replaceFirst('{a}', '${bd.stats.commandsExecuted}')
+                  .replaceFirst('{b}', '${bd.stats.commandsRejected}'),
+              style: const TextStyle(fontSize: 12)),
+          subtitle: bd.stats.lastCommandAt != null
+              ? Text(
+                  S
+                      .of('bridge.last')
+                      .replaceFirst(
+                          '{kind}', bd.stats.lastCommandKind ?? '?')
+                      .replaceFirst(
+                          '{when}', _relTime(bd.stats.lastCommandAt!)),
+                  style: const TextStyle(fontSize: 11))
+              : null,
+        ),
+      ],
+      if (bd.lastError != null && bd.status == BridgeDiagStatus.error)
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+          child: Text(
+            bd.lastError!,
+            style: const TextStyle(fontSize: 11, color: Colors.redAccent),
+          ),
+        ),
+    ]);
+  }
+
+  Color _bridgeDiagStatusColor(BridgeDiagStatus s) {
+    switch (s) {
+      case BridgeDiagStatus.polling:
+        return Colors.lightGreenAccent;
+      case BridgeDiagStatus.executing:
+        return Colors.lightBlueAccent;
+      case BridgeDiagStatus.error:
+      case BridgeDiagStatus.authFailed:
+        return Colors.redAccent;
+      case BridgeDiagStatus.disabled:
+      case BridgeDiagStatus.notRegistered:
+        return Colors.grey;
+    }
+  }
+
+  String _bridgeDiagStatusLabel(BridgeDiagService bd) {
+    switch (bd.status) {
+      case BridgeDiagStatus.disabled:
+        return S.of('bridge.status.off');
+      case BridgeDiagStatus.notRegistered:
+        return S.of('bridge.status.register_first');
+      case BridgeDiagStatus.polling:
+        return S.of('bridge.status.listening');
+      case BridgeDiagStatus.executing:
+        return S.of('bridge.status.executing').replaceFirst(
+            '{kind}', bd.stats.lastCommandKind ?? 'command');
+      case BridgeDiagStatus.error:
+        return S.of('bridge.status.error');
+      case BridgeDiagStatus.authFailed:
+        return S.of('bridge.status.auth_failed');
+    }
+  }
+
+  // ── v0.1.29+110: user-friendly settings restructure (spec B2/О1) ──
+  //
+  // Groups are self-contained cards; the connection plaque spans the
+  // full width on every form factor. Wide landscape head unit (BZ5,
+  // LayoutBreakpoints.useHeadUnitLayout) lays the group cards out in
+  // TWO columns (left: Connection + Vehicle, right: Cost + App);
+  // narrow form factors (BZ3 portrait 720×1106, phone) keep a single
+  // column. Card INTERNALS are identical across form factors — only
+  // the container column count changes. Cards size to content — no
+  // vertical flex stretching, so the columns never tear a card.
+
+  Widget _groupCard(List<Widget> children) => Card(
+        margin: const EdgeInsets.fromLTRB(12, 6, 12, 6),
+        clipBehavior: Clip.antiAlias,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: children,
+        ),
+      );
+
+  List<Widget> _connectionGroup(BuildContext context, ConnectionService svc) {
+    return [
+      _SectionLabel(S.of('settings.section.connection')),
+      SwitchListTile(
+        secondary: Icon(Icons.bluetooth_connected,
+            color: _autoConnect ? Colors.lightBlueAccent : Colors.grey),
+        title: Text(S.of('settings.autoconnect.title')),
+        subtitle: Text(S.of('settings.autoconnect.subtitle')),
+        value: _autoConnect,
+        onChanged: _setAutoConnect,
+      ),
+      // v0.1.29+64: data-source selector. v0.1.29+74: DISCRETE choice
+      // — HAL or OBD2 only (Auto removed from the UI). Each mode is a
+      // complete interface: overlapping core stays in place (held +
+      // dimmed when stale), mode-specific params fill the rest. The
+      // 'auto' enum value is kept internally as a back-compat net for
+      // any persisted 'auto' pref but is no longer offered here.
+      // v0.1.29+110: visible labels are plain-language now ("From the
+      // car" / "Through the adapter") — l10n values only; the
+      // HalSourceMode enum and setMode behaviour are untouched.
+      Builder(builder: (context) {
+        final hal = context.watch<HalTelemetryService>();
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.cable, color: Colors.grey),
+              title: Text(S.of('settings.datasource.title')),
+              subtitle: Text(
+                // v0.1.29+83: three states. No HAL platform (phone) →
+                // explain OBD2-only. HAL selected but stream dead →
+                // unavailable. Otherwise the normal subtitle.
+                !hal.canUseHal
+                    ? S.of('settings.datasource.hal_no_platform')
+                    : hal.mode == HalSourceMode.halOnly && !hal.running
+                        ? S.of('settings.datasource.hal_unavailable')
+                        : S.of('settings.datasource.subtitle'),
+              ),
+            ),
+            // v0.1.29+83: HAL radio only on a real head unit. On a phone
+            // the BYD framework is absent, so halOnly is not offered and
+            // OBD2 is the sole choice (forced in init() too).
+            if (hal.canUseHal)
+              RadioListTile<HalSourceMode>(
+                dense: true,
+                title: Text(S.of('settings.datasource.hal')),
+                value: HalSourceMode.halOnly,
+                groupValue: hal.mode,
+                onChanged: (m) => hal.setMode(m!),
+              ),
+            RadioListTile<HalSourceMode>(
+              dense: true,
+              title: Text(S.of('settings.datasource.obd2')),
+              value: HalSourceMode.obd2Only,
+              groupValue: hal.mode,
+              onChanged: (m) => hal.setMode(m!),
+            ),
+          ],
+        );
+      }),
+      if (svc.status != ConnectionStatus.connected) ...[
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+          child: ElevatedButton.icon(
+            icon: _scanning
+                ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(Icons.bluetooth_searching),
+            label: Text(_scanning
+                ? S.of('settings.scan.busy')
+                : S.of('settings.scan.start')),
+            onPressed: _scanning ? null : () => _scan(svc),
+          ),
+        ),
+        if (svc.adapterAddress != null)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: OutlinedButton.icon(
+              icon: const Icon(Icons.refresh),
+              label: Text(S.of('settings.scan.reconnect_last')),
+              onPressed: _scanning
+                  ? null
+                  : () async {
+                      setState(() => _scanning = true);
+                      await svc.tryAutoConnect();
+                      if (!mounted) return;
+                      setState(() => _scanning = false);
+                    },
+            ),
+          ),
+        ..._devices.map((d) => _DeviceTile(result: d, onTap: () => _connect(svc, d))),
+      ] else ...[
+        ListTile(
+          leading: const Icon(Icons.link_off, color: Colors.red),
+          title: Text(S.of('settings.disconnect')),
+          onTap: () => svc.disconnect(),
+        ),
+      ],
+    ];
+  }
+
+  List<Widget> _vehicleGroup(BuildContext context, HalTelemetryService hal) {
+    return [
+      _SectionLabel(S.of('settings.section.vehicle')),
+      // v0.1.29+100: Status screen (car_status provider — health /
+      // maintenance / fluids). Head-unit only: the provider does not
+      // exist on a phone, so the tile is hidden there (canUseHal is the
+      // same "on the HU?" signal HAL gates on). No dongle required.
+      if (hal.canUseHal)
+        ListTile(
+          leading: const Icon(Icons.health_and_safety,
+              color: Colors.greenAccent),
+          title: Text(S.of('status.title')),
+          subtitle: Text(S.of('status.subtitle')),
+          trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => const StatusScreen(),
+            ),
+          ),
+        ),
+      ListTile(
+        leading: const Icon(Icons.medical_information,
+            color: Colors.lightBlueAccent),
+        title: Text(S.of('settings.dtc.title')),
+        subtitle: Text(S.of('settings.dtc.subtitle')),
+        trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+        onTap: () => Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => const DiagnosticsScreen(),
+          ),
+        ),
+      ),
+      ListTile(
+        leading: const Icon(Icons.info_outline,
+            color: Colors.lightBlueAccent),
+        title: Text(S.of('settings.about.title')),
+        subtitle: Text(S.of('settings.about.subtitle')),
+        trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+        // v0.1.29+59: await the route and re-read prefs on return —
+        // the About screen is where Advanced gets unlocked (15 taps
+        // on the APP card), and the ExpansionTile below must appear
+        // immediately when the user comes back. The build version is
+        // shown inside (kAppVersion, +94).
+        onTap: () async {
+          await Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => const AboutScreen(),
+            ),
+          );
+          _loadSettings();
+        },
+      ),
+    ];
+  }
+
+  List<Widget> _costGroup(BuildContext context) {
+    return [
+      _SectionLabel(S.of('settings.section.cost')),
+      Builder(builder: (context) {
+        final cs = context.watch<CostSettings>();
+        return Column(children: [
+          ListTile(
+            leading: const Icon(Icons.attach_money,
+                color: Colors.amber),
+            title: Text(S.of('settings.cost.per_kwh.title')),
+            subtitle: Text(cs.costPerKwh > 0
+                ? S.of('settings.cost.per_kwh.value').replaceFirst(
+                    '{amount}', cs.formatAmount(cs.costPerKwh))
+                : S.of('settings.cost.per_kwh.unset')),
+            trailing: const Icon(Icons.edit),
+            onTap: () => _editCostPerKwh(context, cs),
+          ),
+          ListTile(
+            leading: const Icon(Icons.currency_exchange,
+                color: Colors.lightGreenAccent),
+            title: Text(S.of('settings.cost.currency.title')),
+            subtitle: Text(S
+                .of('settings.cost.currency.value')
+                .replaceFirst('{symbol}', cs.currencySymbol)
+                .replaceFirst('{example}', cs.formatAmount(10))),
+            trailing: const Icon(Icons.edit),
+            onTap: () => _editCurrencySymbol(context, cs),
+          ),
+        ]);
+      }),
+    ];
+  }
+
+  List<Widget> _appGroup(BuildContext context, LocaleService locale) {
+    return [
+      _SectionLabel(S.of('settings.section.app')),
+      // Язык / Language — compact entry with the current language on
+      // the row; the two radios live in a dialog (the +58/+59 setMode
+      // contract is unchanged: exactly two explicit modes).
+      ListTile(
+        leading: const Icon(Icons.language, color: Colors.lightBlueAccent),
+        title: Text(S.of('settings.section.language')),
+        subtitle: Text(locale.mode == 'ru'
+            ? S.of('settings.language.ru')
+            : S.of('settings.language.en')),
+        trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+        onTap: () => _showLanguageDialog(context, locale),
+      ),
+      // v0.1.29+110 (О1): Cloud services › — the whole cloud block now
+      // lives on its own sub-screen; this row shows a live 4-state
+      // summary (see _cloudMenuLabel). Watching CloudSyncService here
+      // keeps the row updating without entering the sub-screen.
+      Builder(builder: (context) {
+        final cs = context.watch<CloudSyncService>();
+        return ListTile(
+          leading: Icon(Icons.cloud_outlined, color: _cloudMenuColor(cs)),
+          title: Text(S.of('settings.cloud_services.title')),
+          subtitle: Text(_cloudMenuLabel(cs),
+              style: TextStyle(color: _cloudMenuColor(cs))),
+          trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => const CloudServicesScreen(),
+            ),
+          ),
+        );
+      }),
+      ListTile(
+        leading: const Icon(Icons.archive_outlined,
+            color: Colors.lightBlueAccent),
+        title: Text(S.of('settings.data.title')),
+        subtitle: Text(S.of('settings.data.subtitle')),
+        trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+        onTap: () => Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => const DataManagementScreen(),
+          ),
+        ),
+      ),
+    ];
+  }
+
+  Future<void> _showLanguageDialog(
+      BuildContext context, LocaleService locale) async {
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: Text(S.of('settings.section.language')),
+        children: [
+          RadioListTile<String>(
+            dense: true,
+            title: Text(S.of('settings.language.en')),
+            value: 'en',
+            groupValue: locale.mode,
+            onChanged: (v) {
+              locale.setMode(v!);
+              Navigator.of(ctx).pop();
+            },
+          ),
+          RadioListTile<String>(
+            dense: true,
+            title: Text(S.of('settings.language.ru')),
+            value: 'ru',
+            groupValue: locale.mode,
+            onChanged: (v) {
+              locale.setMode(v!);
+              Navigator.of(ctx).pop();
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  // v0.1.29+110: 4-state cloud summary for the Settings menu row —
+  // the sensible collapse of the six internal CloudSyncStatus values.
+  // Each state maps to a DIFFERENT user action: nothing / sign in
+  // again / switch back on / set up. Order of checks matters; a
+  // registered device is never left on `disconnected` by
+  // _recomputeStatus (verified: cloud_sync_service.dart), so a
+  // transient `disconnected` while registered reads as connected.
+  Color _cloudMenuColor(CloudSyncService cs) {
+    if (!cs.isRegistered) return Colors.grey;
+    switch (cs.status) {
+      case CloudSyncStatus.authFailed:
+      case CloudSyncStatus.error:
+      case CloudSyncStatus.pausedByUser:
+        return Colors.amber;
+      default: // idle | syncing | transient disconnected
+        return Colors.lightGreenAccent;
+    }
+  }
+
+  String _cloudMenuLabel(CloudSyncService cs) {
+    if (!cs.isRegistered) return S.of('cloud.menu.disconnected');
+    switch (cs.status) {
+      case CloudSyncStatus.authFailed:
+      case CloudSyncStatus.error:
+        return S.of('cloud.menu.auth_error');
+      case CloudSyncStatus.pausedByUser:
+        return S.of('cloud.menu.paused');
+      default: // idle | syncing | transient disconnected
+        return S.of('cloud.menu.connected');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final svc = context.watch<ConnectionService>();
+    // v0.1.29+100: head-unit signal for the vehicle Status tile. Same
+    // truth source HAL uses ("are we on the HU?"). The car_status
+    // provider only exists on the head unit, so the tile is hidden on
+    // a phone.
+    final hal = context.watch<HalTelemetryService>();
+    // v0.1.29+58: subscribe to language changes. MaterialApp's const
+    // home subtree shields this screen from top-level rebuilds, so the
+    // screen watches LocaleService itself — switching the language
+    // radio re-renders every S.of() string instantly.
+    final locale = context.watch<LocaleService>();
+    final wide = LayoutBreakpoints.useHeadUnitLayout(context);
+
+    final connection = _groupCard(_connectionGroup(context, svc));
+    final vehicle = _groupCard(_vehicleGroup(context, hal));
+    final cost = _groupCard(_costGroup(context));
+    final app = _groupCard(_appGroup(context, locale));
+
+    return Scaffold(
+      appBar: AppBar(title: Text(S.of('settings.title'))),
+      body: ListView(
+        padding: const EdgeInsets.only(bottom: 24),
+        children: [
+          _StatusTile(svc: svc),
+          if (wide)
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [connection, vehicle],
+                  ),
+                ),
+                Expanded(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [cost, app],
+                  ),
+                ),
+              ],
+            )
+          else ...[
+            connection,
+            vehicle,
+            cost,
+            app,
+          ],
+          if (_advancedUnlocked)
+            _advancedCard(context, svc),
+        ],
+      ),
+    );
+  }
+
+  Widget _advancedCard(BuildContext context, ConnectionService svc) {
+    // ════════════ Advanced (research tools, hidden) ════════════
+    // v0.1.29+56: research/diagnostic tooling moved here from the
+    // top-level list. Nothing is deleted — these tools are needed
+    // for the upcoming HAL integration work — they're just out of
+    // the casual user's way. Collapsed by default.
+    // v0.1.29+59: hidden entirely until unlocked via 15 taps on
+    // the APP card in About (advanced_unlocked pref).
+    return ExpansionTile(
+      leading: const Icon(Icons.build_outlined, color: Colors.grey),
+      title: Text(S.of('settings.advanced.title')),
+      subtitle: Text(S.of('settings.advanced.subtitle')),
+      childrenPadding: const EdgeInsets.only(left: 8),
+      children: [
+        // Raw Data — wide-only research view (live DID table). On
+        // phone the EcuExplorerScreen below covers the same need.
+        if (LayoutBreakpoints.useHeadUnitLayout(context))
+          ListTile(
+            leading: const Icon(Icons.table_rows_outlined,
+                color: Colors.grey),
+            title: const Text('Raw Data'),
+            subtitle: Text(S.of('settings.rawdata.subtitle')),
+            trailing:
+                const Icon(Icons.chevron_right, color: Colors.grey),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => Scaffold(
+                  appBar: AppBar(title: const Text('Raw Data')),
+                  body: const RawDataWideScreen(),
+                ),
+              ),
+            ),
+          ),
+        ListTile(
+          leading: const Icon(Icons.memory, color: Colors.grey),
+          title: const Text('ECU Explorer'),
+          subtitle: Text(S.of('settings.ecu.subtitle')),
+          trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => const EcuExplorerScreen(),
+            ),
+          ),
+        ),
+        ListTile(
+          leading: const Icon(Icons.search, color: Colors.grey),
+          title: const Text('DID Sweep'),
+          subtitle: Text(S.of('settings.sweep.subtitle')),
+          trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => const SweepScreen(),
+            ),
+          ),
+        ),
+        ListTile(
+          leading: const Icon(Icons.timeline, color: Colors.grey),
+          title: const Text('Live Log'),
+          subtitle: Text(S.of('settings.livelog.subtitle')),
+          trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => const LiveLogScreen(),
+            ),
+          ),
+        ),
+        ListTile(
+          leading: const Icon(Icons.troubleshoot, color: Colors.grey),
+          title: const Text('Polling diagnostics'),
+          subtitle: Text(S.of('settings.polldiag.subtitle')),
+          trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => const PollingDiagnosticsScreen(),
+            ),
+          ),
+        ),
+        // v0.1.29+58: HAL Explorer moved here from the head-unit
+        // rail (owner: research workbench, not daily-driver — hide
+        // in Advanced). Unlike Raw Data this is NOT wide-gated:
+        // BZ3 runs the phone layout but is still a BYD head unit,
+        // so the friend needs a path to it; on real phones the
+        // screen degrades to its built-in "BLE mode only" notice.
+        // The route owns its NativeDetector lifecycle — see
+        // _HalExplorerRoute below (on the rail the detector lived
+        // in HeadUnitScaffold state, which no longer hosts the
+        // screen).
+        ListTile(
+          leading: const Icon(Icons.api, color: Colors.grey),
+          title: const Text('HAL Explorer'),
+          subtitle: Text(S.of('settings.hal.subtitle')),
+          trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => const _HalExplorerRoute(),
+            ),
+          ),
+        ),
+        // v0.1.29+63: temporary HAL push-telemetry bring-up test.
+        // Start/Stop the live subscription, watch registered status +
+        // per-decoder value & Hz. Developer surface — removed once the
+        // SPEED overlapping pilot (+64) proves the stream path.
+        ListTile(
+          leading: const Icon(Icons.sensors, color: Colors.grey),
+          title: const Text('HAL Test'),
+          subtitle: const Text('Live push-telemetry bring-up (dev)'),
+          trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => const HalTestScreen(),
+            ),
+          ),
+        ),
+        // ── v0.1.29+96 → moved here in +110: per-module charge logger.
+        // A recon instrument (20 cell V + 20 module T under one
+        // charging_session_id, all UDS/dongle) — not a daily-driver
+        // control. It still MUST be started from Settings (not the
+        // charging screen) BEFORE plug-in, so the baseline and the
+        // pack_I sign-flip onset are both captured.
+        Builder(builder: (context) {
+          final active = svc.chargingLogActive;
+          final rows = svc.chargingLogRowsWritten;
+          final pass = svc.chargingBlockAvgPassSeconds;
+          final passStr = pass != null ? pass.toStringAsFixed(1) : '—';
+          return ListTile(
+            leading: Icon(
+              active ? Icons.fiber_manual_record : Icons.battery_charging_full,
+              color: active ? Colors.redAccent : Colors.lightBlueAccent,
+            ),
+            title: Text(
+                active ? S.of('chg.log.active') : S.of('chg.log.idle')),
+            subtitle: Text(active
+                ? S
+                    .of('chg.log.stats')
+                    .replaceFirst('{rows}', '$rows')
+                    .replaceFirst('{pass}', passStr)
+                : S.of('chg.log.hint')),
+            trailing: active
+                ? TextButton.icon(
+                    icon: const Icon(Icons.stop, color: Colors.redAccent),
+                    label: Text(S.of('chg.log.stop'),
+                        style: const TextStyle(color: Colors.redAccent)),
+                    onPressed: () => svc.stopChargingLog(),
+                  )
+                : TextButton.icon(
+                    icon: const Icon(Icons.play_arrow,
+                        color: Colors.lightGreenAccent),
+                    label: Text(S.of('chg.log.start'),
+                        style:
+                            const TextStyle(color: Colors.lightGreenAccent)),
+                    // v0.1.29+97: always tappable. The logger reads the
+                    // modules over UDS, which needs the dongle connected —
+                    // but a disabled grey button gave no clue WHY. Now the
+                    // button is live; if the dongle isn't connected it shows
+                    // an honest snackbar instead of doing nothing silently.
+                    // On a real charge the dongle is connected, so it just
+                    // starts.
+                    onPressed: () {
+                      if (svc.status == ConnectionStatus.connected) {
+                        svc.startChargingLog(manual: true);
+                      } else {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text(S.of('dtc.not_connected'))),
+                        );
+                      }
+                    },
+                  ),
+          );
+        }),
+        // Bridge diagnostic — cloud bridge debug telemetry.
+        Builder(builder: (context) {
+          final bd = context.watch<BridgeDiagService>();
+          return Column(children: [
+            _buildBridgeDiagHeader(bd),
+            _buildBridgeDiagBody(context, bd),
+          ]);
+        }),
+      ],
+    );
+  }
+
+  Future<void> _scan(ConnectionService svc) async {
+    setState(() {
+      _scanning = true;
+      _devices = [];
+    });
+    final found = await svc.scanForAdapters();
+    setState(() {
+      _devices = found;
+      _scanning = false;
+    });
+  }
+
+  Future<void> _connect(ConnectionService svc, ScanResult r) async {
+    final ok = await svc.connect(r.device);
+    if (ok && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(S.of('settings.connected_snack'))),
+      );
+    }
+  }
+}
+
+class _StatusTile extends StatelessWidget {
+  final ConnectionService svc;
+  const _StatusTile({required this.svc});
+
+  @override
+  Widget build(BuildContext context) {
+    final color = switch (svc.status) {
+      ConnectionStatus.connected => Colors.green,
+      ConnectionStatus.connecting || ConnectionStatus.scanning => Colors.orange,
+      ConnectionStatus.error => Colors.red,
+      _ => Colors.grey,
+    };
+    final icon = switch (svc.status) {
+      ConnectionStatus.connected => Icons.check_circle,
+      ConnectionStatus.connecting || ConnectionStatus.scanning => Icons.sync,
+      ConnectionStatus.error => Icons.error,
+      _ => Icons.circle_outlined,
+    };
+
+    // v0.1.29+110: localized human status instead of the raw enum name.
+    // The dev polling-telemetry line (svc.statusMessage, "Polling N
+    // DIDs @ X Hz") is REMOVED from the UI entirely (owner decision) —
+    // internal jargon, not user information. The adapter address is
+    // the only small print.
+    final label = switch (svc.status) {
+      ConnectionStatus.connected => S.of('settings.conn.connected'),
+      ConnectionStatus.connecting => S.of('settings.conn.connecting'),
+      ConnectionStatus.scanning => S.of('settings.conn.scanning'),
+      ConnectionStatus.error => S.of('settings.conn.error'),
+      ConnectionStatus.disconnected => S.of('settings.conn.disconnected'),
+    };
+    final addr = svc.adapterAddress;
+    return Card(
+      margin: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+      color: color.withOpacity(0.10),
+      child: ListTile(
+        leading: Icon(icon, color: color, size: 28),
+        title: Text(label,
+            style: TextStyle(color: color, fontWeight: FontWeight.w500)),
+        subtitle: addr != null
+            ? Text(
+                S.of('settings.conn.adapter').replaceFirst('{addr}', addr))
+            : null,
+      ),
+    );
+  }
+}
+
+class _DeviceTile extends StatelessWidget {
+  final ScanResult result;
+  final VoidCallback onTap;
+
+  const _DeviceTile({required this.result, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    // v0.1.29+110: '<unknown>' → localized human label.
+    final name = result.advertisementData.advName.isEmpty
+        ? S.of('settings.device.unknown')
+        : result.advertisementData.advName;
+    return ListTile(
+      leading: const Icon(Icons.bluetooth, color: Colors.blue),
+      title: Text(name),
+      subtitle: Text('${result.device.remoteId.str}\nRSSI: ${result.rssi}'),
+      isThreeLine: true,
+      onTap: onTap,
+    );
+  }
+}
+
+/// v0.1.29+58: pushed-route host for the HAL Explorer (moved off the
+/// head-unit rail into Settings → Advanced). NativeExplorerWide takes a
+/// NativeDetector via constructor; when it lived on the rail the
+/// detector belonged to HeadUnitScaffold's state. Here the route owns
+/// the full lifecycle: create + fire-and-forget detect() in initState,
+/// dispose() with the route. Each open re-probes — cheap (one
+/// Class.forName + optional VIN read) and always-fresh.
+class _HalExplorerRoute extends StatefulWidget {
+  const _HalExplorerRoute();
+
+  @override
+  State<_HalExplorerRoute> createState() => _HalExplorerRouteState();
+}
+
+class _HalExplorerRouteState extends State<_HalExplorerRoute> {
+  late final NativeDetector _detector;
+
+  @override
+  void initState() {
+    super.initState();
+    _detector = NativeDetector();
+    _detector.detect();
+  }
+
+  @override
+  void dispose() {
+    _detector.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('HAL Explorer')),
+      body: NativeExplorerWide(detector: _detector),
+    );
+  }
+}
+
+/// v0.1.29+56: section label for grouped Settings layout. Small
+/// uppercase accent header above each settings group.
+class _SectionLabel extends StatelessWidget {
+  final String text;
+  const _SectionLabel(this.text);
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+      child: Text(
+        text.toUpperCase(),
+        style: const TextStyle(
+          fontSize: 11,
+          letterSpacing: 1.2,
+          color: Colors.lightBlueAccent,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
+  }
+}
+
+/// Shared relative-time formatter — used by the cloud sub-screen
+/// and the bridge-diag card in Advanced. Was a _SettingsScreenState
+/// method; hoisted to file scope in +110 when the cloud block moved
+/// to its own screen.
+String _relTime(DateTime t) {
+  final diff = DateTime.now().difference(t);
+  if (diff.inSeconds < 60) {
+    return S.of('rel.s_ago').replaceFirst('{n}', '${diff.inSeconds}');
+  }
+  if (diff.inMinutes < 60) {
+    return S.of('rel.m_ago').replaceFirst('{n}', '${diff.inMinutes}');
+  }
+  if (diff.inHours < 24) {
+    return S.of('rel.h_ago').replaceFirst('{n}', '${diff.inHours}');
+  }
+  return S.of('rel.d_ago').replaceFirst('{n}', '${diff.inDays}');
+}
+
+
+/// v0.1.29+110 (decision О1 — freeze & relocate): the ENTIRE cloud block
+/// moved VERBATIM from the Settings top level to this sub-screen behind
+/// the «Cloud services ›» entry (Settings → App group). Internals are
+/// deliberately untouched — the cloud UX redesign (free app + paid cloud
+/// services, phone↔car sync) is a separate future phase. The 4-state
+/// summary lives on the Settings entry row; this screen keeps the
+/// original detailed header/body and all five dialogs unchanged.
+class CloudServicesScreen extends StatefulWidget {
+  const CloudServicesScreen({super.key});
+
+  @override
+  State<CloudServicesScreen> createState() => _CloudServicesScreenState();
+}
+
+class _CloudServicesScreenState extends State<CloudServicesScreen> {
   // v0.1.28: cloud backup UI helpers. Three pieces:
   //   * _buildCloudHeader — section title + icon
   //   * _buildCloudBody — the four states (disconnected, paused,
@@ -478,130 +1316,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  // ── v0.1.29+15: Bridge diagnostic card ────────────────────────────
-  //
-  // The diag service shares the client_token with CloudSyncService,
-  // so its UI is minimalist: a header with status, a toggle, and a
-  // small stats line. No separate setup flow — registration happens
-  // inside Cloud backup.
-
-  Widget _buildBridgeDiagHeader(BridgeDiagService bd) {
-    final color = _bridgeDiagStatusColor(bd.status);
-    return ListTile(
-      leading: Icon(Icons.cell_tower, color: color),
-      title: Text(S.of('bridge.title')),
-      subtitle: Text(_bridgeDiagStatusLabel(bd)),
-    );
-  }
-
-  Widget _buildBridgeDiagBody(BuildContext context, BridgeDiagService bd) {
-    return Column(children: [
-      Padding(
-        padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
-        child: Text(
-          S.of('bridge.intro'),
-          style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: Colors.white60,
-              ),
-        ),
-      ),
-      SwitchListTile(
-        title: Text(S.of('bridge.enable')),
-        // Block the toggle if not yet registered — the long-poll loop
-        // can't function without a token, and we share the token with
-        // Cloud backup.
-        value: bd.isEnabled,
-        onChanged: bd.isRegistered
-            ? (v) async {
-                // If user just enabled, refresh token from secure
-                // storage (CloudSyncService may have just finished
-                // setup in this same app session).
-                if (v) await bd.refreshTokenFromSharedStorage();
-                await bd.setEnabled(v);
-              }
-            : null,
-        secondary: const Icon(Icons.toggle_on),
-      ),
-      if (bd.isEnabled && bd.isRegistered) ...[
-        ListTile(
-          dense: true,
-          leading: const Icon(Icons.assignment_turned_in,
-              color: Colors.white54, size: 20),
-          title: Text(
-              S
-                  .of('bridge.stats')
-                  .replaceFirst('{a}', '${bd.stats.commandsExecuted}')
-                  .replaceFirst('{b}', '${bd.stats.commandsRejected}'),
-              style: const TextStyle(fontSize: 12)),
-          subtitle: bd.stats.lastCommandAt != null
-              ? Text(
-                  S
-                      .of('bridge.last')
-                      .replaceFirst(
-                          '{kind}', bd.stats.lastCommandKind ?? '?')
-                      .replaceFirst(
-                          '{when}', _relTime(bd.stats.lastCommandAt!)),
-                  style: const TextStyle(fontSize: 11))
-              : null,
-        ),
-      ],
-      if (bd.lastError != null && bd.status == BridgeDiagStatus.error)
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-          child: Text(
-            bd.lastError!,
-            style: const TextStyle(fontSize: 11, color: Colors.redAccent),
-          ),
-        ),
-    ]);
-  }
-
-  Color _bridgeDiagStatusColor(BridgeDiagStatus s) {
-    switch (s) {
-      case BridgeDiagStatus.polling:
-        return Colors.lightGreenAccent;
-      case BridgeDiagStatus.executing:
-        return Colors.lightBlueAccent;
-      case BridgeDiagStatus.error:
-      case BridgeDiagStatus.authFailed:
-        return Colors.redAccent;
-      case BridgeDiagStatus.disabled:
-      case BridgeDiagStatus.notRegistered:
-        return Colors.grey;
-    }
-  }
-
-  String _bridgeDiagStatusLabel(BridgeDiagService bd) {
-    switch (bd.status) {
-      case BridgeDiagStatus.disabled:
-        return S.of('bridge.status.off');
-      case BridgeDiagStatus.notRegistered:
-        return S.of('bridge.status.register_first');
-      case BridgeDiagStatus.polling:
-        return S.of('bridge.status.listening');
-      case BridgeDiagStatus.executing:
-        return S.of('bridge.status.executing').replaceFirst(
-            '{kind}', bd.stats.lastCommandKind ?? 'command');
-      case BridgeDiagStatus.error:
-        return S.of('bridge.status.error');
-      case BridgeDiagStatus.authFailed:
-        return S.of('bridge.status.auth_failed');
-    }
-  }
-
-  String _relTime(DateTime t) {
-    final diff = DateTime.now().difference(t);
-    if (diff.inSeconds < 60) {
-      return S.of('rel.s_ago').replaceFirst('{n}', '${diff.inSeconds}');
-    }
-    if (diff.inMinutes < 60) {
-      return S.of('rel.m_ago').replaceFirst('{n}', '${diff.inMinutes}');
-    }
-    if (diff.inHours < 24) {
-      return S.of('rel.h_ago').replaceFirst('{n}', '${diff.inHours}');
-    }
-    return S.of('rel.d_ago').replaceFirst('{n}', '${diff.inDays}');
-  }
 
   Future<void> _showCloudSetupDialog(
       BuildContext context, CloudSyncService cs) async {
@@ -1224,583 +1938,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
   /// close).
   bool _backupTokenRevealed = false;
 
+
   @override
   Widget build(BuildContext context) {
-    final svc = context.watch<ConnectionService>();
-    // v0.1.29+100: head-unit signal for the Status entry tile below. Same
-    // truth source HAL uses ("are we on the HU?"). The car_status provider
-    // only exists on the head unit, so the tile is hidden on a phone.
-    final hal = context.watch<HalTelemetryService>();
-    // v0.1.29+58: subscribe to language changes. MaterialApp's const
-    // home subtree shields this screen from top-level rebuilds, so the
-    // screen watches LocaleService itself — switching the language
-    // radio below re-renders every S.of() string instantly.
-    final locale = context.watch<LocaleService>();
+    final cs = context.watch<CloudSyncService>();
     return Scaffold(
-      appBar: AppBar(title: Text(S.of('settings.title'))),
+      appBar: AppBar(title: Text(S.of('settings.cloud_services.title'))),
       body: ListView(
+        padding: const EdgeInsets.only(bottom: 16),
         children: [
-          _StatusTile(svc: svc),
-          const Divider(),
-
-          // ════════════ Connection ════════════
-          _SectionLabel(S.of('settings.section.connection')),
-          ListTile(
-            title: Text(S.of('settings.adapter.title')),
-            subtitle: Text(
-                svc.adapterAddress ?? S.of('settings.adapter.not_connected')),
-          ),
-          SwitchListTile(
-            secondary: Icon(Icons.bluetooth_connected,
-                color: _autoConnect ? Colors.lightBlueAccent : Colors.grey),
-            title: Text(S.of('settings.autoconnect.title')),
-            subtitle: Text(S.of('settings.autoconnect.subtitle')),
-            value: _autoConnect,
-            onChanged: _setAutoConnect,
-          ),
-          SwitchListTile(
-            secondary: Icon(Icons.speed,
-                color: _matchSpeedometer ? Colors.cyanAccent : Colors.grey),
-            title: Text(S.of('settings.speedmatch.title')),
-            subtitle: Text(S.of('settings.speedmatch.subtitle')),
-            value: _matchSpeedometer,
-            onChanged: _setMatchSpeedometer,
-          ),
-          // v0.1.29+64: data-source selector. v0.1.29+74: DISCRETE choice
-          // — HAL or OBD2 only (Auto removed from the UI). Each mode is a
-          // complete interface: overlapping core stays in place (held +
-          // dimmed when stale), mode-specific params fill the rest. The
-          // 'auto' enum value is kept internally as a back-compat net for
-          // any persisted 'auto' pref but is no longer offered here.
-          Builder(builder: (context) {
-            final hal = context.watch<HalTelemetryService>();
-            return Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                ListTile(
-                  leading: const Icon(Icons.cable, color: Colors.grey),
-                  title: Text(S.of('settings.datasource.title')),
-                  subtitle: Text(
-                    // v0.1.29+83: three states. No HAL platform (phone) →
-                    // explain OBD2-only. HAL selected but stream dead →
-                    // unavailable. Otherwise the normal subtitle.
-                    !hal.canUseHal
-                        ? S.of('settings.datasource.hal_no_platform')
-                        : hal.mode == HalSourceMode.halOnly && !hal.running
-                            ? S.of('settings.datasource.hal_unavailable')
-                            : S.of('settings.datasource.subtitle'),
-                  ),
-                ),
-                // v0.1.29+83: HAL radio only on a real head unit. On a phone
-                // the BYD framework is absent, so halOnly is not offered and
-                // OBD2 is the sole choice (forced in init() too).
-                if (hal.canUseHal)
-                  RadioListTile<HalSourceMode>(
-                    dense: true,
-                    title: Text(S.of('settings.datasource.hal')),
-                    value: HalSourceMode.halOnly,
-                    groupValue: hal.mode,
-                    onChanged: (m) => hal.setMode(m!),
-                  ),
-                RadioListTile<HalSourceMode>(
-                  dense: true,
-                  title: Text(S.of('settings.datasource.obd2')),
-                  value: HalSourceMode.obd2Only,
-                  groupValue: hal.mode,
-                  onChanged: (m) => hal.setMode(m!),
-                ),
-              ],
-            );
-          }),
-          if (svc.status != ConnectionStatus.connected) ...[
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-              child: ElevatedButton.icon(
-                icon: _scanning
-                    ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
-                    : const Icon(Icons.bluetooth_searching),
-                label: Text(_scanning
-                    ? S.of('settings.scan.busy')
-                    : S.of('settings.scan.start')),
-                onPressed: _scanning ? null : () => _scan(svc),
-              ),
-            ),
-            if (svc.adapterAddress != null)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                child: OutlinedButton.icon(
-                  icon: const Icon(Icons.refresh),
-                  label: Text(S.of('settings.scan.reconnect_last')),
-                  onPressed: _scanning
-                      ? null
-                      : () async {
-                          setState(() => _scanning = true);
-                          await svc.tryAutoConnect();
-                          if (!mounted) return;
-                          setState(() => _scanning = false);
-                        },
-                ),
-              ),
-            ..._devices.map((d) => _DeviceTile(result: d, onTap: () => _connect(svc, d))),
-          ] else ...[
-            ListTile(
-              leading: const Icon(Icons.link_off, color: Colors.red),
-              title: Text(S.of('settings.disconnect')),
-              onTap: () => svc.disconnect(),
-            ),
-          ],
-          const Divider(),
-
-          // ════════════ Cost ════════════
-          _SectionLabel(S.of('settings.section.cost')),
-          Builder(builder: (context) {
-            final cs = context.watch<CostSettings>();
-            return Column(children: [
-              ListTile(
-                leading: const Icon(Icons.attach_money,
-                    color: Colors.amber),
-                title: Text(S.of('settings.cost.per_kwh.title')),
-                subtitle: Text(cs.costPerKwh > 0
-                    ? S.of('settings.cost.per_kwh.value').replaceFirst(
-                        '{amount}', cs.formatAmount(cs.costPerKwh))
-                    : S.of('settings.cost.per_kwh.unset')),
-                trailing: const Icon(Icons.edit),
-                onTap: () => _editCostPerKwh(context, cs),
-              ),
-              ListTile(
-                leading: const Icon(Icons.currency_exchange,
-                    color: Colors.lightGreenAccent),
-                title: Text(S.of('settings.cost.currency.title')),
-                subtitle: Text(S
-                    .of('settings.cost.currency.value')
-                    .replaceFirst('{symbol}', cs.currencySymbol)
-                    .replaceFirst('{example}', cs.formatAmount(10))),
-                trailing: const Icon(Icons.edit),
-                onTap: () => _editCurrencySymbol(context, cs),
-              ),
-            ]);
-          }),
-          const Divider(),
-
-          // ════════════ Cloud ════════════
-          _SectionLabel(S.of('settings.section.cloud')),
-          Builder(builder: (context) {
-            final cs = context.watch<CloudSyncService>();
-            return Column(children: [
-              _buildCloudHeader(cs),
-              _buildCloudBody(context, cs),
-            ]);
-          }),
-          const Divider(),
-
-          // ════════════ Vehicle ════════════
-          _SectionLabel(S.of('settings.section.vehicle')),
-          // v0.1.29+100: Status screen (car_status provider — health /
-          // maintenance / fluids). Head-unit only: the provider does not
-          // exist on a phone, so the tile is hidden there (canUseHal is the
-          // same "on the HU?" signal HAL gates on). No dongle required.
-          if (hal.canUseHal)
-            ListTile(
-              leading: const Icon(Icons.health_and_safety,
-                  color: Colors.greenAccent),
-              title: Text(S.of('status.title')),
-              subtitle: Text(S.of('status.subtitle')),
-              trailing: const Icon(Icons.chevron_right, color: Colors.grey),
-              onTap: () => Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) => const StatusScreen(),
-                ),
-              ),
-            ),
-          ListTile(
-            leading: const Icon(Icons.medical_information,
-                color: Colors.lightBlueAccent),
-            title: Text(S.of('settings.dtc.title')),
-            subtitle: Text(S.of('settings.dtc.subtitle')),
-            trailing: const Icon(Icons.chevron_right, color: Colors.grey),
-            onTap: () => Navigator.of(context).push(
-              MaterialPageRoute(
-                builder: (_) => const DiagnosticsScreen(),
-              ),
-            ),
-          ),
-
-          // ── v0.1.29+96: per-module charge logger control ──
-          // The +94 logger (20 cell V 016D…01B7 + 20 module T 0171…01BB +
-          // pack_I 790/0009 + sum-of-cells, all UDS/dongle, under one
-          // charging_session_id) had its full backend + l10n + storage built
-          // but no UI trigger was ever wired — this ListTile is that trigger.
-          // It MUST live here (not on the charging screen) because the
-          // charging screen only appears once isCharging is already true,
-          // which is AFTER the pack_I sign-flip that is recon's sync anchor.
-          // Starting the log here, before plug-in, captures the baseline
-          // (current ~0) and the onset flip both.
-          Builder(builder: (context) {
-            final active = svc.chargingLogActive;
-            final rows = svc.chargingLogRowsWritten;
-            final pass = svc.chargingBlockAvgPassSeconds;
-            final passStr = pass != null ? pass.toStringAsFixed(1) : '—';
-            return ListTile(
-              leading: Icon(
-                active ? Icons.fiber_manual_record : Icons.battery_charging_full,
-                color: active ? Colors.redAccent : Colors.lightBlueAccent,
-              ),
-              title: Text(
-                  active ? S.of('chg.log.active') : S.of('chg.log.idle')),
-              subtitle: Text(active
-                  ? S
-                      .of('chg.log.stats')
-                      .replaceFirst('{rows}', '$rows')
-                      .replaceFirst('{pass}', passStr)
-                  : S.of('chg.log.hint')),
-              trailing: active
-                  ? TextButton.icon(
-                      icon: const Icon(Icons.stop, color: Colors.redAccent),
-                      label: Text(S.of('chg.log.stop'),
-                          style: const TextStyle(color: Colors.redAccent)),
-                      onPressed: () => svc.stopChargingLog(),
-                    )
-                  : TextButton.icon(
-                      icon: const Icon(Icons.play_arrow,
-                          color: Colors.lightGreenAccent),
-                      label: Text(S.of('chg.log.start'),
-                          style:
-                              const TextStyle(color: Colors.lightGreenAccent)),
-                      // v0.1.29+97: always tappable. The logger reads the
-                      // modules over UDS, which needs the dongle connected —
-                      // but a disabled grey button gave no clue WHY. Now the
-                      // button is live; if the dongle isn't connected it shows
-                      // an honest snackbar instead of doing nothing silently.
-                      // On a real charge the dongle is connected, so it just
-                      // starts.
-                      onPressed: () {
-                        if (svc.status == ConnectionStatus.connected) {
-                          svc.startChargingLog(manual: true);
-                        } else {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(content: Text(S.of('dtc.not_connected'))),
-                          );
-                        }
-                      },
-                    ),
-            );
-          }),
-          ListTile(
-            leading: const Icon(Icons.info_outline,
-                color: Colors.lightBlueAccent),
-            title: Text(S.of('settings.about.title')),
-            subtitle: Text(S.of('settings.about.subtitle')),
-            trailing: const Icon(Icons.chevron_right, color: Colors.grey),
-            // v0.1.29+59: await the route and re-read prefs on return —
-            // the About screen is where Advanced gets unlocked (15 taps
-            // on the APP card), and the ExpansionTile below must appear
-            // immediately when the user comes back.
-            onTap: () async {
-              await Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) => const AboutScreen(),
-                ),
-              );
-              _loadSettings();
-            },
-          ),
-          const Divider(),
-
-          // ════════════ Язык / Language (v0.1.29+58, simplified +59) ════
-          // Two explicit modes: English (default) / Русский. 'System'
-          // removed in +59 (owner decision). setMode() updates S.locale
-          // before notifying, and this screen watches LocaleService, so
-          // the whole list re-renders in the new language on the same
-          // frame the radio is tapped.
-          _SectionLabel(S.of('settings.section.language')),
-          RadioListTile<String>(
-            dense: true,
-            title: Text(S.of('settings.language.en')),
-            value: 'en',
-            groupValue: locale.mode,
-            onChanged: (v) => locale.setMode(v!),
-          ),
-          RadioListTile<String>(
-            dense: true,
-            title: Text(S.of('settings.language.ru')),
-            value: 'ru',
-            groupValue: locale.mode,
-            onChanged: (v) => locale.setMode(v!),
-          ),
-          const Divider(),
-
-          // ════════════ Data ════════════
-          _SectionLabel(S.of('settings.section.data')),
-          ListTile(
-            leading: const Icon(Icons.archive_outlined,
-                color: Colors.lightBlueAccent),
-            title: Text(S.of('settings.data.title')),
-            subtitle: Text(S.of('settings.data.subtitle')),
-            trailing: const Icon(Icons.chevron_right, color: Colors.grey),
-            onTap: () => Navigator.of(context).push(
-              MaterialPageRoute(
-                builder: (_) => const DataManagementScreen(),
-              ),
-            ),
-          ),
-          const Divider(),
-
-          // ════════════ Advanced (research tools, hidden) ════════════
-          // v0.1.29+56: research/diagnostic tooling moved here from the
-          // top-level list. Nothing is deleted — these tools are needed
-          // for the upcoming HAL integration work — they're just out of
-          // the casual user's way. Collapsed by default.
-          // v0.1.29+59: hidden entirely until unlocked via 15 taps on
-          // the APP card in About (advanced_unlocked pref).
-          if (_advancedUnlocked)
-          ExpansionTile(
-            leading: const Icon(Icons.build_outlined, color: Colors.grey),
-            title: Text(S.of('settings.advanced.title')),
-            subtitle: Text(S.of('settings.advanced.subtitle')),
-            childrenPadding: const EdgeInsets.only(left: 8),
-            children: [
-              // Raw Data — wide-only research view (live DID table). On
-              // phone the EcuExplorerScreen below covers the same need.
-              if (LayoutBreakpoints.useHeadUnitLayout(context))
-                ListTile(
-                  leading: const Icon(Icons.table_rows_outlined,
-                      color: Colors.grey),
-                  title: const Text('Raw Data'),
-                  subtitle: Text(S.of('settings.rawdata.subtitle')),
-                  trailing:
-                      const Icon(Icons.chevron_right, color: Colors.grey),
-                  onTap: () => Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (_) => Scaffold(
-                        appBar: AppBar(title: const Text('Raw Data')),
-                        body: const RawDataWideScreen(),
-                      ),
-                    ),
-                  ),
-                ),
-              ListTile(
-                leading: const Icon(Icons.memory, color: Colors.grey),
-                title: const Text('ECU Explorer'),
-                subtitle: Text(S.of('settings.ecu.subtitle')),
-                trailing: const Icon(Icons.chevron_right, color: Colors.grey),
-                onTap: () => Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (_) => const EcuExplorerScreen(),
-                  ),
-                ),
-              ),
-              ListTile(
-                leading: const Icon(Icons.search, color: Colors.grey),
-                title: const Text('DID Sweep'),
-                subtitle: Text(S.of('settings.sweep.subtitle')),
-                trailing: const Icon(Icons.chevron_right, color: Colors.grey),
-                onTap: () => Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (_) => const SweepScreen(),
-                  ),
-                ),
-              ),
-              ListTile(
-                leading: const Icon(Icons.timeline, color: Colors.grey),
-                title: const Text('Live Log'),
-                subtitle: Text(S.of('settings.livelog.subtitle')),
-                trailing: const Icon(Icons.chevron_right, color: Colors.grey),
-                onTap: () => Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (_) => const LiveLogScreen(),
-                  ),
-                ),
-              ),
-              ListTile(
-                leading: const Icon(Icons.troubleshoot, color: Colors.grey),
-                title: const Text('Polling diagnostics'),
-                subtitle: Text(S.of('settings.polldiag.subtitle')),
-                trailing: const Icon(Icons.chevron_right, color: Colors.grey),
-                onTap: () => Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (_) => const PollingDiagnosticsScreen(),
-                  ),
-                ),
-              ),
-              // v0.1.29+58: HAL Explorer moved here from the head-unit
-              // rail (owner: research workbench, not daily-driver — hide
-              // in Advanced). Unlike Raw Data this is NOT wide-gated:
-              // BZ3 runs the phone layout but is still a BYD head unit,
-              // so the friend needs a path to it; on real phones the
-              // screen degrades to its built-in "BLE mode only" notice.
-              // The route owns its NativeDetector lifecycle — see
-              // _HalExplorerRoute below (on the rail the detector lived
-              // in HeadUnitScaffold state, which no longer hosts the
-              // screen).
-              ListTile(
-                leading: const Icon(Icons.api, color: Colors.grey),
-                title: const Text('HAL Explorer'),
-                subtitle: Text(S.of('settings.hal.subtitle')),
-                trailing: const Icon(Icons.chevron_right, color: Colors.grey),
-                onTap: () => Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (_) => const _HalExplorerRoute(),
-                  ),
-                ),
-              ),
-              // v0.1.29+63: temporary HAL push-telemetry bring-up test.
-              // Start/Stop the live subscription, watch registered status +
-              // per-decoder value & Hz. Developer surface — removed once the
-              // SPEED overlapping pilot (+64) proves the stream path.
-              ListTile(
-                leading: const Icon(Icons.sensors, color: Colors.grey),
-                title: const Text('HAL Test'),
-                subtitle: const Text('Live push-telemetry bring-up (dev)'),
-                trailing: const Icon(Icons.chevron_right, color: Colors.grey),
-                onTap: () => Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (_) => const HalTestScreen(),
-                  ),
-                ),
-              ),
-              // Bridge diagnostic — cloud bridge debug telemetry.
-              Builder(builder: (context) {
-                final bd = context.watch<BridgeDiagService>();
-                return Column(children: [
-                  _buildBridgeDiagHeader(bd),
-                  _buildBridgeDiagBody(context, bd),
-                ]);
-              }),
-            ],
-          ),
+          _buildCloudHeader(cs),
+          _buildCloudBody(context, cs),
         ],
-      ),
-    );
-  }
-
-  Future<void> _scan(ConnectionService svc) async {
-    setState(() {
-      _scanning = true;
-      _devices = [];
-    });
-    final found = await svc.scanForAdapters();
-    setState(() {
-      _devices = found;
-      _scanning = false;
-    });
-  }
-
-  Future<void> _connect(ConnectionService svc, ScanResult r) async {
-    final ok = await svc.connect(r.device);
-    if (ok && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(S.of('settings.connected_snack'))),
-      );
-    }
-  }
-}
-
-class _StatusTile extends StatelessWidget {
-  final ConnectionService svc;
-  const _StatusTile({required this.svc});
-
-  @override
-  Widget build(BuildContext context) {
-    final color = switch (svc.status) {
-      ConnectionStatus.connected => Colors.green,
-      ConnectionStatus.connecting || ConnectionStatus.scanning => Colors.orange,
-      ConnectionStatus.error => Colors.red,
-      _ => Colors.grey,
-    };
-    final icon = switch (svc.status) {
-      ConnectionStatus.connected => Icons.check_circle,
-      ConnectionStatus.connecting || ConnectionStatus.scanning => Icons.sync,
-      ConnectionStatus.error => Icons.error,
-      _ => Icons.circle_outlined,
-    };
-
-    return ListTile(
-      leading: Icon(icon, color: color, size: 28),
-      title: Text(svc.status.name.toUpperCase(),
-          style: TextStyle(color: color, fontWeight: FontWeight.w500)),
-      subtitle: Text(svc.statusMessage ?? '—'),
-    );
-  }
-}
-
-class _DeviceTile extends StatelessWidget {
-  final ScanResult result;
-  final VoidCallback onTap;
-
-  const _DeviceTile({required this.result, required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    final name = result.advertisementData.advName.isEmpty
-        ? '<unknown>'
-        : result.advertisementData.advName;
-    return ListTile(
-      leading: const Icon(Icons.bluetooth, color: Colors.blue),
-      title: Text(name),
-      subtitle: Text('${result.device.remoteId.str}\nRSSI: ${result.rssi}'),
-      isThreeLine: true,
-      onTap: onTap,
-    );
-  }
-}
-
-/// v0.1.29+58: pushed-route host for the HAL Explorer (moved off the
-/// head-unit rail into Settings → Advanced). NativeExplorerWide takes a
-/// NativeDetector via constructor; when it lived on the rail the
-/// detector belonged to HeadUnitScaffold's state. Here the route owns
-/// the full lifecycle: create + fire-and-forget detect() in initState,
-/// dispose() with the route. Each open re-probes — cheap (one
-/// Class.forName + optional VIN read) and always-fresh.
-class _HalExplorerRoute extends StatefulWidget {
-  const _HalExplorerRoute();
-
-  @override
-  State<_HalExplorerRoute> createState() => _HalExplorerRouteState();
-}
-
-class _HalExplorerRouteState extends State<_HalExplorerRoute> {
-  late final NativeDetector _detector;
-
-  @override
-  void initState() {
-    super.initState();
-    _detector = NativeDetector();
-    _detector.detect();
-  }
-
-  @override
-  void dispose() {
-    _detector.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('HAL Explorer')),
-      body: NativeExplorerWide(detector: _detector),
-    );
-  }
-}
-
-/// v0.1.29+56: section label for grouped Settings layout. Small
-/// uppercase accent header above each settings group.
-class _SectionLabel extends StatelessWidget {
-  final String text;
-  const _SectionLabel(this.text);
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-      child: Text(
-        text.toUpperCase(),
-        style: const TextStyle(
-          fontSize: 11,
-          letterSpacing: 1.2,
-          color: Colors.lightBlueAccent,
-          fontWeight: FontWeight.w600,
-        ),
       ),
     );
   }

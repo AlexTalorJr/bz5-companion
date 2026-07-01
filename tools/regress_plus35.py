@@ -2265,15 +2265,17 @@ if int(pv) >= 56:
     else:
         fail("U6 ChargingViewWide still unreachable")
 
-    # U7. Settings: five section labels present, Advanced ExpansionTile
-    #     contains the research tools (ECU Explorer, DID Sweep, Live Log,
-    #     Polling diagnostics) and the wide-only Raw Data entry.
+    # U7. Settings: four section labels present (+110: the Cloud and
+    #     Data sections merged into the App group as sub-entries),
+    #     Advanced ExpansionTile contains the research tools (ECU
+    #     Explorer, DID Sweep, Live Log, Polling diagnostics) and the
+    #     wide-only Raw Data entry.
     if int(pv) >= 58:
         # +58: section labels localized — literals replaced by S.of keys
         # (and a sixth Language section appeared, checked in Part V).
         sections_ok = all(f"_SectionLabel(S.of('settings.section.{x}'))" in sett
-                          for x in ['connection', 'cost', 'cloud',
-                                    'vehicle', 'data'])
+                          for x in ['connection', 'cost',
+                                    'vehicle', 'app'])
         adv_idx = sett.find("title: Text(S.of('settings.advanced.title'))")
     else:
         sections_ok = all(f"_SectionLabel('{x}')" in sett
