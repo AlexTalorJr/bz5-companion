@@ -126,14 +126,6 @@ class HalTelemetryService extends ChangeNotifier {
   /// halDriveActive (display-only, halOnly-bound) — the dashboard is unaffected.
   bool get halOwnsTrip => _running && !(_dongleConnected?.call() ?? false);
 
-  /// v0.1.29+111: the live HAL trip's Trips row id (null when no HAL trip
-  /// is open). The History screens select() on this to refresh their list
-  /// the moment a dongle-free trip opens/closes — before this they only
-  /// listened to the OBD2 trip flag, so a HAL trip appeared in History
-  /// only after something else forced a rebuild (the "tap another trip"
-  /// workaround).
-  int? get halTripDbId => _halTripDbId;
-
   HalStartStatus? _status;
   HalStartStatus? get status => _status;
 
@@ -1736,6 +1728,11 @@ class HalTelemetryService extends ChangeNotifier {
   /// v0.1.29+96: the DB row id of the live HAL trip, or null before the row
   /// opens / after it closes. Exposed so the driver panel can show the real
   /// trip number ("#42") instead of the +85 placeholder literal "trip".
+  /// v0.1.29+111/+112: the History screens also select() on this to refresh
+  /// their trips list the moment a dongle-free trip opens/closes. (+112:
+  /// +111 accidentally added a DUPLICATE of this getter near halOwnsTrip —
+  /// missed that this one already existed — which broke compilation; the
+  /// duplicate is gone, this original serves both consumers.)
   int? get halTripDbId => _halTripDbId;
 
   /// Synthetic trip flag for the panel's "trip exists?" checks. v0.1.29+85
