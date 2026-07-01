@@ -126,6 +126,14 @@ class HalTelemetryService extends ChangeNotifier {
   /// halDriveActive (display-only, halOnly-bound) — the dashboard is unaffected.
   bool get halOwnsTrip => _running && !(_dongleConnected?.call() ?? false);
 
+  /// v0.1.29+111: the live HAL trip's Trips row id (null when no HAL trip
+  /// is open). The History screens select() on this to refresh their list
+  /// the moment a dongle-free trip opens/closes — before this they only
+  /// listened to the OBD2 trip flag, so a HAL trip appeared in History
+  /// only after something else forced a rebuild (the "tap another trip"
+  /// workaround).
+  int? get halTripDbId => _halTripDbId;
+
   HalStartStatus? _status;
   HalStartStatus? get status => _status;
 
@@ -135,20 +143,24 @@ class HalTelemetryService extends ChangeNotifier {
   // actually delivers (field rates from the 2026-06-11 drive, HAL Test):
   //
   //  * CONTINUOUS — pushed at a steady rate while the stream is up:
-  //      speed ~8 Hz, pack_current ~2.2 Hz, pack_voltage ~0.8 Hz,
-  //      gear_enum ~3.4 Hz. Freshness = sample age within a per-name
+  //      speed ~8 Hz, pack_current ~2.2 Hz, pack_voltage ~0.8 Hz.
+  //      Freshness = sample age within a per-name
   //      window; a stall (binder loss) trips the fallback well before
   //      the user notices a frozen value.
   //  * EVENT-DRIVEN — pushed only when the value CHANGES: soc_display,
   //      soc_battery (0.0 Hz at steady state; SOC can sit for many
-  //      minutes). An age window would falsely expire them, so they
-  //      count as fresh while the stream is RUNNING and are cleared on
-  //      stop.
+  //      minutes) and — v0.1.29+111 — gear_enum: the selector pushes ONE
+  //      frame per lever move (the +96 export showed 348/1014/1497 s
+  //      mid-drive gaps; the "~3.4 Hz" from the 2026-06-11 drive was an
+  //      artifact of frequent shifting during that test). Under the old
+  //      6 s window + 90 s hold the gear cell fell back to OBD2 — a dash
+  //      without a dongle — 90 s after every shift. An age window would
+  //      falsely expire event-driven names, so they count as fresh while
+  //      the stream is RUNNING and are cleared on stop.
   static const Map<String, Duration> _continuousWindow = {
     'speed': Duration(milliseconds: 1500),
     'pack_voltage': Duration(seconds: 6),
     'pack_current': Duration(seconds: 6),
-    'gear_enum': Duration(seconds: 6),
     // v0.1.29+72: battery/drive temperatures. Slow signals — probe runs
     // ~0.5 Hz (n=12-15 per recon chunk), motor/inverter similar — so the
     // freshness window is generous (8 s) to avoid flicker between updates.
@@ -198,7 +210,13 @@ class HalTelemetryService extends ChangeNotifier {
   // soc_precise is NOT event-driven — it arrives on a steady ~30 s tick,
   // so it lives in _continuousWindow above, not in _eventDriven (those are
   // the integer-SOC change-only frames). See halSocForTrip below.
-  static const Set<String> _eventDriven = {'soc_display', 'soc_battery'};
+  static const Set<String> _eventDriven = {
+    'soc_display', 'soc_battery',
+    // v0.1.29+111: gear is event-driven (see the class comment) — display
+    // now holds it for the whole running stream, like _stickyGear does
+    // for the trip machine and +82 did for brake_pedal.
+    'gear_enum',
+  };
 
   // Range guards per name — same role as the 0..220 speed guard from the
   // +64 pilot: drop frame-misalignment junk before it reaches a display.
@@ -600,6 +618,8 @@ class HalTelemetryService extends ChangeNotifier {
         if (t.lastAliveTs != null) {
           await db.closeHalOrphanAt(t.id, t.lastAliveTs!,
               note: 'auto-closed: orphaned');
+          // v0.1.29+111: freeze the derived row bits too (see helper).
+          await _backfillOrphanDerived(db, t.id, samples);
           debugPrint('HAL recovery: closed orphan Trip #${t.id} via watchdog '
               'snapshot (started ${t.startedAt}) → endedAt=${t.lastAliveTs}');
           continue;
@@ -612,6 +632,8 @@ class HalTelemetryService extends ChangeNotifier {
         }
         await db.closeHalOrphanAt(t.id, endTs,
             note: 'auto-closed: orphaned', energyUsedKwh: energyKwh);
+        // v0.1.29+111: freeze the derived row bits too (see helper).
+        await _backfillOrphanDerived(db, t.id, samples);
         debugPrint('HAL recovery: closed orphan Trip #${t.id} '
             '(started ${t.startedAt}) → endedAt=$endTs'
             '${energyKwh != null ? ', energy≈$energyKwh kWh (reconstructed)' : ''}');
@@ -619,6 +641,24 @@ class HalTelemetryService extends ChangeNotifier {
     } catch (e) {
       debugPrint('HAL orphan recovery failed (non-fatal): $e');
     }
+  }
+
+  /// v0.1.29+111: derived-row backfill for a recovered orphan. The LIVE
+  /// finalize freezes the speed histogram (+93) and the hal sample count
+  /// (+98) onto the row, but the orphan path never did. Ignition-off ends
+  /// most real drives (the head unit kills the app before the park timer
+  /// fires), and hal_samples are NOT cloud-restored — so after the next
+  /// reinstall wipe those trips lost their speed distribution for good
+  /// (the "sometimes no distribution" bug). Compute both from hal_samples
+  /// while the rows still exist. Best-effort: a null histogram (no speed
+  /// rows) leaves `extra` untouched; count is written only when > 0 so an
+  /// OBD2-counted row is never clobbered with a zero.
+  Future<void> _backfillOrphanDerived(
+      AppDatabase db, int tripId, int samples) async {
+    if (samples == 0) return;
+    final extraJson = await db.computeHalSpeedHistogramJson(tripId);
+    await db.updateTripExtra(tripId, extraJson);
+    await db.updateTripSampleCount(tripId, samples);
   }
 
   /// Last good value held across short dropouts / bad frames, or null if
@@ -696,6 +736,14 @@ class HalTelemetryService extends ChangeNotifier {
       case HalSourceMode.obd2Only:
         return false;
       case HalSourceMode.halOnly:
+        // v0.1.29+111: event-driven names (gear, the SOC pair) have no
+        // staleness — a frame arrives only on CHANGE, so the last good
+        // value is valid for the whole running stream (mirrors
+        // _stickyGear and the +82 brake_pedal precedent). The 90 s hold
+        // below stays for the continuous names only.
+        if (_eventDriven.contains(name)) {
+          return _running && _lastGood[name] != null;
+        }
         return _heldValue(name, _coreHold) != null;
       case HalSourceMode.auto:
         return halFresh(name);

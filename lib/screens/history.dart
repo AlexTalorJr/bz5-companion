@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../data/database.dart';
 import '../l10n/strings.dart';
 import '../services/connection.dart';
+import '../services/hal_telemetry_service.dart';
 import '../services/locale_service.dart';
 import 'trip_detail.dart';
 import 'trends.dart';
@@ -92,7 +93,14 @@ class _TripsTabState extends State<_TripsTab> {
     // Subscribing via select() to a single bool means we only rebuild
     // when that flag flips, not on every notify.
     final svc = context.watch<ConnectionService>();
-    final tripActive = svc.currentTripId != null;
+    // v0.1.29+111: a dongle-free trip is owned by HalTelemetryService and
+    // never flips svc.currentTripId, so the refresh below never fired for
+    // it — the row sat in the DB until something else rebuilt the tab
+    // (the "tap another trip" workaround). select() on the HAL trip row
+    // id rebuilds exactly on trip open/close, not on every 200 ms notify.
+    final halTripId =
+        context.select<HalTelemetryService, int?>((h) => h.halTripDbId);
+    final tripActive = svc.currentTripId != null || halTripId != null;
     if (_lastTripActive != null && _lastTripActive != tripActive) {
       // Active state flipped — refresh the list to pick up new/ended trip.
       WidgetsBinding.instance.addPostFrameCallback((_) => _refresh());

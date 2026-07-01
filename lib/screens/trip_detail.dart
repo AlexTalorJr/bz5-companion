@@ -102,6 +102,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                 tripId: trip.id,
                 ecuTx: '790',
                 did: '1FFD',
+                halName: 'soc_precise|soc_display',
                 color: Colors.greenAccent,
                 unit: '%',
                 svc: svc,
@@ -112,6 +113,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                 tripId: trip.id,
                 ecuTx: '790',
                 did: '002F',
+                halName: 'probe_highest_temp',
                 color: Colors.orangeAccent,
                 unit: '°C',
                 // v0.1.26+9: NO valueTransform — the registry decoder for
@@ -130,6 +132,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                 tripId: trip.id,
                 ecuTx: '740',
                 did: '0022',
+                halName: 'pack_voltage',
                 color: Colors.yellowAccent,
                 unit: 'V',
                 // No valueTransform — registry decoder already applies scale 0.025
@@ -194,6 +197,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
           tripId: trip.id,
           ecuTx: '790',
           did: '1FFD',
+          halName: 'soc_precise|soc_display',
           color: Colors.greenAccent,
           unit: '%',
           svc: svc,
@@ -205,6 +209,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
             tripId: trip.id,
             ecuTx: '790',
             did: '002F',
+            halName: 'probe_highest_temp',
             color: Colors.orangeAccent,
             unit: '°C',
             // v0.1.26+9: see narrow-layout comment — registry already
@@ -216,6 +221,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
             tripId: trip.id,
             ecuTx: '740',
             did: '0022',
+            halName: 'pack_voltage',
             color: Colors.yellowAccent,
             unit: 'V',
             svc: svc,
@@ -977,6 +983,10 @@ class _ChartCard extends StatelessWidget {
   final String unit;
   final double Function(double)? valueTransform;
   final ConnectionService svc;
+  /// v0.1.29+111: hal_samples fallback name(s) — see the wide _ChartCard
+  /// twin in history_wide.dart for the long-form comment. '|' separates
+  /// alternates tried in order; null → OBD2 only.
+  final String? halName;
   const _ChartCard({
     required this.title,
     required this.tripId,
@@ -986,6 +996,7 @@ class _ChartCard extends StatelessWidget {
     required this.unit,
     required this.svc,
     this.valueTransform,
+    this.halName,
   });
 
   @override
@@ -1022,8 +1033,8 @@ class _ChartCard extends StatelessWidget {
             const SizedBox(height: 8),
             SizedBox(
               height: 160,
-              child: FutureBuilder<List<Sample>>(
-                future: svc.db.getSamplesForTrip(tripId, ecuTx: ecuTx, did: did),
+              child: FutureBuilder<List<({DateTime ts, double? v})>>(
+                future: _loadPoints(),
                 builder: (context, snap) {
                   if (!snap.hasData) {
                     return const Center(
@@ -1047,17 +1058,34 @@ class _ChartCard extends StatelessWidget {
     );
   }
 
-  Widget _buildChart(List<Sample> samples) {
+  /// v0.1.29+111: unified point loader — OBD2 first, hal_samples fallback
+  /// for dongle-free trips. Twin of the loader in history_wide.dart.
+  Future<List<({DateTime ts, double? v})>> _loadPoints() async {
+    final obd =
+        await svc.db.getSamplesForTrip(tripId, ecuTx: ecuTx, did: did);
+    if (obd.isNotEmpty) {
+      return [for (final s in obd) (ts: s.timestamp, v: s.numericValue)];
+    }
+    final names = halName;
+    if (names == null) return const [];
+    for (final n in names.split('|')) {
+      final hal = await svc.db.getHalSamplesForTripByName(tripId, n);
+      if (hal.isNotEmpty) {
+        return [for (final s in hal) (ts: s.timestamp, v: s.numericValue)];
+      }
+    }
+    return const [];
+  }
+
+  Widget _buildChart(List<({DateTime ts, double? v})> samples) {
     final points = <FlSpot>[];
-    final t0 = samples.first.timestamp;
+    final t0 = samples.first.ts;
     double minY = double.infinity;
     double maxY = double.negativeInfinity;
     for (final s in samples) {
-      if (s.numericValue == null) continue;
-      final x = s.timestamp.difference(t0).inSeconds.toDouble();
-      final y = valueTransform != null
-          ? valueTransform!(s.numericValue!)
-          : s.numericValue!;
+      if (s.v == null) continue;
+      final x = s.ts.difference(t0).inSeconds.toDouble();
+      final y = valueTransform != null ? valueTransform!(s.v!) : s.v!;
       points.add(FlSpot(x, y));
       if (y < minY) minY = y;
       if (y > maxY) maxY = y;

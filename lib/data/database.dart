@@ -716,6 +716,20 @@ class AppDatabase extends _$AppDatabase {
   /// shared buildSpeedHistogram / bins, so the rendered chart is identical
   /// in form regardless of source. Returns null when the trip has no HAL
   /// speed samples (then the caller leaves extra untouched).
+  /// v0.1.29+111: generic per-name HAL series for a trip (oldest first) —
+  /// the chart-tile fallback for dongle-free trips. Values are decoded
+  /// physical quantities (same units as the registry-decoded OBD2 series),
+  /// so a chart can consume either source unchanged.
+  Future<List<HalSample>> getHalSamplesForTripByName(int tripId, String name) {
+    return (select(halSamples)
+          ..where((s) =>
+              s.tripId.equals(tripId) &
+              s.source.equals('hal') &
+              s.name.equals(name))
+          ..orderBy([(s) => OrderingTerm.asc(s.timestamp)]))
+        .get();
+  }
+
   Future<String?> computeHalSpeedHistogramJson(int tripId) async {
     final speedSamples = await getHalSpeedSamplesForTrip(tripId);
     if (speedSamples.isEmpty) return null;
