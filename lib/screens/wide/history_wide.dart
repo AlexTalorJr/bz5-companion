@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import '../../data/database.dart';
 import '../../l10n/strings.dart';
 import '../../services/connection.dart';
+import '../../services/hal_telemetry_service.dart';
 import '../../services/locale_service.dart';
 import '../trends.dart';
 import '../trip_detail.dart';
@@ -94,6 +95,13 @@ class _TripsBody extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final svc = context.watch<ConnectionService>();
+    // v0.1.29+111: the trips query below re-fires per REBUILD, and without
+    // a dongle ConnectionService barely notifies — a dongle-free HAL trip
+    // row landed in the DB with nothing rebuilding this pane, so the list
+    // only caught up when selecting a trip forced a parent setState (the
+    // "tap another trip" workaround). select() on the HAL trip row id
+    // adds exactly one rebuild per trip open/close.
+    context.select<HalTelemetryService, int?>((h) => h.halTripDbId);
     return FutureBuilder<List<Trip>>(
       future: svc.db.getRecentTrips(),
       builder: (context, snap) {
@@ -359,6 +367,7 @@ class _SelectedTripDetail extends StatelessWidget {
               tripId: trip.id,
               ecuTx: '790',
               did: '0005',
+              halName: 'soc_precise|soc_display',
               color: Colors.greenAccent,
               unit: '%',
               svc: svc,
@@ -368,6 +377,7 @@ class _SelectedTripDetail extends StatelessWidget {
               tripId: trip.id,
               ecuTx: '790',
               did: '002F',
+              halName: 'probe_highest_temp',
               color: Colors.orangeAccent,
               unit: '°C',
               // v0.1.26+9: NO valueTransform — registry already
@@ -386,6 +396,7 @@ class _SelectedTripDetail extends StatelessWidget {
               tripId: trip.id,
               ecuTx: '740',
               did: '0022',
+              halName: 'pack_voltage',
               color: Colors.yellowAccent,
               unit: 'V',
               // No valueTransform — registry decoder already applies scale.
@@ -629,6 +640,13 @@ class _ChartCard extends StatelessWidget {
   final double Function(double)? valueTransform;
   final ConnectionService svc;
   final bool big;
+  /// v0.1.29+111: hal_samples signal name(s) to fall back to when the
+  /// trip has no OBD2 samples (a dongle-free HAL trip records nothing
+  /// into `samples`, so these charts were permanently empty for it).
+  /// '|' separates alternates tried in order, e.g.
+  /// 'soc_precise|soc_display'. Null → OBD2 only (honest "no data" when
+  /// the HAL stream has no equivalent signal, e.g. HV bus).
+  final String? halName;
   const _ChartCard({
     required this.title,
     required this.tripId,
@@ -639,6 +657,7 @@ class _ChartCard extends StatelessWidget {
     required this.svc,
     this.valueTransform,
     this.big = false,
+    this.halName,
   });
 
   @override
@@ -674,9 +693,8 @@ class _ChartCard extends StatelessWidget {
             ),
             const SizedBox(height: 8),
             Expanded(
-              child: FutureBuilder<List<Sample>>(
-                future: svc.db
-                    .getSamplesForTrip(tripId, ecuTx: ecuTx, did: did),
+              child: FutureBuilder<List<({DateTime ts, double? v})>>(
+                future: _loadPoints(),
                 builder: (context, snap) {
                   if (!snap.hasData) {
                     return const Center(
@@ -692,7 +710,29 @@ class _ChartCard extends StatelessWidget {
     );
   }
 
-  Widget _buildChart(List<Sample> samples) {
+  /// v0.1.29+111: unified point loader. OBD2 samples first (the dongle
+  /// series, exactly what these tiles always drew); when the trip has
+  /// none — a dongle-free HAL trip — fall back to the hal_samples series
+  /// named [halName]. Both carry decoded physical values in the same
+  /// units, so the chart body is source-agnostic.
+  Future<List<({DateTime ts, double? v})>> _loadPoints() async {
+    final obd =
+        await svc.db.getSamplesForTrip(tripId, ecuTx: ecuTx, did: did);
+    if (obd.isNotEmpty) {
+      return [for (final s in obd) (ts: s.timestamp, v: s.numericValue)];
+    }
+    final names = halName;
+    if (names == null) return const [];
+    for (final n in names.split('|')) {
+      final hal = await svc.db.getHalSamplesForTripByName(tripId, n);
+      if (hal.isNotEmpty) {
+        return [for (final s in hal) (ts: s.timestamp, v: s.numericValue)];
+      }
+    }
+    return const [];
+  }
+
+  Widget _buildChart(List<({DateTime ts, double? v})> samples) {
     final points = <FlSpot>[];
     if (samples.isEmpty) {
       return Center(
@@ -700,15 +740,13 @@ class _ChartCard extends StatelessWidget {
             style: TextStyle(color: Colors.grey.shade600, fontSize: 12)),
       );
     }
-    final t0 = samples.first.timestamp;
+    final t0 = samples.first.ts;
     double minY = double.infinity;
     double maxY = double.negativeInfinity;
     for (final s in samples) {
-      if (s.numericValue == null) continue;
-      final x = s.timestamp.difference(t0).inSeconds.toDouble();
-      final y = valueTransform != null
-          ? valueTransform!(s.numericValue!)
-          : s.numericValue!;
+      if (s.v == null) continue;
+      final x = s.ts.difference(t0).inSeconds.toDouble();
+      final y = valueTransform != null ? valueTransform!(s.v!) : s.v!;
       points.add(FlSpot(x, y));
       if (y < minY) minY = y;
       if (y > maxY) maxY = y;
