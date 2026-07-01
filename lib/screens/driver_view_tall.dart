@@ -84,10 +84,25 @@ class _TallDriverContent extends StatelessWidget {
     final halTrip = hal.halDriveActive && hal.halTripActive;
     final showBand = hasObdTrip || halTrip;
 
-    return ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
-        // ── Top zone: speed (huge, left) + gear/SOC stack (right).
+    // v0.1.29+109: this screen has NO AppBar (it's a bare body in the tall
+    // scaffold's IndexedStack), so on BZ3 720×1106 the ListView started flush
+    // against the system status bar (clock/icons/车外 temp) and the top row
+    // ("54 km/h") was clipped. SafeArea(top) drops the whole screen below the
+    // status bar. Nothing is resized or repositioned — the entire layout just
+    // shifts down. bottom:false because the NavigationBar owns the bottom
+    // inset (and the last child already has trailing padding). Applied HERE,
+    // not around the IndexedStack in home.dart, because the other tabs
+    // (Cells/History/Settings) each have their own Scaffold+AppBar and a
+    // body-level SafeArea would double-inset them.
+    return SafeArea(
+      bottom: false,
+      child: ListView(
+        // Horizontal 16 unchanged; a little extra top padding (below the
+        // SafeArea inset) gives breathing room under the status bar as the
+        // owner asked — "drop it down a bit". Sizes/positions untouched.
+        padding: const EdgeInsets.fromLTRB(16, 24, 16, 16),
+        children: [
+          // ── Top zone: speed (huge, left) + gear/SOC stack (right).
         // SpeedAndStatusStrip(compact:true) is content-sized (it skips
         // Expanded in compact mode), so it needs no SizedBox wrapper.
         // The gear/SOC stack is given a fixed height so its cards (which
@@ -132,6 +147,7 @@ class _TallDriverContent extends StatelessWidget {
         const _BottomStatusGridTall(),
         const SizedBox(height: 8),
       ],
+      ),
     );
   }
 }
