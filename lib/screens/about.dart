@@ -26,7 +26,7 @@ class AboutScreen extends StatelessWidget {
     // resolve via S.of, so the screen must hold the rebuild contract now.
     context.watch<LocaleService>();
     return Scaffold(
-      appBar: AppBar(title: const Text('About / Pack Specification')),
+      appBar: AppBar(title: Text(S.of('about.title'))),
       body: ListView(
         padding: const EdgeInsets.all(16),
         // v0.1.29+59: _AppInfoCard became stateful (hidden-Advanced tap
@@ -39,10 +39,6 @@ class AboutScreen extends StatelessWidget {
           _PackSpecCard(),
           SizedBox(height: 16),
           _CellSpecCard(),
-          SizedBox(height: 16),
-          _DidSourcesCard(),
-          SizedBox(height: 16),
-          _ExperimentsCard(),
           SizedBox(height: 16),
           _DisclaimerCard(),
           SizedBox(height: 16),
@@ -204,178 +200,6 @@ class _CellSpecCard extends StatelessWidget {
   }
 }
 
-class _DidSourcesCard extends StatelessWidget {
-  const _DidSourcesCard();
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Row(
-              children: [
-                Icon(Icons.code,
-                    color: Colors.lightBlueAccent, size: 22),
-                SizedBox(width: 8),
-                Text('DATA SOURCES (DIDs)',
-                    style: TextStyle(
-                        fontSize: 12,
-                        letterSpacing: 1.5,
-                        color: Colors.grey)),
-              ],
-            ),
-            const SizedBox(height: 12),
-            const Text(
-              'BZ5 uses non-standard ECU addresses (CarScanner does not work). '
-              'Discovered via brute-force DID sweep:',
-              style: TextStyle(fontSize: 12, height: 1.4, color: Colors.white70),
-            ),
-            const SizedBox(height: 12),
-            const _DidRow('790 → 798', 'BMS Master',
-                'SOC, SOH, cells, temps, charge counter'),
-            const _DidRow('791 → 799', 'VCU',
-                'gear, odometer, parking pawl, VIN'),
-            const _DidRow('740 → 748', 'PDU/HV Junction',
-                'pack nominal constants + PDU temps (live)'),
-            const _DidRow('782 → 78A', 'OBC',
-                'on-board charger (V/I targets, temps, hours)'),
-            const _DidRow('752, 753', 'BMS slaves',
-                'subpack monitors (limited UDS access)'),
-            const _DidRow('744, 745', 'PDU 2/3',
-                'duplicate views of pack stats'),
-            const Divider(height: 20),
-            const Text(
-              'Key DIDs — Master 790:',
-              style: TextStyle(
-                  fontSize: 11, color: Colors.grey, letterSpacing: 0.5),
-            ),
-            const SizedBox(height: 4),
-            const _CompactDidRow('0x0005', 'SOC %'),
-            const _CompactDidRow('0x0029', 'SOH %'),
-            const _CompactDidRow('0x002B / 0x002D', 'global min / max cell mV'),
-            const _CompactDidRow('0x002C / 0x002E', 'min / max cell index (0..135)'),
-            const _CompactDidRow('0x002F', 'battery temp (offset −40)'),
-            const _CompactDidRow('0x0015',
-                'HV bus voltage (× 0.025) — only live V source ★'),
-            const _CompactDidRow('0x016D – 0x01BB',
-                'per-module data (8 DIDs × 10 modules — structural)'),
-            const _CompactDidRow('0x0B00', 'charge counter (calibration TBD)'),
-            const _CompactDidRow('0x0B02', 'cycle count'),
-            const _CompactDidRow('0x0B03',
-                'platform constant (= 0x88, same on BZ3/BZ5)'),
-            const _CompactDidRow('0x1FFD',
-                'precise SOC (high16 / 100) — 0.01% resolution ★ (v0.1.21)'),
-            const SizedBox(height: 8),
-            const Text(
-              'PDU/HV Junction 740 (v0.1.21 reverse):',
-              style: TextStyle(
-                  fontSize: 11, color: Colors.grey, letterSpacing: 0.5),
-            ),
-            const SizedBox(height: 4),
-            const _CompactDidRow('0x0008',
-                'vehicle speed (raw / 14.09 = km/h) ★ (v0.1.21)'),
-            const _CompactDidRow('0x0009',
-                'motor signal — semantics TBD'),
-            const _CompactDidRow('0x0014', 'pack V nominal (platform const ~450V)'),
-            const _CompactDidRow('0x0022', 'pack V nominal alt (platform const ~450V)'),
-            const _CompactDidRow('0x0010 / 0x0011',
-                'PDU heatsink temps 1/2 (offset −40)'),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _ExperimentsCard extends StatelessWidget {
-  const _ExperimentsCard();
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      color: Colors.deepPurple.shade900.withValues(alpha: 0.4),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Row(
-              children: [
-                Icon(Icons.science_outlined,
-                    color: Colors.purpleAccent, size: 22),
-                SizedBox(width: 8),
-                Text('FUTURE EXPERIMENTS',
-                    style: TextStyle(
-                        fontSize: 12,
-                        letterSpacing: 1.5,
-                        color: Colors.grey)),
-              ],
-            ),
-            const SizedBox(height: 12),
-            _ExperimentItem(
-              title: 'Independent SOH calculation',
-              text:
-                  'The app computes an independent SOH by coulomb-counting '
-                  'during charging: it integrates pack current over a session '
-                  'and divides the accumulated Ah by the SOC gained to get '
-                  'full pack capacity, then by the 150 Ah nominal. As of +105 '
-                  'this runs on TWO sources — HAL pack current (dongle-free, '
-                  'preferred) and UDS 790/0009 (dongle) — so a charge produces '
-                  'a real SOH with or without a dongle. A session counts only '
-                  'if it spans ≥ 20% SOC with ≥ 90% current-coverage; the '
-                  'latest qualifying result is shown as a bare percent on the '
-                  'dashboard (HAL ahead of UDS). Until the first such session, '
-                  'the BMS value (0x0029) is shown instead, tagged "(BMS)".',
-            ),
-            _ExperimentItem(
-              title: 'Charge counter calibration (0x0B00)',
-              text:
-                  'Currently calibrated at ~460 Wh/unit from a single charge '
-                  'session. To verify, charge from a metered station: record '
-                  'kWh delivered, ΔSOC, and Δ0x0B00 — compute true Wh/unit. '
-                  'Counter behavior at idle (monotonic decrease) suggests it '
-                  'may not be a pure energy counter.',
-            ),
-            _ExperimentItem(
-              title: 'Pack-V scale verification',
-              text:
-                  'Scale 0.025 V/LSB inferred from theoretical match at '
-                  '81% SOC. Verify at low (10-20%) and high (95%+) SOC where '
-                  'expected voltage range is well-known.\n'
-                  'UPDATE 2026-05-15: confirmed scale 0.025 for DID 0x0015 '
-                  'too (HV bus voltage) — reading 428.75 V in Ready matches '
-                  'predicted pack-minus-contactor-drop almost exactly.',
-            ),
-            _ExperimentItem(
-              title: 'M6 temperature sensor status',
-              text:
-                  'M6 returns 0xFF on all 4 temperature DIDs. Likely by-design '
-                  '(the only module without sensors) but could be a real fault. '
-                  'Read DTCs (UDS service 0x19) to verify — if there is a code '
-                  'related to M6 temp sensor, the sensor is broken.\n'
-                  'UPDATE 2026-05-15: DTC scan complete — no faults related '
-                  'to M6 temperature on any ECU. "By design" hypothesis '
-                  'supported (confidence 70% → 85%).',
-            ),
-            _ExperimentItem(
-              title: 'Per-module cell semantics',
-              text:
-                  'Per-module DIDs (0x016D, 0x016F per module) currently '
-                  'interpreted as min/max of cells in that module. To verify, '
-                  'compare individual DID values vs global min/max (0x002B, '
-                  '0x002D) over time — if module readings always bracket the '
-                  'globals, interpretation is correct.',
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
 class _DisclaimerCard extends StatelessWidget {
   const _DisclaimerCard();
 
@@ -501,7 +325,7 @@ class _AppInfoCardState extends State<_AppInfoCard> {
               const _SpecRow('Source code',
                   'github.com/AlexTalorJr/bz5-companion'),
               const _SpecRow('License', 'MIT'),
-              const _SpecRow('Hardware', 'ELM327 BLE (e.g., Vgate iCar Pro)'),
+              const _SpecRow('Hardware', 'OBD2 Bluetooth adapter'),
               const _SpecRow('Protocol', 'ISO 15765-4 CAN 11/500'),
             ],
           ),
@@ -583,61 +407,3 @@ class _DidRow extends StatelessWidget {
   }
 }
 
-class _CompactDidRow extends StatelessWidget {
-  final String did;
-  final String description;
-  const _CompactDidRow(this.did, this.description);
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 1),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(
-            width: 130,
-            child: Text(did,
-                style: const TextStyle(
-                    fontSize: 11,
-                    color: Colors.lightBlueAccent,
-                    fontFeatures: [FontFeature.tabularFigures()])),
-          ),
-          Expanded(
-            child: Text(description,
-                style: const TextStyle(
-                    fontSize: 11, color: Colors.white70, height: 1.4)),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _ExperimentItem extends StatelessWidget {
-  final String title;
-  final String text;
-  const _ExperimentItem({required this.title, required this.text});
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('• $title',
-              style: const TextStyle(
-                  fontSize: 13, fontWeight: FontWeight.w500)),
-          const SizedBox(height: 2),
-          Padding(
-            padding: const EdgeInsets.only(left: 12),
-            child: Text(text,
-                style: const TextStyle(
-                    fontSize: 12, color: Colors.white70, height: 1.4)),
-          ),
-        ],
-      ),
-    );
-  }
-}

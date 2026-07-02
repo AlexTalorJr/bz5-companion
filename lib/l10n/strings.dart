@@ -114,6 +114,7 @@ class S {
     'settings.language.en': 'English',
 
     // About — hidden Advanced unlock (v0.1.29+59)
+    'about.title': 'About',
     'about.adv.progress': '{n} taps to unlock Advanced',
     'about.adv.unlocked': 'Advanced tools unlocked — see Settings',
 
@@ -313,7 +314,7 @@ class S {
     'drv.regen': 'Regen',
     'drv.odo': 'Odo',
     'drv.cell_spread': 'Cell spread',
-    'drv.hal_extras': 'HAL · MOTOR',
+    'drv.hal_extras': 'MOTOR',
     'drv.cell.trip_a': 'trip A',
     'drv.cell.trip_b': 'trip B',
     'drv.cell.motor_rpm': 'motor rpm',
@@ -369,17 +370,12 @@ class S {
     'dash.this_session_inline': 'This session: ',
     'dash.trip_live': 'Trip #{id} · LIVE',
     'dash.kwh_used': '{e} kWh used',
-    'dash.cells_fmt': '{n} cells',
-    'dash.modules_fmt': '{n} modules',
-    'dash.calibration': 'CALIBRATION',
-    'dash.live_extremes':
-        '• Live extremes: cell #{a} = lowest, cell #{b} = highest (of {c})',
     'dash.consumption_s': 'Consumption',
     'dash.cells_balance': 'CELLS BALANCE',
 
     'cells.tab_balance': 'Cells balance',
     'cells.tab_thermal': 'Thermal',
-    'cells.empty': 'No data. Connect and start polling.',
+    'cells.empty': 'No data. Connect to the car.',
     'cells.balance_fmt': 'Balance: {q}',
     'cells.even': ' — even',
     'cells.normal': ' — normal',
@@ -390,7 +386,7 @@ class S {
     'cells.no_temp_sensor': 'no temp sensor',
     // v0.1.29+102: HAL cumulative balance (BMS min/max pair, dongle-free).
     'cells.hal_cumulative_note':
-        'BMS aggregate (no per-cell dongle). Pack min/max from the BMS.',
+        'Pack minimum and maximum cell voltage.',
     'cells.min_v': 'Min',
     'cells.max_v': 'Max',
     'cells.pack_temp': 'Pack temp',
@@ -398,7 +394,7 @@ class S {
     // longer promises a per-cell picture we can't deliver without a dongle.
     'cells.tab_state': 'Battery state',
     'cells.state_intro':
-        'Live battery summary from the BMS. Per-cell voltages need a dongle.',
+        'Live battery summary. Per-cell voltages need an adapter.',
     'cells.spread_bar': 'Cell voltage spread',
     'cells.soc': 'SOC',
     'cells.soh': 'SOH',
@@ -847,6 +843,7 @@ class S {
     'cloud.menu.paused': 'На паузе',
 
     // About — hidden Advanced unlock (v0.1.29+59)
+    'about.title': 'О приложении',
     'about.adv.progress': 'Ещё {n} тапов до Advanced',
     'about.adv.unlocked': 'Инструменты Advanced разблокированы — в Настройках',
 
@@ -1045,7 +1042,7 @@ class S {
     'drv.regen': 'Рекуперация',
     'drv.odo': 'Пробег',
     'drv.cell_spread': 'Разброс',
-    'drv.hal_extras': 'HAL · МОТОР',
+    'drv.hal_extras': 'МОТОР',
     'drv.cell.trip_a': 'счётчик A',
     'drv.cell.trip_b': 'счётчик B',
     'drv.cell.motor_rpm': 'обороты',
@@ -1101,17 +1098,12 @@ class S {
     'dash.this_session_inline': 'Эта сессия: ',
     'dash.trip_live': 'Поездка #{id} · LIVE',
     'dash.kwh_used': '{e} kWh израсходовано',
-    'dash.cells_fmt': '{n} ячеек',
-    'dash.modules_fmt': '{n} модулей',
-    'dash.calibration': 'КАЛИБРОВКА',
-    'dash.live_extremes':
-        '• Live-экстремумы: ячейка #{a} — минимум, ячейка #{b} — максимум (из {c})',
     'dash.consumption_s': 'Расход',
     'dash.cells_balance': 'БАЛАНС ЯЧЕЕК',
 
     'cells.tab_balance': 'Баланс ячеек',
     'cells.tab_thermal': 'Термо',
-    'cells.empty': 'Нет данных. Подключитесь и запустите опрос.',
+    'cells.empty': 'Нет данных. Подключитесь к автомобилю.',
     'cells.balance_fmt': 'Баланс: {q}',
     'cells.even': ' — равномерно',
     'cells.normal': ' — норма',
@@ -1122,14 +1114,14 @@ class S {
     'cells.no_temp_sensor': 'нет датчика темп.',
     // v0.1.29+102: HAL-кумулятив (пара min/max от BMS, без донгла).
     'cells.hal_cumulative_note':
-        'Данные BMS (без донгла, не по ячейкам). Min/max пакета от BMS.',
+        'Минимальное и максимальное напряжение ячейки в пакете.',
     'cells.min_v': 'Мин',
     'cells.max_v': 'Макс',
     'cells.pack_temp': 'Темп. пакета',
     // v0.1.29+108: честный экран состояния батареи на BZ3 (без донгла).
     'cells.tab_state': 'Состояние батареи',
     'cells.state_intro':
-        'Сводка по батарее от BMS в реальном времени. Напряжения по ячейкам — нужен донгл.',
+        'Сводка по батарее в реальном времени. Напряжения по ячейкам — нужен адаптер.',
     'cells.spread_bar': 'Разброс напряжений ячеек',
     'cells.soc': 'Заряд',
     'cells.soh': 'Здоровье',

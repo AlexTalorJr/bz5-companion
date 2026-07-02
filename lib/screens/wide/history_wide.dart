@@ -89,39 +89,10 @@ class _HistoryWideScreenState extends State<HistoryWideScreen> {
   }
 }
 
-class _TripsBody extends StatefulWidget {
+class _TripsBody extends StatelessWidget {
   final int? selectedTripId;
   final ValueChanged<int> onSelectTrip;
   const _TripsBody({required this.selectedTripId, required this.onSelectTrip});
-
-  @override
-  State<_TripsBody> createState() => _TripsBodyState();
-}
-
-class _TripsBodyState extends State<_TripsBody> {
-  // v0.1.29+113: 1 Hz repaint while an active trip is in the list so the
-  // "ACTIVE · {dur}" duration ticks live. +111 rebuilt only on the HAL trip
-  // id FLIP (open/close); the id is stable while a trip runs, so the
-  // duration (now − startedAt, computed at build) froze until a tap forced a
-  // setState. Armed post-frame from the FutureBuilder once the list is known
-  // — no active trip → no timer (zero idle cost). Disposed with the state.
-  Timer? _tick;
-  void _syncTicker(bool hasActive) {
-    if (hasActive && _tick == null) {
-      _tick = Timer.periodic(const Duration(seconds: 1), (_) {
-        if (mounted) setState(() {});
-      });
-    } else if (!hasActive && _tick != null) {
-      _tick!.cancel();
-      _tick = null;
-    }
-  }
-
-  @override
-  void dispose() {
-    _tick?.cancel();
-    super.dispose();
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -140,9 +111,6 @@ class _TripsBodyState extends State<_TripsBody> {
           return const Center(child: CircularProgressIndicator());
         }
         final trips = snap.data!;
-        final hasActive = trips.any((t) => t.endedAt == null);
-        WidgetsBinding.instance
-            .addPostFrameCallback((_) { if (mounted) _syncTicker(hasActive); });
         if (trips.isEmpty) {
           return Center(
             child: Padding(
@@ -182,7 +150,7 @@ class _TripsBodyState extends State<_TripsBody> {
         // History; it's preserved in code for possible future use as
         // a "follow live trip" mode but isn't currently wired up.
         final activeIdx = trips.indexWhere((t) => t.endedAt == null);
-        final defaultSelectedId = widget.selectedTripId ??
+        final defaultSelectedId = selectedTripId ??
             (activeIdx >= 0 ? trips[activeIdx].id : trips.first.id);
         final selectedTrip = trips.firstWhere(
             (t) => t.id == defaultSelectedId,
@@ -197,7 +165,7 @@ class _TripsBodyState extends State<_TripsBody> {
               child: _TripsListColumn(
                 trips: trips,
                 selectedId: selectedTrip.id,
-                onSelect: widget.onSelectTrip,
+                onSelect: onSelectTrip,
               ),
             ),
             const SizedBox(width: 16),
@@ -212,7 +180,7 @@ class _TripsBodyState extends State<_TripsBody> {
   }
 }
 
-class _TripsListColumn extends StatelessWidget {
+class _TripsListColumn extends StatefulWidget {
   final List<Trip> trips;
   final int selectedId;
   final ValueChanged<int> onSelect;
@@ -223,7 +191,41 @@ class _TripsListColumn extends StatelessWidget {
   });
 
   @override
+  State<_TripsListColumn> createState() => _TripsListColumnState();
+}
+
+class _TripsListColumnState extends State<_TripsListColumn> {
+  // v0.1.29+114: 1 Hz repaint while an active trip is present so the
+  // "ACTIVE · {dur}" duration ticks live. This lives in the LIST column
+  // (not the parent _TripsBody as in +113) so the ticking rebuild does
+  // NOT cascade into _SelectedTripDetail — that pane owns four chart
+  // FutureBuilders, and rebuilding it every second re-fired ~5 DB queries
+  // per second for nothing (the +26+5 anti-thrash lesson). Only the list
+  // repaints now. Armed/disarmed from build; no active trip → no timer.
+  Timer? _tick;
+  void _syncTicker(bool hasActive) {
+    if (hasActive && _tick == null) {
+      _tick = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (mounted) setState(() {});
+      });
+    } else if (!hasActive && _tick != null) {
+      _tick!.cancel();
+      _tick = null;
+    }
+  }
+
+  @override
+  void dispose() {
+    _tick?.cancel();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final trips = widget.trips;
+    final hasActive = trips.any((t) => t.endedAt == null);
+    WidgetsBinding.instance
+        .addPostFrameCallback((_) { if (mounted) _syncTicker(hasActive); });
     return Card(
       child: ListView.separated(
         padding: const EdgeInsets.symmetric(vertical: 8),
@@ -242,7 +244,7 @@ class _TripsListColumn extends StatelessWidget {
         ),
         itemBuilder: (context, i) {
           final t = trips[i];
-          final selected = t.id == selectedId;
+          final selected = t.id == widget.selectedId;
           final duration =
               (t.endedAt ?? DateTime.now()).difference(t.startedAt);
           final dateStr = DateFormat('d MMM HH:mm').format(t.startedAt);
@@ -258,7 +260,7 @@ class _TripsListColumn extends StatelessWidget {
                 : null,
             child: ListTile(
               dense: true,
-              onTap: () => onSelect(t.id),
+              onTap: () => widget.onSelect(t.id),
               leading: isActive
                   ? Container(
                       width: 10,
@@ -709,12 +711,6 @@ class _ChartCard extends StatelessWidget {
                         fontSize: 11,
                         letterSpacing: 1.5,
                         color: Colors.grey)),
-                const Spacer(),
-                Text('$ecuTx/0x$did',
-                    style: const TextStyle(
-                        fontSize: 10,
-                        color: Colors.grey,
-                        fontFeatures: [FontFeature.tabularFigures()])),
               ],
             ),
             const SizedBox(height: 8),
