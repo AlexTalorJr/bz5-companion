@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
@@ -74,6 +76,28 @@ class _TripsTabState extends State<_TripsTab> {
   Future<List<Trip>>? _tripsFuture;
   bool? _lastTripActive;
 
+  // v0.1.29+113: 1 Hz repaint while an active trip is present so the active
+  // card's "ACTIVE · {dur}" ticks live even with no dongle (twin of the wide
+  // _TripsBodyState ticker). Does NOT touch _tripsFuture, so the +26+5 query
+  // cache is preserved — only the duration text recomputes on repaint.
+  Timer? _tick;
+  void _syncTicker(bool hasActive) {
+    if (hasActive && _tick == null) {
+      _tick = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (mounted) setState(() {});
+      });
+    } else if (!hasActive && _tick != null) {
+      _tick!.cancel();
+      _tick = null;
+    }
+  }
+
+  @override
+  void dispose() {
+    _tick?.cancel();
+    super.dispose();
+  }
+
   @override
   void initState() {
     super.initState();
@@ -140,6 +164,10 @@ class _TripsTabState extends State<_TripsTab> {
 
         // Find the active trip (endedAt == null) for live card on top.
         final active = trips.where((t) => t.endedAt == null).toList();
+        // v0.1.29+113: arm the live-duration ticker (post-frame — never
+        // setState during build).
+        WidgetsBinding.instance.addPostFrameCallback(
+            (_) { if (mounted) _syncTicker(active.isNotEmpty); });
         final past = trips.where((t) => t.endedAt != null).toList();
 
         return ListView.builder(
