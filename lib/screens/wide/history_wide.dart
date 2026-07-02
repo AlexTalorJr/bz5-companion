@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:intl/intl.dart';
@@ -87,10 +89,39 @@ class _HistoryWideScreenState extends State<HistoryWideScreen> {
   }
 }
 
-class _TripsBody extends StatelessWidget {
+class _TripsBody extends StatefulWidget {
   final int? selectedTripId;
   final ValueChanged<int> onSelectTrip;
   const _TripsBody({required this.selectedTripId, required this.onSelectTrip});
+
+  @override
+  State<_TripsBody> createState() => _TripsBodyState();
+}
+
+class _TripsBodyState extends State<_TripsBody> {
+  // v0.1.29+113: 1 Hz repaint while an active trip is in the list so the
+  // "ACTIVE · {dur}" duration ticks live. +111 rebuilt only on the HAL trip
+  // id FLIP (open/close); the id is stable while a trip runs, so the
+  // duration (now − startedAt, computed at build) froze until a tap forced a
+  // setState. Armed post-frame from the FutureBuilder once the list is known
+  // — no active trip → no timer (zero idle cost). Disposed with the state.
+  Timer? _tick;
+  void _syncTicker(bool hasActive) {
+    if (hasActive && _tick == null) {
+      _tick = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (mounted) setState(() {});
+      });
+    } else if (!hasActive && _tick != null) {
+      _tick!.cancel();
+      _tick = null;
+    }
+  }
+
+  @override
+  void dispose() {
+    _tick?.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -109,6 +140,9 @@ class _TripsBody extends StatelessWidget {
           return const Center(child: CircularProgressIndicator());
         }
         final trips = snap.data!;
+        final hasActive = trips.any((t) => t.endedAt == null);
+        WidgetsBinding.instance
+            .addPostFrameCallback((_) { if (mounted) _syncTicker(hasActive); });
         if (trips.isEmpty) {
           return Center(
             child: Padding(
@@ -148,7 +182,7 @@ class _TripsBody extends StatelessWidget {
         // History; it's preserved in code for possible future use as
         // a "follow live trip" mode but isn't currently wired up.
         final activeIdx = trips.indexWhere((t) => t.endedAt == null);
-        final defaultSelectedId = selectedTripId ??
+        final defaultSelectedId = widget.selectedTripId ??
             (activeIdx >= 0 ? trips[activeIdx].id : trips.first.id);
         final selectedTrip = trips.firstWhere(
             (t) => t.id == defaultSelectedId,
@@ -163,7 +197,7 @@ class _TripsBody extends StatelessWidget {
               child: _TripsListColumn(
                 trips: trips,
                 selectedId: selectedTrip.id,
-                onSelect: onSelectTrip,
+                onSelect: widget.onSelectTrip,
               ),
             ),
             const SizedBox(width: 16),
@@ -377,7 +411,7 @@ class _SelectedTripDetail extends StatelessWidget {
               tripId: trip.id,
               ecuTx: '790',
               did: '002F',
-              halName: 'probe_highest_temp',
+              halName: 'probe_highest_temp|battery_temp_bigdata',
               color: Colors.orangeAccent,
               unit: '°C',
               // v0.1.26+9: NO valueTransform — registry already
@@ -402,15 +436,7 @@ class _SelectedTripDetail extends StatelessWidget {
               // No valueTransform — registry decoder already applies scale.
               svc: svc,
             ),
-            _ChartCard(
-              title: 'HV bus',
-              tripId: trip.id,
-              ecuTx: '790',
-              did: '0015',
-              color: Colors.lightBlueAccent,
-              unit: 'V',
-              svc: svc,
-            ),
+            _PowerBarCard(trip: trip, svc: svc),
           ),
         ),
       ],
@@ -751,6 +777,15 @@ class _ChartCard extends StatelessWidget {
       if (y < minY) minY = y;
       if (y > maxY) maxY = y;
     }
+    // v0.1.29+113: one point is honest data for a slow event-driven
+    // signal (battery temp sleeps at standstill). Duplicate it at the
+    // last timestamp so fl_chart has a segment — a flat line, not
+    // "no data". Zero points still falls through to the notice.
+    if (points.length == 1) {
+      final only = points.first;
+      final lastX = samples.last.ts.difference(t0).inSeconds.toDouble();
+      points.add(FlSpot(lastX > only.x ? lastX : only.x + 1, only.y));
+    }
     if (points.length < 2) {
       return Center(
         child: Text(S.of('hist.collecting'),
@@ -821,4 +856,180 @@ class _ChartCard extends StatelessWidget {
 String _fmtDuration(Duration d) {
   if (d.inHours > 0) return '${d.inHours}h ${d.inMinutes % 60}m';
   return '${d.inMinutes}m ${d.inSeconds % 60}s';
+}
+
+/// v0.1.29+113: Tesla-style trip power profile. Replaces the HV-bus voltage
+/// chart (no HAL equivalent, low value). Loads the raw motor_power series
+/// (signed kW: + traction, − regen) from hal_samples and bins it into narrow
+/// bars over the trip's time span — each bar is the MEAN power in its bin
+/// (bin width = span / barCount). Raw data is never smoothed; only the
+/// display is binned, matching the "as in a Tesla" ask. Traction bars point
+/// up (green), regen bars down (blue). Footer shows the frozen per-trip regen
+/// energy and peak regen from the Trip row (+98) — not recomputed here.
+class _PowerBarCard extends StatelessWidget {
+  final Trip trip;
+  final ConnectionService svc;
+  const _PowerBarCard({required this.trip, required this.svc});
+
+  static const int _barCount = 60;
+
+  Future<List<double>> _bins() async {
+    final rows = await svc.db.getHalSamplesForTripByName(trip.id, 'motor_power');
+    if (rows.length < 2) return const [];
+    final t0 = rows.first.timestamp;
+    final spanSec =
+        rows.last.timestamp.difference(t0).inSeconds.toDouble();
+    if (spanSec <= 0) return const [];
+    final sums = List<double>.filled(_barCount, 0);
+    final counts = List<int>.filled(_barCount, 0);
+    for (final r in rows) {
+      final v = r.numericValue;
+      if (v == null) continue;
+      final frac = r.timestamp.difference(t0).inSeconds / spanSec;
+      var idx = (frac * _barCount).floor();
+      if (idx < 0) idx = 0;
+      if (idx >= _barCount) idx = _barCount - 1;
+      sums[idx] += v;
+      counts[idx] += 1;
+    }
+    return [
+      for (var i = 0; i < _barCount; i++)
+        counts[i] == 0 ? 0.0 : sums[i] / counts[i]
+    ];
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final regenKwh = trip.regenEnergyKwh;
+    final peakRegen = trip.peakRegenKw;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.bolt, size: 14, color: Colors.greenAccent),
+                const SizedBox(width: 6),
+                Text(S.of('trip.power_profile').toUpperCase(),
+                    style: const TextStyle(
+                        fontSize: 11,
+                        letterSpacing: 1.5,
+                        color: Colors.grey)),
+                const Spacer(),
+                Text('kW',
+                    style: TextStyle(fontSize: 10, color: Colors.grey.shade500)),
+              ],
+            ),
+            const SizedBox(height: 8),
+            SizedBox(
+              height: 160,
+              child: FutureBuilder<List<double>>(
+                future: _bins(),
+                builder: (context, snap) {
+                  if (!snap.hasData) {
+                    return const Center(
+                        child: CircularProgressIndicator(strokeWidth: 2));
+                  }
+                  final bins = snap.data!;
+                  if (bins.isEmpty) {
+                    return Center(
+                      child: Text(S.of('common.no_data'),
+                          style: TextStyle(
+                              color: Colors.grey.shade600, fontSize: 12)),
+                    );
+                  }
+                  double maxAbs = 1;
+                  for (final b in bins) {
+                    if (b.abs() > maxAbs) maxAbs = b.abs();
+                  }
+                  return BarChart(
+                    BarChartData(
+                      minY: -maxAbs,
+                      maxY: maxAbs,
+                      alignment: BarChartAlignment.spaceBetween,
+                      barTouchData: BarTouchData(enabled: false),
+                      gridData: FlGridData(
+                        show: true,
+                        drawVerticalLine: false,
+                        getDrawingHorizontalLine: (v) => FlLine(
+                          color: v == 0
+                              ? Colors.grey.shade600
+                              : Colors.grey.shade800,
+                          strokeWidth: v == 0 ? 1 : 0.5,
+                        ),
+                      ),
+                      titlesData: FlTitlesData(
+                        rightTitles: const AxisTitles(
+                            sideTitles: SideTitles(showTitles: false)),
+                        topTitles: const AxisTitles(
+                            sideTitles: SideTitles(showTitles: false)),
+                        bottomTitles: const AxisTitles(
+                            sideTitles: SideTitles(showTitles: false)),
+                        leftTitles: AxisTitles(
+                          sideTitles: SideTitles(
+                            showTitles: true,
+                            reservedSize: 34,
+                            getTitlesWidget: (v, _) => Text(
+                              v.toStringAsFixed(0),
+                              style: const TextStyle(
+                                  fontSize: 10, color: Colors.grey),
+                            ),
+                          ),
+                        ),
+                      ),
+                      borderData: FlBorderData(show: false),
+                      barGroups: [
+                        for (var i = 0; i < bins.length; i++)
+                          BarChartGroupData(x: i, barRods: [
+                            BarChartRodData(
+                              toY: bins[i],
+                              width: 3,
+                              color: bins[i] >= 0
+                                  ? Colors.greenAccent
+                                  : Colors.lightBlueAccent,
+                              borderRadius: BorderRadius.zero,
+                            ),
+                          ]),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                const Icon(Icons.arrow_upward,
+                    size: 12, color: Colors.greenAccent),
+                Text(' ${S.of('trip.traction')}   ',
+                    style: TextStyle(
+                        fontSize: 10, color: Colors.grey.shade400)),
+                const Icon(Icons.arrow_downward,
+                    size: 12, color: Colors.lightBlueAccent),
+                Text(' ${S.of('trip.regen')}',
+                    style: TextStyle(
+                        fontSize: 10, color: Colors.grey.shade400)),
+                const Spacer(),
+                if (regenKwh != null)
+                  Text(
+                    S
+                        .of('trip.regen_recovered')
+                        .replaceFirst('{kwh}', regenKwh.toStringAsFixed(2))
+                        .replaceFirst(
+                            '{peak}',
+                            peakRegen != null
+                                ? peakRegen.abs().toStringAsFixed(0)
+                                : '—'),
+                    style: const TextStyle(
+                        fontSize: 11, color: Colors.lightBlueAccent),
+                  ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }
