@@ -169,8 +169,8 @@ class _Connected extends StatelessWidget {
 
     // v0.1.29: detect "tall portrait" head units (BZ3 in particular).
     //
-    // Field measurement 2026-05-23 (BZ3 owner's screenshot of in-app
-    // _LayoutDiagnostic):
+    // Field measurement 2026-05-23 (BZ3 owner's screenshot of the in-app
+    // layout readout, since removed in +114):
     //   logical:    720.0 × 1106.0 dp
     //   physical:   1080 × 1659 px · dpr=1.5
     //   padding:    all zero (system bars don't eat MQ in this context)
@@ -435,7 +435,6 @@ class _Connected extends StatelessWidget {
         // for the useful metrics and don't need the technical note).
         // Phone keeps it: still useful as a self-documenting reference
         // when explaining the app to new users.
-        if (!useTallLayout) _PhysicsModelCard(),
       ],
     );
   }
@@ -912,148 +911,9 @@ class _TripCard extends StatelessWidget {
   }
 }
 
-class _PhysicsModelCard extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) {
-    return Consumer<ConnectionService>(
-      builder: (context, svc, _) {
-        final cellCount = svc.packCellCount;
-        final moduleCount = svc.packModuleCount;
-        final minIdx = svc.globalMinCellIndex;
-        final maxIdx = svc.globalMaxCellIndex;
-
-        // Footer line — показываем реальные значения если получили,
-        // иначе fallback к жёстко заданным (нашли в реверсе 2026-05-03).
-        final cellsText = S
-            .of('dash.cells_fmt')
-            .replaceFirst('{n}', '${cellCount ?? 136}');
-        final modText = S
-            .of('dash.modules_fmt')
-            .replaceFirst('{n}', '${moduleCount ?? 10}');
-
-        return Card(
-          color: Colors.grey.shade900,
-          child: Padding(
-            padding: const EdgeInsets.all(12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    const Icon(Icons.science_outlined,
-                        size: 14, color: Colors.grey),
-                    const SizedBox(width: 4),
-                    Text(S.of('dash.calibration'),
-                        style: const TextStyle(
-                            fontSize: 11,
-                            letterSpacing: 1.0,
-                            color: Colors.grey)),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  '65.28 kWh · $cellsText in $modText (LFP blade)\n'
-                  '• Pack V: avg(cells) × N (sum-of-cells, primary)\n'
-                  '   ↳ fallbacks: 790/0x0015 (HV bus), 740/0x0022 (nominal)\n'
-                  '• SOC: BMS 0x0005 · SOH: BMS 0x0029\n'
-                  '• Charge counter: BMS 0x0B00, ≈460 Wh/unit\n'
-                  '• Cycle count: BMS 0x0B02\n'
-                  '• Gear: VCU 0x0009 (1=P, 2=R, 3=N, 4=D)',
-                  style: const TextStyle(fontSize: 11, color: Colors.grey, height: 1.5),
-                ),
-                if (minIdx != null && maxIdx != null) ...[
-                  const SizedBox(height: 6),
-                  Text(
-                    S
-                        .of('dash.live_extremes')
-                        .replaceFirst('{a}', '$minIdx')
-                        .replaceFirst('{b}', '$maxIdx')
-                        .replaceFirst('{c}', cellsText),
-                    style: const TextStyle(fontSize: 11, color: Colors.grey, height: 1.4),
-                  ),
-                ],
-                // v0.1.29+6: diagnostic — only show on non-tall layouts.
-                // Helps identify why BZ3 isn't triggering the tall portrait
-                // layout despite being a tall portrait head unit. Hidden on
-                // BZ5 wide head unit (it doesn't render this screen anyway —
-                // uses dashboard_wide.dart) and on tall layouts where the
-                // threshold already worked. Shows: logical size, device
-                // pixel ratio, system padding, view insets (keyboard), and
-                // the threshold result.
-                _LayoutDiagnostic(),
-              ],
-            ),
-          ),
-        );
-      },
-    );
-  }
-}
-
-/// Inline diagnostic for understanding why a given screen falls into the
-/// phone vs tall-portrait layout bucket. Self-contained — reads MediaQuery
-/// from its own context. Renders nothing when the tall layout would have
-/// activated (threshold worked, no investigation needed).
-class _LayoutDiagnostic extends StatelessWidget {
-  const _LayoutDiagnostic();
-
-  // v0.1.29+56: master switch, default OFF. The block existed to debug
-  // why the BZ3 tall layout wasn't triggering (v0.1.29+7). The tall
-  // layout has been verified working on the BZ3 since +48, so the
-  // amber debug text is retired from production UI. Flip to true (and
-  // rebuild) if a new head-unit model shows layout-detection problems.
-  static const bool kShowLayoutDiagnostic = false;
-
-  @override
-  Widget build(BuildContext context) {
-    if (!kShowLayoutDiagnostic) return const SizedBox.shrink();
-    final mq = MediaQuery.of(context);
-    final size = mq.size;
-    final dpr = mq.devicePixelRatio;
-    final pad = mq.padding;
-    final ins = mq.viewInsets;
-    // v0.1.29+7: thresholds here MUST mirror the detector in
-    // DashboardScreen.build above. If you change one, change the other.
-    // A divergence would lie to the user about why their layout is what
-    // it is.
-    final isTall = size.height >= 1000;
-    final isWide = size.width >= 720;
-    final tallLayoutActive = isTall && isWide;
-    // v0.1.29+7: hide unless we're on a head-unit-class screen where
-    // the diagnostic actually matters. Phones (short side < 600 dp)
-    // never get the tall layout intentionally, so the debug block
-    // would be noise. Head units that DO trigger tall layout also
-    // hide the block (no investigation needed).
-    if (size.shortestSide < 600) return const SizedBox.shrink();
-    if (tallLayoutActive) return const SizedBox.shrink();
-    final physicalW = (size.width * dpr).round();
-    final physicalH = (size.height * dpr).round();
-    return Padding(
-      padding: const EdgeInsets.only(top: 8),
-      child: Text(
-        '— layout debug ($_kDiagVersion) —\n'
-        'logical: ${size.width.toStringAsFixed(1)} × '
-        '${size.height.toStringAsFixed(1)} dp\n'
-        'physical: $physicalW × $physicalH px · dpr=$dpr\n'
-        'padding: L=${pad.left.toStringAsFixed(0)} T=${pad.top.toStringAsFixed(0)} '
-        'R=${pad.right.toStringAsFixed(0)} B=${pad.bottom.toStringAsFixed(0)}\n'
-        'viewInsets: B=${ins.bottom.toStringAsFixed(0)}\n'
-        'isTall(>=1000)=$isTall · isWide(>=720)=$isWide → '
-        'tallLayout=$tallLayoutActive',
-        style: const TextStyle(
-          fontSize: 10,
-          color: Colors.amber,
-          height: 1.4,
-          fontFeatures: [FontFeature.tabularFigures()],
-        ),
-      ),
-    );
-  }
-}
-
 /// Bump when changing the diagnostic format — helps cross-reference
 /// screenshots to specific app versions while iterating.
-const String _kDiagVersion = 'v0.1.29+113';
+const String _kDiagVersion = 'v0.1.29+114';
 
 /// v0.1.29+94: public alias of the build version string for display outside
 /// dashboard (e.g. the About screen's APP card). Single literal source — the

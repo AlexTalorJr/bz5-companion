@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:intl/intl.dart';
@@ -637,10 +639,40 @@ class SpeedHistogramCardState extends State<SpeedHistogramCard> {
   // doesn't care which table they came from.
   late Future<List<double?>> _samples;
 
+  // v0.1.29+114: while the shown trip is still ACTIVE, refresh the speed
+  // values every few seconds. +111 made the active trip auto-select the
+  // instant it appears — at which point it has zero 740/0008 (or HAL speed)
+  // rows, so the histogram cached "empty" and, because the tripId never
+  // changed, didUpdateWidget never reloaded it: the distribution stayed
+  // blank for the whole drive. A closed trip is immutable, so its data is
+  // loaded exactly once (timer not armed / cancelled).
+  Timer? _reload;
+
+  bool get _tripActive => widget.trip == null || widget.trip!.endedAt == null;
+
+  void _syncReload() {
+    if (_tripActive && _reload == null) {
+      _reload = Timer.periodic(const Duration(seconds: 5), (_) {
+        if (!mounted) return;
+        setState(() => _samples = _loadSamples());
+      });
+    } else if (!_tripActive && _reload != null) {
+      _reload!.cancel();
+      _reload = null;
+    }
+  }
+
   @override
   void initState() {
     super.initState();
     _samples = _loadSamples();
+    _syncReload();
+  }
+
+  @override
+  void dispose() {
+    _reload?.cancel();
+    super.dispose();
   }
 
   @override
@@ -657,6 +689,9 @@ class SpeedHistogramCardState extends State<SpeedHistogramCard> {
     if (oldWidget.tripId != widget.tripId) {
       _samples = _loadSamples();
     }
+    // v0.1.29+114: a switch to/from an active trip re-arms or cancels the
+    // self-reload timer.
+    _syncReload();
   }
 
   /// v0.1.29+93: speed values for the trip. Try the OBD2 740/0008 series
@@ -1006,12 +1041,6 @@ class _ChartCard extends StatelessWidget {
                         fontSize: 11,
                         letterSpacing: 1.5,
                         color: Colors.grey)),
-                const Spacer(),
-                Text('$ecuTx/0x$did',
-                    style: const TextStyle(
-                        fontSize: 10,
-                        color: Colors.grey,
-                        fontFeatures: [FontFeature.tabularFigures()])),
               ],
             ),
             const SizedBox(height: 8),

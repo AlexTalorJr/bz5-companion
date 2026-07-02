@@ -2303,12 +2303,14 @@ if int(pv) >= 56:
     else:
         fail("U8 DTC misplaced")
 
-    # U9. Layout debug block: master switch present and OFF.
+    # U9. Layout debug block: fully removed from production UI (+114 UI
+    #     cleanup — the BZ3 layout-diagnostic overlay and the DID/formula
+    #     calibration card were research aids, deleted outright).
     dash = open("lib/screens/dashboard.dart").read()
-    if "kShowLayoutDiagnostic = false" in dash:
-        ok("U9 layout-debug block disabled by default")
+    if "_LayoutDiagnostic" not in dash and "_PhysicsModelCard" not in dash:
+        ok("U9 layout-debug + calibration card removed from production UI")
     else:
-        fail("U9 layout-debug still visible in production UI")
+        fail("U9 layout-debug/calibration still present in production UI")
 
     # U10. Protected layers untouched by +56: connection.dart polling
     #      internals unchanged this patch (scheduler constants intact),
