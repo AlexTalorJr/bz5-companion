@@ -51,7 +51,16 @@ import '../services/hal_telemetry_service.dart';
 class SpeedAndStatusStrip extends StatelessWidget {
   /// `true` → BZ3 tall portrait sizing. See file header.
   final bool compact;
-  const SpeedAndStatusStrip({super.key, this.compact = false});
+  /// v0.1.29+115: `true` (only from the BZ3 Driver top zone) bumps the
+  /// compact sizes up. The Driver top zone is a fixed 210 dp slot the
+  /// compact 80 pt speed left half-empty (owner's BZ3 photo) — this fills
+  /// it: bigger speed + a legible V/Bat/Inv status row, WITHOUT changing
+  /// the slot height. Ignored unless `compact` is also true. The other
+  /// compact caller (dashboard tall, 170 dp slot) keeps roomy=false, so it
+  /// is untouched; non-compact (BZ5 wide) never reads it.
+  final bool roomy;
+  const SpeedAndStatusStrip(
+      {super.key, this.compact = false, this.roomy = false});
 
   @override
   Widget build(BuildContext context) {
@@ -93,12 +102,18 @@ class SpeedAndStatusStrip extends StatelessWidget {
         ? Colors.redAccent
         : Colors.white70;
 
-    final speedFontSize = compact ? 80.0 : 180.0;
-    final unitFontSize = compact ? 14.0 : 28.0;
-    final statusFontSize = compact ? 14.0 : 22.0;
-    final iconSize = compact ? 14.0 : 18.0;
+    // v0.1.29+115: three tiers. `roomy` (BZ3 Driver) sits between compact
+    // (dashboard tall) and full (BZ5 wide) — the 210 dp slot fits a much
+    // larger speed and a readable status row. FittedBox still guards every
+    // row, so these are ceilings, never overflow risks.
+    final speedFontSize = compact ? (roomy ? 128.0 : 80.0) : 180.0;
+    final unitFontSize = compact ? (roomy ? 22.0 : 14.0) : 28.0;
+    final statusFontSize = compact ? (roomy ? 20.0 : 14.0) : 22.0;
+    final iconSize = compact ? (roomy ? 20.0 : 14.0) : 18.0;
     final padding = compact
-        ? const EdgeInsets.fromLTRB(14, 10, 14, 10)
+        ? (roomy
+            ? const EdgeInsets.fromLTRB(16, 10, 16, 10)
+            : const EdgeInsets.fromLTRB(14, 10, 14, 10))
         : const EdgeInsets.fromLTRB(24, 20, 24, 16);
 
     final speedRow = FittedBox(
@@ -120,7 +135,7 @@ class SpeedAndStatusStrip extends StatelessWidget {
           ),
           SizedBox(width: compact ? 4 : 8),
           Padding(
-            padding: EdgeInsets.only(bottom: compact ? 6 : 28),
+            padding: EdgeInsets.only(bottom: compact ? (roomy ? 12 : 6) : 28),
             child: Text('km/h',
                 style: TextStyle(
                     fontSize: unitFontSize,

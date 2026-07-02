@@ -116,7 +116,7 @@ class _TallDriverContent extends StatelessWidget {
                 flex: 3,
                 child: Align(
                   alignment: Alignment.centerLeft,
-                  child: SpeedAndStatusStrip(compact: true),
+                  child: SpeedAndStatusStrip(compact: true, roomy: true),
                 ),
               ),
               SizedBox(width: 12),
@@ -263,16 +263,19 @@ class _SocCardTall extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.end,
                   children: [
                     Text(big,
+                        // v0.1.29+115: higher ceiling; the FittedBox scales
+                        // down to the card, so on BZ3 the SOC integer now
+                        // fills the slot instead of floating small.
                         style: TextStyle(
-                            fontSize: 84,
+                            fontSize: 104,
                             fontWeight: FontWeight.w300,
                             color: color,
                             height: 1.0)),
                     Padding(
-                      padding: const EdgeInsets.only(bottom: 5),
+                      padding: const EdgeInsets.only(bottom: 6),
                       child: Text(small,
                           style: TextStyle(
-                              fontSize: 42,
+                              fontSize: 52,
                               fontWeight: FontWeight.w300,
                               color: color,
                               height: 1.0)),
