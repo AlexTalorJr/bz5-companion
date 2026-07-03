@@ -159,8 +159,14 @@ class _LeftColumn extends StatelessWidget {
     final packV = svc.packVoltageV;
     final packVInst = svc.packVoltageInstantV;
     final hvBus = svc.hvBusV;
-    final isCharging = svc.isCharging;
-    final chargingPower = svc.chargingPowerKw;
+    // v0.1.29+116: charging badge/panel resolve HAL→OBD2 like every other
+    // display site (AA3). svc.isCharging is UDS-only — without a dongle a
+    // 90 kW DC charge showed "Not charging" (Alex, 3 Jul). HAL side is the
+    // debounce-confirmed detector from the SOH machine; power falls back to
+    // |pack V × I| from HAL when the UDS value is dead.
+    final isCharging = svc.isCharging || hal.halChargingActive;
+    final chargingPower =
+        svc.isCharging ? svc.chargingPowerKw : (hal.halChargePowerKw ?? 0.0);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -524,7 +530,9 @@ class _MiddleColumn extends StatelessWidget {
         ? hal.halGear
         : svc.readNumeric('791', '0009');
     final parkingEngaged = svc.parkingPawlEngaged;
-    final isCharging = svc.isCharging;
+    // v0.1.29+116: HAL→OBD2 like the right column — the gear hero goes
+    // amber during a dongle-free charge too.
+    final isCharging = svc.isCharging || hal.halChargingActive;
     // v0.1.22: new live signals exposed on wide dashboard.
     final vehicleSpeed =
         hal.useHalForSpeed ? hal.halSpeedKmh : svc.vehicleSpeedKmh;
