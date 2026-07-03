@@ -126,7 +126,11 @@ class _Connected extends StatelessWidget {
         ? hal.halGear
         : svc.readNumeric('791', '0009');
     final cells = svc.liveCells;
-    final isCharging = svc.isCharging;
+    // v0.1.29+116: charging resolves HAL→OBD2 (AA3). svc.isCharging is
+    // UDS-only and dead without a dongle — a live DC charge showed
+    // "Not charging" (Alex, 3 Jul). HAL side = the debounce-confirmed
+    // detector from the SOH machine.
+    final isCharging = svc.isCharging || hal.halChargingActive;
     // v0.1.29+102: EV range — HAL hybrid estimate when SOC is available via
     // HAL (dongle-free), else OBD2. Invisible substitution like speed/SOC.
     final rangeKm = hal.useHalForRange ? hal.halRangeKm : svc.rangeEstimateKm;
@@ -248,7 +252,17 @@ class _Connected extends StatelessWidget {
                   hal.useHalForSoc ? hal.halSocPct : svc.socPrecisePct,
               rangeKm: rangeKm),
         const SizedBox(height: 12),
-        if (isCharging) _ChargingBanner(svc: svc, chargedSession: chargedSession),
+        if (isCharging)
+          _ChargingBanner(
+            svc: svc,
+            chargedSession: chargedSession,
+            // v0.1.29+116: dongle-free fallbacks — power from HAL |V×I|,
+            // SOC resolved the same way the card above resolves it, so the
+            // ETA stays honest during a HAL-detected charge.
+            halPowerKw: hal.halChargePowerKw,
+            socOverridePct:
+                hal.useHalForSoc ? hal.halSocPct : svc.socPrecisePct,
+          ),
         if (isCharging) const SizedBox(height: 12),
         // v5: Parking pawl indicator. Moved BEFORE the grid on tall layout
         // so the safety indicator sits high in the scroll position; on
@@ -796,12 +810,24 @@ class _TallSocCard extends StatelessWidget {
 class _ChargingBanner extends StatelessWidget {
   final ConnectionService svc;
   final double? chargedSession;
-  const _ChargingBanner({required this.svc, this.chargedSession});
+  // v0.1.29+116: dongle-free inputs. halPowerKw = |pack V × I| from HAL,
+  // non-null only while HAL-charging; socOverridePct = the resolved SOC the
+  // SOC card already shows. Both null → identical to the old UDS-only path.
+  final double? halPowerKw;
+  final double? socOverridePct;
+  const _ChargingBanner({
+    required this.svc,
+    this.chargedSession,
+    this.halPowerKw,
+    this.socOverridePct,
+  });
 
   @override
   Widget build(BuildContext context) {
-    final power = svc.chargingPowerKw;
-    final soc = svc.readNumeric('790', '0005') ?? 0;
+    final udsPower = svc.chargingPowerKw;
+    final power = udsPower > 0.1 ? udsPower : (halPowerKw ?? 0.0);
+    final soc =
+        socOverridePct ?? svc.readNumeric('790', '0005') ?? 0;
     final remainingKwh = (100 - soc) / 100 * 65.28;
     final etaHours = power > 0.1 ? remainingKwh / power : null;
 
@@ -913,7 +939,7 @@ class _TripCard extends StatelessWidget {
 
 /// Bump when changing the diagnostic format — helps cross-reference
 /// screenshots to specific app versions while iterating.
-const String _kDiagVersion = 'v0.1.29+115';
+const String _kDiagVersion = 'v0.1.29+116';
 
 /// v0.1.29+94: public alias of the build version string for display outside
 /// dashboard (e.g. the About screen's APP card). Single literal source — the

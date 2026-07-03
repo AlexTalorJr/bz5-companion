@@ -23,6 +23,7 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -366,6 +367,16 @@ class HalTelemetryService extends ChangeNotifier {
   static const double _halSohPackCapacityAh = 150.0;
   static const double _kHalSohMinDeltaSocPct = 20.0; // min SOC span to accept
   static const double _kHalSohMinCoverage = 0.90;    // min live-current frac
+  // v0.1.29+116: crash-safe SOH sessions. The whole session state used to
+  // live in RAM only and was finalized ONLY on a live charge→idle edge — so
+  // the realistic DC-charge flow (charge, lock the car, walk away → the head
+  // unit powers the process down) silently lost the entire session (Alex,
+  // 3 Jul field run: 26→68% DC charge, no SOH update). While a session is
+  // CONFIRMED, its running state is snapshotted to SharedPreferences every
+  // _kHalSohPersistEvery; on the next init() the snapshot is consumed and,
+  // if it passes the exact same ΔSOC/coverage/sanity gates, written to id=2.
+  static const String _kHalSohPendingKey = 'hal_soh_pending_session';
+  static const Duration _kHalSohPersistEvery = Duration(seconds: 30);
   static const double _halMovingKmh = 1.0; // > this counts as moving
   static const Duration _kHalParkConfirm = Duration(seconds: 30);
   static const Duration _kHalParkClose = Duration(minutes: 10);
@@ -521,6 +532,9 @@ class HalTelemetryService extends ChangeNotifier {
   DateTime? _halSohLastIntegrationAt;    // previous integration tick
   double _halSohCoverageLiveSec = 0.0;   // seconds with a live pack_current
   double _halSohCoverageTotalSec = 0.0;  // total seconds integrated
+  // v0.1.29+116: last time the confirmed session was snapshotted to prefs
+  // (crash-safe recovery). Null until the first snapshot of a session.
+  DateTime? _halSohLastPersistAt;
   // Cached latest HAL SOH percent (id=2), hydrated on init, refreshed on each
   // qualifying session close. Null until the first valid HAL charge session.
   double? _halSohAhPctCached;
@@ -851,6 +865,30 @@ class HalTelemetryService extends ChangeNotifier {
   }
 
   bool get useHalForPower => halPowerKw != null;
+
+  /// v0.1.29+116: HAL-confirmed charging, for the dashboard badge/panel.
+  /// The old badge read ONLY ConnectionService.isCharging (UDS) — dead
+  /// without a dongle, so a 90 kW DC charge showed "Not charging" (Alex,
+  /// 3 Jul). True once the SOH charge machine has confirmed a session past
+  /// the 20 s debounce AND pack_current is still fresh at charge level —
+  /// the freshness re-check keeps a stalled stream from freezing the badge
+  /// on. Display-only; trips/SOH have their own machines.
+  bool get halChargingActive {
+    if (!_running || !_halSohCharging) return false;
+    final pi = halValue('pack_current');
+    return pi != null && pi < _kHalChargeCurrentA;
+  }
+
+  /// v0.1.29+116: charge power for the badge/panel while halChargingActive —
+  /// |pack V × I| in kW, same signals as halPowerKw, unsigned because the
+  /// charging UI renders magnitude. Null when not HAL-charging so callers
+  /// can fall back to the OBD2 value verbatim.
+  double? get halChargePowerKw {
+    if (!halChargingActive) return null;
+    final p = halPowerKw;
+    if (p == null) return null;
+    return p.abs();
+  }
 
   // ── temperatures (v0.1.29+72). Battery temp = probe_highest_temp
   //    (0x47800010), verified against the instrument cluster (HAL 22 °C
@@ -1495,11 +1533,17 @@ class HalTelemetryService extends ChangeNotifier {
   // with too many gaps is discarded. On the charge→idle edge the session is
   // finalized (ΔSOC + coverage gates) and, if valid, written to id=2.
   void _updateHalCharge() {
-    // Only run as the live HAL source (halOnly + stream up). In obd2Only /
-    // phone this stays idle; the UDS path in connection.dart owns SOH there.
-    // If we were mid-session and HAL is no longer the source, finalize what
-    // we have (the gates will discard a too-short one) and reset.
-    if (!halDriveActive) {
+    // v0.1.29+116: gate on OWNERSHIP (halOwnsTrip = stream live AND no
+    // dongle), not display (halDriveActive) — the exact +106 rule the trip
+    // machine already follows. The old halDriveActive gate additionally
+    // required mode == halOnly; today init() migrates 'auto' to halOnly so
+    // the practical gap is small, but the two machines must not diverge:
+    // with a dongle the UDS integral in connection.dart owns SOH (id=1) and
+    // this machine stands down; without one HAL owns it (id=2) in ANY mode.
+    // If we were mid-session and ownership is lost (dongle plugged in, or
+    // the stream died), finalize what we have (the gates will discard a
+    // too-short one) and reset.
+    if (!halOwnsTrip) {
       if (_halSohSessionAnchored) {
         if (_halSohCharging) _finalizeHalSohEstimate();
         _resetHalSohSession();
@@ -1518,12 +1562,25 @@ class HalTelemetryService extends ChangeNotifier {
       // integral both begin at plug-in, not 20 s later. _halSohChargeConfirm
       // then gates VALIDITY (a brief glitch that doesn't last the debounce is
       // discarded on the next non-charging frame before it ever counts).
+      //
+      // v0.1.29+116: the anchor now WAITS for a live SOC. pack_current flows
+      // within ~a second of stream start, but SOC can take up to ~30 s
+      // (soc_precise) — the same lag the trip machine documents. Anchoring
+      // with a null SOC latched _halSohStartSoc = null PERMANENTLY, and
+      // _finalizeHalSohEstimate then silently discarded the whole session —
+      // exactly what killed the 3 Jul field run (app restarted mid-charge,
+      // 26→68% DC session, no SOH). Deferring the anchor keeps Ah and ΔSOC
+      // starting at the SAME instant, so the estimate stays unbiased; the
+      // few seconds of charge lost before SOC arrives shrink the window,
+      // never skew it.
       final now = DateTime.now();
       if (!_halSohSessionAnchored) {
+        final anchorSoc = halSocForTrip;
+        if (anchorSoc == null) return; // SOC not up yet — retry next frame
         _halSohSessionAnchored = true;
         _halSohChargeConfirmStart = now;
         _halSohStartedAt = now;
-        _halSohStartSoc = halSocForTrip;
+        _halSohStartSoc = anchorSoc;
         _halSohChargeAhAccum = 0.0;
         _halSohLastIntegrationAt = now; // seed only; first dt next frame
         _halSohCoverageLiveSec = 0.0;
@@ -1559,6 +1616,22 @@ class HalTelemetryService extends ChangeNotifier {
         }
       }
       _halSohLastIntegrationAt = now;
+
+      // v0.1.29+116: crash-safe snapshot. Once the session is CONFIRMED,
+      // persist its running state every _kHalSohPersistEvery so a process
+      // death (ignition off / car locked mid- or right after a charge — the
+      // realistic DC flow) loses at most the last 30 s of the window instead
+      // of the whole session. Consumed by _recoverPendingSohSession() on the
+      // next init(); cleared on any clean finalize/reset. Anchored-but-not-
+      // confirmed sessions are never persisted — a glitch must not survive
+      // a restart.
+      if (_halSohCharging &&
+          (_halSohLastPersistAt == null ||
+              now.difference(_halSohLastPersistAt!) >=
+                  _kHalSohPersistEvery)) {
+        _halSohLastPersistAt = now;
+        unawaited(_persistPendingSohSession());
+      }
     } else {
       // Not charging this frame. If a session was anchored, the charge has
       // ended (unplugged / driving away). Finalize only if it ever confirmed
@@ -1580,13 +1653,33 @@ class HalTelemetryService extends ChangeNotifier {
     if (startSoc == null) return;
     final curSoc = halSocForTrip;
     if (curSoc == null) return;
-    final deltaSocPct = curSoc - startSoc;
+    _storeHalSohIfValid(
+      startSoc: startSoc,
+      endSoc: curSoc,
+      chargeAh: _halSohChargeAhAccum,
+      liveSec: _halSohCoverageLiveSec,
+      totalSec: _halSohCoverageTotalSec,
+    );
+  }
+
+  /// v0.1.29+116: the gate + store half of the old _finalizeHalSohEstimate,
+  /// split out so the crash-recovery path (_recoverPendingSohSession) runs
+  /// the EXACT same ΔSOC / coverage / sanity gates and the same id=2 write
+  /// as a live finalize — one rule set, two entry points.
+  void _storeHalSohIfValid({
+    required double startSoc,
+    required double endSoc,
+    required double chargeAh,
+    required double liveSec,
+    required double totalSec,
+  }) {
+    final deltaSocPct = endSoc - startSoc;
     if (deltaSocPct < _kHalSohMinDeltaSocPct) return; // window too narrow
-    if (_halSohCoverageTotalSec <= 0) return;
-    final coverage = _halSohCoverageLiveSec / _halSohCoverageTotalSec;
+    if (totalSec <= 0) return;
+    final coverage = liveSec / totalSec;
     if (coverage < _kHalSohMinCoverage) return; // too many current gaps
-    if (_halSohChargeAhAccum <= 0) return;
-    final fullAh = _halSohChargeAhAccum / (deltaSocPct / 100.0);
+    if (chargeAh <= 0) return;
+    final fullAh = chargeAh / (deltaSocPct / 100.0);
     final sohPct = fullAh / _halSohPackCapacityAh * 100.0;
     // Sanity clamp — outside this band means a bad session, so drop it.
     if (sohPct < 50.0 || sohPct > 110.0) return;
@@ -1608,6 +1701,76 @@ class HalTelemetryService extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// v0.1.29+116: snapshot the CONFIRMED in-flight session to prefs so a
+  /// process death mid-charge doesn't lose it. Best-effort — a failed write
+  /// just means recovery has a staler (or no) snapshot.
+  Future<void> _persistPendingSohSession() async {
+    final startSoc = _halSohStartSoc;
+    final curSoc = halSocForTrip;
+    if (startSoc == null || curSoc == null) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(
+          _kHalSohPendingKey,
+          jsonEncode(<String, Object>{
+            'start_soc': startSoc,
+            'last_soc': curSoc,
+            'ah': _halSohChargeAhAccum,
+            'live_sec': _halSohCoverageLiveSec,
+            'total_sec': _halSohCoverageTotalSec,
+            'saved_at': DateTime.now().toIso8601String(),
+          }));
+    } catch (_) {/* best-effort */}
+  }
+
+  /// v0.1.29+116: drop the pending snapshot. Called from _resetHalSohSession
+  /// — by then the session has either been finalized through the normal gates
+  /// or intentionally discarded, so the snapshot must not outlive it.
+  Future<void> _clearPendingSohSession() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(_kHalSohPendingKey);
+    } catch (_) {/* best-effort */}
+  }
+
+  /// v0.1.29+116: consume a session snapshot left by a process death and, if
+  /// it passes the standard gates, store it as the HAL SOH (id=2). Runs once
+  /// per startup from init(), AFTER loadHalSohEstimate (so hydration can't
+  /// clobber a fresher recovered value) and BEFORE the stream starts (so a
+  /// new session can't race the snapshot). The snapshot is removed up front —
+  /// whatever the outcome, it must be consumed exactly once. The recovered
+  /// window ends at the last snapshot (≤ _kHalSohPersistEvery before the
+  /// kill): Ah and last_soc were captured at the same instant, so the
+  /// estimate stays unbiased — the tail of the charge is simply not counted.
+  Future<void> _recoverPendingSohSession() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_kHalSohPendingKey);
+      if (raw == null) return;
+      await prefs.remove(_kHalSohPendingKey);
+      final m = jsonDecode(raw) as Map<String, dynamic>;
+      final startSoc = (m['start_soc'] as num?)?.toDouble();
+      final lastSoc = (m['last_soc'] as num?)?.toDouble();
+      final ah = (m['ah'] as num?)?.toDouble();
+      final liveSec = (m['live_sec'] as num?)?.toDouble();
+      final totalSec = (m['total_sec'] as num?)?.toDouble();
+      if (startSoc == null ||
+          lastSoc == null ||
+          ah == null ||
+          liveSec == null ||
+          totalSec == null) {
+        return;
+      }
+      _storeHalSohIfValid(
+        startSoc: startSoc,
+        endSoc: lastSoc,
+        chargeAh: ah,
+        liveSec: liveSec,
+        totalSec: totalSec,
+      );
+    } catch (_) {/* corrupt / unreadable snapshot — drop silently */}
+  }
+
   /// Clear the HAL SOH session state for the next charge.
   void _resetHalSohSession() {
     _halSohCharging = false;
@@ -1619,6 +1782,11 @@ class HalTelemetryService extends ChangeNotifier {
     _halSohLastIntegrationAt = null;
     _halSohCoverageLiveSec = 0.0;
     _halSohCoverageTotalSec = 0.0;
+    // v0.1.29+116: the session is finalized-or-discarded at this point, so
+    // its crash snapshot must go too — a stale snapshot surviving a clean
+    // close would be double-counted on the next startup.
+    _halSohLastPersistAt = null;
+    unawaited(_clearPendingSohSession());
   }
 
   /// v0.1.29+105: hydrate the cached HAL SOH (id=2) from the DB at startup so
@@ -1626,6 +1794,12 @@ class HalTelemetryService extends ChangeNotifier {
   /// Best-effort — a missing/un-migrated DB just leaves the cache null and the
   /// UI falls through to the UDS estimate / BMS.
   Future<void> loadHalSohEstimate() async {
+    // v0.1.29+116: never clobber a value already computed THIS run — the
+    // crash-recovery path (_recoverPendingSohSession) fills the cache before
+    // this hydration runs, and its DB upsert is fire-and-forget, so reading
+    // the DB here could still see the OLD row and silently roll the fresher
+    // recovered estimate back.
+    if (_halSohAhPctCached != null) return;
     final db = _diagDb;
     if (db == null) return;
     try {
@@ -1906,6 +2080,12 @@ class HalTelemetryService extends ChangeNotifier {
     if (_isHeadUnit) {
       await _recoverOrphanHalTrips();
     }
+    // v0.1.29+116: consume any SOH session snapshot left by a process death
+    // (ignition off mid-charge). MUST run before _startStream — once frames
+    // flow, a new session's reset would clear the pending key before it is
+    // read. Writes the recovered value to the cache + DB; the hydration
+    // below is guarded so it can't clobber this fresher value.
+    await _recoverPendingSohSession();
     // Start the stream unless the user pinned OBD2-only. On a phone the
     // platform returns null and we simply stay on OBD2 — no harm.
     if (_mode != HalSourceMode.obd2Only) {
