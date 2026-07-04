@@ -99,6 +99,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../data/database.dart';
+import '../data/uuid_v7.dart';
 
 // ─── Public enums / value objects ──────────────────────────────────
 
@@ -254,6 +255,30 @@ class CloudSyncService extends ChangeNotifier {
   // retained for stats (pending count) but no longer gates push.
   static const _kPushedTripIds = 'cloud_sync_pushed_trip_ids';
 
+  // v0.1.29+117 (C1, spec v1.3 §3.3): per-entity high-water marks for the
+  // uuid-mapping push to POST /v2/sync/uuid-mapping. Key = prefix + entity.
+  // Semantics: every local row with id <= watermark has been included in a
+  // successfully-accepted mapping POST. Watermarks (instead of a single
+  // one-shot flag) close the C1→C4 gap: rows created and pushed via ingest
+  // AFTER the initial mapping run (ingest carries no uuid until C4) still get
+  // their uuid delivered by the next sync's delta-mapping. Server replay is a
+  // free no-op (`already_set`), so advancing late is always safe, advancing
+  // early never happens (only after 2xx).
+  static const _kUuidMapWmPrefix = 'cloud_sync_uuid_map_wm_';
+
+  /// Canonical entity names per the agreed contract (review Q2). Order is
+  /// push order; values are the current watermarks (loaded in init()).
+  static const List<String> _uuidMapEntities = [
+    'trips',
+    'snapshots',
+    'sweeps',
+    'livelogs',
+    'canmonitor',
+  ];
+  final Map<String, int> _uuidMapWm = {
+    for (final e in _uuidMapEntities) e: 0,
+  };
+
   // v0.1.29+18: persisted restore state. Status is non-persistent (in
   // memory only — a restore in flight when the app is killed becomes
   // 'idle' on next launch, and the user re-runs it; dedup makes that
@@ -374,6 +399,11 @@ class CloudSyncService extends ChangeNotifier {
     _cursorSweep = prefs.getInt(_kCursorSweep) ?? 0;
     _cursorLiveLog = prefs.getInt(_kCursorLiveLog) ?? 0;
     _cursorCanMonitor = prefs.getInt(_kCursorCanMonitor) ?? 0;
+    // v0.1.29+117 (C1): uuid-mapping watermarks. Absent key (first launch
+    // after the +117 upgrade) = 0 = full mapping backfill on next sync.
+    for (final e in _uuidMapEntities) {
+      _uuidMapWm[e] = prefs.getInt('$_kUuidMapWmPrefix$e') ?? 0;
+    }
     final lastTs = prefs.getInt(_kLastSuccessAt);
     if (lastTs != null) {
       _lastSuccessAt = DateTime.fromMillisecondsSinceEpoch(lastTs);
@@ -575,6 +605,14 @@ class CloudSyncService extends ChangeNotifier {
     // v0.1.29+20: pushed-trip-id set is identity-scoped; new device =
     // empty set = all closed trips will re-upload.
     await prefs.remove(_kPushedTripIds);
+    // v0.1.29+117 (C1): uuid-mapping watermarks are identity-scoped too — a
+    // fresh device_id means the server has no rows for this device yet, so
+    // the mapping must replay after the data re-uploads (mapping runs at the
+    // END of syncOnce, after the pushes, exactly for this ordering).
+    for (final e in _uuidMapEntities) {
+      await prefs.remove('$_kUuidMapWmPrefix$e');
+      _uuidMapWm[e] = 0;
+    }
     await prefs.setBool(_kEnabled, true);
 
     _clientToken = token;
@@ -656,6 +694,12 @@ class CloudSyncService extends ChangeNotifier {
     // v0.1.29+20: "force full resync" means re-push everything; the
     // pushed-trip-id set is the main gate on trip push now.
     await prefs.remove(_kPushedTripIds);
+    // v0.1.29+117 (C1): replay the uuid mapping too — idempotent on the
+    // server (replay → already_set), keeps "replay everything" honest.
+    for (final e in _uuidMapEntities) {
+      await prefs.remove('$_kUuidMapWmPrefix$e');
+      _uuidMapWm[e] = 0;
+    }
     _cursorTrip = 0;
     _cursorSnapshot = 0;
     _cursorSweep = 0;
@@ -689,6 +733,14 @@ class CloudSyncService extends ChangeNotifier {
       // related livelog (rarely co-located on the same drive, but
       // we keep the convention).
       await _syncCanMonitors();
+      // v0.1.29+117 (C1): uuid-mapping delta push, deliberately LAST — after
+      // the ingest pushes above, so freshly-uploaded rows exist server-side
+      // by the time their mapping arrives and land in `matched` rather than
+      // `unmatched`. (On a brand-new device identity a mapping-first order
+      // would map into the void, advance the watermarks, and leave every row
+      // uuid-less on the server until C4.) Deviation from the plan doc §1.4
+      // ("before _syncTrips") — server contract is unaffected.
+      await _syncUuidMapping();
       _lastSuccessAt = DateTime.now();
       _lastError = null;
       final prefs = await SharedPreferences.getInstance();
@@ -976,6 +1028,104 @@ class CloudSyncService extends ChangeNotifier {
       _cursorCanMonitor = session.id;
       final prefs = await SharedPreferences.getInstance();
       await prefs.setInt(_kCursorCanMonitor, _cursorCanMonitor);
+    }
+  }
+
+  /// v0.1.29+117 (C1, spec v1.3 §3.3 + c1-mapping-contract-review.md):
+  /// one-time-per-row (client_id → client_uuid) mapping push to
+  /// `POST /v2/sync/uuid-mapping`, so the server can attach uuids to rows it
+  /// already holds under the legacy (device_id, client_*_id) key.
+  ///
+  /// Delta semantics: per entity, rows with `id > watermark` are batched
+  /// (≤ [_uuidMapBatchSize]/POST, review Q3), the watermark advances to the
+  /// batch max id only after a 2xx. Replays after a crash are free — the
+  /// server answers `already_set` (review §3.4). `unmatched` (rows the server
+  /// never received) and `conflicts` (first-write-wins server-side) are
+  /// counters, not errors; conflicts get a diag line here (review Q5) but do
+  /// not block the watermark — a conflict is not retryable.
+  ///
+  /// Server not deployed yet (404/405, review Q4): swallow silently, keep the
+  /// watermarks, retry on the next syncOnce. No user-visible error, no
+  /// capability flag.
+  static const int _uuidMapBatchSize = 1000;
+
+  Future<void> _syncUuidMapping() async {
+    // Snapshot the per-entity pending rows lazily so entities already at
+    // their watermark cost one cheap in-memory pass and zero HTTP.
+    Future<List<(int, String)>> pendingFor(String entity) async {
+      List<(int, String?)> raw;
+      switch (entity) {
+        case 'trips':
+          raw = (await _db.getAllTrips())
+              .map((r) => (r.id, r.clientUuid))
+              .toList();
+        case 'snapshots':
+          raw = (await _db.getAllSnapshots())
+              .map((r) => (r.id, r.clientUuid))
+              .toList();
+        case 'sweeps':
+          raw = (await _db.getAllSweepRuns())
+              .map((r) => (r.id, r.clientUuid))
+              .toList();
+        case 'livelogs':
+          raw = (await _db.getAllLiveLogSessions())
+              .map((r) => (r.id, r.clientUuid))
+              .toList();
+        case 'canmonitor':
+          raw = (await _db.getAllCanMonitorSessions())
+              .map((r) => (r.id, r.clientUuid))
+              .toList();
+        default:
+          raw = const [];
+      }
+      final wm = _uuidMapWm[entity] ?? 0;
+      final out = <(int, String)>[];
+      for (final (id, uuid) in raw) {
+        // uuid == null shouldn't exist post-migration (backfill + insert
+        // injection), but stay defensive — a null-uuid row is simply not
+        // mappable; skipping it must NOT advance the watermark past it,
+        // hence the sort + early-stop structure below.
+        if (id > wm && uuid != null) out.add((id, uuid));
+      }
+      out.sort((a, b) => a.$1.compareTo(b.$1));
+      return out;
+    }
+
+    for (final entity in _uuidMapEntities) {
+      final pending = await pendingFor(entity);
+      if (pending.isEmpty) continue;
+      for (var off = 0; off < pending.length; off += _uuidMapBatchSize) {
+        final end = (off + _uuidMapBatchSize).clamp(0, pending.length);
+        final batch = pending.sublist(off, end);
+        final body = {
+          'entity': entity,
+          'items': [
+            for (final (id, uuid) in batch)
+              {'client_id': id, 'client_uuid': uuid},
+          ],
+        };
+        Map<String, dynamic> resp;
+        try {
+          resp = await _postIngest('/v2/sync/uuid-mapping', body,
+              tolerateNotDeployed: true);
+        } on _EndpointNotDeployedException {
+          // Review Q4: server slice not live yet. Quietly defer the whole
+          // mapping (all entities) to a later sync; watermarks untouched.
+          debugPrint('CloudSync: uuid-mapping endpoint not deployed yet '
+              '(404/405), deferring');
+          return;
+        }
+        final conflicts = resp['conflicts'];
+        if (conflicts is int && conflicts > 0) {
+          debugPrint('CloudSync: uuid-mapping $entity reported '
+              '$conflicts conflict(s) — server kept its original uuids '
+              '(first-write-wins), see server log');
+        }
+        _uuidMapWm[entity] = batch.last.$1;
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setInt(
+            '$_kUuidMapWmPrefix$entity', _uuidMapWm[entity]!);
+      }
     }
   }
 
@@ -1411,6 +1561,14 @@ class CloudSyncService extends ChangeNotifier {
         await Future<void>.delayed(delay);
         continue;
       }
+      // v0.1.29+117 (C1, review Q4): a caller may opt in to treating
+      // 404 (path absent) and 405 (known path / wrong method during a
+      // partial deploy) as "endpoint not rolled out yet" instead of a
+      // permanent client error. Used only by the uuid-mapping push,
+      // which can ship client-side ahead of the server slice.
+      if (tolerateNotDeployed && (code == 404 || code == 405)) {
+        throw const _EndpointNotDeployedException();
+      }
       // 400 / 403 / 404 / 409 / other 4xx → permanent client error.
       throw _BridgeException(
           'HTTP $code on $path: ${_briefBody(resp.body)}');
@@ -1465,6 +1623,14 @@ class CloudSyncService extends ChangeNotifier {
       // after a wipe, the speed histogram comes back so the Speed
       // Distribution chart renders even though raw samples are gone.
       extra: _encodeExtraOrAbsent(j['extra']),
+      // v0.1.29+117 (C1): adopt the server's uuid when the pull payload
+      // carries one (S4+ servers will); otherwise mint one locally, stamped
+      // from the row's own started_at so historical ordering survives.
+      // Without this, restored rows would be uuid-less while the mapping
+      // watermarks may already be past them.
+      clientUuid: j['client_uuid'] is String
+          ? Value(j['client_uuid'] as String)
+          : Value(uuidV7(time: parseDt(j['started_at']))),
     );
   }
 
@@ -1513,6 +1679,10 @@ class CloudSyncService extends ChangeNotifier {
       isCharging: parseBoolN(j['is_charging']),
       chargingPowerKw: parseRealN(j['charging_power_kw']),
       cycleCount: parseIntN(j['cycle_count']),
+      // v0.1.29+117 (C1): same uuid adoption/minting as the trip companion.
+      clientUuid: j['client_uuid'] is String
+          ? Value(j['client_uuid'] as String)
+          : Value(uuidV7(time: parseDt(j['captured_at']))),
     );
   }
 
@@ -1538,7 +1708,8 @@ class CloudSyncService extends ChangeNotifier {
   ];
 
   Future<Map<String, dynamic>> _postIngest(
-      String path, Map<String, dynamic> body) async {
+      String path, Map<String, dynamic> body,
+      {bool tolerateNotDeployed = false}) async {
     final token = _clientToken;
     if (token == null) {
       throw const _AuthException();
@@ -1960,7 +2131,7 @@ class CloudSyncService extends ChangeNotifier {
   /// Read app version from the static value baked into the build.
   /// We don't have package_info_plus as a dep — pubspec-version is
   /// hardcoded here. Update when bumping. Off-by-one tolerated.
-  Future<String> _readAppVersion() async => '0.1.29+116';
+  Future<String> _readAppVersion() async => '0.1.29+117';
 }
 
 // ─── Internal exceptions ────────────────────────────────────────────
@@ -1970,6 +2141,16 @@ class _BridgeException implements Exception {
   const _BridgeException(this.message);
   @override
   String toString() => message;
+}
+
+/// v0.1.29+117 (C1): the requested endpoint answered 404/405 and the caller
+/// opted in to treating that as "server slice not deployed yet" (review Q4).
+/// Non-fatal: caught by _syncUuidMapping, which quietly defers to a later
+/// sync. Never surfaces to the user or the error state.
+class _EndpointNotDeployedException implements Exception {
+  const _EndpointNotDeployedException();
+  @override
+  String toString() => 'endpoint not deployed (404/405)';
 }
 
 /// Permanent auth failure: 3+ consecutive 401s, OR a single 409

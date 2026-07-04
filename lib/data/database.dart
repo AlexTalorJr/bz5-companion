@@ -3,6 +3,7 @@ import 'package:drift_flutter/drift_flutter.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'trip_extra.dart';
+import 'uuid_v7.dart';
 
 part 'database.g.dart';
 
@@ -91,6 +92,15 @@ class Trips extends Table {
   // the aggregates already on the row, instead of "ACTIVE 2 h / all dashes".
   // Local-only: NOT serialized into the trip JSON (server schema unchanged).
   DateTimeColumn get lastAliveTs => dateTime().nullable()();
+
+  // v0.1.29+117 (C1, spec v1.3 D1): globally-unique UUIDv7 identity for cloud
+  // dedup — survives local-DB wipes where the autoincrement id restarts and
+  // silently overwrites server trips (UPSERT on (device_id, client_trip_id)).
+  // Nullable by design: a row without a uuid stays valid (restore payloads
+  // predating S4 don't carry one; the restore path generates locally).
+  // Uniqueness enforced by a partial unique index (SQLite can't ADD COLUMN
+  // UNIQUE), created in the from<14 migration step.
+  TextColumn get clientUuid => text().nullable()();
 }
 
 @DataClassName('Snapshot')
@@ -115,6 +125,9 @@ class Snapshots extends Table {
   BoolColumn get isCharging => boolean().nullable()();
   RealColumn get chargingPowerKw => real().nullable()();
   IntColumn get cycleCount => integer().nullable()();
+
+  // v0.1.29+117 (C1): cloud dedup identity — see Trips.clientUuid.
+  TextColumn get clientUuid => text().nullable()();
 }
 
 /// v0.1.11: header for a single in-car sweep run.
@@ -134,6 +147,9 @@ class SweepRuns extends Table {
   TextColumn get notes => text().nullable()();
   IntColumn get totalProbes => integer().withDefault(const Constant(0))();
   IntColumn get validResponses => integer().withDefault(const Constant(0))();
+
+  // v0.1.29+117 (C1): cloud dedup identity — see Trips.clientUuid.
+  TextColumn get clientUuid => text().nullable()();
 }
 
 /// One row per probed DID in a sweep run.
@@ -166,6 +182,9 @@ class LiveLogSessions extends Table {
   IntColumn get cycleCount => integer().withDefault(const Constant(0))();
   /// Total entries written (= cycleCount × didCount in the ideal case).
   IntColumn get entryCount => integer().withDefault(const Constant(0))();
+
+  // v0.1.29+117 (C1): cloud dedup identity — see Trips.clientUuid.
+  TextColumn get clientUuid => text().nullable()();
 }
 
 /// v0.1.15: one row per (DID, poll cycle) within a Live Log session.
@@ -219,6 +238,9 @@ class CanMonitorSessions extends Table {
   /// whitelist gateway will show 1-3 IDs (UDS traffic only), an open
   /// one will show 50+.
   IntColumn get uniqueCanIds => integer().withDefault(const Constant(0))();
+
+  // v0.1.29+117 (C1): cloud dedup identity — see Trips.clientUuid.
+  TextColumn get clientUuid => text().nullable()();
 }
 
 /// v0.1.29+28: one row per CAN broadcast frame captured.
@@ -358,7 +380,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase() : super(_openConnection());
 
   @override
-  int get schemaVersion => 13;
+  int get schemaVersion => 14;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -457,8 +479,77 @@ class AppDatabase extends _$AppDatabase {
             // v0.1.29+106: watchdog last-alive checkpoint for HAL trips.
             await m.addColumn(trips, trips.lastAliveTs);
           }
+          // v13 → v14 (v0.1.29+117, cloud-v2 C1 / spec v1.3 D1): client_uuid
+          // (UUIDv7) on the 5 syncable parent tables — the global cloud dedup
+          // key. Additive + nullable (addColumn); uniqueness via partial
+          // unique indexes because SQLite can't ADD COLUMN UNIQUE (NULLs
+          // excluded so uuid-less rows never conflict). Existing rows are
+          // backfilled with UUIDv7 stamped from their own started_at /
+          // captured_at (cosmetic ordering only — the server treats the uuid
+          // as opaque, pull is ordered by server_seq; review Q6).
+          if (from < 14) {
+            await m.addColumn(trips, trips.clientUuid);
+            await m.addColumn(snapshots, snapshots.clientUuid);
+            await m.addColumn(sweepRuns, sweepRuns.clientUuid);
+            await m.addColumn(liveLogSessions, liveLogSessions.clientUuid);
+            await m.addColumn(
+                canMonitorSessions, canMonitorSessions.clientUuid);
+            for (final table in const [
+              'trips',
+              'snapshots',
+              'sweep_runs',
+              'live_log_sessions',
+              'can_monitor_sessions',
+            ]) {
+              await customStatement(
+                  'CREATE UNIQUE INDEX IF NOT EXISTS idx_${table}_client_uuid '
+                  'ON $table (client_uuid) WHERE client_uuid IS NOT NULL');
+            }
+            await _backfillClientUuids();
+          }
         },
       );
+
+  /// v0.1.29+117 (C1): stamp a UUIDv7 onto every pre-schema-14 row of the 5
+  /// syncable tables. Runs once inside the from<14 migration step.
+  ///
+  /// Raw SQL on purpose: (a) typed queries inside a migration are fragile if
+  /// the schema mid-migration doesn't match the generated code, and (b) the
+  /// timestamp column may be stored either as INTEGER unix-seconds (drift
+  /// default) or as ISO-8601 TEXT depending on build options — the raw read
+  /// handles both, so the backfill can't silently mis-parse.
+  Future<void> _backfillClientUuids() async {
+    const specs = [
+      ('trips', 'started_at'),
+      ('snapshots', 'captured_at'),
+      ('sweep_runs', 'started_at'),
+      ('live_log_sessions', 'started_at'),
+      ('can_monitor_sessions', 'started_at'),
+    ];
+    for (final (table, tsCol) in specs) {
+      final rows = await customSelect(
+              'SELECT id, $tsCol AS ts FROM $table WHERE client_uuid IS NULL')
+          .get();
+      for (final row in rows) {
+        final id = row.read<int>('id');
+        final rawTs = row.data['ts'];
+        DateTime? ts;
+        if (rawTs is int) {
+          // drift default: unix seconds.
+          ts = DateTime.fromMillisecondsSinceEpoch(rawTs * 1000);
+        } else if (rawTs is String) {
+          ts = DateTime.tryParse(rawTs);
+        }
+        await customUpdate(
+          'UPDATE $table SET client_uuid = ? WHERE id = ?',
+          variables: [
+            Variable<String>(uuidV7(time: ts)),
+            Variable<int>(id),
+          ],
+        );
+      }
+    }
+  }
 
   // ─────────────────────────── Trips ─────────────────────────────
 
@@ -467,6 +558,8 @@ class AppDatabase extends _$AppDatabase {
       startedAt: Value(DateTime.now()),
       startSoc: Value(startSoc),
       startOdometer: Value(startOdo),
+      // v0.1.29+117 (C1): every new trip is born with its cloud identity.
+      clientUuid: Value(uuidV7()),
     ));
   }
 
@@ -1291,8 +1384,12 @@ class AppDatabase extends _$AppDatabase {
 
   // ────────────────────────── Snapshots ──────────────────────────
 
+  // v0.1.29+117 (C1): inject a fresh UUIDv7 unless the caller already set one
+  // (the cloud-restore path does — it adopts the server uuid when present).
   Future<int> insertSnapshot(SnapshotsCompanion data) =>
-      into(snapshots).insert(data);
+      into(snapshots).insert(data.clientUuid.present
+          ? data
+          : data.copyWith(clientUuid: Value(uuidV7())));
 
   Future<List<Snapshot>> getRecentSnapshots({int limit = 1000}) {
     return (select(snapshots)
@@ -1333,8 +1430,11 @@ class AppDatabase extends _$AppDatabase {
 
   // ────────────────────────── Sweeps (v0.1.11 schema, v0.1.12 fill) ──
 
+  // v0.1.29+117 (C1): same uuid injection as insertSnapshot.
   Future<int> insertSweepRun(SweepRunsCompanion data) =>
-      into(sweepRuns).insert(data);
+      into(sweepRuns).insert(data.clientUuid.present
+          ? data
+          : data.copyWith(clientUuid: Value(uuidV7())));
 
   Future<int> insertSweepResult(SweepResultsCompanion data) =>
       into(sweepResults).insert(data);
@@ -1361,8 +1461,11 @@ class AppDatabase extends _$AppDatabase {
 
   // ────────────────────────── LiveLog (v0.1.15) ──────────────────
 
+  // v0.1.29+117 (C1): same uuid injection as insertSnapshot.
   Future<int> insertLiveLogSession(LiveLogSessionsCompanion data) =>
-      into(liveLogSessions).insert(data);
+      into(liveLogSessions).insert(data.clientUuid.present
+          ? data
+          : data.copyWith(clientUuid: Value(uuidV7())));
 
   Future<int> insertLiveLogEntry(LiveLogEntriesCompanion data) =>
       into(liveLogEntries).insert(data);
@@ -1453,8 +1556,11 @@ class AppDatabase extends _$AppDatabase {
 
   // ───────────────────── CAN monitor DAO (v0.1.29+28) ─────────────────
 
+  // v0.1.29+117 (C1): same uuid injection as insertSnapshot.
   Future<int> insertCanMonitorSession(CanMonitorSessionsCompanion data) =>
-      into(canMonitorSessions).insert(data);
+      into(canMonitorSessions).insert(data.clientUuid.present
+          ? data
+          : data.copyWith(clientUuid: Value(uuidV7())));
 
   Future<int> insertCanFrame(CanFramesCompanion data) =>
       into(canFrames).insert(data);

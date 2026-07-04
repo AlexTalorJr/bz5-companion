@@ -228,7 +228,7 @@ class _DisclaimerCard extends StatelessWidget {
                   Text(
                     'This app is reverse-engineered from CAN responses and is '
                     'NOT an official Toyota or BYD product. While the pack '
-                    'configuration is mathematically validated, individual DID '
+                    'configuration is mathematically validated, individual signal '
                     'interpretations are inferences and may be incorrect. Use '
                     'this app for monitoring purposes — do NOT rely on its '
                     'numbers for safety-critical decisions or warranty '

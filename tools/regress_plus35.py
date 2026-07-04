@@ -343,16 +343,18 @@ if int(pv) >= 37:
     cloud_src = (root / 'lib/services/cloud_sync_service.dart').read_text()
     detail_src = (root / 'lib/screens/trip_detail.dart').read_text()
 
-    # D1. schema migration: version bumped to 13 (v0.1.29+106
-    # trips.last_alive_ts, watchdog checkpoint), additive addColumn step.
-    # Prior steps remain present/additive: from<8 trips.extra, from<9
-    # hal_samples, from<10 samples.charging_session_id (+94), from<11
-    # soh_estimates table (+104), from<12 soh_estimates.source (+105,
-    # splits UDS id=1 / HAL id=2), from<13 trips.last_alive_ts (+106).
-    if "int get schemaVersion => 13;" in db_src:
-        ok("D1 schemaVersion bumped to 13")
+    # D1. schema migration: version bumped to 14 (v0.1.29+117 C1:
+    # client_uuid UUIDv7 on the 5 syncable tables + partial unique
+    # indexes + backfill + uuid-mapping push). Prior steps remain
+    # present/additive: from<8 trips.extra, from<9 hal_samples,
+    # from<10 samples.charging_session_id (+94), from<11 soh_estimates
+    # table (+104), from<12 soh_estimates.source (+105, splits UDS
+    # id=1 / HAL id=2), from<13 trips.last_alive_ts (+106), from<14
+    # client_uuid x5 (+117).
+    if "int get schemaVersion => 14;" in db_src:
+        ok("D1 schemaVersion bumped to 14")
     else:
-        fail("D1 schemaVersion not 13")
+        fail("D1 schemaVersion not 14")
     if "if (from < 8)" in db_src and "m.addColumn(trips, trips.extra)" in db_src:
         ok("D1 migration adds trips.extra (additive)")
     else:
@@ -380,9 +382,60 @@ if int(pv) >= 37:
         ok("D1 migration adds trips.last_alive_ts (additive)")
     else:
         fail("D1 from<13 addColumn(trips.lastAliveTs) missing")
+    # v0.1.29+117 (C1): from<14 — client_uuid on the 5 syncable tables,
+    # partial unique indexes, backfill.
+    if "if (from < 14)" in db_src and \
+       "m.addColumn(trips, trips.clientUuid)" in db_src and \
+       "m.addColumn(snapshots, snapshots.clientUuid)" in db_src and \
+       "m.addColumn(sweepRuns, sweepRuns.clientUuid)" in db_src and \
+       "m.addColumn(liveLogSessions, liveLogSessions.clientUuid)" in db_src and \
+       "canMonitorSessions, canMonitorSessions.clientUuid" in db_src:
+        ok("D1 migration adds client_uuid to all 5 syncable tables (additive)")
+    else:
+        fail("D1 from<14 addColumn(clientUuid) x5 incomplete")
+    if "CREATE UNIQUE INDEX IF NOT EXISTS idx_${table}_client_uuid" in db_src \
+       and "WHERE client_uuid IS NOT NULL" in db_src:
+        ok("D1 client_uuid partial unique indexes (NULL-tolerant)")
+    else:
+        fail("D1 client_uuid partial unique index statement missing")
+    if "_backfillClientUuids" in db_src and \
+       db_src.count("_backfillClientUuids") >= 2:
+        ok("D1 from<14 backfill invoked (defined + called)")
+    else:
+        fail("D1 _backfillClientUuids missing or never called")
+    uuid_gen_path = root / 'lib/data/uuid_v7.dart'
+    uuid_gen_src = uuid_gen_path.read_text() if uuid_gen_path.is_file() else ""
+    if "String uuidV7({DateTime? time})" in uuid_gen_src:
+        ok("D1 uuid_v7 generator present")
+    else:
+        fail("D1 lib/data/uuid_v7.dart missing or wrong signature")
+    # C1 mapping-push client: endpoint, watermark prefix, 404/405 tolerance,
+    # ordering (mapping strictly AFTER the ingest pushes in syncOnce).
+    if "'/v2/sync/uuid-mapping'" in cloud_src and \
+       "cloud_sync_uuid_map_wm_" in cloud_src:
+        ok("D1 uuid-mapping push wired (endpoint + watermarks)")
+    else:
+        fail("D1 uuid-mapping endpoint/watermarks missing in cloud_sync")
+    if "_EndpointNotDeployedException" in cloud_src and \
+       "tolerateNotDeployed" in cloud_src:
+        ok("D1 uuid-mapping tolerates undeployed endpoint (404/405)")
+    else:
+        fail("D1 uuid-mapping 404/405 tolerance missing")
+    pos_can = cloud_src.find("await _syncCanMonitors();")
+    pos_map = cloud_src.find("await _syncUuidMapping();")
+    if pos_can != -1 and pos_map != -1 and pos_can < pos_map:
+        ok("D1 uuid-mapping ordered after ingest pushes in syncOnce")
+    else:
+        fail("D1 _syncUuidMapping must run after _syncCanMonitors")
+    if "j['client_uuid'] is String" in cloud_src and \
+       cloud_src.count("j['client_uuid'] is String") >= 2:
+        ok("D1 restore adopts server client_uuid (trips + snapshots)")
+    else:
+        fail("D1 restore companions don't read client_uuid from payload")
     # additive only — must NOT drop/recreate tables in the new steps
     for marker in ("if (from < 8)", "if (from < 9)", "if (from < 10)",
-                   "if (from < 11)", "if (from < 12)", "if (from < 13)"):
+                   "if (from < 11)", "if (from < 12)", "if (from < 13)",
+                   "if (from < 14)"):
         seg = db_src[db_src.find(marker):db_src.find(marker) + 200]
         if "deleteTable" in seg or "drop" in seg.lower():
             fail(f"D1 {marker} step is destructive (drop/delete) — must be additive")
