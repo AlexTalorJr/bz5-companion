@@ -3199,6 +3199,53 @@ if int(pv) >= 68:
 else:
     ok(f"Part AC skipped (build +{pv}, release delivery lands in +68)")
 
+# ─────────────── Part AD: +119 SOH persistence + merged gear/SOC ───────────
+# AD1..AD3 pin the v0.1.29+119 fix for the BZ3 field bug "SOH corrected on
+# charge reverts next trip": the id=2 upsert used to be fire-and-forget while
+# _resetHalSohSession cleared the crash snapshot immediately — ignition-off
+# in that window lost both. AD4 pins the merged gear+SOC card.
+if int(pv) >= 119:
+    _hal = (root / 'lib/services/hal_telemetry_service.dart').read_text()
+    # AD1: reset must NOT clear the pending snapshot (ownership moved).
+    _m = re.search(r"void _resetHalSohSession\(\)\s*\{(.*?)\n  \}", _hal,
+                   re.DOTALL)
+    if _m and '_clearPendingSohSession' not in _m.group(1):
+        ok("AD1 _resetHalSohSession no longer clears the pending snapshot")
+    else:
+        fail("AD1 reset still clears pending snapshot (the +118 race)")
+    # AD2: store path awaits the upsert and clears the snapshot only after.
+    # NOTE: the parameter block of _storeHalSohIfValid itself closes with
+    # '\n  })' — a naive regex to the first '\n  }' captures only the
+    # signature. Slice to the next known method instead.
+    _s0 = _hal.find("void _storeHalSohIfValid({")
+    _s1 = _hal.find("_persistPendingSohSession", _s0)
+    _sbody = _hal[_s0:_s1] if (_s0 != -1 and _s1 != -1) else ""
+    _p_up = _sbody.find("await db.upsertSohEstimate")
+    _p_cl = _sbody.find("await _clearPendingSohSession")
+    if _p_up != -1 and _p_cl != -1 and _p_up < _p_cl:
+        ok("AD2 SOH upsert awaited; snapshot cleared only after the write")
+    else:
+        fail("AD2 upsert-then-clear ordering missing in _storeHalSohIfValid")
+    # AD3: gate failures clear the snapshot explicitly (discarded session
+    # must not resurrect), i.e. clear appears at least twice in the store
+    # body (two discard exits) plus once post-upsert.
+    if _sbody.count("_clearPendingSohSession") >= 3:
+        ok("AD3 discarded sessions clear the snapshot explicitly")
+    else:
+        fail("AD3 gate-failure paths don't clear the pending snapshot")
+    # AD4: merged gear+SOC card on the BZ3 tall driver screen; the two old
+    # cards are gone (they'd be unused_element lint failures anyway).
+    _tall = (root / 'lib/screens/driver_view_tall.dart').read_text()
+    if ('class _GearSocCardTall' in _tall
+            and 'class _GearCardTall' not in _tall
+            and 'class _SocCardTall' not in _tall
+            and "'SOH ${sohHal.toInt()} % (BMS)'" in _tall):
+        ok("AD4 merged gear+SOC card + (BMS) tag on live BMS SOH")
+    else:
+        fail("AD4 merged gear/SOC card or (BMS) tag missing")
+else:
+    ok(f"Part AD skipped (build +{pv}, SOH persistence lands in +119)")
+
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
 print(f"+35→+51 REGRESSION — build +{pv}")

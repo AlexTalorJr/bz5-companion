@@ -154,37 +154,37 @@ class _TallDriverContent extends StatelessWidget {
 
 /// Gear card over SOC card, stretched to fill the fixed-height top-right
 /// slot. Ported from driver_view_wide.dart `_GearAndSocStack`.
+/// v0.1.29+119: merged gear+SOC card (owner request, BZ3 field feedback —
+/// "шрифт SOC всё равно мелкий"). Replaces the former two-card stack
+/// (_GearCardTall over _SocCardTall): the gear letter shrinks into the
+/// card's top-right corner and the SOC digits inherit the ENTIRE former
+/// gear-card height — roughly doubling their rendered size in the same
+/// 210 dp top-right slot. Gear mapping/colors and the SOC/range/bar
+/// content are carried over verbatim from the deleted cards.
 class _GearAndSocStackTall extends StatelessWidget {
   const _GearAndSocStackTall();
 
   @override
   Widget build(BuildContext context) {
-    return const Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Expanded(flex: 2, child: _GearCardTall()),
-        SizedBox(height: 12),
-        Expanded(flex: 3, child: _SocCardTall()),
-      ],
-    );
+    return const _GearSocCardTall();
   }
 }
 
-/// Ported copy of driver_view_wide.dart `_GearCard` (BZ5 file untouched).
-class _GearCardTall extends StatelessWidget {
-  const _GearCardTall();
+class _GearSocCardTall extends StatelessWidget {
+  const _GearSocCardTall();
 
   @override
   Widget build(BuildContext context) {
     final svc = context.watch<ConnectionService>();
     final hal = context.watch<HalTelemetryService>();
+
+    // ── Gear (mapping identical to the former _GearCardTall).
     final gear = (hal.useHalForGear
             ? hal.halGear
             : svc.readNumeric('791', '0009'))
         ?.toInt();
     final parking = svc.parkingPawlEngaged;
     final isCharging = svc.isCharging;
-
     final ({String label, Color color}) g;
     if (gear == 1 || parking == true) {
       g = (label: 'P', color: Colors.lightBlueAccent);
@@ -200,32 +200,7 @@ class _GearCardTall extends StatelessWidget {
       g = (label: '—', color: Colors.grey);
     }
 
-    return Card(
-      child: Center(
-        child: FittedBox(
-          fit: BoxFit.scaleDown,
-          child: Text(
-            g.label,
-            style: TextStyle(
-                fontSize: 140,
-                fontWeight: FontWeight.w300,
-                color: g.color,
-                height: 1.0),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// Ported copy of driver_view_wide.dart `_SocCard` (BZ5 file untouched).
-class _SocCardTall extends StatelessWidget {
-  const _SocCardTall();
-
-  @override
-  Widget build(BuildContext context) {
-    final svc = context.watch<ConnectionService>();
-    final hal = context.watch<HalTelemetryService>();
+    // ── SOC + range (identical to the former _SocCardTall).
     final socInt = svc.readNumeric('790', '0005');
     final displaySoc =
         (hal.useHalForSoc ? hal.halSocPct : svc.socPrecisePct) ?? socInt;
@@ -251,10 +226,26 @@ class _SocCardTall extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(S.of('drv.soc'),
-                style: const TextStyle(
-                    fontSize: 12, letterSpacing: 1.5, color: Colors.grey)),
-            const SizedBox(height: 4),
+            // Header row: SOC label left, compact gear letter right. The
+            // gear is a fixed 44 pt — legible at arm's length but ceding
+            // the vertical budget to the SOC digits below.
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(S.of('drv.soc'),
+                    style: const TextStyle(
+                        fontSize: 12, letterSpacing: 1.5, color: Colors.grey)),
+                const Spacer(),
+                Text(
+                  g.label,
+                  style: TextStyle(
+                      fontSize: 44,
+                      fontWeight: FontWeight.w400,
+                      color: g.color,
+                      height: 1.0),
+                ),
+              ],
+            ),
             Expanded(
               child: FittedBox(
                 fit: BoxFit.scaleDown,
@@ -263,29 +254,31 @@ class _SocCardTall extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.end,
                   children: [
                     Text(big,
-                        // v0.1.29+115: higher ceiling; the FittedBox scales
-                        // down to the card, so on BZ3 the SOC integer now
-                        // fills the slot instead of floating small.
+                        // Ceiling raised 104 → 150: the FittedBox still
+                        // scales down to the slot, but the slot itself is
+                        // now the merged card's full height, so the digits
+                        // land ~2× the +115 size instead of hitting the
+                        // old ceiling early.
                         style: TextStyle(
-                            fontSize: 104,
+                            fontSize: 150,
                             fontWeight: FontWeight.w300,
                             color: color,
                             height: 1.0)),
                     Padding(
-                      padding: const EdgeInsets.only(bottom: 6),
+                      padding: const EdgeInsets.only(bottom: 8),
                       child: Text(small,
                           style: TextStyle(
-                              fontSize: 52,
+                              fontSize: 72,
                               fontWeight: FontWeight.w300,
                               color: color,
                               height: 1.0)),
                     ),
                     const SizedBox(width: 4),
                     const Padding(
-                      padding: EdgeInsets.only(bottom: 12),
+                      padding: EdgeInsets.only(bottom: 16),
                       child: Text('%',
                           style:
-                              TextStyle(fontSize: 22, color: Colors.grey)),
+                              TextStyle(fontSize: 26, color: Colors.grey)),
                     ),
                   ],
                 ),
@@ -622,7 +615,11 @@ class _BottomStatusGridTall extends StatelessWidget {
     final String sohDisplay = sohAh != null
         ? 'SOH ${sohAh.round()} %'
         : (sohHal != null
-            ? 'SOH ${sohHal.toInt()} %'
+            // v0.1.29+119: tag the live BMS-reported SOH the same way the
+            // UDS BMS value is tagged — an untagged value must mean OUR
+            // coulomb-counted estimate, nothing else. On BZ3 the untagged
+            // live value was indistinguishable from a corrected one.
+            ? 'SOH ${sohHal.toInt()} % (BMS)'
             : (sohBms != null ? 'SOH ${sohBms.toInt()} % (BMS)' : 'SOH —'));
 
     final odo = hal.useHalForOdometer
