@@ -3279,6 +3279,42 @@ if int(pv) >= 120:
 else:
     ok(f"Part AE skipped (build +{pv}, push v2 lands in +120)")
 
+# ─────────────────── Part AF: +121 C5 restore via /v2/sync/pull ────────────
+if int(pv) >= 121:
+    _cs = (root / 'lib/services/cloud_sync_service.dart').read_text()
+    _db2 = (root / 'lib/data/database.dart').read_text()
+    # AF1: v2 pull wired into startRestore with legacy fallback kept.
+    if "_tryRestoreViaSyncPullV2(tripIdMap)" in _cs and \
+       "if (v2 == null) {" in _cs and \
+       "end `if (v2 == null)`" in _cs:
+        ok("AF1 restore tries /v2/sync/pull, legacy v1 loops kept as fallback")
+    else:
+        fail("AF1 v2 pull integration or legacy fallback missing")
+    # AF2: idempotent apply by client_uuid (D8) — uuid lookups exist and the
+    # apply is two-pass (trips buffered before snapshots).
+    if "getTripByClientUuid" in _db2 and "getSnapshotByClientUuid" in _db2 \
+       and _cs.find("Apply pass 1: trips") < _cs.find("Apply pass 2: snapshots"):
+        ok("AF2 uuid-idempotent two-pass apply (trips before snapshots)")
+    else:
+        fail("AF2 uuid lookups or two-pass apply ordering missing")
+    # AF3: cursor progress guard — a non-advancing next_since must break.
+    if "next <= since) break" in _cs:
+        ok("AF3 pull loop guards against a non-advancing cursor")
+    else:
+        fail("AF3 pull loop can spin on a stale next_since")
+    # AF4: v2Probe branch lives in _getJson (the +117 lesson, inverted:
+    # this one BELONGS in _getJson — verify it sits after _getJson's
+    # signature and before _postIngest's).
+    _p_get = _cs.find("Future<Map<String, dynamic>> _getJson(")
+    _p_post = _cs.find("Future<Map<String, dynamic>> _postIngest(")
+    _p_br = _cs.find("if (v2Probe && (code == 400")
+    if -1 < _p_get < _p_br < _p_post:
+        ok("AF4 v2Probe branch scoped inside _getJson")
+    else:
+        fail("AF4 v2Probe branch outside _getJson scope")
+else:
+    ok(f"Part AF skipped (build +{pv}, restore v2 lands in +121)")
+
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
 print(f"+35→+51 REGRESSION — build +{pv}")

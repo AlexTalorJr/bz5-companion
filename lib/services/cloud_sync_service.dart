@@ -1253,6 +1253,159 @@ class CloudSyncService extends ChangeNotifier {
   /// All errors land in _restoreError + _restoreStatus = error; the
   /// method itself never throws. Safe to retry with the same token —
   /// already-inserted rows are skipped by dedup.
+  /// v0.1.29+121 (C5, CLIENT_API §3.9): restore via GET /v2/sync/pull —
+  /// cursor pull over a single global server_seq, applied idempotently by
+  /// client_uuid (D8). Returns (tripsFetched, tripsInserted,
+  /// snapshotsFetched, snapshotsInserted), or null when the endpoint is
+  /// unusable (400/404/405 — server without S4, or vehicle_id unknown on a
+  /// restore-token install) so the caller falls back to the legacy v1 loops.
+  ///
+  /// Fetch is buffered and applied in two passes (trips, then snapshots):
+  /// server_seq is insertion-ordered, and snapshots push continuously while
+  /// their trip row only lands at close — so a snapshot routinely PRECEDES
+  /// its own trip in seq order, which would break tripIdMap relinking in a
+  /// single streamed pass. Buffer cost is bounded by history size (a few MB
+  /// at current volumes — fine; revisit if history grows 100×).
+  Future<(int, int, int, int)?> _tryRestoreViaSyncPullV2(
+      Map<int, int> tripIdMap) async {
+    final tripRows = <Map<String, dynamic>>[];
+    final snapRows = <Map<String, dynamic>>[];
+    var since = 0;
+    while (true) {
+      if (_restoreCancelRequested) {
+        _restoreStatus = CloudRestoreStatus.cancelled;
+        notifyListeners();
+        return (tripRows.length, 0, snapRows.length, 0);
+      }
+      Map<String, dynamic> resp;
+      try {
+        resp = await _getJson('/v2/sync/pull',
+            query: {
+              if (_vehicleId != null) 'vehicle': _vehicleId!,
+              'since': '$since',
+              'limit': '500',
+            },
+            v2Probe: true);
+      } on _EndpointNotDeployedException {
+        debugPrint('CloudSync: /v2/sync/pull unusable '
+            '(400/404/405${_vehicleId == null ? ', vehicle_id unknown' : ''})'
+            ' — falling back to legacy v1 restore');
+        return null;
+      }
+      final items = (resp['items'] as List?) ?? const [];
+      for (final raw in items) {
+        if (raw is! Map<String, dynamic>) continue;
+        final data = raw['data'];
+        if (data is! Map<String, dynamic>) continue;
+        // The envelope's client_uuid is authoritative; copy it into the row
+        // payload so the existing companion builders (+117) adopt it.
+        final uuid = raw['client_uuid'];
+        if (uuid is String && data['client_uuid'] is! String) {
+          data['client_uuid'] = uuid;
+        }
+        switch (raw['entity']) {
+          case 'trips':
+            tripRows.add(data);
+          case 'snapshots':
+            snapRows.add(data);
+        }
+      }
+      _restoreProgress = CloudRestoreProgress(
+        phase: 'trips',
+        tripsFetched: tripRows.length,
+        snapshotsFetched: snapRows.length,
+      );
+      notifyListeners();
+      final next = resp['next_since'];
+      // Progress guard: a non-advancing cursor must terminate the loop, not
+      // spin it — has_more with a stale next_since would otherwise re-pull
+      // the same page forever.
+      if (resp['has_more'] != true || next is! int || next <= since) break;
+      since = next;
+    }
+
+    // ── Apply pass 1: trips ──
+    var ti = 0;
+    for (final data in tripRows) {
+      if (_restoreCancelRequested) {
+        _restoreStatus = CloudRestoreStatus.cancelled;
+        notifyListeners();
+        return (tripRows.length, ti, snapRows.length, 0);
+      }
+      final clientTripId = data['client_trip_id'];
+      final uuid = data['client_uuid'];
+      Trip? existing;
+      if (uuid is String) {
+        existing = await _db.getTripByClientUuid(uuid);
+      }
+      if (existing == null && uuid is! String) {
+        // Null-uuid row (a device that never completed mapping): fall back
+        // to the legacy identity — (started_at, distance_km), same contract
+        // as the v1 restore loop.
+        final startedAtStr = data['started_at'];
+        if (startedAtStr is! String) continue;
+        final startedAt = DateTime.parse(startedAtStr).toLocal();
+        final distanceKm = (data['distance_km'] as num?)?.toDouble();
+        final query = _db.select(_db.trips)..limit(1);
+        query.where((t) => t.startedAt.equals(startedAt));
+        if (distanceKm != null) {
+          query.where((t) => t.distanceKm.equals(distanceKm));
+        } else {
+          query.where((t) => t.distanceKm.isNull());
+        }
+        existing = await query.getSingleOrNull();
+      }
+      if (existing != null) {
+        if (clientTripId is int) tripIdMap[clientTripId] = existing.id;
+        continue;
+      }
+      final newLocalId =
+          await _db.into(_db.trips).insert(_tripCompanionFromJson(data));
+      if (clientTripId is int) tripIdMap[clientTripId] = newLocalId;
+      ti++;
+    }
+    _restoreProgress = CloudRestoreProgress(
+      phase: 'snapshots',
+      tripsFetched: tripRows.length,
+      tripsInserted: ti,
+      snapshotsFetched: snapRows.length,
+    );
+    notifyListeners();
+
+    // ── Apply pass 2: snapshots ──
+    var si = 0;
+    for (final data in snapRows) {
+      if (_restoreCancelRequested) {
+        _restoreStatus = CloudRestoreStatus.cancelled;
+        notifyListeners();
+        return (tripRows.length, ti, snapRows.length, si);
+      }
+      final uuid = data['client_uuid'];
+      if (uuid is String) {
+        final existing = await _db.getSnapshotByClientUuid(uuid);
+        if (existing != null) continue;
+      } else {
+        final capturedAtStr = data['captured_at'];
+        if (capturedAtStr is! String) continue;
+        final capturedAt = DateTime.parse(capturedAtStr).toLocal();
+        final existing = await (_db.select(_db.snapshots)
+              ..where((s) => s.capturedAt.equals(capturedAt))
+              ..limit(1))
+            .getSingleOrNull();
+        if (existing != null) continue;
+      }
+      final rawTripId = data['client_trip_id'];
+      final mappedTripId = rawTripId is int ? tripIdMap[rawTripId] : null;
+      await _db
+          .into(_db.snapshots)
+          .insert(_snapshotCompanionFromJson(data, tripId: mappedTripId));
+      si++;
+    }
+    debugPrint('CloudSync: restore via /v2/sync/pull — trips '
+        '${tripRows.length}/$ti new, snapshots ${snapRows.length}/$si new');
+    return (tripRows.length, ti, snapRows.length, si);
+  }
+
   Future<void> startRestore({required String oldClientToken}) async {
     if (isRestoring) return;
 
@@ -1304,6 +1457,19 @@ class CloudSyncService extends ChangeNotifier {
     final tripIdMap = <int, int>{}; // serverClientTripId → newLocalId
 
     try {
+      // ── v0.1.29+121 (C5): restore via /v2/sync/pull when available.
+      // Returns counters, or null → run the legacy v1 loops below. The
+      // legacy block keeps its original indentation on purpose (minimal,
+      // reviewable diff) — it is inside `if (v2 == null) { … }`.
+      final v2 = await _tryRestoreViaSyncPullV2(tripIdMap);
+      if (_restoreStatus == CloudRestoreStatus.cancelled) return;
+      if (v2 != null) {
+        tripsFetched = v2.$1;
+        tripsInserted = v2.$2;
+        snapshotsFetched = v2.$3;
+        snapshotsInserted = v2.$4;
+      }
+      if (v2 == null) {
       // ── Phase 1: trips ──
       String? cursor;
       while (true) {
@@ -1423,6 +1589,7 @@ class CloudSyncService extends ChangeNotifier {
         if (nextCursor is! String) break;
         cursor = nextCursor;
       }
+      } // end `if (v2 == null)` — legacy v1 fallback (+121)
 
       // ── Cursor advancement ──
       // After restore, push cursors must skip everything currently
@@ -1528,6 +1695,13 @@ class CloudSyncService extends ChangeNotifier {
   Future<Map<String, dynamic>> _getJson(
     String path, {
     Map<String, String>? query,
+    // v0.1.29+121 (C5): opt-in — treat 400/404/405 as "v2 endpoint
+    // unusable" (_EndpointNotDeployedException) instead of a permanent
+    // error, so the caller can fall back to the legacy v1 restore.
+    // 400 is included deliberately: /v2/sync/pull 400s when the required
+    // `vehicle` param is unknown to this client (restore-token installs
+    // don't learn a vehicle_id) — same remedy, legacy path.
+    bool v2Probe = false,
   }) async {
     final token = _clientToken;
     if (token == null) {
@@ -1591,6 +1765,13 @@ class CloudSyncService extends ChangeNotifier {
         }
         await Future<void>.delayed(delay);
         continue;
+      }
+      // v0.1.29+121 (C5): see the v2Probe doc on the signature. NOTE for
+      // future edits: this anchor comment also exists in _postIngest — the
+      // +117 incident put a branch in the wrong method through it. This one
+      // belongs HERE (the v2Probe parameter is on _getJson).
+      if (v2Probe && (code == 400 || code == 404 || code == 405)) {
+        throw const _EndpointNotDeployedException();
       }
       // 400 / 403 / 404 / 409 / other 4xx → permanent client error.
       throw _BridgeException(
@@ -2182,7 +2363,7 @@ class CloudSyncService extends ChangeNotifier {
   /// Read app version from the static value baked into the build.
   /// We don't have package_info_plus as a dep — pubspec-version is
   /// hardcoded here. Update when bumping. Off-by-one tolerated.
-  Future<String> _readAppVersion() async => '0.1.29+120';
+  Future<String> _readAppVersion() async => '0.1.29+121';
 }
 
 // ─── Internal exceptions ────────────────────────────────────────────
