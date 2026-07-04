@@ -1637,6 +1637,23 @@ class AppDatabase extends _$AppDatabase {
     return (select(sohEstimates)..where((r) => r.id.equals(rowId)))
         .getSingleOrNull();
   }
+
+  /// v0.1.29+121 (C5): exact-identity lookups for the /v2/sync/pull restore
+  /// apply — D8 says "apply idempotently by client_uuid", and these are that
+  /// predicate. Backed by the partial unique indexes from schema 14.
+  Future<Trip?> getTripByClientUuid(String uuid) {
+    return (select(trips)
+          ..where((t) => t.clientUuid.equals(uuid))
+          ..limit(1))
+        .getSingleOrNull();
+  }
+
+  Future<Snapshot?> getSnapshotByClientUuid(String uuid) {
+    return (select(snapshots)
+          ..where((s) => s.clientUuid.equals(uuid))
+          ..limit(1))
+        .getSingleOrNull();
+  }
 }
 
 QueryExecutor _openConnection() {
