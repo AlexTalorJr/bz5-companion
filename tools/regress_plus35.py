@@ -3246,6 +3246,39 @@ if int(pv) >= 119:
 else:
     ok(f"Part AD skipped (build +{pv}, SOH persistence lands in +119)")
 
+# ─────────────────── Part AE: +120 C4 push v2 (client_uuid) ────────────────
+# Pins the CLIENT_API §3 ordering rule: ingest carries client_uuid ONLY
+# behind the initial-mapping-done gate, the gate is set at the end of a full
+# _syncUuidMapping pass, and a fresh registration resets it.
+if int(pv) >= 120:
+    _cs = (root / 'lib/services/cloud_sync_service.dart').read_text()
+    # AE1: all 5 serializers gate client_uuid on _uuidMapInitialDone.
+    _gated = _cs.count("if (_uuidMapInitialDone && ")
+    if _gated >= 5 and _cs.count("'client_uuid': ") >= 6:
+        ok("AE1 client_uuid gated in all 5 ingest serializers")
+    else:
+        fail(f"AE1 gated serializers incomplete (gates={_gated})")
+    # AE2: gate set only at the end of the mapping pass (after the entity
+    # loop), and persisted.
+    _p_loop = _cs.find("for (final entity in _uuidMapEntities)")
+    _p_set = _cs.find("_uuidMapInitialDone = true")
+    if _p_loop != -1 and _p_set != -1 and _p_set > _p_loop and \
+       "prefs.setBool(_kUuidMapInitialDone, true)" in _cs:
+        ok("AE2 initial-done set after a full mapping pass + persisted")
+    else:
+        fail("AE2 initial-done gate not set at end of mapping pass")
+    # AE3: fresh identity resets the gate; forceFullResync must NOT.
+    _reg = _cs.find("prefs.remove(_kUuidMapInitialDone)")
+    _ffr = _cs.find("Future<void> forceFullResync")
+    _ffr_end = _cs.find("Future", _ffr + 10) if _ffr != -1 else -1
+    _ffr_body = _cs[_ffr:_ffr_end] if _ffr != -1 else ""
+    if _reg != -1 and "_kUuidMapInitialDone" not in _ffr_body:
+        ok("AE3 gate reset on new identity only (survives forceFullResync)")
+    else:
+        fail("AE3 gate reset wiring wrong (registration/forceFullResync)")
+else:
+    ok(f"Part AE skipped (build +{pv}, push v2 lands in +120)")
+
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
 print(f"+35→+51 REGRESSION — build +{pv}")
