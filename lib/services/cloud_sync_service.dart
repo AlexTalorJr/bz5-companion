@@ -1561,14 +1561,6 @@ class CloudSyncService extends ChangeNotifier {
         await Future<void>.delayed(delay);
         continue;
       }
-      // v0.1.29+117 (C1, review Q4): a caller may opt in to treating
-      // 404 (path absent) and 405 (known path / wrong method during a
-      // partial deploy) as "endpoint not rolled out yet" instead of a
-      // permanent client error. Used only by the uuid-mapping push,
-      // which can ship client-side ahead of the server slice.
-      if (tolerateNotDeployed && (code == 404 || code == 405)) {
-        throw const _EndpointNotDeployedException();
-      }
       // 400 / 403 / 404 / 409 / other 4xx → permanent client error.
       throw _BridgeException(
           'HTTP $code on $path: ${_briefBody(resp.body)}');
@@ -1819,6 +1811,17 @@ class CloudSyncService extends ChangeNotifier {
         throw _BridgeException(
             'Conflict (${errCode ?? 'no code'}) on $path: '
             '${_briefBody(resp.body)}');
+      }
+
+      // v0.1.29+118 (C1 hotfix, review Q4): a caller may opt in to treating
+      // 404 (path absent) and 405 (known path / wrong method during a
+      // partial deploy) as "endpoint not rolled out yet" instead of a
+      // permanent client error. Used only by the uuid-mapping push. NOTE:
+      // +117 shipped this branch inside _getJson by mistake (identical
+      // anchor comment in two methods); it belongs here, where the
+      // tolerateNotDeployed parameter lives.
+      if (tolerateNotDeployed && (code == 404 || code == 405)) {
+        throw const _EndpointNotDeployedException();
       }
 
       // 400 / 404 / other 4xx — permanent client error, no retry.
@@ -2131,7 +2134,7 @@ class CloudSyncService extends ChangeNotifier {
   /// Read app version from the static value baked into the build.
   /// We don't have package_info_plus as a dep — pubspec-version is
   /// hardcoded here. Update when bumping. Off-by-one tolerated.
-  Future<String> _readAppVersion() async => '0.1.29+117';
+  Future<String> _readAppVersion() async => '0.1.29+118';
 }
 
 // ─── Internal exceptions ────────────────────────────────────────────

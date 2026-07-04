@@ -421,6 +421,19 @@ if int(pv) >= 37:
         ok("D1 uuid-mapping tolerates undeployed endpoint (404/405)")
     else:
         fail("D1 uuid-mapping 404/405 tolerance missing")
+    # v0.1.29+118 hotfix regression: the 404/405 branch MUST live inside
+    # _postIngest (where the tolerateNotDeployed parameter is), not in
+    # _getJson. +117 shipped it in the wrong method — identical anchor
+    # comment in two methods — and CI kernel_snapshot failed with
+    # "getter isn't defined". Scope heuristic: the branch must appear
+    # AFTER the parameter declaration in file order (_getJson precedes
+    # _postIngest in this file).
+    pos_param = cloud_src.find("{bool tolerateNotDeployed = false}")
+    pos_branch = cloud_src.find("if (tolerateNotDeployed && (code == 404")
+    if pos_param != -1 and pos_branch != -1 and pos_branch > pos_param:
+        ok("D1 404/405 branch scoped inside _postIngest (after its param)")
+    else:
+        fail("D1 404/405 branch outside _postIngest scope (the +117 bug)")
     pos_can = cloud_src.find("await _syncCanMonitors();")
     pos_map = cloud_src.find("await _syncUuidMapping();")
     if pos_can != -1 and pos_map != -1 and pos_can < pos_map:
