@@ -266,6 +266,17 @@ class CloudSyncService extends ChangeNotifier {
   // early never happens (only after 2xx).
   static const _kUuidMapWmPrefix = 'cloud_sync_uuid_map_wm_';
 
+  // v0.1.29+120 (C4, CLIENT_API §3 dedup rules): push v2 gate. Ingest may
+  // carry client_uuid ONLY after the initial uuid-mapping backfill pass has
+  // completed for THIS device identity — a v2 row whose matching server row
+  // still has client_uuid = NULL would collide on the legacy per-device key.
+  // Set once by _syncUuidMapping when a full pass over all 5 entities
+  // finishes without deferral; reset only on a new registration (fresh
+  // device identity). forceFullResync deliberately does NOT reset it: the
+  // server rows keep their uuids through a replay, so v2 push stays safe.
+  static const _kUuidMapInitialDone = 'cloud_sync_uuid_map_initial_done';
+  bool _uuidMapInitialDone = false;
+
   /// Canonical entity names per the agreed contract (review Q2). Order is
   /// push order; values are the current watermarks (loaded in init()).
   static const List<String> _uuidMapEntities = [
@@ -404,6 +415,7 @@ class CloudSyncService extends ChangeNotifier {
     for (final e in _uuidMapEntities) {
       _uuidMapWm[e] = prefs.getInt('$_kUuidMapWmPrefix$e') ?? 0;
     }
+    _uuidMapInitialDone = prefs.getBool(_kUuidMapInitialDone) ?? false;
     final lastTs = prefs.getInt(_kLastSuccessAt);
     if (lastTs != null) {
       _lastSuccessAt = DateTime.fromMillisecondsSinceEpoch(lastTs);
@@ -613,6 +625,11 @@ class CloudSyncService extends ChangeNotifier {
       await prefs.remove('$_kUuidMapWmPrefix$e');
       _uuidMapWm[e] = 0;
     }
+    // v0.1.29+120 (C4): fresh identity → v2 push OFF until the mapping pass
+    // completes under the new device_id (first syncOnce: legacy pushes, then
+    // mapping; v2 turns on from the second cycle).
+    await prefs.remove(_kUuidMapInitialDone);
+    _uuidMapInitialDone = false;
     await prefs.setBool(_kEnabled, true);
 
     _clientToken = token;
@@ -1126,6 +1143,20 @@ class CloudSyncService extends ChangeNotifier {
         await prefs.setInt(
             '$_kUuidMapWmPrefix$entity', _uuidMapWm[entity]!);
       }
+    }
+    // v0.1.29+120 (C4): reaching here means the pass covered all 5 entities
+    // without a deferral return — every currently-known local row is mapped
+    // (a fresh identity with an empty DB is trivially complete: rows created
+    // later are born with a uuid and push v2-keyed, which is safe by
+    // definition). From the NEXT ingest cycle on, serializers include
+    // client_uuid and the server dedups on (vehicle_id, client_uuid) — the
+    // wipe-safe key.
+    if (!_uuidMapInitialDone) {
+      _uuidMapInitialDone = true;
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_kUuidMapInitialDone, true);
+      debugPrint('CloudSync: uuid-mapping initial pass complete — '
+          'push v2 (client_uuid) enabled for this identity');
     }
   }
 
@@ -1959,6 +1990,11 @@ class CloudSyncService extends ChangeNotifier {
   Map<String, dynamic> _tripToJson(Trip t) {
     return {
       'client_trip_id': t.id,
+      // v0.1.29+120 (C4, push v2): present only after the initial mapping
+      // pass — flips the server dedup key to (vehicle_id, client_uuid),
+      // closing the wipe-overwrite defect. Omitted key = legacy row.
+      if (_uuidMapInitialDone && t.clientUuid != null)
+        'client_uuid': t.clientUuid,
       'started_at': t.startedAt.toUtc().toIso8601String(),
       'ended_at': t.endedAt?.toUtc().toIso8601String(),
       'start_soc': t.startSoc,
@@ -2005,6 +2041,9 @@ class CloudSyncService extends ChangeNotifier {
   Map<String, dynamic> _snapshotToJson(Snapshot s) {
     return {
       'client_snapshot_id': s.id,
+      // v0.1.29+120 (C4): see _tripToJson.
+      if (_uuidMapInitialDone && s.clientUuid != null)
+        'client_uuid': s.clientUuid,
       'captured_at': s.capturedAt.toUtc().toIso8601String(),
       'soc': s.soc,
       'soh': s.soh,
@@ -2027,6 +2066,9 @@ class CloudSyncService extends ChangeNotifier {
   Map<String, dynamic> _sweepRunToJson(SweepRun r, List<SweepResult> results) {
     return {
       'client_sweep_id': r.id,
+      // v0.1.29+120 (C4): see _tripToJson.
+      if (_uuidMapInitialDone && r.clientUuid != null)
+        'client_uuid': r.clientUuid,
       'started_at': r.startedAt.toUtc().toIso8601String(),
       'ended_at': r.endedAt?.toUtc().toIso8601String(),
       'tx_ecu': r.txEcu,
@@ -2053,6 +2095,9 @@ class CloudSyncService extends ChangeNotifier {
       LiveLogSession s, List<LiveLogEntry> entries) {
     return {
       'client_session_id': s.id,
+      // v0.1.29+120 (C4): see _tripToJson.
+      if (_uuidMapInitialDone && s.clientUuid != null)
+        'client_uuid': s.clientUuid,
       'started_at': s.startedAt.toUtc().toIso8601String(),
       'ended_at': s.endedAt?.toUtc().toIso8601String(),
       'did_list': s.didList,
@@ -2098,6 +2143,9 @@ class CloudSyncService extends ChangeNotifier {
     final startMs = s.startedAt.millisecondsSinceEpoch;
     return {
       'client_session_id': s.id,
+      // v0.1.29+120 (C4): see _tripToJson.
+      if (_uuidMapInitialDone && s.clientUuid != null)
+        'client_uuid': s.clientUuid,
       'started_at': s.startedAt.toUtc().toIso8601String(),
       'ended_at': s.endedAt?.toUtc().toIso8601String(),
       'duration_sec': s.durationSec,
@@ -2134,7 +2182,7 @@ class CloudSyncService extends ChangeNotifier {
   /// Read app version from the static value baked into the build.
   /// We don't have package_info_plus as a dep — pubspec-version is
   /// hardcoded here. Update when bumping. Off-by-one tolerated.
-  Future<String> _readAppVersion() async => '0.1.29+119';
+  Future<String> _readAppVersion() async => '0.1.29+120';
 }
 
 // ─── Internal exceptions ────────────────────────────────────────────
