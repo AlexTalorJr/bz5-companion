@@ -153,7 +153,19 @@ class S {
     'settings.sweep.subtitle': 'In-car ECU probe — presets and custom ranges',
     'settings.livelog.subtitle': 'Time-series polling, up to 7 DIDs at once',
     'settings.polldiag.subtitle': 'Pack current read counters, gaps, null rate',
+    'settings.appdiag.title': 'App log & sync state',
+    'settings.appdiag.subtitle':
+        'debugPrint ring buffer + CloudSync internals (dev)',
     'settings.hal.subtitle': 'Native BYD HAL probe — status, subscriptions, logs',
+
+    // App diagnostics screen (v0.1.29+122)
+    'appdiag.title': 'App diagnostics',
+    'appdiag.cloud.header': 'Cloud sync state',
+    'appdiag.log.header': 'App log',
+    'appdiag.copy': 'Copy',
+    'appdiag.export': 'Export',
+    'appdiag.clear': 'Clear',
+    'appdiag.copied': 'Log copied to clipboard',
 
     // Cloud backup card
     'cloud.title': 'Cloud backup',
@@ -883,7 +895,19 @@ class S {
     'settings.sweep.subtitle': 'In-car ECU probe — presets и custom диапазоны',
     'settings.livelog.subtitle': 'Time-series polling до 7 DIDs одновременно',
     'settings.polldiag.subtitle': 'Счётчики чтения pack current, gaps, null rate',
+    'settings.appdiag.title': 'Журнал приложения и синк',
+    'settings.appdiag.subtitle':
+        'Кольцевой буфер debugPrint + состояние CloudSync (dev)',
     'settings.hal.subtitle': 'Нативный BYD HAL — статус, подписки, логи',
+
+    // App diagnostics screen (v0.1.29+122)
+    'appdiag.title': 'Диагностика приложения',
+    'appdiag.cloud.header': 'Состояние облачной синхронизации',
+    'appdiag.log.header': 'Журнал приложения',
+    'appdiag.copy': 'Копировать',
+    'appdiag.export': 'Экспорт',
+    'appdiag.clear': 'Очистить',
+    'appdiag.copied': 'Журнал скопирован в буфер обмена',
 
     // Cloud backup card
     'cloud.title': 'Облачный бэкап',

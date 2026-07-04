@@ -393,6 +393,20 @@ class CloudSyncService extends ChangeNotifier {
   /// token" dialog in Settings.
   String? get clientTokenForBackup => _clientToken;
 
+  // v0.1.29+122: read-only diagnostics surface for AppDiagScreen. The
+  // +121 field run left three checklist items unverifiable because the
+  // gate/watermark/cursor state only ever appeared in debugPrint (ADB-
+  // less head unit) or second-hand from the server operator. Exposing
+  // them read-only costs nothing and closes that loop on-device.
+  bool get uuidMapInitialDone => _uuidMapInitialDone;
+  Map<String, int> get uuidMapWatermarks => Map.unmodifiable(_uuidMapWm);
+  int get cursorTrip => _cursorTrip;
+  int get cursorSnapshot => _cursorSnapshot;
+  int get cursorSweep => _cursorSweep;
+  int get cursorLiveLog => _cursorLiveLog;
+  int get cursorCanMonitor => _cursorCanMonitor;
+  int get pushedTripCount => _pushedTripIds.length;
+
   // ─── init / disposal ─────────────────────────────────────────────
 
   /// Load persisted state + start background timers if conditions met.
@@ -2363,7 +2377,7 @@ class CloudSyncService extends ChangeNotifier {
   /// Read app version from the static value baked into the build.
   /// We don't have package_info_plus as a dep — pubspec-version is
   /// hardcoded here. Update when bumping. Off-by-one tolerated.
-  Future<String> _readAppVersion() async => '0.1.29+121';
+  Future<String> _readAppVersion() async => '0.1.29+122';
 }
 
 // ─── Internal exceptions ────────────────────────────────────────────
