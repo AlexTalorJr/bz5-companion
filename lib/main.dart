@@ -4,6 +4,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
 
 import 'data/database.dart';
+import 'services/app_diag_log.dart';
 import 'services/hal_telemetry_service.dart';
 import 'services/connection.dart';
 import 'services/cost_settings.dart';
@@ -14,6 +15,11 @@ import 'screens/home.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // v0.1.29+122: capture every debugPrint line into the in-app ring
+  // buffer BEFORE any service init, so startup lines (CloudSync init,
+  // HAL engine selection, locale resolution) are readable on the
+  // ADB-less head unit via Settings → App log & sync state.
+  AppDiagLog.instance.install();
   // v0.1.29+49: initialize the ru locale for intl BEFORE any DateFormat
   // call. Without this, `DateFormat.MMM('ru').format(...)` throws a
   // LocaleDataException at the first render. In debug that surfaces as

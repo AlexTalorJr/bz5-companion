@@ -20,6 +20,7 @@ import 'diagnostics.dart';
 import 'status.dart';
 import '../services/hal_telemetry_service.dart';
 import 'ecu_explorer.dart';
+import 'app_diag.dart';
 import 'hal_test.dart';
 import 'wide/raw_data_wide.dart';
 import 'wide/native_explorer_wide.dart';
@@ -732,6 +733,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
           onTap: () => Navigator.of(context).push(
             MaterialPageRoute(
               builder: (_) => const PollingDiagnosticsScreen(),
+            ),
+          ),
+        ),
+        // v0.1.29+122: on-device debugPrint ring buffer + CloudSync
+        // internals (push-v2 gate, watermarks, cursors, last error).
+        // Exists because the head unit has no ADB — see AppDiagScreen.
+        ListTile(
+          leading: const Icon(Icons.receipt_long, color: Colors.grey),
+          title: Text(S.of('settings.appdiag.title')),
+          subtitle: Text(S.of('settings.appdiag.subtitle')),
+          trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => const AppDiagScreen(),
             ),
           ),
         ),
