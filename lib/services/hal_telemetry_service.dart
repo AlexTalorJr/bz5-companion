@@ -1674,30 +1674,70 @@ class HalTelemetryService extends ChangeNotifier {
     required double totalSec,
   }) {
     final deltaSocPct = endSoc - startSoc;
-    if (deltaSocPct < _kHalSohMinDeltaSocPct) return; // window too narrow
-    if (totalSec <= 0) return;
-    final coverage = liveSec / totalSec;
-    if (coverage < _kHalSohMinCoverage) return; // too many current gaps
-    if (chargeAh <= 0) return;
+    // v0.1.29+119: gate failures now clear the pending snapshot EXPLICITLY
+    // (it used to happen in _resetHalSohSession) — a discarded session is
+    // void and must not resurrect at the next startup. The single valid
+    // path below, in contrast, keeps the snapshot alive until the DB write
+    // is CONFIRMED.
+    final bool gatesPass = deltaSocPct >= _kHalSohMinDeltaSocPct &&
+        totalSec > 0 &&
+        (liveSec / totalSec) >= _kHalSohMinCoverage &&
+        chargeAh > 0;
+    if (!gatesPass) {
+      unawaited(_clearPendingSohSession());
+      return;
+    }
     final fullAh = chargeAh / (deltaSocPct / 100.0);
     final sohPct = fullAh / _halSohPackCapacityAh * 100.0;
     // Sanity clamp — outside this band means a bad session, so drop it.
-    if (sohPct < 50.0 || sohPct > 110.0) return;
+    if (sohPct < 50.0 || sohPct > 110.0) {
+      unawaited(_clearPendingSohSession());
+      return;
+    }
     _halSohAhPctCached = sohPct;
     final db = _diagDb;
-    if (db != null) {
-      // Fire-and-forget; the cache is already updated so the UI reflects it
-      // immediately even if the write lags.
-      unawaited(db
-          .upsertSohEstimate(
-            sohAhPct: sohPct,
-            computedAt: DateTime.now(),
-            deltaSocCovered: deltaSocPct,
-            rowId: 2,
-            source: 'hal',
-          )
-          .catchError((_) {/* keep cache; retry next qualifying session */}));
+    if (db == null) {
+      // No DB this run: the RAM cache is all we have. Keep the pending
+      // snapshot — next-startup recovery is then the only persistence path.
+      notifyListeners();
+      return;
     }
+    // v0.1.29+119 (BZ3 field bug, "SOH сбрасывается на старый"): the +116..
+    // +118 code fired this upsert unawaited AND _resetHalSohSession cleared
+    // the crash snapshot immediately after. Ignition-off in that window
+    // (charge just ended → driver leaves → head unit killed) lost BOTH the
+    // write and the safety net, so the next run hydrated the OLD id=2 row.
+    // Order guarantee now: upsert first, snapshot cleared only after the
+    // write lands; if the write never completes, the snapshot survives and
+    // _recoverPendingSohSession recomputes the same estimate at next init.
+    unawaited(() async {
+      try {
+        await db.upsertSohEstimate(
+          sohAhPct: sohPct,
+          computedAt: DateTime.now(),
+          deltaSocCovered: deltaSocPct,
+          rowId: 2,
+          source: 'hal',
+        );
+        debugPrint('HalSoh: id=2 upsert landed '
+            '(${sohPct.toStringAsFixed(1)}%, ΔSOC '
+            '${deltaSocPct.toStringAsFixed(1)}%)');
+        // Clear the snapshot ONLY if no new session anchored while this
+        // write was in flight — a live session owns the key now (its 30 s
+        // persist cadence refreshes it), and deleting it here would strip
+        // that session's crash safety. Worst case of skipping: a stale
+        // snapshot of THIS (already written) session survives and is
+        // re-recovered once at next startup — same value, idempotent
+        // id=2 upsert, harmless.
+        if (!_halSohSessionAnchored) {
+          await _clearPendingSohSession();
+        }
+      } catch (e) {
+        // Keep the cache AND the pending snapshot — recovery next start.
+        debugPrint('HalSoh: id=2 upsert failed ($e), '
+            'pending snapshot kept for recovery');
+      }
+    }());
     notifyListeners();
   }
 
@@ -1782,11 +1822,15 @@ class HalTelemetryService extends ChangeNotifier {
     _halSohLastIntegrationAt = null;
     _halSohCoverageLiveSec = 0.0;
     _halSohCoverageTotalSec = 0.0;
-    // v0.1.29+116: the session is finalized-or-discarded at this point, so
-    // its crash snapshot must go too — a stale snapshot surviving a clean
-    // close would be double-counted on the next startup.
     _halSohLastPersistAt = null;
-    unawaited(_clearPendingSohSession());
+    // v0.1.29+119: reset NO LONGER clears the pending snapshot. Ownership
+    // moved to the two consumers: _storeHalSohIfValid clears it on gate
+    // failure or after a CONFIRMED db write (keeping it when the write
+    // fails or the process dies first), and _recoverPendingSohSession
+    // consumes it at startup. Clearing here raced the unawaited upsert —
+    // the +118 field bug where a corrected SOH reverted on the next trip.
+    // Every path into this reset goes through finalize-or-discard first,
+    // so the key is never left owning stale data by skipping the clear.
   }
 
   /// v0.1.29+105: hydrate the cached HAL SOH (id=2) from the DB at startup so
@@ -1804,7 +1848,15 @@ class HalTelemetryService extends ChangeNotifier {
     if (db == null) return;
     try {
       final row = await db.getLatestSohEstimate(rowId: 2);
-      if (row != null) _halSohAhPctCached = row.sohAhPct;
+      if (row != null) {
+        _halSohAhPctCached = row.sohAhPct;
+        debugPrint('HalSoh: hydrated id=2 → '
+            '${row.sohAhPct.toStringAsFixed(1)}% '
+            '(computed ${row.computedAt.toIso8601String()})');
+      } else {
+        debugPrint('HalSoh: no stored id=2 estimate — '
+            'display falls through to live BMS/UDS');
+      }
     } catch (_) {/* no DB / not migrated yet — stay on fallback */}
   }
 
