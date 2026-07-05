@@ -3315,6 +3315,33 @@ if int(pv) >= 121:
 else:
     ok(f"Part AF skipped (build +{pv}, restore v2 lands in +121)")
 
+# ─────────────────── Part AG: +123 restore watermark fix ────────────────────
+if int(pv) >= 123:
+    _cs = (root / 'lib/services/cloud_sync_service.dart').read_text()
+    # AG1: uuid-mapping watermarks (trips+snapshots) advanced after a
+    # successful restore, in the SAME success block as (and after) the
+    # push-cursor advancement — restored rows must never be re-mapped
+    # under their new local ids (field conflicts 2026-07-04/05).
+    _p_cur = _cs.find("await prefs.setInt(_kCursorSnapshot, _cursorSnapshot);")
+    _p_wm_t = _cs.find("_uuidMapWm['trips'] = maxTripId;")
+    _p_wm_s = _cs.find("_uuidMapWm['snapshots'] = maxSnapId;")
+    if -1 < _p_cur < _p_wm_t < _p_wm_s and \
+       "'${_kUuidMapWmPrefix}trips'" in _cs and \
+       "'${_kUuidMapWmPrefix}snapshots'" in _cs:
+        ok("AG1 restore advances uuid-mapping watermarks (trips+snapshots)")
+    else:
+        fail("AG1 restore watermark advancement missing/misplaced")
+    # AG2: pass-1/pass-2 skip-reason counters exist and are reported in
+    # the restore diag line (uuid= / legacy= / bad=).
+    if "skip uuid=$tSkipUuid legacy=$tSkipLegacy bad=$tSkipBad" in _cs and \
+       "skip uuid=$sSkipUuid legacy=$sSkipLegacy bad=$sSkipBad" in _cs and \
+       "tSkipBad++" in _cs and "sSkipLegacy++" in _cs:
+        ok("AG2 restore skip-reason counters (uuid/legacy/bad) in diag line")
+    else:
+        fail("AG2 restore skip-reason counters missing")
+else:
+    ok(f"Part AG skipped (build +{pv}, restore watermark fix lands in +123)")
+
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
 print(f"+35→+51 REGRESSION — build +{pv}")
