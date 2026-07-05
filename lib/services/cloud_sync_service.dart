@@ -1340,6 +1340,10 @@ class CloudSyncService extends ChangeNotifier {
 
     // ── Apply pass 1: trips ──
     var ti = 0;
+    // v0.1.29+123: per-reason skip counters. The 2026-07-05 restore
+    // reported "snapshots 2485/1315 new" with zero visibility into WHY
+    // 1170 rows were skipped — the diag line now itemizes it.
+    var tSkipUuid = 0, tSkipLegacy = 0, tSkipBad = 0;
     for (final data in tripRows) {
       if (_restoreCancelRequested) {
         _restoreStatus = CloudRestoreStatus.cancelled;
@@ -1357,7 +1361,10 @@ class CloudSyncService extends ChangeNotifier {
         // to the legacy identity — (started_at, distance_km), same contract
         // as the v1 restore loop.
         final startedAtStr = data['started_at'];
-        if (startedAtStr is! String) continue;
+        if (startedAtStr is! String) {
+          tSkipBad++;
+          continue;
+        }
         final startedAt = DateTime.parse(startedAtStr).toLocal();
         final distanceKm = (data['distance_km'] as num?)?.toDouble();
         final query = _db.select(_db.trips)..limit(1);
@@ -1370,6 +1377,11 @@ class CloudSyncService extends ChangeNotifier {
         existing = await query.getSingleOrNull();
       }
       if (existing != null) {
+        if (uuid is String) {
+          tSkipUuid++;
+        } else {
+          tSkipLegacy++;
+        }
         if (clientTripId is int) tripIdMap[clientTripId] = existing.id;
         continue;
       }
@@ -1388,6 +1400,8 @@ class CloudSyncService extends ChangeNotifier {
 
     // ── Apply pass 2: snapshots ──
     var si = 0;
+    // v0.1.29+123: see pass-1 counters.
+    var sSkipUuid = 0, sSkipLegacy = 0, sSkipBad = 0;
     for (final data in snapRows) {
       if (_restoreCancelRequested) {
         _restoreStatus = CloudRestoreStatus.cancelled;
@@ -1397,16 +1411,25 @@ class CloudSyncService extends ChangeNotifier {
       final uuid = data['client_uuid'];
       if (uuid is String) {
         final existing = await _db.getSnapshotByClientUuid(uuid);
-        if (existing != null) continue;
+        if (existing != null) {
+          sSkipUuid++;
+          continue;
+        }
       } else {
         final capturedAtStr = data['captured_at'];
-        if (capturedAtStr is! String) continue;
+        if (capturedAtStr is! String) {
+          sSkipBad++;
+          continue;
+        }
         final capturedAt = DateTime.parse(capturedAtStr).toLocal();
         final existing = await (_db.select(_db.snapshots)
               ..where((s) => s.capturedAt.equals(capturedAt))
               ..limit(1))
             .getSingleOrNull();
-        if (existing != null) continue;
+        if (existing != null) {
+          sSkipLegacy++;
+          continue;
+        }
       }
       final rawTripId = data['client_trip_id'];
       final mappedTripId = rawTripId is int ? tripIdMap[rawTripId] : null;
@@ -1416,7 +1439,10 @@ class CloudSyncService extends ChangeNotifier {
       si++;
     }
     debugPrint('CloudSync: restore via /v2/sync/pull — trips '
-        '${tripRows.length}/$ti new, snapshots ${snapRows.length}/$si new');
+        '${tripRows.length}/$ti new '
+        '(skip uuid=$tSkipUuid legacy=$tSkipLegacy bad=$tSkipBad), '
+        'snapshots ${snapRows.length}/$si new '
+        '(skip uuid=$sSkipUuid legacy=$sSkipLegacy bad=$sSkipBad)');
     return (tripRows.length, ti, snapRows.length, si);
   }
 
@@ -1623,6 +1649,25 @@ class CloudSyncService extends ChangeNotifier {
       _cursorSnapshot = maxSnapId;
       await prefs.setInt(_kCursorTrip, _cursorTrip);
       await prefs.setInt(_kCursorSnapshot, _cursorSnapshot);
+
+      // v0.1.29+123: advance the uuid-mapping watermarks too, mirroring
+      // the push-cursor advancement above. Restored rows are already
+      // uuid-known to the server (the pull delivered them BY uuid) —
+      // mapping them again under their NEW local Drift ids is exactly
+      // what produced the field conflicts (2026-07-04: trips=50,
+      // snapshots=13; 2026-07-05 fresh-install restore: trips=50,
+      // snapshots=873+315): after any restore, local autoincrement id ≠
+      // original client_*_id, so the mapping POST pairs a server
+      // client_id with a uuid belonging to a DIFFERENT row →
+      // first-write-wins conflict on every restored row. Entities the
+      // restore never touches (sweeps/livelogs/canmonitor) keep their
+      // watermarks — their local ids didn't shift. Sits in the common
+      // success block, so both the v2 pull and the legacy v1 fallback
+      // paths are covered.
+      _uuidMapWm['trips'] = maxTripId;
+      _uuidMapWm['snapshots'] = maxSnapId;
+      await prefs.setInt('${_kUuidMapWmPrefix}trips', maxTripId);
+      await prefs.setInt('${_kUuidMapWmPrefix}snapshots', maxSnapId);
 
       // v0.1.29+20: restored trips with endedAt != null are already on
       // the server (the restore loop fetched them from there) and
@@ -2377,7 +2422,7 @@ class CloudSyncService extends ChangeNotifier {
   /// Read app version from the static value baked into the build.
   /// We don't have package_info_plus as a dep — pubspec-version is
   /// hardcoded here. Update when bumping. Off-by-one tolerated.
-  Future<String> _readAppVersion() async => '0.1.29+122';
+  Future<String> _readAppVersion() async => '0.1.29+123';
 }
 
 // ─── Internal exceptions ────────────────────────────────────────────
