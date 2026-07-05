@@ -1,5 +1,6 @@
 import 'package:drift/drift.dart';
 import 'package:drift_flutter/drift_flutter.dart';
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:path_provider/path_provider.dart';
 
 import 'trip_extra.dart';
@@ -388,84 +389,87 @@ class AppDatabase extends _$AppDatabase {
           await m.createAll();
         },
         onUpgrade: (m, from, to) async {
+          // v0.1.29+125: migration start marker — with the AppDiagLog
+          // ring buffer (+122) the whole run is visible on-device.
+          debugPrint('DB migrate: $from → $to starting');
           // v1 → v2 (v0.1.9): Trip + Snapshot extra columns.
           if (from < 2) {
-            await m.addColumn(trips, trips.distanceKm);
-            await m.addColumn(trips, trips.energyUsedKwh);
-            await m.addColumn(trips, trips.avgConsumptionKwh100km);
-            await m.addColumn(trips, trips.minBatteryTempC);
-            await m.addColumn(trips, trips.maxBatteryTempC);
-            await m.addColumn(trips, trips.maxCellSpreadMv);
-            await m.addColumn(trips, trips.minSoc);
-            await m.addColumn(trips, trips.maxSoc);
-            await m.addColumn(trips, trips.peakSpeedKmh);
-            await m.addColumn(trips, trips.peakPowerKw);
-            await m.addColumn(trips, trips.peakRegenKw);
-            await m.addColumn(trips, trips.regenEnergyKwh);
+            await _addColumnIfAbsent(m, trips, trips.distanceKm);
+            await _addColumnIfAbsent(m, trips, trips.energyUsedKwh);
+            await _addColumnIfAbsent(m, trips, trips.avgConsumptionKwh100km);
+            await _addColumnIfAbsent(m, trips, trips.minBatteryTempC);
+            await _addColumnIfAbsent(m, trips, trips.maxBatteryTempC);
+            await _addColumnIfAbsent(m, trips, trips.maxCellSpreadMv);
+            await _addColumnIfAbsent(m, trips, trips.minSoc);
+            await _addColumnIfAbsent(m, trips, trips.maxSoc);
+            await _addColumnIfAbsent(m, trips, trips.peakSpeedKmh);
+            await _addColumnIfAbsent(m, trips, trips.peakPowerKw);
+            await _addColumnIfAbsent(m, trips, trips.peakRegenKw);
+            await _addColumnIfAbsent(m, trips, trips.regenEnergyKwh);
 
-            await m.addColumn(snapshots, snapshots.packVoltageV);
-            await m.addColumn(snapshots, snapshots.hvBusV);
-            await m.addColumn(snapshots, snapshots.gear);
-            await m.addColumn(snapshots, snapshots.pawlEngaged);
-            await m.addColumn(snapshots, snapshots.isCharging);
-            await m.addColumn(snapshots, snapshots.chargingPowerKw);
-            await m.addColumn(snapshots, snapshots.cycleCount);
+            await _addColumnIfAbsent(m, snapshots, snapshots.packVoltageV);
+            await _addColumnIfAbsent(m, snapshots, snapshots.hvBusV);
+            await _addColumnIfAbsent(m, snapshots, snapshots.gear);
+            await _addColumnIfAbsent(m, snapshots, snapshots.pawlEngaged);
+            await _addColumnIfAbsent(m, snapshots, snapshots.isCharging);
+            await _addColumnIfAbsent(m, snapshots, snapshots.chargingPowerKw);
+            await _addColumnIfAbsent(m, snapshots, snapshots.cycleCount);
           }
           // v2 → v3 (v0.1.11): sweep tables.
           if (from < 3) {
-            await m.createTable(sweepRuns);
-            await m.createTable(sweepResults);
+            await _createTableIfAbsent(m, sweepRuns);
+            await _createTableIfAbsent(m, sweepResults);
           }
           // v3 → v4 (v0.1.15): live-log tables.
           if (from < 4) {
-            await m.createTable(liveLogSessions);
-            await m.createTable(liveLogEntries);
+            await _createTableIfAbsent(m, liveLogSessions);
+            await _createTableIfAbsent(m, liveLogEntries);
           }
           // v4 → v5 (v0.1.21): speed-based trip metrics + SOC-derived
           // energy estimate. All additive (addColumn only), zero risk
           // to existing data.
           if (from < 5) {
-            await m.addColumn(trips, trips.avgMovingSpeedKmh);
-            await m.addColumn(trips, trips.movingSeconds);
-            await m.addColumn(trips, trips.idleSeconds);
-            await m.addColumn(trips, trips.energyFromSocKwh);
+            await _addColumnIfAbsent(m, trips, trips.avgMovingSpeedKmh);
+            await _addColumnIfAbsent(m, trips, trips.movingSeconds);
+            await _addColumnIfAbsent(m, trips, trips.idleSeconds);
+            await _addColumnIfAbsent(m, trips, trips.energyFromSocKwh);
           }
           // v5 → v6 (v0.1.29+28): CAN passive-monitor tables.
           // Additive only — pre-existing tables untouched.
           if (from < 6) {
-            await m.createTable(canMonitorSessions);
-            await m.createTable(canFrames);
+            await _createTableIfAbsent(m, canMonitorSessions);
+            await _createTableIfAbsent(m, canFrames);
           }
           // v6 → v7 (v0.1.29+32): raw monitor-line capture table for
           // Path-A exploration. Additive only.
           if (from < 7) {
-            await m.createTable(canRawLines);
+            await _createTableIfAbsent(m, canRawLines);
           }
           // v7 → v8 (v0.1.29+37): trips.extra JSON blob for restorable
           // derived aggregates (speed-distribution histogram). Additive,
           // nullable — existing trip rows get NULL and behave exactly as
           // before (the UI falls back to raw samples when extra is null).
           if (from < 8) {
-            await m.addColumn(trips, trips.extra);
+            await _addColumnIfAbsent(m, trips, trips.extra);
           }
           // v8 → v9 (v0.1.29+87): HAL/BigData diagnostic capture table.
           // Additive only — pre-existing tables untouched, existing data
           // behaves exactly as before.
           if (from < 9) {
-            await m.createTable(halSamples);
+            await _createTableIfAbsent(m, halSamples);
           }
           // v9 → v10 (v0.1.29+94): samples.charging_session_id for the
           // per-module UDS charge logger. Additive, nullable — existing
           // sample rows get NULL (they're trip / ad-hoc samples, unchanged).
           if (from < 10) {
-            await m.addColumn(samples, samples.chargingSessionId);
+            await _addColumnIfAbsent(m, samples, samples.chargingSessionId);
           }
           // v10 → v11 (v0.1.29+104): soh_estimates single-row table for the
           // independent coulomb-counted SOH result. Additive (createTable) —
           // pre-existing tables untouched; until the first qualifying charge
           // session writes a row, the UI falls back to BMS SOH (0x0029).
           if (from < 11) {
-            await m.createTable(sohEstimates);
+            await _createTableIfAbsent(m, sohEstimates);
           }
           // v11 → v12 (v0.1.29+105): add soh_estimates.source so the UDS
           // (id=1) and HAL (id=2) coulomb-count estimators can coexist in the
@@ -473,11 +477,11 @@ class AppDatabase extends _$AppDatabase {
           // (addColumn) — any pre-existing id=1 row stays valid and reads as
           // null → treated as 'uds' by callers.
           if (from < 12) {
-            await m.addColumn(sohEstimates, sohEstimates.source);
+            await _addColumnIfAbsent(m, sohEstimates, sohEstimates.source);
           }
           if (from < 13) {
             // v0.1.29+106: watchdog last-alive checkpoint for HAL trips.
-            await m.addColumn(trips, trips.lastAliveTs);
+            await _addColumnIfAbsent(m, trips, trips.lastAliveTs);
           }
           // v13 → v14 (v0.1.29+117, cloud-v2 C1 / spec v1.3 D1): client_uuid
           // (UUIDv7) on the 5 syncable parent tables — the global cloud dedup
@@ -488,12 +492,12 @@ class AppDatabase extends _$AppDatabase {
           // captured_at (cosmetic ordering only — the server treats the uuid
           // as opaque, pull is ordered by server_seq; review Q6).
           if (from < 14) {
-            await m.addColumn(trips, trips.clientUuid);
-            await m.addColumn(snapshots, snapshots.clientUuid);
-            await m.addColumn(sweepRuns, sweepRuns.clientUuid);
-            await m.addColumn(liveLogSessions, liveLogSessions.clientUuid);
-            await m.addColumn(
-                canMonitorSessions, canMonitorSessions.clientUuid);
+            await _addColumnIfAbsent(m, trips, trips.clientUuid);
+            await _addColumnIfAbsent(m, snapshots, snapshots.clientUuid);
+            await _addColumnIfAbsent(m, sweepRuns, sweepRuns.clientUuid);
+            await _addColumnIfAbsent(m, liveLogSessions, liveLogSessions.clientUuid);
+            await _addColumnIfAbsent(
+                m, canMonitorSessions, canMonitorSessions.clientUuid);
             for (final table in const [
               'trips',
               'snapshots',
@@ -507,8 +511,53 @@ class AppDatabase extends _$AppDatabase {
             }
             await _backfillClientUuids();
           }
+          debugPrint('DB migrate: $from → $to complete');
         },
       );
+
+  // ── v0.1.29+125: idempotent migration guards ──────────────────────
+  //
+  // Field incident (phone, 2026-07-05): a 9→14 upgrade chain was
+  // interrupted mid-run (long 13→14 backfill on a large DB; process
+  // killed), leaving the ALTERs of the early steps applied but
+  // user_version still at 9. Every subsequent open re-ran step 9→10 and
+  // died on "duplicate column: charging_session_id" — wedging ALL DB
+  // access until reinstall. These guards make every structural step
+  // safely re-runnable, so a torn migration self-heals on the next
+  // launch instead of bricking the app. (The 13→14 tail was already
+  // idempotent: indexes are IF NOT EXISTS, the uuid backfill filters
+  // WHERE client_uuid IS NULL.)
+
+  Future<bool> _columnExists(String table, String column) async {
+    final rows = await customSelect('PRAGMA table_info($table)').get();
+    return rows.any((r) => r.data['name'] == column);
+  }
+
+  Future<bool> _tableExists(String table) async {
+    final rows = await customSelect(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name = ?",
+        variables: [Variable.withString(table)]).get();
+    return rows.isNotEmpty;
+  }
+
+  Future<void> _addColumnIfAbsent(
+      Migrator m, TableInfo table, GeneratedColumn column) async {
+    if (await _columnExists(table.actualTableName, column.name)) {
+      debugPrint('DB migrate: ${table.actualTableName}.${column.name} '
+          'already present — skipped');
+      return;
+    }
+    await m.addColumn(table, column);
+  }
+
+  Future<void> _createTableIfAbsent(Migrator m, TableInfo table) async {
+    if (await _tableExists(table.actualTableName)) {
+      debugPrint('DB migrate: table ${table.actualTableName} '
+          'already present — skipped');
+      return;
+    }
+    await m.createTable(table);
+  }
 
   /// v0.1.29+117 (C1): stamp a UUIDv7 onto every pre-schema-14 row of the 5
   /// syncable tables. Runs once inside the from<14 migration step.

@@ -338,6 +338,12 @@ else:
 # ──────────── Part D: +37 trips.extra speed-histogram backup ────────────
 if int(pv) >= 37:
     db_src = (root / 'lib/data/database.dart').read_text()
+    # v0.1.29+125: structural DDL is wrapped in if-absent guards
+    # (_addColumnIfAbsent/_createTableIfAbsent). Normalize back to
+    # the raw form so additive-migration checks keep asserting the
+    # same migration CONTENT regardless of the guard wrapper.
+    db_src = db_src.replace('_addColumnIfAbsent(m, ', 'm.addColumn(') \
+                   .replace('_createTableIfAbsent(m, ', 'm.createTable(')
     extra_src_path = root / 'lib/data/trip_extra.dart'
     conn_src = (root / 'lib/services/connection.dart').read_text()
     cloud_src = (root / 'lib/services/cloud_sync_service.dart').read_text()
@@ -583,6 +589,12 @@ else:
 if int(pv) >= 38:
     conn_src = (root / 'lib/services/connection.dart').read_text()
     db_src = (root / 'lib/data/database.dart').read_text()
+    # v0.1.29+125: structural DDL is wrapped in if-absent guards
+    # (_addColumnIfAbsent/_createTableIfAbsent). Normalize back to
+    # the raw form so additive-migration checks keep asserting the
+    # same migration CONTENT regardless of the guard wrapper.
+    db_src = db_src.replace('_addColumnIfAbsent(m, ', 'm.addColumn(') \
+                   .replace('_createTableIfAbsent(m, ', 'm.createTable(')
 
     # E1. DB helper exists
     if "Future<double?> lastNumericSampleForTrip(" in db_src:
@@ -773,6 +785,12 @@ else:
 # ──────────── Part H: +41 orphan/backfill finalization ────────────
 if int(pv) >= 41:
     db_src = (root / 'lib/data/database.dart').read_text()
+    # v0.1.29+125: structural DDL is wrapped in if-absent guards
+    # (_addColumnIfAbsent/_createTableIfAbsent). Normalize back to
+    # the raw form so additive-migration checks keep asserting the
+    # same migration CONTENT regardless of the guard wrapper.
+    db_src = db_src.replace('_addColumnIfAbsent(m, ', 'm.addColumn(') \
+                   .replace('_createTableIfAbsent(m, ', 'm.createTable(')
     conn_src = (root / 'lib/services/connection.dart').read_text()
 
     # H1. firstNumericSampleForTrip helper added (asc + limit 1)
@@ -848,6 +866,12 @@ else:
 # ──────────── Part I: +42 heavy aggregate recovery ────────────
 if int(pv) >= 42:
     db_src = (root / 'lib/data/database.dart').read_text()
+    # v0.1.29+125: structural DDL is wrapped in if-absent guards
+    # (_addColumnIfAbsent/_createTableIfAbsent). Normalize back to
+    # the raw form so additive-migration checks keep asserting the
+    # same migration CONTENT regardless of the guard wrapper.
+    db_src = db_src.replace('_addColumnIfAbsent(m, ', 'm.addColumn(') \
+                   .replace('_createTableIfAbsent(m, ', 'm.createTable(')
 
     # I1. recoverHeavyAggregates method exists
     if "Future<TripsCompanion> recoverHeavyAggregates(" in db_src:
@@ -3408,6 +3432,34 @@ if int(pv) >= 124:
         fail('AH8 AppDiag account rows missing')
 else:
     ok(f"Part AH skipped (build +{pv}, account auth lands in +124)")
+
+# ─────────────────── Part AI: +125 idempotent migrations ────────────────────
+if int(pv) >= 125:
+    _db3 = (root / 'lib/data/database.dart').read_text()
+    # AI1: no raw structural calls left in the migration — every
+    # addColumn/createTable goes through the if-absent guards (exactly
+    # one raw call of each remains, inside the guard bodies).
+    if _db3.count('await m.addColumn(') == 1 and \
+       _db3.count('await m.createTable(') == 1 and \
+       '_addColumnIfAbsent(m, ' in _db3 and \
+       '_createTableIfAbsent(m, ' in _db3:
+        ok('AI1 all migration DDL routed through if-absent guards')
+    else:
+        fail('AI1 raw addColumn/createTable left in onUpgrade')
+    # AI2: guards check real schema state (PRAGMA table_info /
+    # sqlite_master), not app state.
+    if 'PRAGMA table_info(' in _db3 and 'sqlite_master' in _db3:
+        ok('AI2 guards read live schema (pragma/sqlite_master)')
+    else:
+        fail('AI2 schema-existence checks missing')
+    # AI3: migration run visible in the diag ring buffer (+122).
+    if "DB migrate: $from → $to starting" in _db3 and \
+       "already present — skipped" in _db3:
+        ok('AI3 migration start/skip diag lines present')
+    else:
+        fail('AI3 migration diag lines missing')
+else:
+    ok(f"Part AI skipped (build +{pv}, idempotent migrations land in +125)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
