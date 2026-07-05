@@ -30,8 +30,36 @@ class AccountScreen extends StatefulWidget {
 class _AccountScreenState extends State<AccountScreen> {
   final _emailCtrl = TextEditingController();
   final _codeCtrl = TextEditingController();
+  final _claimCtrl = TextEditingController(); // v0.1.29+127 (C3)
+  bool _claiming = false;
   Timer? _ticker;
   bool _devicesRequested = false;
+
+  // v0.1.29+127 (C3): approve a pairing request by user_code.
+  Future<void> _claim() async {
+    final code = _claimCtrl.text.trim();
+    if (code.isEmpty) return;
+    setState(() => _claiming = true);
+    final err =
+        await context.read<AccountAuthService>().claimPairing(code);
+    if (!mounted) return;
+    setState(() => _claiming = false);
+    if (err == null) {
+      _claimCtrl.clear();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(S.of('account.claim_ok'))),
+      );
+    } else {
+      final msg = err == 'pairing_invalid'
+          ? S.of('account.claim_invalid')
+          : err == 'no_vehicle'
+              ? S.of('account.claim_no_vehicle')
+              : '${S.of('account.err_generic')} ($err)';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(msg)),
+      );
+    }
+  }
 
   @override
   void initState() {
@@ -50,6 +78,7 @@ class _AccountScreenState extends State<AccountScreen> {
     _ticker?.cancel();
     _emailCtrl.dispose();
     _codeCtrl.dispose();
+    _claimCtrl.dispose(); // v0.1.29+127 (C3)
     super.dispose();
   }
 
@@ -230,6 +259,42 @@ class _AccountScreenState extends State<AccountScreen> {
       ),
       if (err.isNotEmpty)
         Text(err, style: const TextStyle(color: Colors.orangeAccent)),
+      const Divider(height: 24),
+      // v0.1.29+127 (C3): approve a device's pairing request — type the
+      // short code the device shows (§1.2). Success auto-refreshes the
+      // devices list below.
+      Text(S.of('account.claim_header'),
+          style: Theme.of(context).textTheme.titleMedium),
+      const SizedBox(height: 4),
+      Text(S.of('account.claim_hint'),
+          style: const TextStyle(color: Colors.grey, fontSize: 12)),
+      const SizedBox(height: 8),
+      Row(
+        children: [
+          Expanded(
+            child: TextField(
+              controller: _claimCtrl,
+              maxLength: 8,
+              textCapitalization: TextCapitalization.characters,
+              decoration: InputDecoration(
+                labelText: S.of('account.claim_code_hint'),
+                border: const OutlineInputBorder(),
+                counterText: '',
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          FilledButton(
+            onPressed: _claiming ? null : _claim,
+            child: _claiming
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2))
+                : Text(S.of('account.claim_button')),
+          ),
+        ],
+      ),
       const Divider(height: 24),
       Row(
         children: [

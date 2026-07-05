@@ -211,6 +211,41 @@ class S {
     'account.err_bad_email': 'Enter a valid email address.',
     'account.err_network': 'Network error — check the connection and retry.',
     'account.err_generic': 'Request failed',
+    'account.claim_header': 'Pair a device',
+    'account.claim_hint': 'On the device: Settings → Device pairing → '
+        'Get code, then type that code here.',
+    'account.claim_code_hint': 'Code from the device',
+    'account.claim_button': 'Pair',
+    'account.claim_ok': 'Device paired to the account',
+    'account.claim_invalid': 'Unknown or expired code — get a fresh one '
+        'on the device (valid 5 min).',
+    'account.claim_no_vehicle': 'The account has no default vehicle — '
+        'contact the bridge owner.',
+
+    // Device pairing screen — v0.1.29+127 (C3)
+    'pairing.title': 'Device pairing',
+    'pairing.settings_subtitle': 'Link this device to an account '
+        '(code on screen → approve on the phone)',
+    'pairing.intro_fresh': 'This install has no cloud credential yet. '
+        'Get a code, approve it on a signed-in phone — a token will be '
+        'issued automatically and history restore will start. No manual '
+        'token entry.',
+    'pairing.intro_live': 'This device already syncs. Pairing will '
+        'attach it to the account — the token stays unchanged, data is '
+        'not touched.',
+    'pairing.kind_headunit': 'Head unit',
+    'pairing.kind_phone': 'Phone',
+    'pairing.get_code': 'Get code',
+    'pairing.enter_on_phone': 'On the signed-in phone: Settings → Cloud '
+        'services → Account → Pair a device — and type this code:',
+    'pairing.expires_in': 'Code valid for',
+    'pairing.paired_fresh': 'Paired! Token issued — restoring history…',
+    'pairing.paired_live': 'Paired! Device attached to the account.',
+    'pairing.restore_status': 'Restore',
+    'pairing.expired': 'The code expired (5 min). Get a new one.',
+    'pairing.error': 'Pairing failed',
+    'pairing.retry': 'Try again',
+    'common.done': 'Done',
 
     // Cloud backup card
     'cloud.title': 'Cloud backup',
@@ -999,6 +1034,44 @@ class S {
     'account.err_bad_email': 'Введите корректный email.',
     'account.err_network': 'Ошибка сети — проверьте соединение и повторите.',
     'account.err_generic': 'Запрос не выполнен',
+    'account.claim_header': 'Привязать устройство',
+    'account.claim_hint': 'На устройстве: Настройки → Привязка '
+        'устройства → Получить код, затем введите этот код здесь.',
+    'account.claim_code_hint': 'Код с устройства',
+    'account.claim_button': 'Привязать',
+    'account.claim_ok': 'Устройство привязано к аккаунту',
+    'account.claim_invalid': 'Код неизвестен или истёк — получите новый '
+        'на устройстве (действует 5 минут).',
+    'account.claim_no_vehicle': 'У аккаунта нет автомобиля по умолчанию '
+        '— обратитесь к владельцу bridge.',
+
+    // Device pairing screen — v0.1.29+127 (C3)
+    'pairing.title': 'Привязка устройства',
+    'pairing.settings_subtitle': 'Привязать это устройство к аккаунту '
+        '(код на экране → подтверждение на телефоне)',
+    'pairing.intro_fresh': 'У этой установки ещё нет облачного доступа. '
+        'Получите код, подтвердите его на залогиненном телефоне — токен '
+        'выдастся автоматически и начнётся восстановление истории. Без '
+        'ручного ввода токена.',
+    'pairing.intro_live': 'Это устройство уже синхронизируется. '
+        'Привязка прикрепит его к аккаунту — токен не меняется, данные '
+        'не затрагиваются.',
+    'pairing.kind_headunit': 'Головное устройство',
+    'pairing.kind_phone': 'Телефон',
+    'pairing.get_code': 'Получить код',
+    'pairing.enter_on_phone': 'На залогиненном телефоне: Настройки → '
+        'Облачные сервисы → Аккаунт → Привязать устройство — и введите '
+        'этот код:',
+    'pairing.expires_in': 'Код действует ещё',
+    'pairing.paired_fresh': 'Привязано! Токен выдан — восстанавливаю '
+        'историю…',
+    'pairing.paired_live': 'Привязано! Устройство прикреплено к '
+        'аккаунту.',
+    'pairing.restore_status': 'Восстановление',
+    'pairing.expired': 'Код истёк (5 минут). Получите новый.',
+    'pairing.error': 'Привязка не удалась',
+    'pairing.retry': 'Попробовать снова',
+    'common.done': 'Готово',
 
     // Cloud backup card
     'cloud.title': 'Облачный бэкап',

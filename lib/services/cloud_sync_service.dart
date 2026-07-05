@@ -179,6 +179,26 @@ class CloudSyncStats {
 /// from the bridge into local Drift after a reinstall). Independent of
 /// CloudSyncStatus — sync continues to push under the *new* identity
 /// once the restore advances the cursors at the end.
+/// v0.1.29+127 (C3): device-side pairing state (CLIENT_API §1.2).
+enum CloudPairingStatus {
+  idle,
+
+  /// POST /v2/pair/start in flight.
+  starting,
+
+  /// user_code on screen, polling /v2/pair/status every `interval`.
+  waitingForClaim,
+
+  /// Claimed. If a fresh token was minted (scenario b) the restore
+  /// auto-starts — watch restoreStatus/restoreProgress for it.
+  paired,
+
+  /// 5-minute window elapsed without a claim.
+  expired,
+
+  error,
+}
+
 enum CloudRestoreStatus {
   /// Not started, or completed and acknowledged.
   idle,
@@ -498,8 +518,205 @@ class CloudSyncService extends ChangeNotifier {
   void dispose() {
     _periodicTimer?.cancel();
     _heartbeatTimer?.cancel();
+    _pairPollTimer?.cancel(); // v0.1.29+127
     _http.close();
     super.dispose();
+  }
+
+  // ─── v0.1.29+127 (C3): pairing — device side (CLIENT_API §1.2) ────
+  //
+  // OAuth device-flow with two secrets that must never be conflated:
+  //   * device_code — long, token-releasing. Lives ONLY in
+  //     [_pairDeviceCode] (private, no getter), is never rendered,
+  //     never logged, never interpolated into diag lines.
+  //   * user_code — short, display-only. Shown big on this device,
+  //     typed on the signed-in phone. Yields approval, never a token.
+  //
+  // Two scenarios, one flow:
+  //   (a) live device (has a token): pair/start goes out with Bearer —
+  //       claim just attaches the device to the account, token
+  //       unchanged, nothing else happens.
+  //   (b) fresh device (post-reinstall, no token): pair/start without
+  //       auth; on "paired" the poll delivers a minted client_token
+  //       EXACTLY ONCE → persisted to secure storage immediately, then
+  //       startRestore() auto-runs with it (barrier +126 applies) —
+  //       the manual paste-a-token step is gone.
+
+  CloudPairingStatus _pairingStatus = CloudPairingStatus.idle;
+  String? _pairUserCode;
+  String? _pairDeviceCode; // token-releasing secret — no getter, ever
+  DateTime? _pairExpiresAt;
+  int _pairIntervalSec = 2;
+  String? _pairError;
+  Timer? _pairPollTimer;
+  bool _pairPollInFlight = false;
+  bool _pairMintedFresh = false;
+
+  CloudPairingStatus get pairingStatus => _pairingStatus;
+  String? get pairUserCode => _pairUserCode;
+  DateTime? get pairExpiresAt => _pairExpiresAt;
+  String? get pairError => _pairError;
+  bool get pairMintedFresh => _pairMintedFresh;
+  int get pairSecondsLeft {
+    final t = _pairExpiresAt;
+    if (t == null) return 0;
+    final d = t.difference(DateTime.now()).inSeconds;
+    return d > 0 ? d : 0;
+  }
+
+  Future<void> startPairing({
+    required String kind,
+    String? displayName,
+  }) async {
+    if (_pairingStatus == CloudPairingStatus.starting ||
+        _pairingStatus == CloudPairingStatus.waitingForClaim) {
+      return;
+    }
+    _pairError = null;
+    _pairMintedFresh = false;
+    _pairUserCode = null;
+    _pairingStatus = CloudPairingStatus.starting;
+    notifyListeners();
+    try {
+      final resp = await _http
+          .post(
+            Uri.parse('$_baseUrl/v2/pair/start'),
+            headers: {
+              'Content-Type': 'application/json',
+              // Scenario (a): a live device authenticates so the claim
+              // attaches it instead of minting a new token.
+              if (isRegistered && _clientToken != null)
+                'Authorization': 'Bearer $_clientToken',
+            },
+            body: jsonEncode({
+              'kind': kind,
+              'client_kind': 'flutter-bz5-companion',
+              'display_name': displayName ??
+                  (kind == 'headunit' ? 'BZ5 head unit' : 'BZ5 phone'),
+            }),
+          )
+          .timeout(const Duration(seconds: 15));
+      if (resp.statusCode == 200) {
+        final j = jsonDecode(resp.body) as Map<String, dynamic>;
+        _pairDeviceCode = j['device_code'] as String?;
+        _pairUserCode = j['user_code'] as String?;
+        final iv = j['interval'];
+        _pairIntervalSec = iv is int && iv > 0 ? iv : 2;
+        final exp = j['expires_in'];
+        _pairExpiresAt = DateTime.now()
+            .add(Duration(seconds: exp is int && exp > 0 ? exp : 300));
+        if (_pairDeviceCode == null || _pairUserCode == null) {
+          _pairError = 'malformed pair/start response';
+          _pairingStatus = CloudPairingStatus.error;
+        } else {
+          _pairingStatus = CloudPairingStatus.waitingForClaim;
+          _pairPollTimer = Timer.periodic(
+              Duration(seconds: _pairIntervalSec),
+              (_) => _pollPairStatus());
+          // Codes deliberately NOT logged — user_code is on the screen,
+          // device_code must stay out of every sink.
+          debugPrint('CloudSync: pairing started '
+              '(${isRegistered ? 'live device' : 'fresh device'}, '
+              'expires in ${pairSecondsLeft}s, poll ${_pairIntervalSec}s)');
+        }
+      } else {
+        _pairError = 'pair/start HTTP ${resp.statusCode}';
+        _pairingStatus = CloudPairingStatus.error;
+        debugPrint('CloudSync: $_pairError');
+      }
+    } catch (e) {
+      _pairError = 'network: $e';
+      _pairingStatus = CloudPairingStatus.error;
+      debugPrint('CloudSync: pair/start failed: $e');
+    }
+    notifyListeners();
+  }
+
+  Future<void> _pollPairStatus() async {
+    if (_pairPollInFlight) return;
+    final code = _pairDeviceCode;
+    if (code == null) return;
+    if (_pairExpiresAt != null &&
+        DateTime.now().isAfter(_pairExpiresAt!)) {
+      _finishPairing(CloudPairingStatus.expired);
+      debugPrint('CloudSync: pairing window expired');
+      return;
+    }
+    _pairPollInFlight = true;
+    try {
+      final resp = await _http
+          .post(
+            Uri.parse('$_baseUrl/v2/pair/status'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'device_code': code}),
+          )
+          .timeout(const Duration(seconds: 10));
+      if (resp.statusCode == 200) {
+        final j = jsonDecode(resp.body) as Map<String, dynamic>;
+        final st = j['status'];
+        if (st == 'paired') {
+          final minted = j['client_token'];
+          if (minted is String && minted.isNotEmpty) {
+            // Scenario (b): the token arrives EXACTLY ONCE — persist
+            // to secure storage FIRST, before any state that could
+            // throw; a second poll will not repeat it.
+            await _secureStorage.write(key: _kTokenKey, value: minted);
+            _pairMintedFresh = true;
+            _finishPairing(CloudPairingStatus.paired);
+            debugPrint('CloudSync: pairing complete — fresh token '
+                'minted and persisted, auto-starting restore');
+            unawaited(startRestore(oldClientToken: minted));
+          } else {
+            _finishPairing(CloudPairingStatus.paired);
+            debugPrint('CloudSync: pairing complete — device attached '
+                'to account (token unchanged)');
+          }
+        } else if (st == 'expired') {
+          _finishPairing(CloudPairingStatus.expired);
+          debugPrint('CloudSync: pairing expired (server)');
+        } else {
+          // pending — honor a server-updated interval if it changed.
+          final iv = j['interval'];
+          if (iv is int && iv > 0 && iv != _pairIntervalSec) {
+            _pairIntervalSec = iv;
+            _pairPollTimer?.cancel();
+            _pairPollTimer = Timer.periodic(
+                Duration(seconds: _pairIntervalSec),
+                (_) => _pollPairStatus());
+          }
+        }
+      } else if (resp.statusCode == 404) {
+        _pairError = 'pairing_invalid';
+        _finishPairing(CloudPairingStatus.error);
+        debugPrint('CloudSync: pair/status 404 pairing_invalid');
+      }
+      // other statuses: transient — keep polling until expiry.
+    } catch (e) {
+      // Network blip mid-poll: keep polling until the window expires.
+      debugPrint('CloudSync: pair/status poll error (will retry): $e');
+    } finally {
+      _pairPollInFlight = false;
+    }
+  }
+
+  void _finishPairing(CloudPairingStatus terminal) {
+    _pairPollTimer?.cancel();
+    _pairPollTimer = null;
+    _pairDeviceCode = null; // secret dies with the flow
+    _pairingStatus = terminal;
+    notifyListeners();
+  }
+
+  void cancelPairing() {
+    _pairPollTimer?.cancel();
+    _pairPollTimer = null;
+    _pairDeviceCode = null;
+    _pairUserCode = null;
+    _pairExpiresAt = null;
+    _pairMintedFresh = false;
+    _pairError = null;
+    _pairingStatus = CloudPairingStatus.idle;
+    notifyListeners();
   }
 
   // ─── timers ──────────────────────────────────────────────────────
@@ -812,7 +1029,7 @@ class CloudSyncService extends ChangeNotifier {
       // will become the primary path.) startRestore() restarts the
       // timers, so the state is fully recoverable from the UI.
       _lastError = 'Cloud access revoked (3×401) — local data intact. '
-          'Recover via Restore (previous token) or Setup.';
+          'Recover via Pairing (Account), Restore (previous token) or Setup.';
       _status = CloudSyncStatus.authFailed;
       await _persistError(_lastError!);
       await _wipeTokenAndCursors();
@@ -2475,7 +2692,7 @@ class CloudSyncService extends ChangeNotifier {
   /// Read app version from the static value baked into the build.
   /// We don't have package_info_plus as a dep — pubspec-version is
   /// hardcoded here. Update when bumping. Off-by-one tolerated.
-  Future<String> _readAppVersion() async => '0.1.29+126';
+  Future<String> _readAppVersion() async => '0.1.29+127';
 }
 
 // ─── Internal exceptions ────────────────────────────────────────────

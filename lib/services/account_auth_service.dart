@@ -394,6 +394,38 @@ class AccountAuthService extends ChangeNotifier {
     return resp;
   }
 
+  // ─── §1.2 pairing claim (phone side) ──────────────────────────────
+
+  /// v0.1.29+127 (C3): approve a device's pairing request by typing the
+  /// short user_code it displays. Returns null on success, an error
+  /// code otherwise ('pairing_invalid', 'no_vehicle', 'session',
+  /// 'network', 'bad_code'). vehicle_id is omitted — a single-vehicle
+  /// account defaults to it server-side.
+  Future<String?> claimPairing(String userCode) async {
+    final code = userCode.trim().toUpperCase();
+    if (code.isEmpty) return 'bad_code';
+    try {
+      final resp = await _authorizedSend((access) => _http
+          .post(Uri.parse('$_baseUrl/v2/pair/claim'),
+              headers: {
+                'Authorization': 'Bearer $access',
+                'Content-Type': 'application/json',
+              },
+              body: jsonEncode({'user_code': code}))
+          .timeout(const Duration(seconds: 15)));
+      if (resp == null) return 'session';
+      if (resp.statusCode == 200) {
+        debugPrint('AccountAuth: pairing claimed');
+        unawaited(fetchDevices());
+        return null;
+      }
+      return _errorCode(resp);
+    } catch (e) {
+      debugPrint('AccountAuth: pair/claim failed: $e');
+      return 'network';
+    }
+  }
+
   // ─── §1.3 devices ─────────────────────────────────────────────────
 
   Future<void> fetchDevices() async {
