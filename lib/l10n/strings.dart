@@ -167,6 +167,51 @@ class S {
     'appdiag.clear': 'Clear',
     'appdiag.copied': 'Log copied to clipboard',
 
+    // Account (email OTP) — v0.1.29+124 (C2)
+    'account.title': 'Account',
+    'account.settings_subtitle': 'Email sign-in, device list & revoke',
+    'account.intro': 'Sign in with your email to manage devices linked to '
+        'this bridge account. Only addresses allowed by the bridge owner '
+        'can sign in.',
+    'account.email_hint': 'Email',
+    'account.send_code': 'Send code',
+    'account.code_sent_neutral': 'If {email} is allowed to sign in, a code '
+        'was sent to it (valid 10 min). Check the Spam folder too. For '
+        'security reasons this screen cannot confirm whether the mail was '
+        'actually sent.',
+    'account.code_hint': 'Code from the email',
+    'account.verify': 'Sign in',
+    'account.resend': 'Send again',
+    'account.resend_in': 'Send again in',
+    'account.resend_note': 'A new code voids the previous one — only the '
+        'latest code works.',
+    'account.change_email': 'Use a different email',
+    'account.locked_for': 'Rate-limited, wait',
+    'account.signed_in_as': 'Signed in',
+    'account.logout': 'Sign out',
+    'account.devices_header': 'Devices',
+    'account.devices_empty': 'No devices linked to this account yet.',
+    'account.last_heartbeat': 'last seen',
+    'account.revoked': 'REVOKED',
+    'account.revoke': 'Revoke',
+    'account.revoke_confirm_title': 'Revoke device access?',
+    'account.revoke_confirm_body': '"{name}" will lose cloud access and '
+        'stop syncing. Its local data is NOT deleted. This cannot be '
+        'undone from the app.',
+    'account.err_invalid_code': 'Wrong, expired (10 min) or already used '
+        'code. After 5 wrong attempts the code burns — request a new one.',
+    'account.err_not_allowed': 'This address is not allowed to sign in. '
+        'Ask the bridge owner to add it to the allowlist.',
+    'account.err_rate_limited': 'Too many requests — wait a bit and retry '
+        '(limit: 5 codes per hour per address).',
+    'account.err_not_configured': 'Accounts are not set up on this bridge '
+        'yet (server-side). Ask the owner.',
+    'account.err_session': 'The session was ended (token reuse or expiry). '
+        'Please sign in again.',
+    'account.err_bad_email': 'Enter a valid email address.',
+    'account.err_network': 'Network error — check the connection and retry.',
+    'account.err_generic': 'Request failed',
+
     // Cloud backup card
     'cloud.title': 'Cloud backup',
     'cloud.intro': 'Save trip history and BMS snapshots to the bz5-bridge so '
@@ -908,6 +953,52 @@ class S {
     'appdiag.export': 'Экспорт',
     'appdiag.clear': 'Очистить',
     'appdiag.copied': 'Журнал скопирован в буфер обмена',
+
+    // Account (email OTP) — v0.1.29+124 (C2)
+    'account.title': 'Аккаунт',
+    'account.settings_subtitle': 'Вход по email, устройства и отзыв доступа',
+    'account.intro': 'Войдите по email, чтобы управлять устройствами этого '
+        'bridge-аккаунта. Вход доступен только адресам, разрешённым '
+        'владельцем bridge.',
+    'account.email_hint': 'Email',
+    'account.send_code': 'Отправить код',
+    'account.code_sent_neutral': 'Если адресу {email} разрешён вход — на '
+        'него отправлен код (действует 10 минут). Проверьте и папку Спам. '
+        'Из соображений безопасности экран не подтверждает, было ли письмо '
+        'отправлено на самом деле.',
+    'account.code_hint': 'Код из письма',
+    'account.verify': 'Войти',
+    'account.resend': 'Отправить снова',
+    'account.resend_in': 'Повторно через',
+    'account.resend_note': 'Новый код аннулирует предыдущий — работает '
+        'только самый свежий.',
+    'account.change_email': 'Другой email',
+    'account.locked_for': 'Лимит запросов, подождите',
+    'account.signed_in_as': 'Вход выполнен',
+    'account.logout': 'Выйти',
+    'account.devices_header': 'Устройства',
+    'account.devices_empty': 'К аккаунту пока не привязано ни одного '
+        'устройства.',
+    'account.last_heartbeat': 'был на связи',
+    'account.revoked': 'ОТОЗВАНО',
+    'account.revoke': 'Отозвать',
+    'account.revoke_confirm_title': 'Отозвать доступ устройства?',
+    'account.revoke_confirm_body': '«{name}» потеряет доступ к облаку и '
+        'перестанет синхронизироваться. Локальные данные на устройстве НЕ '
+        'удаляются. Отменить из приложения нельзя.',
+    'account.err_invalid_code': 'Код неверный, просроченный (10 минут) или '
+        'уже использованный. После 5 ошибок код сгорает — запросите новый.',
+    'account.err_not_allowed': 'Этому адресу вход не разрешён. Попросите '
+        'владельца bridge добавить его в список разрешённых.',
+    'account.err_rate_limited': 'Слишком много запросов — подождите и '
+        'повторите (лимит: 5 кодов в час на адрес).',
+    'account.err_not_configured': 'Аккаунты на этом bridge ещё не настроены '
+        '(на сервере). Обратитесь к владельцу.',
+    'account.err_session': 'Сессия завершена (повторное использование или '
+        'истечение токена). Войдите заново.',
+    'account.err_bad_email': 'Введите корректный email.',
+    'account.err_network': 'Ошибка сети — проверьте соединение и повторите.',
+    'account.err_generic': 'Запрос не выполнен',
 
     // Cloud backup card
     'cloud.title': 'Облачный бэкап',

@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../l10n/strings.dart';
+import '../services/account_auth_service.dart';
 import '../services/app_diag_log.dart';
 import '../services/cloud_sync_service.dart';
 import '../services/diag_dump_file.dart';
@@ -215,6 +216,22 @@ class _AppDiagScreenState extends State<AppDiagScreen> {
       ('restore status', cloud.restoreStatus.name, false),
       ('last error', cloud.lastError ?? '—', cloud.lastError != null),
     ];
+    // v0.1.29+124 (C2): account-plane state alongside the device-plane
+    // rows — separate credential, shown together for field debugging.
+    final auth = context.watch<AccountAuthService>();
+    final accessLeft = auth.accessExpiresAt == null
+        ? '—'
+        : '${auth.accessExpiresAt!.difference(DateTime.now()).inSeconds}s';
+    rows.addAll([
+      ('account status', auth.status.name, false),
+      ('account email', auth.email ?? '—', false),
+      ('account access expires in', accessLeft, false),
+      (
+        'account last error',
+        auth.lastErrorCode ?? '—',
+        auth.lastErrorCode != null
+      ),
+    ]);
     return Card(
       child: Padding(
         padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
