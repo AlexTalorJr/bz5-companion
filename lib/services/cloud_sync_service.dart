@@ -100,6 +100,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../data/database.dart';
 import '../data/uuid_v7.dart';
+import 'native_car_channel.dart';
 
 // ─── Public enums / value objects ──────────────────────────────────
 
@@ -512,6 +513,14 @@ class CloudSyncService extends ChangeNotifier {
     await _recomputeStats();
     _restartTimers();
     notifyListeners();
+    // v0.1.29+128: prefetch the hardware fingerprint for the diag screen
+    // (also sent later on pair/start). Fire-and-forget — non-fatal.
+    unawaited(NativeCarChannel.instance.hwFingerprint().then((v) {
+      if (v != null) {
+        _hwFingerprint = v.length > 200 ? v.substring(0, 200) : v;
+        notifyListeners();
+      }
+    }).catchError((_) {}));
   }
 
   @override
@@ -551,12 +560,22 @@ class CloudSyncService extends ChangeNotifier {
   Timer? _pairPollTimer;
   bool _pairPollInFlight = false;
   bool _pairMintedFresh = false;
+  // v0.1.29+128: hardware fingerprint (ANDROID_ID) sent on pair/start so
+  // the server re-attaches a reinstalled device to its existing identity
+  // (§1.2). Cached for the diag screen; shown shortened there, never
+  // logged in full.
+  String? _hwFingerprint;
+  // v0.1.29+128: attach_mode from the last paired response —
+  // 'new' (fresh device row) or 'reattached' (existing row reused).
+  String? _lastAttachMode;
 
   CloudPairingStatus get pairingStatus => _pairingStatus;
   String? get pairUserCode => _pairUserCode;
   DateTime? get pairExpiresAt => _pairExpiresAt;
   String? get pairError => _pairError;
   bool get pairMintedFresh => _pairMintedFresh;
+  String? get hwFingerprint => _hwFingerprint;
+  String? get lastAttachMode => _lastAttachMode;
   int get pairSecondsLeft {
     final t = _pairExpiresAt;
     if (t == null) return 0;
@@ -577,6 +596,18 @@ class CloudSyncService extends ChangeNotifier {
     _pairUserCode = null;
     _pairingStatus = CloudPairingStatus.starting;
     notifyListeners();
+    // v0.1.29+128: best-effort hardware fingerprint. Any failure or
+    // slowness degrades to "field not sent" — pairing never blocks on it.
+    String? fp;
+    try {
+      fp = await NativeCarChannel.instance
+          .hwFingerprint()
+          .timeout(const Duration(seconds: 3));
+    } catch (_) {
+      fp = null;
+    }
+    if (fp != null && fp.length > 200) fp = fp.substring(0, 200); // §1.2 cap
+    _hwFingerprint = fp;
     try {
       final resp = await _http
           .post(
@@ -593,6 +624,9 @@ class CloudSyncService extends ChangeNotifier {
               'client_kind': 'flutter-bz5-companion',
               'display_name': displayName ??
                   (kind == 'headunit' ? 'BZ5 head unit' : 'BZ5 phone'),
+              // v0.1.29+128 (§1.2): lets the server reuse the existing
+              // device row after reinstall instead of minting a new one.
+              if (fp != null) 'hw_fingerprint': fp,
             }),
           )
           .timeout(const Duration(seconds: 15));
@@ -655,6 +689,11 @@ class CloudSyncService extends ChangeNotifier {
         final j = jsonDecode(resp.body) as Map<String, dynamic>;
         final st = j['status'];
         if (st == 'paired') {
+          // v0.1.29+128 (§1.2): 'new' | 'reattached' — whether the server
+          // minted a fresh device row or reused an existing one (matched
+          // hw_fingerprint, or scenario (a) attach by token).
+          final am = j['attach_mode'];
+          _lastAttachMode = am is String ? am : null;
           final minted = j['client_token'];
           if (minted is String && minted.isNotEmpty) {
             // Scenario (b): the token arrives EXACTLY ONCE — persist
@@ -664,12 +703,14 @@ class CloudSyncService extends ChangeNotifier {
             _pairMintedFresh = true;
             _finishPairing(CloudPairingStatus.paired);
             debugPrint('CloudSync: pairing complete — fresh token '
-                'minted and persisted, auto-starting restore');
+                'minted and persisted, auto-starting restore '
+                '(attach_mode=${_lastAttachMode ?? '?'})');
             unawaited(startRestore(oldClientToken: minted));
           } else {
             _finishPairing(CloudPairingStatus.paired);
             debugPrint('CloudSync: pairing complete — device attached '
-                'to account (token unchanged)');
+                'to account (token unchanged, '
+                'attach_mode=${_lastAttachMode ?? '?'})');
           }
         } else if (st == 'expired') {
           _finishPairing(CloudPairingStatus.expired);
@@ -2692,7 +2733,7 @@ class CloudSyncService extends ChangeNotifier {
   /// Read app version from the static value baked into the build.
   /// We don't have package_info_plus as a dep — pubspec-version is
   /// hardcoded here. Update when bumping. Off-by-one tolerated.
-  Future<String> _readAppVersion() async => '0.1.29+127';
+  Future<String> _readAppVersion() async => '0.1.29+128';
 }
 
 // ─── Internal exceptions ────────────────────────────────────────────

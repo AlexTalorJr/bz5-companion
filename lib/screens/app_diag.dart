@@ -179,6 +179,17 @@ class _AppDiagScreenState extends State<AppDiagScreen> {
         false
       ),
       ('device_id', cloud.deviceId ?? '—', false),
+      // v0.1.29+128: fingerprint shown shortened (identity hint, not a
+      // copy source); attach_mode verifies the §1.2 re-attach path in
+      // the field without server-side help.
+      (
+        'hw fingerprint',
+        cloud.hwFingerprint == null
+            ? '—'
+            : '${cloud.hwFingerprint!.length > 8 ? cloud.hwFingerprint!.substring(0, 8) : cloud.hwFingerprint!}…',
+        false
+      ),
+      ('pair attach_mode (last)', cloud.lastAttachMode ?? '—', false),
       (
         'vehicle',
         '${cloud.vehicleName ?? '—'} (${cloud.vehicleId ?? '—'})',
