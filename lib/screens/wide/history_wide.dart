@@ -787,9 +787,9 @@ class _ChartCard extends StatelessWidget {
       }
     }
     final field = snapshotField;
-    if (field == null) return (pts: const [], fromSnapshots: false);
+    if (field == null) return (pts: const <({DateTime ts, double? v})>[], fromSnapshots: false);
     final trip = await svc.db.getTrip(tripId);
-    if (trip == null) return (pts: const [], fromSnapshots: false);
+    if (trip == null) return (pts: const <({DateTime ts, double? v})>[], fromSnapshots: false);
     // Time-window query, not snapshots.trip_id — FK linkage doesn't
     // survive a wipe/restore, captured_at does.
     final to = trip.endedAt ?? trip.lastAliveTs ?? DateTime.now();
@@ -800,7 +800,7 @@ class _ChartCard extends StatelessWidget {
     if (field == 'chargingPowerKw') {
       final hasCharge = snaps.any((s) =>
           (s.isCharging ?? false) || ((s.chargingPowerKw ?? 0) > 0));
-      if (!hasCharge) return (pts: const [], fromSnapshots: false);
+      if (!hasCharge) return (pts: const <({DateTime ts, double? v})>[], fromSnapshots: false);
     }
     final pts = <({DateTime ts, double? v})>[];
     for (final s in snaps) {
