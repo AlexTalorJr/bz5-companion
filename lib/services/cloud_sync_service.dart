@@ -784,10 +784,17 @@ class CloudSyncService extends ChangeNotifier {
       // v0.1.29+9: permanent auth failure (3+ consecutive 401s OR
       // explicit 409 already_revoked). Wipe the token from secure
       // storage so the next app start doesn't keep retrying with a
-      // dead credential, and stop the timers — the user must run
-      // the setup flow with a fresh setup token from the owner.
-      _lastError = 'Auth failed — re-register required '
-          '(token wiped after 3 consecutive 401s)';
+      // dead credential, and stop the timers.
+      //
+      // v0.1.29+124 (C6): graceful wording. A sustained 401 means the
+      // token was revoked or rotated (CLIENT_API §1.3/§6.5) — LOCAL
+      // DATA IS INTACT and stays intact; only cloud access is lost.
+      // Recovery paths that exist today: Restore with the previous
+      // client token, or a fresh Setup. (Pairing via account — C3 —
+      // will become the primary path.) startRestore() restarts the
+      // timers, so the state is fully recoverable from the UI.
+      _lastError = 'Cloud access revoked (3×401) — local data intact. '
+          'Recover via Restore (previous token) or Setup.';
       _status = CloudSyncStatus.authFailed;
       await _persistError(_lastError!);
       await _wipeTokenAndCursors();
@@ -2422,7 +2429,7 @@ class CloudSyncService extends ChangeNotifier {
   /// Read app version from the static value baked into the build.
   /// We don't have package_info_plus as a dep — pubspec-version is
   /// hardcoded here. Update when bumping. Off-by-one tolerated.
-  Future<String> _readAppVersion() async => '0.1.29+123';
+  Future<String> _readAppVersion() async => '0.1.29+124';
 }
 
 // ─── Internal exceptions ────────────────────────────────────────────

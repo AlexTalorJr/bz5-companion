@@ -4,6 +4,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
 
 import 'data/database.dart';
+import 'services/account_auth_service.dart';
 import 'services/app_diag_log.dart';
 import 'services/hal_telemetry_service.dart';
 import 'services/connection.dart';
@@ -146,6 +147,13 @@ class _BZ5AppState extends State<BZ5App> with WidgetsBindingObserver {
         ),
         ChangeNotifierProvider<BridgeDiagService>(
           create: (_) => BridgeDiagService(svc: widget.svc)..init(),
+        ),
+        // v0.1.29+124 (C2): account layer (email OTP, CLIENT_API §1.1).
+        // Independent of CloudSyncService/BridgeDiagService per the
+        // §0/§10 rule — phone-side credential, own lifecycle. init()
+        // is a local secure-storage read (no network).
+        ChangeNotifierProvider<AccountAuthService>(
+          create: (_) => AccountAuthService()..init(),
         ),
         // v0.1.29+64: HAL push-telemetry (SPEED overlapping pilot). Owns
         // the live HAL stream + source mode; feeds the DISPLAYED speedo

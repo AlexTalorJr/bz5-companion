@@ -3342,6 +3342,73 @@ if int(pv) >= 123:
 else:
     ok(f"Part AG skipped (build +{pv}, restore watermark fix lands in +123)")
 
+# ─────────────────── Part AH: +124 C2 account auth + C6 ─────────────────────
+if int(pv) >= 124:
+    _aa = (root / 'lib/services/account_auth_service.dart').read_text()
+    _acc = (root / 'lib/screens/account.dart').read_text()
+    _l10n2 = (root / 'lib/l10n/strings.dart').read_text()
+    _cs2 = (root / 'lib/services/cloud_sync_service.dart').read_text()
+    _ad = (root / 'lib/screens/app_diag.dart').read_text()
+    # AH1: rotation discipline — the NEW refresh token is persisted to
+    # secure storage BEFORE the new access token is exposed (crash-safe
+    # ordering), inside _adoptTokenPair.
+    _p_body = _aa.find('_adoptTokenPair(Map<String, dynamic> j)')
+    _p_w = _aa.find('_secureStorage.write(key: _kRefreshKey', _p_body)
+    _p_a = _aa.find('_accessToken = access', _p_body)
+    if -1 < _p_body < _p_w < _p_a:
+        ok('AH1 refresh rotation: new refresh persisted before access exposed')
+    else:
+        fail('AH1 refresh persist-before-access ordering broken')
+    # AH2: refresh_reused / invalid_refresh → session wipe, never retried.
+    if "refresh_reused" in _aa and "_wipeSession(" in _aa and \
+       "NEVER retried" in _aa:
+        ok('AH2 refresh_reused/invalid_refresh wipe session (no replay)')
+    else:
+        fail('AH2 refresh 401 handling missing')
+    # AH3: C6 account plane — exactly one refresh+retry on 401, then
+    # local sign-out (no loops).
+    if '_authorizedSend' in _aa and \
+       _aa.count('resp = await send(access)') >= 2 and \
+       "await _wipeSession(reason: 'session')" in _aa:
+        ok('AH3 authorized calls: one refresh + one retry on 401, then out')
+    else:
+        fail('AH3 account 401 retry discipline missing')
+    # AH4: anti-enumeration copy + spam hint + resend note in BOTH locales.
+    if _l10n2.count("'account.code_sent_neutral'") == 2 and \
+       'Спам' in _l10n2 and 'Spam folder' in _l10n2 and \
+       _l10n2.count("'account.resend_note'") == 2:
+        ok('AH4 anti-enumeration + spam-hint + resend-note copy (EN+RU)')
+    else:
+        fail('AH4 neutral OTP copy incomplete')
+    # AH5: resend cooldown wired (60 s constant + countdown in the UI).
+    if 'resendCooldown = Duration(seconds: 60)' in _aa and \
+       'resendSecondsLeft' in _acc:
+        ok('AH5 resend cooldown (60s) + UI countdown')
+    else:
+        fail('AH5 resend cooldown missing')
+    # AH6: devices list + revoke (§1.3) with a confirm dialog that states
+    # local data is kept.
+    if '/v2/devices' in _aa and '/revoke' in _aa and \
+       "revoke_confirm_body" in _acc and \
+       _l10n2.count("'account.revoke_confirm_body'") == 2:
+        ok('AH6 devices list + revoke with local-data-kept confirm')
+    else:
+        fail('AH6 devices/revoke wiring missing')
+    # AH7: C6 device plane — graceful 3x401 wording (data intact, recovery
+    # paths named), old dead-end wording gone.
+    if 'local data intact' in _cs2 and \
+       're-register required' not in _cs2:
+        ok('AH7 device-plane 3x401 message graceful (data intact + recovery)')
+    else:
+        fail('AH7 device-plane 401 wording not updated')
+    # AH8: AppDiag shows account-plane rows.
+    if "('account status', auth.status.name" in _ad:
+        ok('AH8 AppDiag exposes account status rows')
+    else:
+        fail('AH8 AppDiag account rows missing')
+else:
+    ok(f"Part AH skipped (build +{pv}, account auth lands in +124)")
+
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
 print(f"+35→+51 REGRESSION — build +{pv}")

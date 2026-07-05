@@ -12,6 +12,7 @@ import '../services/locale_service.dart';
 import '../services/native_detector.dart';
 import '../widgets/responsive.dart';
 import '../services/cost_settings.dart';
+import '../services/account_auth_service.dart';
 import '../services/cloud_sync_service.dart';
 import '../services/bridge_diag_service.dart';
 import 'about.dart';
@@ -20,6 +21,7 @@ import 'diagnostics.dart';
 import 'status.dart';
 import '../services/hal_telemetry_service.dart';
 import 'ecu_explorer.dart';
+import 'account.dart';
 import 'app_diag.dart';
 import 'hal_test.dart';
 import 'wide/raw_data_wide.dart';
@@ -1964,6 +1966,25 @@ class _CloudServicesScreenState extends State<CloudServicesScreen> {
         children: [
           _buildCloudHeader(cs),
           _buildCloudBody(context, cs),
+          // v0.1.29+124 (C2): account (email OTP) — phone-side login,
+          // device list + revoke. Separate credential from the device
+          // token; the cloud-backup block above is untouched by it.
+          Builder(builder: (context) {
+            final auth = context.watch<AccountAuthService>();
+            final signed = auth.isSignedIn;
+            return ListTile(
+              leading: Icon(Icons.account_circle_outlined,
+                  color: signed ? Colors.lightBlueAccent : Colors.grey),
+              title: Text(S.of('account.title')),
+              subtitle: Text(signed
+                  ? (auth.email ?? S.of('account.signed_in_as'))
+                  : S.of('account.settings_subtitle')),
+              trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const AccountScreen()),
+              ),
+            );
+          }),
         ],
       ),
     );
