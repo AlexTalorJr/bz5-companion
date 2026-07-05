@@ -335,6 +335,8 @@ class CloudSyncService extends ChangeNotifier {
   CloudRestoreProgress _restoreProgress = const CloudRestoreProgress();
   String? _restoreError;
   bool _restoreCancelRequested = false;
+  // v0.1.29+126: restore barrier — syncOnce is refused while true.
+  bool _restoreInProgress = false;
   DateTime? _lastRestoreAt;
 
   CloudSyncStatus _status = CloudSyncStatus.disconnected;
@@ -725,12 +727,16 @@ class CloudSyncService extends ChangeNotifier {
     // v0.1.29+20: "force full resync" means re-push everything; the
     // pushed-trip-id set is the main gate on trip push now.
     await prefs.remove(_kPushedTripIds);
-    // v0.1.29+117 (C1): replay the uuid mapping too — idempotent on the
-    // server (replay → already_set), keeps "replay everything" honest.
-    for (final e in _uuidMapEntities) {
-      await prefs.remove('$_kUuidMapWmPrefix$e');
-      _uuidMapWm[e] = 0;
-    }
+    // v0.1.29+126: uuid-map watermarks are deliberately NOT reset here
+    // anymore (they were in +117, when "replay everything" was assumed
+    // idempotent — mapping replay answered `already_set`). That
+    // assumption broke the moment a restore shifted local ids: on a
+    // post-restore DB a mapping replay pairs server client_ids with
+    // uuids of DIFFERENT rows — the exact mis-stamp/conflict storm
+    // from the 2026-07-04/05 field data. Mapping exists to attach
+    // uuids to LEGACY rows only; rows above the watermark are already
+    // uuid-known to the server via push v2, and replaying data pushes
+    // (the cursors reset above) is uuid-dedup-safe without it.
     _cursorTrip = 0;
     _cursorSnapshot = 0;
     _cursorSweep = 0;
@@ -750,6 +756,18 @@ class CloudSyncService extends ChangeNotifier {
     if (!_initialized) return;
     if (!_enabled || !isRegistered) return;
     if (_syncInProgress) return;
+    // v0.1.29+126: hard barrier — no sync while a restore is anywhere
+    // between identity swap and cursor/watermark advancement. Field
+    // evidence (phone, 2026-07-05 18:21): a syncOnce interleaved with
+    // the restore tail pushed 254 legacy duplicates (stale cursors,
+    // gate still off) and full-scanned the uuid mapping before the
+    // +123 watermark advance landed → 873+437 conflicts. The restore's
+    // own finally kicks a syncOnce after the barrier drops, so nothing
+    // is lost — only deferred a few seconds.
+    if (_restoreInProgress) {
+      debugPrint('CloudSync: syncOnce($reason) skipped — restore barrier');
+      return;
+    }
     _syncInProgress = true;
     _status = CloudSyncStatus.syncing;
     notifyListeners();
@@ -1456,6 +1474,27 @@ class CloudSyncService extends ChangeNotifier {
   Future<void> startRestore({required String oldClientToken}) async {
     if (isRestoring) return;
 
+    // v0.1.29+126: raise the restore barrier FIRST — syncOnce refuses
+    // to start while it is up (see the guard there). Cleared on every
+    // exit path (two early error returns + the finally).
+    _restoreInProgress = true;
+
+    // …and wait out any syncOnce already in flight, bounded: pushes
+    // racing a half-restored DB under mixed identity/cursors are
+    // exactly what minted the 2026-07-05 duplicate layer (254 rows).
+    var waitedMs = 0;
+    while (_syncInProgress && waitedMs < 30000) {
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+      waitedMs += 250;
+    }
+    if (_syncInProgress) {
+      debugPrint('CloudSync: restore barrier — in-flight sync still '
+          'running after ${waitedMs}ms, proceeding anyway');
+    } else if (waitedMs > 0) {
+      debugPrint(
+          'CloudSync: restore barrier — waited ${waitedMs}ms for sync');
+    }
+
     _restoreCancelRequested = false;
     _restoreStatus = CloudRestoreStatus.preflight;
     _restoreError = null;
@@ -1469,6 +1508,7 @@ class CloudSyncService extends ChangeNotifier {
     } catch (e) {
       _restoreError = e.toString();
       _restoreStatus = CloudRestoreStatus.error;
+      _restoreInProgress = false; // v0.1.29+126: drop the barrier
       notifyListeners();
       return;
     }
@@ -1481,6 +1521,7 @@ class CloudSyncService extends ChangeNotifier {
     } catch (e) {
       _restoreError = 'Secure storage write failed: $e';
       _restoreStatus = CloudRestoreStatus.error;
+      _restoreInProgress = false; // v0.1.29+126: drop the barrier
       notifyListeners();
       return;
     }
@@ -1727,6 +1768,11 @@ class CloudSyncService extends ChangeNotifier {
         debugPrint('CloudSync: could not persist restore error');
       }
     } finally {
+      // v0.1.29+126: drop the barrier BEFORE restarting the timers —
+      // the immediate syncOnce kicked by _restartTimers below is the
+      // deliberate post-restore sync, now safe: cursors and uuid-map
+      // watermarks are already advanced.
+      _restoreInProgress = false;
       _restoreCancelRequested = false;
       // v0.1.29+18: was `wasEnabled && isRegistered` — after the
       // success-path `_enabled = true` flip above, this is now the
@@ -2429,7 +2475,7 @@ class CloudSyncService extends ChangeNotifier {
   /// Read app version from the static value baked into the build.
   /// We don't have package_info_plus as a dep — pubspec-version is
   /// hardcoded here. Update when bumping. Off-by-one tolerated.
-  Future<String> _readAppVersion() async => '0.1.29+125';
+  Future<String> _readAppVersion() async => '0.1.29+126';
 }
 
 // ─── Internal exceptions ────────────────────────────────────────────
