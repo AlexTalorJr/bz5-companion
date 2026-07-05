@@ -3502,6 +3502,54 @@ if int(pv) >= 126:
 else:
     ok(f"Part AJ skipped (build +{pv}, restore barrier lands in +126)")
 
+# ─────────────────── Part AK: +127 C3 pairing ───────────────────────────────
+if int(pv) >= 127:
+    _cs = (root / 'lib/services/cloud_sync_service.dart').read_text()
+    _pair = (root / 'lib/screens/pairing.dart').read_text()
+    _aa2 = (root / 'lib/services/account_auth_service.dart').read_text()
+    _acc2 = (root / 'lib/screens/account.dart').read_text()
+    # AK1: device_code confinement — private field, no getter, never
+    # interpolated (not into diag lines, not into the UI).
+    if '_pairDeviceCode' in _cs and \
+       'get pairDeviceCode' not in _cs and \
+       '$_pairDeviceCode' not in _cs and \
+       '$_pairUserCode' not in _cs and \
+       'DeviceCode' not in _pair:
+        ok('AK1 device_code confined (no getter, no logs, no UI)')
+    else:
+        fail('AK1 device_code leaks (getter/log/UI)')
+    # AK2: scenario (b) — minted token persisted to secure storage
+    # BEFORE the auto-restore is kicked (exactly-once delivery).
+    _p_poll = _cs.find('Future<void> _pollPairStatus()')
+    _p_w = _cs.find('_secureStorage.write(key: _kTokenKey, value: minted)',
+                    _p_poll)
+    _p_r = _cs.find('unawaited(startRestore(oldClientToken: minted))',
+                    _p_poll)
+    if -1 < _p_poll < _p_w < _p_r:
+        ok('AK2 minted token persisted before auto-restore kick')
+    else:
+        fail('AK2 token persist / auto-restore ordering broken')
+    # AK3: poll honors the server interval and self-expires.
+    if 'Duration(seconds: _pairIntervalSec)' in _cs and \
+       '_finishPairing(CloudPairingStatus.expired)' in _cs:
+        ok('AK3 poll uses server interval + local expiry stop')
+    else:
+        fail('AK3 poll cadence/expiry wiring missing')
+    # AK4: phone-side claim wired end-to-end (§1.2 pair/claim).
+    if '/v2/pair/claim' in _aa2 and 'claimPairing' in _acc2 and \
+       "account.claim_invalid" in _acc2:
+        ok('AK4 pair/claim wired in account service + screen')
+    else:
+        fail('AK4 claim path missing')
+    # AK5: scenario (a) — live device sends its Bearer on pair/start.
+    if "if (isRegistered && _clientToken != null)" in _cs and \
+       "'Bearer $_clientToken'," in _cs:
+        ok('AK5 live device authenticates pair/start (token unchanged)')
+    else:
+        fail('AK5 scenario (a) Bearer on pair/start missing')
+else:
+    ok(f"Part AK skipped (build +{pv}, pairing lands in +127)")
+
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
 print(f"+35→+51 REGRESSION — build +{pv}")

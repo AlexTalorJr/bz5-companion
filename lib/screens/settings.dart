@@ -23,6 +23,7 @@ import '../services/hal_telemetry_service.dart';
 import 'ecu_explorer.dart';
 import 'account.dart';
 import 'app_diag.dart';
+import 'pairing.dart';
 import 'hal_test.dart';
 import 'wide/raw_data_wide.dart';
 import 'wide/native_explorer_wide.dart';
@@ -1985,6 +1986,18 @@ class _CloudServicesScreenState extends State<CloudServicesScreen> {
               ),
             );
           }),
+          // v0.1.29+127 (C3): device-side pairing (§1.2). Fresh device:
+          // code → claim on the phone → token minted → auto-restore.
+          // Live device: attaches this install to the account.
+          ListTile(
+            leading: const Icon(Icons.link, color: Colors.grey),
+            title: Text(S.of('pairing.title')),
+            subtitle: Text(S.of('pairing.settings_subtitle')),
+            trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const PairingScreen()),
+            ),
+          ),
         ],
       ),
     );
