@@ -404,6 +404,7 @@ class _SelectedTripDetail extends StatelessWidget {
               ecuTx: '790',
               did: '0005',
               halName: 'soc_precise|soc_display',
+              snapshotField: 'soc',
               color: Colors.greenAccent,
               unit: '%',
               svc: svc,
@@ -414,6 +415,7 @@ class _SelectedTripDetail extends StatelessWidget {
               ecuTx: '790',
               did: '002F',
               halName: 'probe_highest_temp|battery_temp_bigdata',
+              snapshotField: 'batteryTempC',
               color: Colors.orangeAccent,
               unit: '°C',
               // v0.1.26+9: NO valueTransform — registry already
@@ -433,6 +435,7 @@ class _SelectedTripDetail extends StatelessWidget {
               ecuTx: '740',
               did: '0022',
               halName: 'pack_voltage',
+              snapshotField: 'packVoltageV',
               color: Colors.yellowAccent,
               unit: 'V',
               // No valueTransform — registry decoder already applies scale.
@@ -675,6 +678,10 @@ class _ChartCard extends StatelessWidget {
   /// 'soc_precise|soc_display'. Null → OBD2 only (honest "no data" when
   /// the HAL stream has no equivalent signal, e.g. HV bus).
   final String? halName;
+  /// v0.1.29+128: snapshot fallback column — third loader stage for
+  /// restored trips (samples never uploaded, snapshots are). See the
+  /// trip_detail.dart twin for the long-form comment.
+  final String? snapshotField;
   const _ChartCard({
     required this.title,
     required this.tripId,
@@ -686,49 +693,65 @@ class _ChartCard extends StatelessWidget {
     this.valueTransform,
     this.big = false,
     this.halName,
+    this.snapshotField,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
+    return FutureBuilder<
+        ({List<({DateTime ts, double? v})> pts, bool fromSnapshots})>(
+      future: _loadPoints(),
+      builder: (context, snap) {
+        final data = snap.data;
+        return Card(
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Container(
-                  width: 8, height: 8,
-                  decoration: BoxDecoration(
-                    color: color,
-                    shape: BoxShape.circle,
-                  ),
+                Row(
+                  children: [
+                    Container(
+                      width: 8, height: 8,
+                      decoration: BoxDecoration(
+                        color: color,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Text(title.toUpperCase(),
+                        style: const TextStyle(
+                            fontSize: 11,
+                            letterSpacing: 1.5,
+                            color: Colors.grey)),
+                    // v0.1.29+128: source caption, snapshot-fed only.
+                    if (data != null && data.fromSnapshots) ...[
+                      const SizedBox(width: 6),
+                      Flexible(
+                        child: Text(
+                          S.of('trip.chart_src_snapshots'),
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                              fontSize: 10,
+                              color: Colors.grey.shade600),
+                        ),
+                      ),
+                    ],
+                  ],
                 ),
-                const SizedBox(width: 6),
-                Text(title.toUpperCase(),
-                    style: const TextStyle(
-                        fontSize: 11,
-                        letterSpacing: 1.5,
-                        color: Colors.grey)),
+                const SizedBox(height: 8),
+                Expanded(
+                  child: data == null
+                      ? const Center(
+                          child:
+                              CircularProgressIndicator(strokeWidth: 2))
+                      : _buildChart(data.pts),
+                ),
               ],
             ),
-            const SizedBox(height: 8),
-            Expanded(
-              child: FutureBuilder<List<({DateTime ts, double? v})>>(
-                future: _loadPoints(),
-                builder: (context, snap) {
-                  if (!snap.hasData) {
-                    return const Center(
-                        child: CircularProgressIndicator(strokeWidth: 2));
-                  }
-                  return _buildChart(snap.data!);
-                },
-              ),
-            ),
-          ],
-        ),
-      ),
+          ),
+        );
+      },
     );
   }
 
@@ -737,21 +760,60 @@ class _ChartCard extends StatelessWidget {
   /// none — a dongle-free HAL trip — fall back to the hal_samples series
   /// named [halName]. Both carry decoded physical values in the same
   /// units, so the chart body is source-agnostic.
-  Future<List<({DateTime ts, double? v})>> _loadPoints() async {
+  /// v0.1.29+128: third stage — snapshots by trip time window (restored
+  /// trips have no sample series at all). Twin of trip_detail.dart.
+  Future<({List<({DateTime ts, double? v})> pts, bool fromSnapshots})>
+      _loadPoints() async {
     final obd =
         await svc.db.getSamplesForTrip(tripId, ecuTx: ecuTx, did: did);
     if (obd.isNotEmpty) {
-      return [for (final s in obd) (ts: s.timestamp, v: s.numericValue)];
+      return (
+        pts: [for (final s in obd) (ts: s.timestamp, v: s.numericValue)],
+        fromSnapshots: false
+      );
     }
     final names = halName;
-    if (names == null) return const [];
-    for (final n in names.split('|')) {
-      final hal = await svc.db.getHalSamplesForTripByName(tripId, n);
-      if (hal.isNotEmpty) {
-        return [for (final s in hal) (ts: s.timestamp, v: s.numericValue)];
+    if (names != null) {
+      for (final n in names.split('|')) {
+        final hal = await svc.db.getHalSamplesForTripByName(tripId, n);
+        if (hal.isNotEmpty) {
+          return (
+            pts: [
+              for (final s in hal) (ts: s.timestamp, v: s.numericValue)
+            ],
+            fromSnapshots: false
+          );
+        }
       }
     }
-    return const [];
+    final field = snapshotField;
+    if (field == null) return (pts: const [], fromSnapshots: false);
+    final trip = await svc.db.getTrip(tripId);
+    if (trip == null) return (pts: const [], fromSnapshots: false);
+    // Time-window query, not snapshots.trip_id — FK linkage doesn't
+    // survive a wipe/restore, captured_at does.
+    final to = trip.endedAt ?? trip.lastAliveTs ?? DateTime.now();
+    final snaps = await svc.db.getSnapshotsInRange(trip.startedAt, to);
+    // chargingPowerKw is 0.0 (not NULL) outside charging — see the
+    // trip_detail.dart twin comment. No real charging in the window →
+    // "no data", not a flat zero line.
+    if (field == 'chargingPowerKw') {
+      final hasCharge = snaps.any((s) =>
+          (s.isCharging ?? false) || ((s.chargingPowerKw ?? 0) > 0));
+      if (!hasCharge) return (pts: const [], fromSnapshots: false);
+    }
+    final pts = <({DateTime ts, double? v})>[];
+    for (final s in snaps) {
+      final v = switch (field) {
+        'soc' => s.soc,
+        'batteryTempC' => s.batteryTempC,
+        'packVoltageV' => s.packVoltageV,
+        'chargingPowerKw' => s.chargingPowerKw,
+        _ => null,
+      };
+      if (v != null) pts.add((ts: s.capturedAt, v: v));
+    }
+    return (pts: pts, fromSnapshots: pts.isNotEmpty);
   }
 
   Widget _buildChart(List<({DateTime ts, double? v})> samples) {

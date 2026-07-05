@@ -105,6 +105,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                 ecuTx: '790',
                 did: '1FFD',
                 halName: 'soc_precise|soc_display',
+                snapshotField: 'soc',
                 color: Colors.greenAccent,
                 unit: '%',
                 svc: svc,
@@ -116,6 +117,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                 ecuTx: '790',
                 did: '002F',
                 halName: 'probe_highest_temp|battery_temp_bigdata',
+                snapshotField: 'batteryTempC',
                 color: Colors.orangeAccent,
                 unit: '°C',
                 // v0.1.26+9: NO valueTransform — the registry decoder for
@@ -135,6 +137,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                 ecuTx: '740',
                 did: '0022',
                 halName: 'pack_voltage',
+                snapshotField: 'packVoltageV',
                 color: Colors.yellowAccent,
                 unit: 'V',
                 // No valueTransform — registry decoder already applies scale 0.025
@@ -143,6 +146,18 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                 svc: svc,
               ),
               const SizedBox(height: 12),
+              // v0.1.29+128: snapshot-only chart — appears only when the
+              // trip's snapshot window recorded charging power (carries
+              // its own bottom gap, zero footprint when hidden).
+              _ChartCard(
+                title: S.of('trip.charging_power'),
+                tripId: trip.id,
+                snapshotField: 'chargingPowerKw',
+                hideWhenEmpty: true,
+                color: Colors.cyanAccent,
+                unit: 'kW',
+                svc: svc,
+              ),
               _PowerBarCard(trip: trip, svc: svc),
             ],
           );
@@ -192,6 +207,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
           ecuTx: '790',
           did: '1FFD',
           halName: 'soc_precise|soc_display',
+          snapshotField: 'soc',
           color: Colors.greenAccent,
           unit: '%',
           svc: svc,
@@ -204,6 +220,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
             ecuTx: '790',
             did: '002F',
             halName: 'probe_highest_temp|battery_temp_bigdata',
+            snapshotField: 'batteryTempC',
             color: Colors.orangeAccent,
             unit: '°C',
             // v0.1.26+9: see narrow-layout comment — registry already
@@ -216,12 +233,24 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
             ecuTx: '740',
             did: '0022',
             halName: 'pack_voltage',
+            snapshotField: 'packVoltageV',
             color: Colors.yellowAccent,
             unit: 'V',
             svc: svc,
           ),
         ),
         const SizedBox(height: 12),
+        // v0.1.29+128: snapshot-only charging-power chart (see the
+        // narrow-layout comment). Zero footprint when hidden.
+        _ChartCard(
+          title: S.of('trip.charging_power'),
+          tripId: trip.id,
+          snapshotField: 'chargingPowerKw',
+          hideWhenEmpty: true,
+          color: Colors.cyanAccent,
+          unit: 'kW',
+          svc: svc,
+        ),
         _PowerBarCard(trip: trip, svc: svc),
       ],
     );
@@ -996,8 +1025,10 @@ class _MetricRow extends StatelessWidget {
 class _ChartCard extends StatelessWidget {
   final String title;
   final int tripId;
-  final String ecuTx;
-  final String did;
+  // v0.1.29+128: nullable — a snapshot-only chart (charging power) has
+  // no OBD2 series at all. All pre-existing call sites still pass both.
+  final String? ecuTx;
+  final String? did;
   final Color color;
   final String unit;
   final double Function(double)? valueTransform;
@@ -1006,88 +1037,174 @@ class _ChartCard extends StatelessWidget {
   /// twin in history_wide.dart for the long-form comment. '|' separates
   /// alternates tried in order; null → OBD2 only.
   final String? halName;
+  /// v0.1.29+128: snapshot fallback — Snapshots column to chart when the
+  /// trip has neither OBD2 nor hal_samples series (typical for a trip
+  /// restored from cloud: samples are never uploaded, snapshots are).
+  /// One of 'soc' | 'batteryTempC' | 'packVoltageV' | 'chargingPowerKw';
+  /// null → no snapshot stage. Snapshot-sourced charts carry a source
+  /// caption (~1/min cadence is visibly coarser than live samples).
+  final String? snapshotField;
+  /// v0.1.29+128: collapse to nothing instead of a "no data" card. Used
+  /// by the charging-power chart, which only exists for trips whose
+  /// snapshots actually recorded charging.
+  final bool hideWhenEmpty;
   const _ChartCard({
     required this.title,
     required this.tripId,
-    required this.ecuTx,
-    required this.did,
+    this.ecuTx,
+    this.did,
     required this.color,
     required this.unit,
     required this.svc,
     this.valueTransform,
     this.halName,
+    this.snapshotField,
+    this.hideWhenEmpty = false,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(14),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
+    return FutureBuilder<
+        ({List<({DateTime ts, double? v})> pts, bool fromSnapshots})>(
+      future: _loadPoints(),
+      builder: (context, snap) {
+        final data = snap.data;
+        if (hideWhenEmpty && (data == null || data.pts.isEmpty)) {
+          // Loading or genuinely absent — either way, no placeholder
+          // frame (honesty rule: no widget without flowing data).
+          return const SizedBox.shrink();
+        }
+        final card = Card(
+          child: Padding(
+            padding: const EdgeInsets.all(14),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Container(
-                  width: 8, height: 8,
-                  decoration: BoxDecoration(
-                    color: color,
-                    shape: BoxShape.circle,
-                  ),
+                Row(
+                  children: [
+                    Container(
+                      width: 8, height: 8,
+                      decoration: BoxDecoration(
+                        color: color,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Text(title.toUpperCase(),
+                        style: const TextStyle(
+                            fontSize: 11,
+                            letterSpacing: 1.5,
+                            color: Colors.grey)),
+                    // v0.1.29+128: source caption — only when the curve
+                    // is built from snapshots, so live-sample charts look
+                    // exactly as before.
+                    if (data != null && data.fromSnapshots) ...[
+                      const SizedBox(width: 6),
+                      Flexible(
+                        child: Text(
+                          S.of('trip.chart_src_snapshots'),
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                              fontSize: 10,
+                              color: Colors.grey.shade600),
+                        ),
+                      ),
+                    ],
+                  ],
                 ),
-                const SizedBox(width: 6),
-                Text(title.toUpperCase(),
-                    style: const TextStyle(
-                        fontSize: 11,
-                        letterSpacing: 1.5,
-                        color: Colors.grey)),
+                const SizedBox(height: 8),
+                SizedBox(
+                  height: 160,
+                  child: data == null
+                      ? const Center(
+                          child:
+                              CircularProgressIndicator(strokeWidth: 2))
+                      : data.pts.isEmpty
+                          ? Center(
+                              child: Text(S.of('common.no_data'),
+                                  style: TextStyle(
+                                      color: Colors.grey.shade600,
+                                      fontSize: 12)),
+                            )
+                          : _buildChart(data.pts),
+                ),
               ],
             ),
-            const SizedBox(height: 8),
-            SizedBox(
-              height: 160,
-              child: FutureBuilder<List<({DateTime ts, double? v})>>(
-                future: _loadPoints(),
-                builder: (context, snap) {
-                  if (!snap.hasData) {
-                    return const Center(
-                        child: CircularProgressIndicator(strokeWidth: 2));
-                  }
-                  final samples = snap.data!;
-                  if (samples.isEmpty) {
-                    return Center(
-                      child: Text(S.of('common.no_data'),
-                          style: TextStyle(
-                              color: Colors.grey.shade600, fontSize: 12)),
-                    );
-                  }
-                  return _buildChart(samples);
-                },
-              ),
-            ),
-          ],
-        ),
-      ),
+          ),
+        );
+        // hideWhenEmpty charts are inserted without surrounding spacer
+        // widgets (a hidden card must leave zero gap), so the visible
+        // branch carries its own bottom margin.
+        return hideWhenEmpty
+            ? Padding(
+                padding: const EdgeInsets.only(bottom: 12), child: card)
+            : card;
+      },
     );
   }
 
   /// v0.1.29+111: unified point loader — OBD2 first, hal_samples fallback
   /// for dongle-free trips. Twin of the loader in history_wide.dart.
-  Future<List<({DateTime ts, double? v})>> _loadPoints() async {
-    final obd =
-        await svc.db.getSamplesForTrip(tripId, ecuTx: ecuTx, did: did);
-    if (obd.isNotEmpty) {
-      return [for (final s in obd) (ts: s.timestamp, v: s.numericValue)];
-    }
-    final names = halName;
-    if (names == null) return const [];
-    for (final n in names.split('|')) {
-      final hal = await svc.db.getHalSamplesForTripByName(tripId, n);
-      if (hal.isNotEmpty) {
-        return [for (final s in hal) (ts: s.timestamp, v: s.numericValue)];
+  /// v0.1.29+128: third stage — snapshots by the trip's time window, for
+  /// restored trips where both sample series are gone (never uploaded).
+  Future<({List<({DateTime ts, double? v})> pts, bool fromSnapshots})>
+      _loadPoints() async {
+    final tx = ecuTx;
+    final d = did;
+    if (tx != null && d != null) {
+      final obd = await svc.db.getSamplesForTrip(tripId, ecuTx: tx, did: d);
+      if (obd.isNotEmpty) {
+        return (
+          pts: [for (final s in obd) (ts: s.timestamp, v: s.numericValue)],
+          fromSnapshots: false
+        );
       }
     }
-    return const [];
+    final names = halName;
+    if (names != null) {
+      for (final n in names.split('|')) {
+        final hal = await svc.db.getHalSamplesForTripByName(tripId, n);
+        if (hal.isNotEmpty) {
+          return (
+            pts: [
+              for (final s in hal) (ts: s.timestamp, v: s.numericValue)
+            ],
+            fromSnapshots: false
+          );
+        }
+      }
+    }
+    final field = snapshotField;
+    if (field == null) return (pts: const [], fromSnapshots: false);
+    final trip = await svc.db.getTrip(tripId);
+    if (trip == null) return (pts: const [], fromSnapshots: false);
+    // Time-window query, NOT snapshots.trip_id: restored snapshots keep
+    // captured_at but their local FK linkage doesn't survive the wipe.
+    final to = trip.endedAt ?? trip.lastAliveTs ?? DateTime.now();
+    final snaps = await svc.db.getSnapshotsInRange(trip.startedAt, to);
+    // chargingPowerKw is written as 0.0 (not NULL) whenever the car
+    // isn't charging — verified against the snapshot writer in
+    // connection.dart. Without this guard the charging chart would be
+    // a flat zero line on EVERY trip and never hide. Real charging in
+    // the window → keep the series whole (zero shoulders are the
+    // honest curve shape); none → treat as "no data".
+    if (field == 'chargingPowerKw') {
+      final hasCharge = snaps.any((s) =>
+          (s.isCharging ?? false) || ((s.chargingPowerKw ?? 0) > 0));
+      if (!hasCharge) return (pts: const [], fromSnapshots: false);
+    }
+    final pts = <({DateTime ts, double? v})>[];
+    for (final s in snaps) {
+      final v = switch (field) {
+        'soc' => s.soc,
+        'batteryTempC' => s.batteryTempC,
+        'packVoltageV' => s.packVoltageV,
+        'chargingPowerKw' => s.chargingPowerKw,
+        _ => null,
+      };
+      if (v != null) pts.add((ts: s.capturedAt, v: v));
+    }
+    return (pts: pts, fromSnapshots: pts.isNotEmpty);
   }
 
   Widget _buildChart(List<({DateTime ts, double? v})> samples) {

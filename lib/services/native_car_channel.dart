@@ -46,6 +46,20 @@ class NativeCarChannel {
     }
   }
 
+  /// v0.1.29+128: stable hardware fingerprint (Settings.Secure.ANDROID_ID).
+  /// Sent with pair/start so the server can re-attach a reinstalled
+  /// device to its existing identity instead of minting a new one.
+  /// Null on any failure — pairing must proceed without it.
+  Future<String?> hwFingerprint() async {
+    try {
+      final r = await _method.invokeMethod<String>('hwFingerprint');
+      return (r == null || r.isEmpty) ? null : r;
+    } catch (_) {
+      // notImplemented / platform error → field simply not sent.
+      return null;
+    }
+  }
+
   /// Returns the VIN, or null if unavailable.
   /// [fresh] forces a CAN-side fetch (slower); default uses the
   /// framework's cached value.

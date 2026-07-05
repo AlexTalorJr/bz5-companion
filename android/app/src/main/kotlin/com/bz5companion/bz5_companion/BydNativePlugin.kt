@@ -2,6 +2,7 @@ package com.bz5companion.bz5_companion
 
 import android.app.Activity
 import android.content.Context
+import android.provider.Settings
 import androidx.core.app.ActivityCompat
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
@@ -228,6 +229,12 @@ class BydNativePlugin : FlutterPlugin, ActivityAware, MethodChannel.MethodCallHa
                 // provider. Returns a key→value String map (one table). Phone
                 // has no such provider, so this only yields data on the HU.
                 "queryCarStatus"       -> handleQueryCarStatus(call, result)
+                // v0.1.29+128: stable hardware identity for cloud pairing.
+                // ANDROID_ID survives app uninstall+reinstall (per-app
+                // signing key scope; our keystore is constant across CI
+                // builds), dies only on factory reset — exactly the
+                // lifetime the server-side re-attach needs.
+                "hwFingerprint"        -> result.success(getHwFingerprint())
                 else                -> result.notImplemented()
             }
         } catch (t: Throwable) {
@@ -237,6 +244,18 @@ class BydNativePlugin : FlutterPlugin, ActivityAware, MethodChannel.MethodCallHa
     }
 
     // ─── dispatch handlers ────────────────────────────────────────────────
+
+    /** v0.1.29+128: Settings.Secure.ANDROID_ID or null when unreadable/blank.
+     *  No permission needed on API 26+; wrapped anyway — a DiLink build
+     *  quirk must degrade to "field absent", never crash pairing. */
+    private fun getHwFingerprint(): String? = try {
+        val id = Settings.Secure.getString(
+            appContext.contentResolver, Settings.Secure.ANDROID_ID)
+        if (id.isNullOrBlank()) null else id
+    } catch (t: Throwable) {
+        BydLogger.w(TAG, "hwFingerprint unavailable: ${t.message}")
+        null
+    }
 
     private fun handleDetectVin(call: MethodCall, result: MethodChannel.Result) {
         // Fresh = pulls from CAN (slower, ~tens of ms);
