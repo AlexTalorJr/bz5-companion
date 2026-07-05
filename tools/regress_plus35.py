@@ -3461,6 +3461,47 @@ if int(pv) >= 125:
 else:
     ok(f"Part AI skipped (build +{pv}, idempotent migrations land in +125)")
 
+# ─────────────────── Part AJ: +126 restore barrier ──────────────────────────
+if int(pv) >= 126:
+    _cs = (root / 'lib/services/cloud_sync_service.dart').read_text()
+    # AJ1: syncOnce refuses to run while the restore barrier is up, and
+    # the guard sits BEFORE _syncInProgress is taken.
+    _p_g = _cs.find('if (_restoreInProgress) {')
+    _p_t = _cs.find('_syncInProgress = true;')
+    if -1 < _p_g < _p_t and 'restore barrier' in _cs:
+        ok('AJ1 syncOnce guarded by restore barrier (before in-progress take)')
+    else:
+        fail('AJ1 restore barrier guard in syncOnce missing/misplaced')
+    # AJ2: barrier raised at startRestore entry, dropped on ALL exit
+    # paths (2 early error returns + finally), and dropped BEFORE the
+    # timers restart in the finally block.
+    _p_fin = _cs.find('} finally {\n      // v0.1.29+126: drop the barrier')
+    _p_drop = _cs.find('_restoreInProgress = false;', _p_fin)
+    _p_rt = _cs.find('_restartTimers();', _p_fin)
+    if _cs.count('_restoreInProgress = true;') == 1 and \
+       _cs.count('_restoreInProgress = false;') == 4 and \
+       -1 < _p_fin < _p_drop < _p_rt:
+        ok('AJ2 barrier raised once, dropped on all 3 exits, before timers')
+    else:
+        fail('AJ2 barrier lifecycle wrong')
+    # AJ3: startRestore waits out an in-flight syncOnce (bounded).
+    if 'while (_syncInProgress && waitedMs < 30000)' in _cs:
+        ok('AJ3 restore waits out in-flight sync (bounded 30s)')
+    else:
+        fail('AJ3 in-flight sync wait missing')
+    # AJ4: forceFullResync keeps uuid-map watermarks (mapping replay on
+    # a post-restore DB mis-pairs uuids — 2026-07-04/05 field data).
+    _ffr2 = _cs.find('Future<void> forceFullResync')
+    _ffr2_end = _cs.find('notifyListeners();', _ffr2)
+    _ffr2_body = _cs[_ffr2:_ffr2_end] if _ffr2 != -1 else ''
+    if _ffr2 != -1 and '_kUuidMapWmPrefix' not in _ffr2_body and \
+       '_uuidMapWm[e] = 0' not in _ffr2_body:
+        ok('AJ4 forceFullResync preserves uuid-map watermarks')
+    else:
+        fail('AJ4 forceFullResync still wipes watermarks')
+else:
+    ok(f"Part AJ skipped (build +{pv}, restore barrier lands in +126)")
+
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
 print(f"+35→+51 REGRESSION — build +{pv}")
