@@ -24,19 +24,21 @@ import '../widgets/responsive.dart';
 /// New structure, three sections (see TrendAggregator for the maths):
 ///   1. Period totals      — distance / energy / money / regen as numbers.
 ///   2. Cumulative & cost  — running distance curve + per-month cost bars.
-///   3. Efficiency & health— consumption-per-trip with a smoothed trend
-///                           line, regen share, SOH, real range per 100%.
+///   3. Efficiency & health— v0.1.31+130 (Trends v2): weighted consumption
+///                           and regen-share BARS per calendar bucket
+///                           (day for the 30d window, month for 1y/all),
+///                           SOH combo (pale BMS line + Ah-method dots
+///                           from the soh_history table), cell-voltage
+///                           spread per trip.
 ///
 /// Period totals & per-period charts come from the Trips table (via
-/// TrendAggregator); SOH still comes from Snapshots (it has no home on
-/// Trips). Money uses CostSettings — hidden entirely if not configured.
+/// TrendAggregator); BMS SOH still comes from Snapshots, the Ah-method
+/// SOH series from soh_history. Money uses CostSettings — hidden
+/// entirely if not configured.
 ///
-/// Smoothing: slow health/efficiency lines use fl_chart's curve with
-/// preventCurveOverShooting (so a Bézier can't dip a non-negative
-/// quantity below its real floor). The per-trip consumption scatter is
-/// smoothed with a moving average computed in the aggregator rather than
-/// a render flag, because the sawtooth there is real trip-to-trip
-/// variance, not a rendering artefact.
+/// Charts stay touch-free (BarTouchData(enabled: false)) — the +44/+45
+/// lesson: fl_chart 0.68 tooltip API blanked cards in release builds on
+/// the head unit. Values live in static footers instead.
 class TrendsScreen extends StatefulWidget {
   const TrendsScreen({super.key});
 
@@ -96,22 +98,39 @@ class _TrendsScreenState extends State<TrendsScreen> {
                 return const Center(child: CircularProgressIndicator());
               }
               final trips = tripSnap.data!;
+              // v0.1.31+130: bucket granularity follows the window — a
+              // 30-day span reads as daily bars, a year+ as monthly.
+              final bucket = _window == _Window.d30
+                  ? TrendBucket.day
+                  : TrendBucket.month;
               final agg = TrendAggregator.build(
                 trips,
                 costPerKwh: cost.costPerKwh,
+                bucket: bucket,
               );
 
               if (agg.isEmpty) {
                 return _emptyState();
               }
 
-              // SOH comes from snapshots, separately — fetch them too and
-              // merge the SOH curve in once both futures resolve.
+              // SOH comes from snapshots and (v0.1.31+130) the Ah-method
+              // history — fetch both and merge once resolved. Nested
+              // builders with `data ?? const []` keep the original
+              // loading behaviour: sections render immediately off the
+              // trips aggregate, health series pop in when ready.
               return FutureBuilder<List<Snapshot>>(
                 future: svc.db.getSnapshotsInRange(from, now),
                 builder: (context, snapSnap) {
                   final snapshots = snapSnap.data ?? const <Snapshot>[];
-                  return _buildSections(context, agg, snapshots, cost);
+                  return FutureBuilder<List<SohHistoryData>>(
+                    future: svc.db.getSohHistoryInRange(from, now),
+                    builder: (context, sohSnap) {
+                      final sohHistory =
+                          sohSnap.data ?? const <SohHistoryData>[];
+                      return _buildSections(context, agg, trips, snapshots,
+                          sohHistory, cost, bucket);
+                    },
+                  );
                 },
               );
             },
@@ -147,12 +166,16 @@ class _TrendsScreenState extends State<TrendsScreen> {
   Widget _buildSections(
     BuildContext context,
     TrendAggregate agg,
+    List<Trip> trips,
     List<Snapshot> snapshots,
+    List<SohHistoryData> sohHistory,
     CostSettings cost,
+    TrendBucket bucket,
   ) {
     final isWide = LayoutBreakpoints.useHeadUnitLayout(context);
 
-    // SOH curve straight off snapshots (the one metric with no Trips home).
+    // BMS-reported SOH straight off snapshots — the pale context line of
+    // the v0.1.31+130 SOH combo card.
     // v0.1.29+44: keep x as absolute epoch-ms (was: subtracted t0 offset).
     // The date axis on bottomTitles below needs real wall-clock x values to
     // format as dates; the previous t0-relative offset would have produced
@@ -166,6 +189,23 @@ class _TrendsScreenState extends State<TrendsScreen> {
             .add(FlSpot(s.capturedAt.millisecondsSinceEpoch.toDouble(), v));
       }
     }
+
+    // v0.1.31+130: Ah-method (coulomb-counted) SOH points from the
+    // append-only soh_history — the foreground dots of the combo card.
+    final ahPoints = <FlSpot>[
+      for (final h in sohHistory)
+        FlSpot(h.computedAt.millisecondsSinceEpoch.toDouble(), h.sohAhPct),
+    ];
+
+    // v0.1.31+130: cell voltage spread per trip. Slow-moving pack-health
+    // quantity, so a line over per-trip values is honest (unlike the old
+    // per-trip consumption). Null / non-positive values are skipped.
+    final cellSpreadPts = <TrendPoint>[
+      for (final t in trips)
+        if (t.maxCellSpreadMv != null && t.maxCellSpreadMv! > 0)
+          TrendPoint(t.startedAt.millisecondsSinceEpoch.toDouble(),
+              t.maxCellSpreadMv!),
+    ];
 
     // v0.1.29+45: pre-compute the per-card footers so every chart shell
     // ends with one meaningful number ("итого N", "средн. X", "было →
@@ -192,53 +232,61 @@ class _TrendsScreenState extends State<TrendsScreen> {
     // Weighted average consumption: total energy / total distance × 100.
     // More honest than averaging per-trip consumption (which would
     // overweight short trips). Falls back to '—' when either total is
-    // missing.
+    // missing. v0.1.31+130: the derived full-charge range (estRangeKm)
+    // rides along in the same footer — deliberately a number, not a chart.
     final avgCons = (agg.totalDistanceKm > 0 && agg.totalEnergyKwh > 0)
         ? agg.totalEnergyKwh / agg.totalDistanceKm * 100
         : null;
+    final estRange = agg.estRangeKm;
     final consFooter = avgCons == null
         ? '—'
         : S
-            .of('trends.avg_cons_fmt')
-            .replaceFirst('{x}', avgCons.toStringAsFixed(1))
-            .replaceFirst('{n}', '${agg.consumptionPerTrip.length}');
+                .of('trends.avg_cons_period_fmt')
+                .replaceFirst('{x}', avgCons.toStringAsFixed(1)) +
+            (estRange == null
+                ? ''
+                : ' · ${S.of('trends.est_range_fmt').replaceFirst('{n}', '${estRange.round()}')}');
 
-    final avgRegen = agg.regenSharePct.isEmpty
+    final avgRegen = agg.regenSharePerPeriod.isEmpty
         ? null
-        : agg.regenSharePct
-                .map((p) => p.y)
+        : agg.regenSharePerPeriod
+                .map((p) => p.value)
                 .reduce((a, b) => a + b) /
-            agg.regenSharePct.length;
+            agg.regenSharePerPeriod.length;
     final regenFooter = avgRegen == null
         ? '—'
         : S
-            .of('trends.avg_regen_fmt')
+            .of('trends.avg_regen_period_fmt')
             .replaceFirst('{x}', avgRegen.toStringAsFixed(1))
-            .replaceFirst('{n}', '${agg.regenSharePct.length}');
+            .replaceFirst('{n}', '${agg.regenSharePerPeriod.length}');
 
-    // SOH "было → сейчас": pulls the chronological first and last SOH
-    // sample from the snapshot stream. Both are non-null here because
-    // sohPoints is built by filtering out nulls upstream.
-    final sohWas = sohPoints.isEmpty ? null : sohPoints.first.y;
-    final sohNow = sohPoints.isEmpty ? null : sohPoints.last.y;
-    final sohFooter = (sohWas == null || sohNow == null)
-        ? '—'
+    // v0.1.31+130 SOH combo footer: Ah-method "was → now" when the history
+    // has points, "accumulating" until the first qualifying session; the
+    // current BMS figure always closes the line ('—' if no snapshots).
+    final bmsNow =
+        sohPoints.isEmpty ? '—' : sohPoints.last.y.toStringAsFixed(1);
+    final sohFooter = ahPoints.isEmpty
+        ? S.of('trends.soh_accumulating').replaceFirst('{c}', bmsNow)
         : S
-            .of('trends.soh_fmt')
-            .replaceFirst('{a}', sohWas.toStringAsFixed(1))
-            .replaceFirst('{b}', sohNow.toStringAsFixed(1))
-            .replaceFirst('{n}', '${sohPoints.length}');
+            .of('trends.soh_combo_fmt')
+            .replaceFirst('{a}', ahPoints.first.y.toStringAsFixed(1))
+            .replaceFirst('{b}', ahPoints.last.y.toStringAsFixed(1))
+            .replaceFirst('{n}', '${ahPoints.length}')
+            .replaceFirst('{c}', bmsNow);
 
-    // v0.1.29+45: SOH y-axis bounds. Hardcoding 95-100% would make a
-    // 95% pack "off-screen"; floating with the data would make 0.5%
-    // wobble look catastrophic. Adaptive: floor at min(measured, 95),
-    // ceiling at max(measured, 100). A healthy pack lives in 95-100;
-    // a worn one extends the chart downward without clipping.
+    // v0.1.29+45 / v0.1.31+130: SOH y-axis bounds over BOTH series.
+    // Hardcoding 95-100% would make a 95% pack "off-screen"; floating
+    // with the data would make 0.5% wobble look catastrophic. Adaptive:
+    // floor at min(measured, 95), ceiling at max(measured, 100).
     double? sohMinY, sohMaxY;
-    if (sohPoints.isNotEmpty) {
+    if (sohPoints.isNotEmpty || ahPoints.isNotEmpty) {
       var measuredMin = double.infinity;
       var measuredMax = double.negativeInfinity;
       for (final p in sohPoints) {
+        if (p.y < measuredMin) measuredMin = p.y;
+        if (p.y > measuredMax) measuredMax = p.y;
+      }
+      for (final p in ahPoints) {
         if (p.y < measuredMin) measuredMin = p.y;
         if (p.y > measuredMax) measuredMax = p.y;
       }
@@ -246,20 +294,13 @@ class _TrendsScreenState extends State<TrendsScreen> {
       sohMaxY = measuredMax > 100.0 ? measuredMax + 0.5 : 100.0;
     }
 
-    final avgRange = agg.realRangePer100.isEmpty
-        ? null
-        : agg.realRangePer100.map((p) => p.y).reduce((a, b) => a + b) /
-            agg.realRangePer100.length;
-    final lastRange = agg.realRangePer100.isEmpty
-        ? null
-        : agg.realRangePer100.last.y;
-    final rangeFooter = (avgRange == null || lastRange == null)
+    final spreadFooter = cellSpreadPts.isEmpty
         ? '—'
         : S
-            .of('trends.range_fmt')
-            .replaceFirst('{a}', '${avgRange.round()}')
-            .replaceFirst('{b}', '${lastRange.round()}')
-            .replaceFirst('{n}', '${agg.realRangePer100.length}');
+            .of('trends.cell_spread_fmt')
+            .replaceFirst('{a}', cellSpreadPts.first.y.toStringAsFixed(1))
+            .replaceFirst('{b}', cellSpreadPts.last.y.toStringAsFixed(1))
+            .replaceFirst('{n}', '${cellSpreadPts.length}');
 
     final children = <Widget>[
       // ── Section 1: period totals ──
@@ -289,59 +330,57 @@ class _TrendsScreenState extends State<TrendsScreen> {
             bars: agg.costPerMonth,
             color: Colors.amberAccent,
             currency: cost.currencySymbol,
+            // Cost is ALWAYS monthly (money per day is noise) — the axis
+            // and text fallback keep month labels regardless of window.
+            bucket: TrendBucket.month,
             footer: costFooter,
           ),
       ]),
       const SizedBox(height: 20),
 
-      // ── Section 3: efficiency ──
+      // ── Section 3: efficiency (v0.1.31+130: period bars) ──
       _SectionLabel(S.of('trends.sec_efficiency')),
       _chartGrid(isWide, [
-        _ScatterTrendCard(
-          title: S.of('trends.avg_cons'),
-          subtitle: S.of('trends.avg_cons_sub'),
-          dots: agg.consumptionPerTrip,
-          trend: agg.consumptionTrendLine,
+        _BarCard(
+          title: S.of('trends.cons_by_period'),
+          subtitle: S.of('trends.cons_by_period_sub'),
+          bars: agg.consumptionPerPeriod,
           color: Colors.tealAccent,
           unit: S.of('trends.kwh100'),
+          bucket: bucket,
           footer: consFooter,
         ),
-        _LineCard(
-          title: S.of('trends.regen_share'),
-          subtitle: S.of('trends.regen_share_sub'),
-          points: agg.regenSharePct,
+        _BarCard(
+          title: S.of('trends.regen_by_period'),
+          subtitle: S.of('trends.regen_by_period_sub'),
+          bars: agg.regenSharePerPeriod,
           color: Colors.greenAccent,
           unit: '%',
-          curved: true,
+          bucket: bucket,
           footer: regenFooter,
         ),
       ]),
       const SizedBox(height: 20),
 
-      // ── Section 3b: battery health ──
+      // ── Section 3b: battery health (v0.1.31+130: combo + spread) ──
       _SectionLabel(S.of('trends.sec_health')),
       _chartGrid(isWide, [
-        _LineCard(
-          title: 'SOH',
-          subtitle: S.of('trends.soh_sub'),
-          points: sohPoints
-              .map((s) => TrendPoint(s.x, s.y))
-              .toList(growable: false),
-          color: Colors.lightGreenAccent,
-          unit: '%',
-          curved: true,
+        _SohComboCard(
+          bmsPoints: sohPoints,
+          ahPoints: ahPoints,
           footer: sohFooter,
           forcedMinY: sohMinY,
           forcedMaxY: sohMaxY,
         ),
         _LineCard(
-          title: S.of('trends.real_range'),
-          subtitle: S.of('trends.real_range_sub'),
-          points: agg.realRangePer100,
-          color: Colors.purpleAccent,
-          unit: S.of('trends.km'),
+          title: S.of('trends.cell_spread'),
+          subtitle: S.of('trends.cell_spread_sub'),
+          points: cellSpreadPts,
+          color: Colors.orangeAccent,
+          unit: S.of('trends.mv'),
           curved: true,
-          footer: rangeFooter,
+          showDots: true,
+          footer: spreadFooter,
         ),
       ]),
     ];
@@ -572,6 +611,10 @@ class _LineCard extends StatelessWidget {
   // below). Null → auto-bounds from data with the old padding rule.
   final double? forcedMinY;
   final double? forcedMaxY;
+  // v0.1.31+130: draw a marker on every point (cell-spread card — the
+  // per-trip samples are sparse enough that dots stay readable and make
+  // clear where the real measurements are on the interpolated line).
+  final bool showDots;
   const _LineCard({
     required this.title,
     required this.subtitle,
@@ -582,6 +625,7 @@ class _LineCard extends StatelessWidget {
     required this.footer,
     this.forcedMinY,
     this.forcedMaxY,
+    this.showDots = false,
   });
 
   @override
@@ -631,7 +675,17 @@ class _LineCard extends StatelessWidget {
                     curveSmoothness: 0.25,
                     color: color,
                     barWidth: 2,
-                    dotData: const FlDotData(show: false),
+                    dotData: showDots
+                        ? FlDotData(
+                            show: true,
+                            getDotPainter: (spot, pct, bar, i) =>
+                                FlDotCirclePainter(
+                              radius: 2.5,
+                              color: color,
+                              strokeWidth: 0,
+                            ),
+                          )
+                        : const FlDotData(show: false),
                     belowBarData: BarAreaData(
                       show: true,
                       color: color.withValues(alpha: 0.08),
@@ -644,85 +698,90 @@ class _LineCard extends StatelessWidget {
   }
 }
 
-/// Scatter of per-trip values (dots) with a smoothed moving-average line
-/// on top. The dots stay honest (each is a real trip); the line conveys
-/// the trend without faking smoothness on the underlying data.
-class _ScatterTrendCard extends StatelessWidget {
-  final String title;
-  final String subtitle;
-  final List<TrendPoint> dots;
-  final List<TrendPoint> trend;
-  final Color color;
-  final String unit;
-  // v0.1.29+45: footer composed by the caller — see _LineCard for
-  // the rationale. Same change.
+/// v0.1.31+130: SOH combo card — the pale BMS-reported line from
+/// snapshots as slow context, with the coulomb-counted (Ah-method)
+/// estimates from soh_history drawn as full-opacity dots on top. The BMS
+/// figure updates every snapshot but is the pack's own self-report; the
+/// Ah points are rare (one per qualifying charge session) but
+/// independent — seeing them against the BMS line is the whole point.
+/// A SINGLE Ah point still renders (dots need no line), unlike _LineCard
+/// which falls back to text below 2 points.
+class _SohComboCard extends StatelessWidget {
+  final List<FlSpot> bmsPoints;
+  final List<FlSpot> ahPoints;
   final String footer;
-  const _ScatterTrendCard({
-    required this.title,
-    required this.subtitle,
-    required this.dots,
-    required this.trend,
-    required this.color,
-    required this.unit,
+  final double? forcedMinY;
+  final double? forcedMaxY;
+  const _SohComboCard({
+    required this.bmsPoints,
+    required this.ahPoints,
     required this.footer,
+    this.forcedMinY,
+    this.forcedMaxY,
   });
 
   @override
   Widget build(BuildContext context) {
-    final dotSpots = dots.map((p) => FlSpot(p.x, p.y)).toList(growable: false);
-    final trendSpots =
-        trend.map((p) => FlSpot(p.x, p.y)).toList(growable: false);
-    double minY = double.infinity, maxY = double.negativeInfinity;
-    for (final p in dots) {
-      if (p.y < minY) minY = p.y;
-      if (p.y > maxY) maxY = p.y;
+    const color = Colors.lightGreenAccent;
+    // Time axis spans BOTH series.
+    double minX = double.infinity, maxX = double.negativeInfinity;
+    for (final p in bmsPoints) {
+      if (p.x < minX) minX = p.x;
+      if (p.x > maxX) maxX = p.x;
     }
+    for (final p in ahPoints) {
+      if (p.x < minX) minX = p.x;
+      if (p.x > maxX) maxX = p.x;
+    }
+    final hasBmsLine = bmsPoints.length >= 2;
+    final hasAnything = bmsPoints.isNotEmpty || ahPoints.isNotEmpty;
 
     return _ChartCardShell(
-      title: title,
-      subtitle: subtitle,
+      title: 'SOH',
+      subtitle: S.of('trends.soh_combo_sub'),
       color: color,
       footer: footer,
-      body: dotSpots.isEmpty
+      body: !hasAnything
           ? _notEnough(0)
           : LineChart(
               LineChartData(
-                minY: minY - (maxY - minY).abs() * 0.08 - 0.1,
-                maxY: maxY + (maxY - minY).abs() * 0.08 + 0.1,
+                minY: forcedMinY,
+                maxY: forcedMaxY,
                 gridData: const FlGridData(show: false),
                 titlesData: _chartTitles(
-                  bottom: _timeSideTitles(
-                    minX: dotSpots.first.x,
-                    maxX: dotSpots.last.x,
-                  ),
+                  bottom: _timeSideTitles(minX: minX, maxX: maxX),
                 ),
                 borderData: FlBorderData(show: false),
                 lineBarsData: [
-                  // Dots: invisible line, visible points.
-                  LineChartBarData(
-                    spots: dotSpots,
-                    isCurved: false,
-                    barWidth: 0,
-                    color: color.withValues(alpha: 0.0),
-                    dotData: FlDotData(
-                      show: true,
-                      getDotPainter: (s, _, __, ___) => FlDotCirclePainter(
-                        radius: 2.2,
-                        color: color.withValues(alpha: 0.55),
-                        strokeWidth: 0,
-                      ),
-                    ),
-                  ),
-                  // Moving-average trend line on top.
-                  if (trendSpots.length >= 2)
+                  // BMS context line: pale, no markers. Needs ≥2 points
+                  // to be a line at all; a lone BMS sample adds nothing.
+                  if (hasBmsLine)
                     LineChartBarData(
-                      spots: trendSpots,
+                      spots: bmsPoints,
                       isCurved: true,
                       preventCurveOverShooting: true,
                       curveSmoothness: 0.25,
-                      color: color,
-                      barWidth: 2.5,
+                      color: color.withValues(alpha: 0.25),
+                      barWidth: 2,
                       dotData: const FlDotData(show: false),
+                    ),
+                  // Ah-method estimates: invisible line, visible points —
+                  // same dots-only trick the old scatter card used.
+                  if (ahPoints.isNotEmpty)
+                    LineChartBarData(
+                      spots: ahPoints,
+                      isCurved: false,
+                      barWidth: 0,
+                      color: color.withValues(alpha: 0.0),
+                      dotData: FlDotData(
+                        show: true,
+                        getDotPainter: (s, _, __, ___) =>
+                            FlDotCirclePainter(
+                          radius: 3.5,
+                          color: color,
+                          strokeWidth: 0,
+                        ),
+                      ),
                     ),
                 ],
               ),
@@ -746,7 +805,15 @@ class _BarCard extends StatelessWidget {
   final String subtitle;
   final List<PeriodBar> bars;
   final Color color;
-  final String currency;
+  // v0.1.31+130: the card is no longer money-only. Exactly one of
+  // [currency] (prefix, cost card — behaviour identical to before) or
+  // [unit] (suffix, consumption / regen bars) should be provided; both
+  // null renders a bare number.
+  final String? currency;
+  final String? unit;
+  // v0.1.31+130: bucket granularity — drives the axis / text-fallback
+  // label format (day → dd.MM, month → the original month logic).
+  final TrendBucket bucket;
   // v0.1.29+45: footer composed by the caller.
   final String footer;
   const _BarCard({
@@ -754,7 +821,9 @@ class _BarCard extends StatelessWidget {
     required this.subtitle,
     required this.bars,
     required this.color,
-    required this.currency,
+    this.currency,
+    this.unit,
+    required this.bucket,
     required this.footer,
   });
 
@@ -796,7 +865,7 @@ class _BarCard extends StatelessWidget {
         maxY: maxV * 1.1 + 0.1,
         gridData: const FlGridData(show: false),
         titlesData: _chartTitles(
-          bottom: _monthBarSideTitles(bars),
+          bottom: _periodBarSideTitles(bars, bucket),
         ),
         borderData: FlBorderData(show: false),
         // v0.1.29+46: BarTouchData in fl_chart 0.68 has no const ctor —
@@ -822,6 +891,18 @@ class _BarCard extends StatelessWidget {
   }
 
   Widget _textFallback() {
+    // v0.1.31+130: label follows the bucket (dd.MM for day bars), value
+    // follows the card kind — currency prefixes (unchanged for cost),
+    // unit suffixes (consumption / regen).
+    final labelFmt = bucket == TrendBucket.day
+        ? DateFormat('dd.MM').format
+        : _fmtMonthRu;
+    String valueText(double v) {
+      if (currency != null) return '$currency ${v.toStringAsFixed(1)}';
+      if (unit != null) return '${v.toStringAsFixed(1)} $unit';
+      return v.toStringAsFixed(1);
+    }
+
     final lines = <Widget>[
       for (final b in bars)
         Padding(
@@ -829,10 +910,10 @@ class _BarCard extends StatelessWidget {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(_fmtMonthRu(b.start),
+              Text(labelFmt(b.start),
                   style: TextStyle(
                       fontSize: 13, color: Colors.grey.shade400)),
-              Text('$currency ${b.value.toStringAsFixed(1)}',
+              Text(valueText(b.value),
                   style: TextStyle(
                       fontSize: 15,
                       fontWeight: FontWeight.w500,
@@ -967,19 +1048,26 @@ SideTitles _timeSideTitles({required double minX, required double maxX}) {
 /// enough to fit on the narrow head-unit width without overlap; for
 /// n ≤ 12 (year window) we still cap at 4 labels (March/June/Sep/Dec
 /// pattern on a 12-bucket axis). Format adapts to multi-year ranges.
-SideTitles _monthBarSideTitles(List<PeriodBar> bars) {
+/// v0.1.31+130: generalized to both bucket kinds — day buckets label as
+/// "dd.MM", month buckets keep the original month / MM.yy logic.
+SideTitles _periodBarSideTitles(List<PeriodBar> bars, TrendBucket bucket) {
   if (bars.isEmpty) return const SideTitles(showTitles: false);
   final n = bars.length;
   final step = ((n + 3) / 4).floor().clamp(1, n);
-  // If the bars span more than one calendar year, drop the year in too.
-  final firstY = bars.first.start.year;
-  final lastY = bars.last.start.year;
   final String Function(DateTime) fmt;
-  if (firstY == lastY) {
-    fmt = _fmtMonthRu;
-  } else {
-    final f = DateFormat('MM.yy');
+  if (bucket == TrendBucket.day) {
+    final f = DateFormat('dd.MM');
     fmt = f.format;
+  } else {
+    // If the bars span more than one calendar year, drop the year in too.
+    final firstY = bars.first.start.year;
+    final lastY = bars.last.start.year;
+    if (firstY == lastY) {
+      fmt = _fmtMonthRu;
+    } else {
+      final f = DateFormat('MM.yy');
+      fmt = f.format;
+    }
   }
   return SideTitles(
     showTitles: true,
