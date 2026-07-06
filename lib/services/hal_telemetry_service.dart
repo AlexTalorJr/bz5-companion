@@ -1722,6 +1722,23 @@ class HalTelemetryService extends ChangeNotifier {
         debugPrint('HalSoh: id=2 upsert landed '
             '(${sohPct.toStringAsFixed(1)}%, ΔSOC '
             '${deltaSocPct.toStringAsFixed(1)}%)');
+        // v0.1.31+130 (Trends v2): append the same estimate to the
+        // soh_history time series. Placement matters: AFTER the upsert
+        // landed (so history never leads the dashboard), BEFORE the
+        // snapshot cleanup (inside the +119 ordered section). Guarded
+        // separately — a history failure must NOT abort the cleanup below
+        // or the recovery path would replay forever; the recovery re-write
+        // of the same session is deduped inside appendSohHistory itself.
+        try {
+          await db.appendSohHistory(
+            sohAhPct: sohPct,
+            computedAt: DateTime.now(),
+            deltaSocCovered: deltaSocPct,
+            source: 'hal',
+          );
+        } catch (e) {
+          debugPrint('HalSoh: history append failed ($e) — non-fatal');
+        }
         // Clear the snapshot ONLY if no new session anchored while this
         // write was in flight — a live session owns the key now (its 30 s
         // persist cadence refreshes it), and deleting it here would strip

@@ -29,7 +29,7 @@ void main() async {
   // dimensions — exactly the "белый прямоугольник" the owner saw on
   // the Trends cost card. Three sites in trends.dart use MMM('ru'):
   // _textFallback for <3-month cost card (the one that blanked), the
-  // ≤400d branch of _timeSideTitles, and _monthBarSideTitles for ≥3
+  // ≤400d branch of _timeSideTitles, and _periodBarSideTitles for ≥3
   // months with a single calendar year. All three depended on this
   // initializer existing — it never did. await before runApp so the
   // first frame is safe.

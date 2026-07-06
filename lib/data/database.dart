@@ -369,6 +369,35 @@ class SohEstimates extends Table {
   Set<Column> get primaryKey => {id};
 }
 
+/// v0.1.31+130 (Trends v2): append-only history of coulomb-counted SOH
+/// estimates. SohEstimates above keeps only the LAST value per estimator
+/// (the dashboard widget reads it); this table accumulates the full time
+/// series so the Trends tab can plot Ah-method degradation over months.
+/// Never updated, never deleted — one row per qualifying charge session
+/// (dedup guard in [AppDatabase.appendSohHistory] filters the HAL
+/// crash-recovery re-write of the same session).
+class SohHistory extends Table {
+  IntColumn get id => integer().autoIncrement()();
+
+  /// Independent SOH estimate, percent (full_Ah / batteryCapacityAh × 100).
+  RealColumn get sohAhPct => real()();
+
+  /// When this estimate was computed (charge-session close time).
+  DateTimeColumn get computedAt => dateTime()();
+
+  /// SOC span covered by the producing session, percent.
+  RealColumn get deltaSocCovered => real()();
+
+  /// Which estimator produced this row: 'uds' | 'hal'. NOT nullable — the
+  /// table is new, there are no legacy rows to accommodate.
+  TextColumn get source => text()();
+
+  /// Reserved for a future cloud sync of this table (push v2 style dedup
+  /// key). Always null until that patch lands; nullable so the sync patch
+  /// is a pure addColumn-free backfill.
+  TextColumn get clientUuid => text().nullable()();
+}
+
 @DriftDatabase(tables: [
   Samples, Trips, Snapshots,
   SweepRuns, SweepResults,
@@ -376,12 +405,13 @@ class SohEstimates extends Table {
   CanMonitorSessions, CanFrames, CanRawLines,
   HalSamples,
   SohEstimates,
+  SohHistory,
 ])
 class AppDatabase extends _$AppDatabase {
   AppDatabase() : super(_openConnection());
 
   @override
-  int get schemaVersion => 14;
+  int get schemaVersion => 15;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -510,6 +540,15 @@ class AppDatabase extends _$AppDatabase {
                   'ON $table (client_uuid) WHERE client_uuid IS NOT NULL');
             }
             await _backfillClientUuids();
+          }
+          // v14 → v15 (v0.1.31+130, Trends v2): soh_history append-only
+          // time series of coulomb-counted SOH estimates. Additive
+          // (createTable), idempotent via _createTableIfAbsent — same
+          // pattern as v10→v11 for soh_estimates. Empty until the first
+          // qualifying charge session after the upgrade; the Trends SOH
+          // combo card shows the BMS line alone until then.
+          if (from < 15) {
+            await _createTableIfAbsent(m, sohHistory);
           }
           debugPrint('DB migrate: $from → $to complete');
         },
@@ -1685,6 +1724,64 @@ class AppDatabase extends _$AppDatabase {
   Future<SohEstimate?> getLatestSohEstimate({int rowId = 1}) {
     return (select(sohEstimates)..where((r) => r.id.equals(rowId)))
         .getSingleOrNull();
+  }
+
+  /// v0.1.31+130 (Trends v2): append one coulomb-counted SOH estimate to
+  /// the append-only history. Called right next to [upsertSohEstimate] by
+  /// both estimators (UDS in ConnectionService, HAL in
+  /// HalTelemetryService); the upsert keeps feeding the dashboard widget,
+  /// this feeds the Trends time series.
+  ///
+  /// Dedup guard: the HAL path has crash recovery
+  /// (`_recoverPendingSohSession`) that recomputes and re-writes the SAME
+  /// session's estimate at the next init with a NEW DateTime.now(). For
+  /// the single-row upsert that re-write is idempotent; for an append-only
+  /// table it would duplicate the point. So: if the latest row with the
+  /// same [source] matches within 0.05 on both sohAhPct and
+  /// deltaSocCovered AND is younger than 24 h — skip the insert.
+  Future<void> appendSohHistory({
+    required double sohAhPct,
+    required DateTime computedAt,
+    required double deltaSocCovered,
+    required String source,
+  }) async {
+    final last = await (select(sohHistory)
+          ..where((r) => r.source.equals(source))
+          ..orderBy([
+            (r) => OrderingTerm(
+                expression: r.computedAt, mode: OrderingMode.desc)
+          ])
+          ..limit(1))
+        .getSingleOrNull();
+    if (last != null &&
+        (sohAhPct - last.sohAhPct).abs() < 0.05 &&
+        (deltaSocCovered - last.deltaSocCovered).abs() < 0.05 &&
+        computedAt.difference(last.computedAt) < const Duration(hours: 24)) {
+      debugPrint('SohHistory: $source re-write of the same estimate '
+          'skipped (recovery dedup guard)');
+      return;
+    }
+    await into(sohHistory).insert(
+      SohHistoryCompanion.insert(
+        sohAhPct: sohAhPct,
+        computedAt: computedAt,
+        deltaSocCovered: deltaSocCovered,
+        source: source,
+      ),
+    );
+  }
+
+  /// v0.1.31+130: SOH history rows inside [from, to], ascending by
+  /// computedAt — same contract as [getSnapshotsInRange], consumed by the
+  /// Trends SOH combo card (Ah-method points).
+  Future<List<SohHistoryData>> getSohHistoryInRange(
+      DateTime from, DateTime to) {
+    return (select(sohHistory)
+          ..where((r) =>
+              r.computedAt.isBiggerOrEqualValue(from) &
+              r.computedAt.isSmallerOrEqualValue(to))
+          ..orderBy([(r) => OrderingTerm(expression: r.computedAt)]))
+        .get();
   }
 
   /// v0.1.29+121 (C5): exact-identity lookups for the /v2/sync/pull restore

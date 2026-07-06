@@ -3916,15 +3916,28 @@ class ConnectionService extends ChangeNotifier {
     if (sohPct < 50.0 || sohPct > 110.0) return;
     _sohAhPctCached = sohPct;
     final coveredSoc = deltaSocPct;
+    final now = DateTime.now();
     // Fire-and-forget DB write; the in-memory cache is already updated so the
     // dashboard reflects it immediately even if the write lags.
     unawaited(db
         .upsertSohEstimate(
           sohAhPct: sohPct,
-          computedAt: DateTime.now(),
+          computedAt: now,
           deltaSocCovered: coveredSoc,
         )
         .catchError((_) {/* keep cache; retry next qualifying session */}));
+    // v0.1.31+130 (Trends v2): the same estimate goes into the append-only
+    // soh_history time series. Independent fire-and-forget — a history
+    // failure must never affect the dashboard upsert above. Same `now`
+    // stamp on both writes so the two tables agree on the session time.
+    unawaited(db
+        .appendSohHistory(
+          sohAhPct: sohPct,
+          computedAt: now,
+          deltaSocCovered: coveredSoc,
+          source: 'uds',
+        )
+        .catchError((_) {/* history is best-effort */}));
     notifyListeners();
   }
 
