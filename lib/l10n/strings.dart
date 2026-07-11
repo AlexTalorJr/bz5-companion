@@ -283,6 +283,14 @@ class S {
     'cloud.status.syncing': 'Syncing…',
     'cloud.status.error': 'Error — retrying',
     'cloud.status.auth_failed': 'Auth failed — re-register required',
+    // v0.1.34+133: account approval gate
+    'cloud.status.pending_approval': 'Waiting for approval',
+    'cloud.status.access_denied': 'Access denied by owner',
+    'cloud.pending_approval.hint':
+        'Your data is stored locally. Cloud sync will start automatically '
+        'once the owner approves your account.',
+    'cloud.access_denied.hint':
+        'Cloud access is disabled for this account. Local data is intact.',
     // Restore progress lines (inline card)
     'cloud.restoring.validating': 'Restoring: validating token…',
     'cloud.restoring.trips': 'Restoring trips: {a} new / {b} fetched',
@@ -1134,6 +1142,14 @@ class S {
     'cloud.status.syncing': 'Синхронизация…',
     'cloud.status.error': 'Ошибка — повтор',
     'cloud.status.auth_failed': 'Ошибка авторизации — нужна перерегистрация',
+    // v0.1.34+133: account approval gate
+    'cloud.status.pending_approval': 'Ожидает подтверждения',
+    'cloud.status.access_denied': 'Доступ закрыт владельцем',
+    'cloud.pending_approval.hint':
+        'Данные хранятся локально. Синхронизация включится автоматически '
+        'после одобрения аккаунта.',
+    'cloud.access_denied.hint':
+        'Облачный доступ для аккаунта отключён. Локальные данные целы.',
     // Restore progress lines (inline card)
     'cloud.restoring.validating': 'Восстановление: проверка токена…',
     'cloud.restoring.trips': 'Восстановление поездок: {a} новых / {b} получено',
