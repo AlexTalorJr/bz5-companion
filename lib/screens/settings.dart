@@ -364,6 +364,47 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ],
         );
       }),
+      // v0.1.32+131: user-selectable SOC source. Plain-language options
+      // ("Same as the car" / "Exact, from the battery") — the words SOC /
+      // BMS / display never surface. Same visual pattern as the data
+      // source block above; applies live via HalTelemetryService
+      // notifyListeners (no restart). On a dongle-only setup the cluster
+      // figure does not exist in UDS — the subtitle says so and the
+      // resolver falls back to the exact value either way.
+      Builder(builder: (context) {
+        final hal = context.watch<HalTelemetryService>();
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            ListTile(
+              leading:
+                  const Icon(Icons.battery_std_outlined, color: Colors.grey),
+              title: Text(S.of('settings.socsource.title')),
+              subtitle: Text(
+                !hal.canUseHal
+                    ? S.of('settings.socsource.subtitle_obd2')
+                    : S.of('settings.socsource.subtitle'),
+              ),
+            ),
+            RadioListTile<SocSource>(
+              dense: true,
+              title: Text(S.of('settings.socsource.display')),
+              subtitle: Text(S.of('settings.socsource.display_sub')),
+              value: SocSource.display,
+              groupValue: hal.socSource,
+              onChanged: (s) => hal.setSocSource(s!),
+            ),
+            RadioListTile<SocSource>(
+              dense: true,
+              title: Text(S.of('settings.socsource.precise')),
+              subtitle: Text(S.of('settings.socsource.precise_sub')),
+              value: SocSource.precise,
+              groupValue: hal.socSource,
+              onChanged: (s) => hal.setSocSource(s!),
+            ),
+          ],
+        );
+      }),
       if (svc.status != ConnectionStatus.connected) ...[
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),

@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../../l10n/strings.dart';
 import '../../services/connection.dart';
 import '../../services/hal_telemetry_service.dart';
+import '../../services/soc_resolver.dart';
 import '../../services/locale_service.dart';
 
 /// v0.1.26: Charging Companion view for the head-unit Driver tab.
@@ -280,10 +281,9 @@ class _PhaseEtaStack extends StatelessWidget {
   Widget build(BuildContext context) {
     final phase = svc.chargingPhase;
     final etaSec = svc.etaToFullSeconds;
-    // v0.1.29+66: HAL soc_display (cluster %) preferred when fresh.
+    // v0.1.32+131: user-selected SOC source (display / precise).
     final hal = context.watch<HalTelemetryService>();
-    final soc = (hal.useHalForSoc ? hal.halSocPct : svc.socPrecisePct)
-        ?? svc.readNumeric('790', '0005');
+    final soc = resolveUiSocPct(hal, svc) ?? svc.readNumeric('790', '0005');
     final gain = svc.socGainedThisChargingSessionPct;
 
     final phaseLabel = switch (phase) {
@@ -322,7 +322,9 @@ class _PhaseEtaStack extends StatelessWidget {
                   const SizedBox(height: 8),
                   Text(
                     soc != null
-                        ? 'SOC ${soc.toStringAsFixed(soc < 100 ? 2 : 1)}%'
+                        // v0.1.32+131: integral (display mode) → "80";
+                        // fractional keeps the historical two decimals.
+                        ? 'SOC ${formatSocPct(soc, maxDecimals: soc < 100 ? 2 : 1)}%'
                         : 'SOC —',
                     style: const TextStyle(fontSize: 14, color: Colors.grey),
                   ),

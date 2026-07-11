@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../../l10n/strings.dart';
 import '../../services/connection.dart';
 import '../../services/hal_telemetry_service.dart';
+import '../../services/soc_resolver.dart';
 import '../../services/locale_service.dart';
 import '../../services/car_status_service.dart';
 import '../status.dart';
@@ -173,8 +174,8 @@ class _LeftColumn extends StatelessWidget {
       children: [
         Expanded(flex: 5, child: _SocHero(
                 soc: soc,
-                socPrecise:
-                    hal.useHalForSoc ? hal.halSocPct : svc.socPrecisePct,
+                // v0.1.32+131: user-selected SOC source (display/precise).
+                socPrecise: resolveUiSocPct(hal, svc),
                 rangeKm: rangeKm)),
         const SizedBox(height: 12),
         Expanded(
@@ -233,31 +234,21 @@ class _SocHero extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
                 Text(
-                  // v0.1.21+3: integer part of precise SOC; decimal goes
-                  // to a smaller adjacent Text widget for visual hierarchy.
-                  //
-                  // Floating-point safety: round to nearest tenth first
-                  // (see SocCard comment for details).
-                  displaySoc != null
-                      ? (() {
-                          final r = (displaySoc * 10).round() / 10;
-                          return r.truncate().toString();
-                        })()
-                      : '—',
+                  // v0.1.21+3: big integer + small fraction (FP-safe split
+                  // in splitSocDigits). v0.1.32+131: integral values
+                  // (SocSource.display) render with no suffix — "72".
+                  splitSocDigits(displaySoc).$1,
                   style: TextStyle(
                       fontSize: 96,
                       fontWeight: FontWeight.w300,
                       color: color,
                       height: 1.0),
                 ),
-                if (displaySoc != null)
+                if (splitSocDigits(displaySoc).$2.isNotEmpty)
                   Padding(
                     padding: const EdgeInsets.only(bottom: 12),
                     child: Text(
-                      (() {
-                        final r = (displaySoc * 10).round() / 10;
-                        return '.${((r - r.truncate()) * 10).round()}';
-                      })(),
+                      splitSocDigits(displaySoc).$2,
                       style: TextStyle(
                           fontSize: 48,
                           fontWeight: FontWeight.w300,
@@ -968,6 +959,8 @@ class _RightColumn extends StatelessWidget {
     final maxIdx = svc.globalMaxCellIndex;
     // v0.1.29+66: same SOC resolution as the hero (HAL cluster % first).
     final hal = context.watch<HalTelemetryService>();
+    // v0.1.32+131: deliberately NOT resolveUiSocPct — this SOC feeds the
+    // spread-quality classifier thresholds (math), not a displayed digit.
     final soc = (hal.useHalForSoc ? hal.halSocPct : svc.socPrecisePct)
         ?? svc.readNumeric('790', '0005')
         ?? 50;

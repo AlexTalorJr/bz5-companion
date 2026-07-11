@@ -7,6 +7,7 @@ import '../../l10n/strings.dart';
 import '../../services/connection.dart';
 import '../../services/cost_settings.dart';
 import '../../services/hal_telemetry_service.dart';
+import '../../services/soc_resolver.dart';
 import '../../services/locale_service.dart';
 import '../../widgets/driver_panels.dart';
 
@@ -567,8 +568,8 @@ class _SocCard extends StatelessWidget {
     // verified) when fresh; then precise OBD2 (1FFD); then integer 0x0005.
     final hal = context.watch<HalTelemetryService>();
     final socInt = svc.readNumeric('790', '0005');
-    final displaySoc = (hal.useHalForSoc ? hal.halSocPct : svc.socPrecisePct)
-        ?? socInt;
+    // v0.1.32+131: user-selected SOC source (display / precise).
+    final displaySoc = resolveUiSocPct(hal, svc) ?? socInt;
     // v0.1.29+102: EV range — HAL hybrid when SOC available via HAL, else OBD2.
     final rangeKm = hal.useHalForRange ? hal.halRangeKm : svc.rangeEstimateKm;
 
@@ -580,13 +581,8 @@ class _SocCard extends StatelessWidget {
             ? Colors.orangeAccent
             : Colors.greenAccent;
 
-    // FP-safe one-decimal split.
-    String big = '—', small = '';
-    if (displaySoc != null) {
-      final r = (displaySoc * 10).round() / 10;
-      big = r.truncate().toString();
-      small = '.${((r - r.truncate()) * 10).round()}';
-    }
+    // v0.1.32+131: shared FP-safe split; integral → no fractional suffix.
+    final (big, small) = splitSocDigits(displaySoc);
 
     return Card(
       child: Padding(
