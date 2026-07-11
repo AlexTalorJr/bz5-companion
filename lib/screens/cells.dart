@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../l10n/strings.dart';
 import '../services/connection.dart';
 import '../services/hal_telemetry_service.dart';
+import '../services/soc_resolver.dart';
 import '../services/locale_service.dart';
 
 /// v0.1.2: Cells screen теперь имеет два режима — CELLS и THERMAL.
@@ -130,8 +131,8 @@ class _HalCumulativeView extends StatelessWidget {
     final moduleCount = svc.packModuleCount ?? 10;
 
     // SOC / SOH for the summary chips (HAL-preferred, dongle-free).
-    final double? socPct =
-        (hal.useHalForSoc ? hal.halSocPct : svc.socPrecisePct);
+    // v0.1.32+131: user-selected SOC source (display / precise).
+    final double? socPct = resolveUiSocPct(hal, svc);
     final double? sohAh = hal.halSohAhPct ?? svc.sohAhPct;
     final double? sohHal = hal.useHalForSoh ? hal.halSoh : null;
     final double? soh = sohAh ?? sohHal;
@@ -225,7 +226,7 @@ class _HalCumulativeView extends StatelessWidget {
                       label: S.of('cells.soc'),
                       value: socPct == null
                           ? '—'
-                          : '${(socPct * 10).round() / 10}%',
+                          : '${formatSocPct(socPct)}%',
                     ),
                     _StatColumn(
                       label: S.of('cells.soh'),

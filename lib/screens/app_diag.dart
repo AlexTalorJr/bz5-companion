@@ -7,6 +7,7 @@ import '../services/account_auth_service.dart';
 import '../services/app_diag_log.dart';
 import '../services/cloud_sync_service.dart';
 import '../services/diag_dump_file.dart';
+import '../services/hal_telemetry_service.dart';
 import '../services/locale_service.dart';
 import 'dashboard.dart' show kAppVersion;
 
@@ -241,6 +242,24 @@ class _AppDiagScreenState extends State<AppDiagScreen> {
         'account last error',
         auth.lastErrorCode ?? '—',
         auth.lastErrorCode != null
+      ),
+    ]);
+    // v0.1.32+131: the three raw SOC figures side by side + the active UI
+    // source — closes any future "the app shows the wrong percent" dispute
+    // with one glance at this screen (per the +131 SOC-source work).
+    final hal = context.watch<HalTelemetryService>();
+    String socV(String name, [int dec = 0]) {
+      final v = hal.halValue(name);
+      return v == null ? '—' : v.toStringAsFixed(dec);
+    }
+
+    rows.addAll([
+      ('soc source (ui)', hal.socSource.name, false),
+      (
+        'soc precise · display · battery',
+        '${socV('soc_precise', 1)} · ${socV('soc_display')} · '
+            '${socV('soc_battery')}',
+        false
       ),
     ]);
     return Card(

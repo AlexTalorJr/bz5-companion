@@ -73,6 +73,17 @@ class S {
     'settings.datasource.hal': 'From the car',
     'settings.datasource.obd2': 'Through the adapter',
     'settings.datasource.hal_unavailable': 'Car data is not available right now',
+    // v0.1.32+131: SOC source (plain-language, no SOC/BMS jargon).
+    'settings.socsource.title': 'Battery percentage',
+    'settings.socsource.subtitle': 'How to show the charge level',
+    'settings.socsource.subtitle_obd2':
+        'With an OBD2 adapter only the exact value is available',
+    'settings.socsource.display': 'Same as the car',
+    'settings.socsource.display_sub':
+        'the same number as on the car screen',
+    'settings.socsource.precise': 'Exact, from the battery',
+    'settings.socsource.precise_sub':
+        'real value, may differ from the car by 1–2%',
     'settings.datasource.hal_no_platform':
         'On this device only the adapter is available',
     'datasource.hal_dead_hint':
@@ -136,9 +147,8 @@ class S {
     // Settings — vehicle
     'settings.dtc.title': 'Diagnostics (DTC)',
     'settings.dtc.subtitle': 'Read trouble codes from all ECUs (read-only)',
-    'settings.about.title': 'About / Pack specification',
-    'settings.about.subtitle':
-        'BZ5 battery pack details, DID sources, experiments',
+    'settings.about.title': 'About',
+    'settings.about.subtitle': 'App info, license, disclaimer',
 
     // Settings — data
     'settings.data.title': 'Data & Export',
@@ -551,6 +561,7 @@ class S {
     'trends.avg_regen_period_fmt': 'avg {x}% · {n} periods',
     'trends.est_range_fmt': '≈ {n} km per 100%',
     'trends.cell_spread_fmt': 'was {a} → now {b} mV · {n} trips',
+    'trends.cell_spread_peak': ' · peak {p} mV',
     'trends.m_dist': 'Distance',
     'trends.m_energy': 'Energy',
     'trends.m_spent': 'Spent',
@@ -914,6 +925,17 @@ class S {
     'settings.datasource.hal': 'Из автомобиля',
     'settings.datasource.obd2': 'Через адаптер',
     'settings.datasource.hal_unavailable': 'Данные из автомобиля сейчас недоступны',
+    // v0.1.32+131: источник SOC (без жаргона SOC/BMS).
+    'settings.socsource.title': 'Процент заряда',
+    'settings.socsource.subtitle': 'Как показывать заряд батареи',
+    'settings.socsource.subtitle_obd2':
+        'С OBD2-адаптером доступно только точное значение',
+    'settings.socsource.display': 'Как в машине',
+    'settings.socsource.display_sub':
+        'то же число, что на экране автомобиля',
+    'settings.socsource.precise': 'Точный, от батареи',
+    'settings.socsource.precise_sub':
+        'реальное значение, может отличаться от машины на 1–2%',
     'settings.datasource.hal_no_platform':
         'На этом устройстве доступен только адаптер',
     'datasource.hal_dead_hint':
@@ -971,9 +993,8 @@ class S {
 
     // Settings — vehicle
     'settings.dtc.subtitle': 'Считать коды ошибок со всех ECU (только чтение)',
-    'settings.about.title': 'О батарее / спецификация',
-    'settings.about.subtitle':
-        'Детали батареи BZ5, источники DID, эксперименты',
+    'settings.about.title': 'О приложении',
+    'settings.about.subtitle': 'Информация, лицензия, дисклеймер',
 
     // Settings — data
     'settings.data.title': 'Данные и экспорт',
@@ -1388,6 +1409,7 @@ class S {
     'trends.avg_regen_period_fmt': 'средн. {x}% · {n} период.',
     'trends.est_range_fmt': '≈ {n} км на 100%',
     'trends.cell_spread_fmt': 'было {a} → сейчас {b} мВ · {n} поезд.',
+    'trends.cell_spread_peak': ' · пик {p} мВ',
     'trends.m_dist': 'Пробег',
     'trends.m_energy': 'Энергия',
     'trends.m_spent': 'Потрачено',

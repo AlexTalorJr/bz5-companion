@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import '../l10n/strings.dart';
 import '../services/connection.dart';
 import '../services/hal_telemetry_service.dart';
+import '../services/soc_resolver.dart';
 import '../services/locale_service.dart';
 import '../widgets/driver_panels.dart';
 
@@ -231,9 +232,9 @@ class _Connected extends StatelessWidget {
                   flex: 2,
                   child: _TallSocCard(
                     soc: soc,
-                    socPrecise: hal.useHalForSoc
-                        ? hal.halSocPct
-                        : svc.socPrecisePct,
+                    // v0.1.32+131: user-selected SOC source (display /
+                    // precise) — the single resolver for every shown digit.
+                    socPrecise: resolveUiSocPct(hal, svc),
                     rangeKm: rangeKm,
                     gear: gear,
                     parkingEngaged: parkingEngaged,
@@ -246,19 +247,20 @@ class _Connected extends StatelessWidget {
         else
           _SocCard(
               soc: soc,
-              // v0.1.29+66: HAL soc_display = the instrument-cluster %
-              // (live-verified equal on 2026-06-11); preferred when fresh.
-              socPrecise:
-                  hal.useHalForSoc ? hal.halSocPct : svc.socPrecisePct,
+              // v0.1.32+131: user-selected SOC source (display / precise).
+              // Default 'display' = the instrument-cluster % (soc_display,
+              // live-verified equal on 2026-06-11).
+              socPrecise: resolveUiSocPct(hal, svc),
               rangeKm: rangeKm),
         const SizedBox(height: 12),
         if (isCharging)
           _ChargingBanner(
             svc: svc,
             chargedSession: chargedSession,
-            // v0.1.29+116: dongle-free fallbacks — power from HAL |V×I|,
-            // SOC resolved the same way the card above resolves it, so the
-            // ETA stays honest during a HAL-detected charge.
+            // v0.1.29+116: dongle-free fallbacks — power from HAL |V×I|.
+            // v0.1.32+131: deliberately NOT resolveUiSocPct — this value
+            // feeds the remaining-kWh/ETA math, and math stays on precise
+            // regardless of the display setting.
             halPowerKw: hal.halChargePowerKw,
             socOverridePct:
                 hal.useHalForSoc ? hal.halSocPct : svc.socPrecisePct,
@@ -574,34 +576,18 @@ class _SocCard extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
                 Text(
-                  // v0.1.21+3: one decimal place. Split integer and
-                  // fractional parts so the big "54" stays prominent and
-                  // ".3" is rendered slightly smaller — keeps the card
-                  // height stable across whole-number and fractional
-                  // values and avoids the giant digit jiggling between
-                  // single and triple-digit width.
-                  //
-                  // Floating-point safety: round to nearest tenth FIRST,
-                  // then split. Naive `truncate()` would render 48.30
-                  // (stored as 48.2999...) as "48.2" instead of "48.3".
-                  // We use round(x*10)/10 to snap to the visible
-                  // resolution, then int-truncate to separate digits.
-                  displaySoc != null
-                      ? (() {
-                          final r = (displaySoc * 10).round() / 10;
-                          return r.truncate().toString();
-                        })()
-                      : '—',
+                  // v0.1.21+3: one decimal place, big integer + small
+                  // fraction (see splitSocDigits for the FP-safe split).
+                  // v0.1.32+131: integral values (SocSource.display mode)
+                  // get an empty suffix — "72", not "72.0".
+                  splitSocDigits(displaySoc).$1,
                   style: TextStyle(fontSize: 72, fontWeight: FontWeight.w300, color: color, height: 1.0),
                 ),
-                if (displaySoc != null)
+                if (splitSocDigits(displaySoc).$2.isNotEmpty)
                   Padding(
                     padding: const EdgeInsets.only(bottom: 6),
                     child: Text(
-                      (() {
-                        final r = (displaySoc * 10).round() / 10;
-                        return '.${((r - r.truncate()) * 10).round()}';
-                      })(),
+                      splitSocDigits(displaySoc).$2,
                       style: TextStyle(fontSize: 36, fontWeight: FontWeight.w300, color: color, height: 1.0),
                     ),
                   ),
@@ -691,15 +677,10 @@ class _TallSocCard extends StatelessWidget {
             ? Colors.orangeAccent
             : Colors.greenAccent;
 
-    // FP-safe one-decimal split — same approach as the driver wide
-    // _SocCard, kept in lockstep so the BZ5 and BZ3 SOC displays show
-    // identical values down to the displayed decimal.
-    String big = '—', small = '';
-    if (displaySoc != null) {
-      final r = (displaySoc * 10).round() / 10;
-      big = r.truncate().toString();
-      small = '.${((r - r.truncate()) * 10).round()}';
-    }
+    // FP-safe one-decimal split — shared helper since +131, kept in
+    // lockstep across every SOC card. Integral values (SocSource.display)
+    // render with no fractional suffix, like the cluster.
+    final (big, small) = splitSocDigits(displaySoc);
 
     return Card(
       child: Padding(
@@ -939,7 +920,7 @@ class _TripCard extends StatelessWidget {
 
 /// Bump when changing the diagnostic format — helps cross-reference
 /// screenshots to specific app versions while iterating.
-const String _kDiagVersion = 'v0.1.31+130';
+const String _kDiagVersion = 'v0.1.32+131';
 
 /// v0.1.29+94: public alias of the build version string for display outside
 /// dashboard (e.g. the About screen's APP card). Single literal source — the

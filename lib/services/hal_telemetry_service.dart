@@ -55,6 +55,28 @@ String _modeToString(HalSourceMode m) {
   }
 }
 
+/// v0.1.32+131: user-selectable SOC for the UI (prefs 'soc_source').
+///
+/// The car keeps TWO state-of-charge figures and they legitimately differ
+/// by ~1-2% (non-linearly across the range):
+///   - display : the buffered/scaled percentage the instrument cluster
+///               shows (HAL soc_display, live-verified equal to the
+///               cluster on 2026-06-11). Integer, event-driven.
+///   - precise : the BMS-internal (true) SOC — HAL soc_precise, 0.1%
+///               resolution, ~30 s cadence.
+/// Showing `precise` (the pre-+131 behaviour) made users compare against
+/// the cluster and conclude the app "lies". Default is therefore
+/// `display`; `precise` remains one toggle away for those who want the
+/// real figure. The setting changes DISPLAYED digits only — trip energy,
+/// SOH and charging-ETA math stay on precise unconditionally.
+enum SocSource { display, precise }
+
+SocSource _socSourceFromString(String? s) =>
+    s == 'precise' ? SocSource.precise : SocSource.display;
+
+String _socSourceToString(SocSource s) =>
+    s == SocSource.precise ? 'precise' : 'display';
+
 class HalTelemetryService extends ChangeNotifier {
   final _hal = HalTelemetryChannel.instance;
   StreamSubscription<HalEvent>? _sub;
@@ -85,6 +107,11 @@ class HalTelemetryService extends ChangeNotifier {
 
   HalSourceMode _mode = HalSourceMode.auto;
   HalSourceMode get mode => _mode;
+
+  // v0.1.32+131: UI SOC source (see the SocSource doc above). Read by
+  // resolveUiSocPct (soc_resolver.dart); persisted in init()/setSocSource.
+  SocSource _socSource = SocSource.display;
+  SocSource get socSource => _socSource;
 
   // v0.1.29+83: platform gate. HAL only exists on the BYD head unit (the
   // BYDAutoBodyworkDevice framework class is present there and absent on a
@@ -798,6 +825,18 @@ class HalTelemetryService extends ChangeNotifier {
       _useHal('soc_display') ||
       _useHal('soc_battery');
 
+  /// v0.1.32+131: cluster-matching SOC for SocSource.display. Same
+  /// no-window sticky semantics as halSocForTrip (both names are
+  /// event-driven — the last frame is valid for the whole running
+  /// stream); null on a dead stream or before the first frame, letting
+  /// resolveUiSocPct fall back honestly.
+  double? get halSocDisplayPct {
+    if (!_running) return null;
+    final d = halValue('soc_display');
+    if (d != null) return d;
+    return halValue('soc_battery');
+  }
+
   // ── EV range estimate (v0.1.29+102). The OBD2 path (connection.dart
   //    rangeEstimateKm) needs readNumeric('790','0005') for SOC plus the
   //    OBD2 trip-consumption history, so in halOnly without a dongle it
@@ -983,12 +1022,30 @@ class HalTelemetryService extends ChangeNotifier {
   double? get halCellVLowest => _heldValue('cell_v_lowest', _coreHold);
   double? get halCellVHighest => _heldValue('cell_v_highest', _coreHold);
 
+  /// v0.1.32+131: the min/max frames must have arrived close together
+  /// before we subtract them. Both cell_v names stream at ~48 Hz, so a
+  /// healthy pair is milliseconds apart; a gap means one side stalled and
+  /// _heldValue (90 s) is serving a frame from a different electrical
+  /// moment — subtracting across that gap manufactures a spread that
+  /// never existed. Field evidence: the 195 mV outlier latched into a
+  /// trip's max (the +130 Trends spread card) while the UDS path — whose
+  /// min/max come from ONE poll and are immune by construction — never
+  /// saw anything like it.
+  static const _cellPairWindow = Duration(seconds: 3);
+
   /// Cell spread in mV from the HAL min/max pair, or null if either is
   /// absent. (max − min) V × 1000 → mV, matching the OBD2 cell-spread unit.
+  /// v0.1.32+131: null too when the pair is mismatched in time (see
+  /// [_cellPairWindow]) — feeds BOTH consumers (the live Balance tile and
+  /// the per-trip max accumulator) through this single gate.
   double? get halCellSpreadMv {
     final lo = halCellVLowest;
     final hi = halCellVHighest;
     if (lo == null || hi == null) return null;
+    final loAt = _lastGood['cell_v_lowest']?.at;
+    final hiAt = _lastGood['cell_v_highest']?.at;
+    if (loAt == null || hiAt == null) return null;
+    if (hiAt.difference(loAt).abs() > _cellPairWindow) return null;
     final mv = (hi - lo) * 1000.0;
     return mv < 0 ? 0 : mv;
   }
@@ -2113,6 +2170,8 @@ class HalTelemetryService extends ChangeNotifier {
   Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
     _mode = _modeFromString(prefs.getString('hal_source_mode'));
+    // v0.1.32+131: UI SOC source. Missing pref → display (cluster match).
+    _socSource = _socSourceFromString(prefs.getString('soc_source'));
     // v0.1.29+74: discrete-source migration. The UI no longer offers Auto.
     // Anyone with a persisted 'auto' (the old default) is moved to halOnly
     // — which behaves like the old auto for the common case (HAL live) but
@@ -2165,6 +2224,18 @@ class HalTelemetryService extends ChangeNotifier {
     // v0.1.29+105: hydrate the cached HAL SOH (id=2) so the dashboard shows
     // the last computed value before any new charge session this run.
     await loadHalSohEstimate();
+    notifyListeners();
+  }
+
+  /// v0.1.32+131: persist + broadcast the UI SOC source. Applies without
+  /// a restart — every consumer resolves through resolveUiSocPct inside a
+  /// widget that already watches this service, so notifyListeners is the
+  /// whole live-apply mechanism (same contract as setMode).
+  Future<void> setSocSource(SocSource s) async {
+    if (s == _socSource) return;
+    _socSource = s;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('soc_source', _socSourceToString(s));
     notifyListeners();
   }
 

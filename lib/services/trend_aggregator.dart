@@ -132,6 +132,16 @@ const double kUsableCapacityKwh = 65.28;
 /// which are robust to it.
 const double kMinDistForConsumptionKm = 2.0;
 
+/// v0.1.32+131: minimum SUMMED qualifying distance (km) before a bucket
+/// gets a consumption bar at all. The per-trip guard above cannot save a
+/// day made ENTIRELY of short hops — three 1.5-km errand runs all pass
+/// nothing to the bucket, but two 2.5-km ones pass 5 km of HVAC-dominated
+/// crawling and still print a "60 kWh/100km" day bar (field photo
+/// 2026-07-11, the 30d outlier). Below this floor the bucket is simply
+/// absent (the "empty bucket is absent, not zero" rule) — period TOTALS
+/// are untouched, this only gates the per-period bar.
+const double kMinBucketDistKm = 5.0;
+
 class TrendAggregator {
   /// Build the full aggregate for [trips] (assumed already filtered to the
   /// window and sorted ascending by startedAt — getTripsInRange does both).
@@ -212,9 +222,12 @@ class TrendAggregator {
 
     // Weighted consumption per bucket. A bucket is present only when it
     // has qualifying trips — empty buckets are absent, not zero.
+    // v0.1.32+131: and only when those trips sum to a meaningful distance
+    // (kMinBucketDistKm) — a bucket of nothing but short hops is noise,
+    // not a consumption figure.
     final consumptionBars = <PeriodBar>[
       for (final e in bucketConsEnergy.entries)
-        if ((bucketConsDist[e.key] ?? 0) > 0)
+        if ((bucketConsDist[e.key] ?? 0) >= kMinBucketDistKm)
           PeriodBar(e.key, e.value / bucketConsDist[e.key]! * 100),
     ]..sort((a, b) => a.start.compareTo(b.start));
 

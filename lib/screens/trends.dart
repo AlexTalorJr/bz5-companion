@@ -294,13 +294,23 @@ class _TrendsScreenState extends State<TrendsScreen> {
       sohMaxY = measuredMax > 100.0 ? measuredMax + 0.5 : 100.0;
     }
 
+    // v0.1.32+131: the Y axis is capped at p95×1.3 so one spike cannot
+    // crush the series — the true maximum therefore moves into the footer
+    // ("· peak N mV") where it stays visible as a number.
+    double spreadPeak = 0;
+    for (final pnt in cellSpreadPts) {
+      if (pnt.y > spreadPeak) spreadPeak = pnt.y;
+    }
     final spreadFooter = cellSpreadPts.isEmpty
         ? '—'
         : S
-            .of('trends.cell_spread_fmt')
-            .replaceFirst('{a}', cellSpreadPts.first.y.toStringAsFixed(1))
-            .replaceFirst('{b}', cellSpreadPts.last.y.toStringAsFixed(1))
-            .replaceFirst('{n}', '${cellSpreadPts.length}');
+                .of('trends.cell_spread_fmt')
+                .replaceFirst('{a}', cellSpreadPts.first.y.toStringAsFixed(1))
+                .replaceFirst('{b}', cellSpreadPts.last.y.toStringAsFixed(1))
+                .replaceFirst('{n}', '${cellSpreadPts.length}') +
+            S
+                .of('trends.cell_spread_peak')
+                .replaceFirst('{p}', spreadPeak.toStringAsFixed(0));
 
     final children = <Widget>[
       // ── Section 1: period totals ──
@@ -317,8 +327,11 @@ class _TrendsScreenState extends State<TrendsScreen> {
           points: agg.cumulativeOdometer,
           color: Colors.lightBlueAccent,
           unit: S.of('trends.km'),
-          // monotone by nature — no curve (overshoot would break monotonicity)
-          curved: false,
+          // v0.1.32+131: curved. _LineCard draws with
+          // preventCurveOverShooting + 0.25 smoothness, so a monotone
+          // series stays monotone — the daily "staircase" softens into
+          // the smooth climb the field photos asked for.
+          curved: true,
           footer: cumFooter,
         ),
         if (cost.isConfigured)
@@ -372,14 +385,16 @@ class _TrendsScreenState extends State<TrendsScreen> {
           forcedMinY: sohMinY,
           forcedMaxY: sohMaxY,
         ),
-        _LineCard(
+        // v0.1.32+131: dots + rolling median instead of the +130
+        // dot-to-dot line. Raw per-trip maxima are honest but noisy (load
+        // transients are physics); the window-3 MEDIAN is robust to a
+        // single spike — unlike the moving average removed in +130 — so
+        // the trend line stays put when one trip latches an outlier.
+        _SpreadCard(
           title: S.of('trends.cell_spread'),
           subtitle: S.of('trends.cell_spread_sub'),
           points: cellSpreadPts,
           color: Colors.orangeAccent,
-          unit: S.of('trends.mv'),
-          curved: true,
-          showDots: true,
           footer: spreadFooter,
         ),
       ]),
@@ -698,6 +713,133 @@ class _LineCard extends StatelessWidget {
   }
 }
 
+/// v0.1.32+131: cell-spread card — raw per-trip maxima as DOTS with a
+/// window-3 rolling MEDIAN drawn as the trend line.
+///
+/// Why not the +130 dot-to-dot line: per-trip max values are legitimately
+/// noisy (load transients), and one latched outlier (the 195 mV artefact,
+/// see halCellSpreadMv's pair gate) dragged both the line and the whole Y
+/// scale. Here:
+///   - dots show every real measurement, honestly;
+///   - the median-3 line is robust to a single spike (a moving average —
+///     removed in +130 — is not);
+///   - the Y axis is capped at max(p95 × 1.3, 50 mV): a spike-dot renders
+///     pinned to the top edge instead of crushing the series, and its true
+///     value lives in the footer ("· peak N mV").
+/// The median is display-only, computed here — it does NOT belong in the
+/// aggregator (nothing downstream consumes it).
+class _SpreadCard extends StatelessWidget {
+  final String title;
+  final String subtitle;
+  final List<TrendPoint> points;
+  final Color color;
+  final String footer;
+  const _SpreadCard({
+    required this.title,
+    required this.subtitle,
+    required this.points,
+    required this.color,
+    required this.footer,
+  });
+
+  /// Rolling median, window 3 (edges fall back to the raw value — a
+  /// 1-point "median" is the value itself and keeps ends anchored).
+  static List<double> _median3(List<double> ys) {
+    if (ys.length < 3) return List.of(ys);
+    final out = List<double>.filled(ys.length, 0);
+    out[0] = ys[0];
+    out[ys.length - 1] = ys[ys.length - 1];
+    for (var i = 1; i < ys.length - 1; i++) {
+      final a = ys[i - 1], b = ys[i], c = ys[i + 1];
+      // median of three without allocating a sort.
+      out[i] = a > b
+          ? (b > c ? b : (a > c ? c : a))
+          : (a > c ? a : (b > c ? c : b));
+    }
+    return out;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final n = points.length;
+    final body = n < 2
+        ? _notEnough(n)
+        : Builder(builder: (context) {
+            final ys = [for (final p in points) p.y];
+            // p95 by rank on a sorted copy (n is small — trips in window).
+            final sorted = List<double>.from(ys)..sort();
+            final p95 = sorted[(0.95 * (sorted.length - 1)).round()];
+            final maxY = (p95 * 1.3) > 50.0 ? (p95 * 1.3) : 50.0;
+
+            // Raw dots, clamped to the axis cap so an outlier renders
+            // pinned to the top edge (its number is in the footer).
+            final rawSpots = [
+              for (final p in points)
+                FlSpot(p.x, p.y > maxY ? maxY : p.y),
+            ];
+            final med = _median3(ys);
+            final medSpots = [
+              for (var i = 0; i < n; i++)
+                FlSpot(points[i].x, med[i] > maxY ? maxY : med[i]),
+            ];
+
+            return LineChart(
+              LineChartData(
+                minY: 0,
+                maxY: maxY,
+                gridData: const FlGridData(show: false),
+                titlesData: _chartTitles(
+                  bottom: _timeSideTitles(
+                    minX: points.first.x,
+                    maxX: points.last.x,
+                  ),
+                ),
+                borderData: FlBorderData(show: false),
+                lineBarsData: [
+                  // Median trend — the line the eye follows.
+                  LineChartBarData(
+                    spots: medSpots,
+                    isCurved: false,
+                    color: color,
+                    barWidth: 2,
+                    dotData: const FlDotData(show: false),
+                    belowBarData: BarAreaData(
+                      show: true,
+                      color: color.withValues(alpha: 0.08),
+                    ),
+                  ),
+                  // Raw measurements — dots only (the connecting line is
+                  // fully transparent; fl_chart has no line-less series).
+                  LineChartBarData(
+                    spots: rawSpots,
+                    isCurved: false,
+                    color: Colors.transparent,
+                    barWidth: 1,
+                    dotData: FlDotData(
+                      show: true,
+                      getDotPainter: (spot, pct, bar, i) =>
+                          FlDotCirclePainter(
+                        radius: 2.5,
+                        color: color.withValues(alpha: 0.85),
+                        strokeWidth: 0,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          });
+
+    return _ChartCardShell(
+      title: title,
+      subtitle: subtitle,
+      color: color,
+      footer: footer,
+      body: body,
+    );
+  }
+}
+
 /// v0.1.31+130: SOH combo card — the pale BMS-reported line from
 /// snapshots as slow context, with the coulomb-counted (Ah-method)
 /// estimates from soh_history drawn as full-opacity dots on top. The BMS
@@ -879,10 +1021,32 @@ class _BarCard extends StatelessWidget {
             BarChartGroupData(x: i, barRods: [
               BarChartRodData(
                 toY: bars[i].value,
-                color: color,
-                width: bars.length > 12 ? 5 : 9,
+                // v0.1.32+131: bottom-to-top gradient instead of the flat
+                // fill — same hue, softer body.
+                gradient: LinearGradient(
+                  begin: Alignment.bottomCenter,
+                  end: Alignment.topCenter,
+                  colors: [color.withValues(alpha: 0.55), color],
+                ),
+                // v0.1.32+131: stepped width. The old `>12 ? 5 : 9` drew
+                // matchsticks on a 13-day window; the ladder keeps bars
+                // readable across every window the UI offers.
+                width: bars.length <= 8
+                    ? 14
+                    : bars.length <= 16
+                        ? 10
+                        : bars.length <= 31
+                            ? 6
+                            : 4,
                 borderRadius: const BorderRadius.vertical(
-                    top: Radius.circular(2)),
+                    top: Radius.circular(4)),
+                // v0.1.32+131: faint full-height track behind each rod —
+                // sparse bars stop floating in empty space.
+                backDrawRodData: BackgroundBarChartRodData(
+                  show: true,
+                  toY: maxV * 1.1 + 0.1,
+                  color: Colors.white.withValues(alpha: 0.04),
+                ),
               ),
             ]),
         ],

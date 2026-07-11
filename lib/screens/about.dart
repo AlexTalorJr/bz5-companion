@@ -7,15 +7,11 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../l10n/strings.dart';
 import 'dashboard.dart' show kAppVersion;
 
-/// v0.1.5: About screen — verified Toyota BZ5 battery pack specification
-/// derived from reverse engineering + cross-validation with manufacturer specs.
-///
-/// Math validation:
-///   136 cells × 150 Ah × 3.2 V = 65.280 kWh (exact match to marketing spec)
-///   136 cells × 3.31 V (LFP @ 81% SOC) = 450 V (exact match to measured)
-///
-/// Both constraints satisfied simultaneously → high confidence in pack
-/// configuration.
+/// About screen: app identity, disclaimer and the APP info card (which
+/// doubles as the 15-tap Advanced unlock). v0.1.32+131: the development
+/// narrative and the hardcoded BZ5 pack/cell specification cards are gone
+/// — the app is multi-model (BZ5/BZ3) and those numbers were only ever
+/// true for one of them.
 class AboutScreen extends StatelessWidget {
   const AboutScreen({super.key});
 
@@ -35,10 +31,6 @@ class AboutScreen extends StatelessWidget {
         // not in the constructor).
         children: const [
           _IntroCard(),
-          SizedBox(height: 16),
-          _PackSpecCard(),
-          SizedBox(height: 16),
-          _CellSpecCard(),
           SizedBox(height: 16),
           _DisclaimerCard(),
           SizedBox(height: 16),
@@ -73,125 +65,9 @@ class _IntroCard extends StatelessWidget {
             ),
             SizedBox(height: 8),
             Text(
-              'Open-source companion app for Toyota BZ5 (FAW-Toyota 2025).\n'
-              'Reads the high-voltage battery pack via the OBD-II port using '
-              'an ELM327 BLE adapter. The pack specifications below were '
-              'reverse-engineered from CAN diagnostic responses and '
-              'cross-validated with manufacturer cell data.',
+              'Companion app for Toyota/BYD EVs. Reads vehicle telemetry '
+              'to monitor battery health, trips and charging.',
               style: TextStyle(fontSize: 13, color: Colors.white70, height: 1.4),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _PackSpecCard extends StatelessWidget {
-  const _PackSpecCard();
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Row(
-              children: [
-                Icon(Icons.battery_charging_full,
-                    color: Colors.greenAccent, size: 22),
-                SizedBox(width: 8),
-                Text('PACK SPECIFICATION',
-                    style: TextStyle(
-                        fontSize: 12,
-                        letterSpacing: 1.5,
-                        color: Colors.grey)),
-              ],
-            ),
-            const SizedBox(height: 12),
-            const _SpecRow('Total energy', '65.28 kWh'),
-            const _SpecRow('Configuration', '136S × 1P (all in series)'),
-            const _SpecRow('Total cells', '136'),
-            const _SpecRow('Modules (CMU groups)', '10'),
-            const _SpecRow('Nominal pack voltage',
-                '435.2 V (3.2 V × 136)'),
-            const _SpecRow('Operating range',
-                '~410 V (10% SOC) – 477 V (100% SOC)'),
-            const _SpecRow('Resting at 81% SOC',
-                '~450 V (measured 2026-05-03)'),
-            const Divider(height: 24),
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: Colors.green.withValues(alpha: 0.1),
-                borderRadius: BorderRadius.circular(6),
-              ),
-              child: const Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Icon(Icons.check_circle,
-                      color: Colors.green, size: 18),
-                  SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'Math check: 136 × 150 Ah × 3.2 V = 65.280 kWh — '
-                      'exact match to marketing spec.',
-                      style: TextStyle(fontSize: 12, height: 1.4),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _CellSpecCard extends StatelessWidget {
-  const _CellSpecCard();
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Row(
-              children: [
-                Icon(Icons.memory,
-                    color: Colors.amberAccent, size: 22),
-                SizedBox(width: 8),
-                Text('CELL SPECIFICATION',
-                    style: TextStyle(
-                        fontSize: 12,
-                        letterSpacing: 1.5,
-                        color: Colors.grey)),
-              ],
-            ),
-            const SizedBox(height: 12),
-            const _SpecRow('Brand / Model', 'BYD C104F'),
-            const _SpecRow('Type', 'LFP (LiFePO₄) blade cell'),
-            const _SpecRow('Nominal voltage', '3.2 V'),
-            const _SpecRow('Capacity', '150 Ah'),
-            const _SpecRow('Energy per cell', '480 Wh'),
-            const _SpecRow('Dimensions',
-                '960 × 90 × 13.5 mm'),
-            const _SpecRow('Weight', '2.61 kg'),
-            const _SpecRow('Operating temperature', '−10 to 50 °C'),
-            const _SpecRow('Max charge / discharge',
-                '200 A / 200 A (1.33C)'),
-            const _SpecRow('Cycle life', '3000+ cycles'),
-            const SizedBox(height: 8),
-            Text(
-              'Pack mass (cells only): ${136 * 2.61} kg',
-              style: const TextStyle(
-                  fontSize: 12, color: Colors.grey, height: 1.4),
             ),
           ],
         ),
@@ -226,13 +102,10 @@ class _DisclaimerCard extends StatelessWidget {
                           color: Colors.orangeAccent)),
                   SizedBox(height: 8),
                   Text(
-                    'This app is reverse-engineered from CAN responses and is '
-                    'NOT an official Toyota or BYD product. While the pack '
-                    'configuration is mathematically validated, individual signal '
-                    'interpretations are inferences and may be incorrect. Use '
-                    'this app for monitoring purposes — do NOT rely on its '
-                    'numbers for safety-critical decisions or warranty '
-                    'discussions with Toyota service.',
+                    'This is not an official Toyota or BYD product. Readings '
+                    'are informational and may be inaccurate — do not rely on '
+                    'them for safety-critical decisions or warranty '
+                    'discussions.',
                     style: TextStyle(
                         fontSize: 12, height: 1.5, color: Colors.white70),
                   ),
@@ -326,7 +199,6 @@ class _AppInfoCardState extends State<_AppInfoCard> {
                   'github.com/AlexTalorJr/bz5-companion'),
               const _SpecRow('License', 'MIT'),
               const _SpecRow('Hardware', 'OBD2 Bluetooth adapter'),
-              const _SpecRow('Protocol', 'ISO 15765-4 CAN 11/500'),
             ],
           ),
         ),
@@ -368,42 +240,3 @@ class _SpecRow extends StatelessWidget {
     );
   }
 }
-
-class _DidRow extends StatelessWidget {
-  final String address;
-  final String name;
-  final String description;
-  const _DidRow(this.address, this.name, this.description);
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(
-            width: 90,
-            child: Text(address,
-                style: const TextStyle(
-                    fontSize: 12,
-                    color: Colors.lightBlueAccent,
-                    fontFeatures: [FontFeature.tabularFigures()])),
-          ),
-          SizedBox(
-            width: 120,
-            child: Text(name,
-                style: const TextStyle(
-                    fontSize: 12, fontWeight: FontWeight.w500)),
-          ),
-          Expanded(
-            child: Text(description,
-                style: const TextStyle(
-                    fontSize: 12, color: Colors.grey, height: 1.4)),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
