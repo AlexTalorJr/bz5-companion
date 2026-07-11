@@ -29,9 +29,14 @@ db = (root / 'lib/data/database.dart').read_text()
 agg_src = (root / 'lib/services/trend_aggregator.dart').read_text()
 
 # A1. version triple
-pv = re.search(r"version:\s*0\.1\.29\+(\d+)", (root / 'pubspec.yaml').read_text()).group(1)
-diag = re.search(r"_kDiagVersion = 'v0\.1\.29\+(\d+)'", (root / 'lib/screens/dashboard.dart').read_text())
-cloud = re.search(r"_readAppVersion\(\) async => '0\.1\.29\+(\d+)'", (root / 'lib/services/cloud_sync_service.dart').read_text())
+# v0.1.33+132: the version regex was hardwired to the 0.1.29 minor and
+# silently died the day the minor rolled to 0.1.30 (AttributeError on the
+# very first check). The build number (+N) is the only monotonic part all
+# the era-gates below compare against, so match any x.y.z and keep +N.
+_pv_m = re.search(r"version:\s*(\d+\.\d+\.\d+\+(\d+))", (root / 'pubspec.yaml').read_text())
+full_ver, pv = _pv_m.group(1), _pv_m.group(2)
+diag = re.search(r"_kDiagVersion = 'v\d+\.\d+\.\d+\+(\d+)'", (root / 'lib/screens/dashboard.dart').read_text())
+cloud = re.search(r"_readAppVersion\(\) async => '\d+\.\d+\.\d+\+(\d+)'", (root / 'lib/services/cloud_sync_service.dart').read_text())
 if pv == diag.group(1) and pv == cloud.group(1) and int(pv) >= 35:
     ok(f"version triple-sync = +{pv}")
 else:
@@ -93,10 +98,14 @@ _a6_anchor = (r"S\.of\('trends\.cumulative_dist'\).*?curved:\s*(true|false)"
               if int(pv) >= 60
               else r"Пробег накопительно.*?curved:\s*(true|false)")
 m = re.search(_a6_anchor, trends, re.S)
-if m and m.group(1) == "false":
-    ok("cumulative distance is non-curved (monotone preserved)")
+# v0.1.32+131 flipped the contract ON PURPOSE: the cumulative card is
+# curved, protected by preventCurveOverShooting (verified separately
+# just below) — monotone data stays monotone, the staircase softens.
+_a6_want = "true" if int(pv) >= 131 else "false"
+if m and m.group(1) == _a6_want:
+    ok(f"cumulative distance curved={_a6_want} (per-era contract)")
 elif m:
-    fail("cumulative distance is curved — overshoot can break monotonicity")
+    fail(f"cumulative distance curved={m.group(1)}, expected {_a6_want} for +{pv}")
 else:
     warn("could not locate cumulative-distance curved flag")
 
@@ -107,10 +116,20 @@ else:
     warn("cost section not gated on isConfigured — may show 0 when untariffed")
 
 # A8. aggregator constants present
-if "kMinSocDeltaForRange" in agg_src and "kConsumptionSmoothingWindow" in agg_src:
-    ok("aggregator filter + smoothing constants present")
+# +130 Trends v2 removed smoothing/range constants (bars replaced the
+# smoothed line; real-range card dropped); +132 added the bucket floor.
+if int(pv) >= 132:
+    _a8_need = ["kMinDistForConsumptionKm", "kUsableCapacityKwh",
+                "kMinBucketDistKm"]
+elif int(pv) >= 130:
+    _a8_need = ["kMinDistForConsumptionKm", "kUsableCapacityKwh"]
 else:
-    fail("aggregator constants missing")
+    _a8_need = ["kMinSocDeltaForRange", "kConsumptionSmoothingWindow"]
+_a8_missing = [c for c in _a8_need if c not in agg_src]
+if not _a8_missing:
+    ok(f"aggregator constants present ({', '.join(_a8_need)})")
+else:
+    fail(f"aggregator constants missing: {_a8_missing}")
 
 # ──────────────── Part B: aggregator logic port + edge cases ────────────────
 # Mirror of TrendAggregator.build / _movingAverage. Kept deliberately
@@ -357,10 +376,16 @@ if int(pv) >= 37:
     # table (+104), from<12 soh_estimates.source (+105, splits UDS
     # id=1 / HAL id=2), from<13 trips.last_alive_ts (+106), from<14
     # client_uuid x5 (+117).
-    if "int get schemaVersion => 14;" in db_src:
-        ok("D1 schemaVersion bumped to 14")
+    _d1_expected = 15 if int(pv) >= 130 else 14
+    if f"int get schemaVersion => {_d1_expected};" in db_src:
+        ok(f"D1 schemaVersion = {_d1_expected} (per-era)")
     else:
-        fail("D1 schemaVersion not 14")
+        fail(f"D1 schemaVersion != {_d1_expected}")
+    if int(pv) >= 130:
+        if "if (from < 15)" in db_src and "sohHistory" in db_src:
+            ok("D1 migration adds soh_history (from<15, additive)")
+        else:
+            fail("D1 from<15 soh_history step missing")
     if "if (from < 8)" in db_src and "m.addColumn(trips, trips.extra)" in db_src:
         ok("D1 migration adds trips.extra (additive)")
     else:
@@ -1055,42 +1080,61 @@ if int(pv) >= 44:
 
     # K3. _monthBarSideTitles looks up bars[i].start (real DateTime),
     #     not just rendering the integer index.
-    if "SideTitles _monthBarSideTitles(" in trends and \
-       "bars[i].start" in trends:
-        ok("K3 _monthBarSideTitles uses bars[i].start for real month labels")
+    # +130 renamed _monthBarSideTitles → _periodBarSideTitles (day/month
+    # buckets); the invariant — labels from bars[i].start — is unchanged.
+    _k3_name = ("_periodBarSideTitles" if int(pv) >= 130
+                else "_monthBarSideTitles")
+    if f"SideTitles {_k3_name}(" in trends and "bars[i].start" in trends:
+        ok(f"K3 {_k3_name} uses bars[i].start for real period labels")
     else:
-        fail("K3 _monthBarSideTitles missing or doesn't read PeriodBar.start")
+        fail(f"K3 {_k3_name} missing or doesn't read PeriodBar.start")
 
     # K4. _LineCard and _ScatterTrendCard wire bottom=_timeSideTitles via
     #     spots.first.x / spots.last.x or dotSpots.first.x / dotSpots.last.x.
-    line_card = trends[trends.find("class _LineCard"):trends.find("class _ScatterTrendCard")]
-    scatter_card = trends[trends.find("class _ScatterTrendCard"):trends.find("class _BarCard")]
+    _lc_start = trends.find("class _LineCard")
+    _lc_end = trends.find("class _", _lc_start + 10)
+    line_card = trends[_lc_start:_lc_end]
     line_ok = "_timeSideTitles(" in line_card and \
               "minX: spots.first.x" in line_card and \
               "maxX: spots.last.x" in line_card
-    scatter_ok = "_timeSideTitles(" in scatter_card and \
-                 "minX: dotSpots.first.x" in scatter_card and \
-                 "maxX: dotSpots.last.x" in scatter_card
-    if line_ok and scatter_ok:
-        ok("K4 _LineCard + _ScatterTrendCard wire date axis from spot extremes")
+    if int(pv) >= 130:
+        # +130 removed _ScatterTrendCard with the real-range card; the
+        # date-axis invariant now lives in _LineCard alone (the +131
+        # _SpreadCard is checked by its own part, not here).
+        if line_ok:
+            ok("K4 _LineCard wires date axis from spot extremes"
+               " (scatter card removed in +130)")
+        else:
+            fail("K4 _LineCard date axis not wired from spot extremes")
     else:
-        fail(f"K4 date axis not wired correctly: line={line_ok} scatter={scatter_ok}")
+        scatter_card = trends[trends.find("class _ScatterTrendCard"):trends.find("class _BarCard")]
+        scatter_ok = "_timeSideTitles(" in scatter_card and \
+                     "minX: dotSpots.first.x" in scatter_card and \
+                     "maxX: dotSpots.last.x" in scatter_card
+        if line_ok and scatter_ok:
+            ok("K4 _LineCard + _ScatterTrendCard wire date axis from spot extremes")
+        else:
+            fail(f"K4 date axis not wired correctly: line={line_ok} scatter={scatter_ok}")
 
     # K5. _BarCard wires _monthBarSideTitles(bars)
     bar_card = trends[trends.find("class _BarCard"):trends.find("// ── shared chart helpers ──")]
-    if "_monthBarSideTitles(bars)" in bar_card:
-        ok("K5 _BarCard wires month-bucket bottom axis")
+    _k5_call = ("_periodBarSideTitles(bars, bucket)" if int(pv) >= 130
+                else "_monthBarSideTitles(bars)")
+    if _k5_call in bar_card:
+        ok(f"K5 _BarCard wires period bottom axis via {_k5_call}")
     else:
-        fail("K5 _BarCard missing _monthBarSideTitles wiring")
+        fail(f"K5 _BarCard missing {_k5_call} wiring")
 
     # K6. SOH block no longer subtracts a t0 offset — must use absolute
     #     epoch-ms so the date-axis formatter shows real years, not 1970.
-    soh_block_idx = trends.find("SOH curve straight off snapshots")
+    _k6_anchor = ("Ah-method (coulomb-counted) SOH points" if int(pv) >= 130
+                  else "SOH curve straight off snapshots")
+    soh_block_idx = trends.find(_k6_anchor)
     soh_block = trends[soh_block_idx:soh_block_idx + 700] if soh_block_idx >= 0 else ""
     if soh_block and "final t0 =" not in soh_block and \
        "millisecondsSinceEpoch.toDouble()" in soh_block and \
        "- t0" not in soh_block:
-        ok("K6 SOH block uses absolute epoch-ms (no t0 subtraction)")
+        ok("K6 SOH points use absolute epoch-ms (no t0 subtraction)")
     else:
         fail("K6 SOH block still uses relative-to-t0 offset → dates would be 1970")
 
@@ -1134,7 +1178,7 @@ if int(pv) >= 44:
 
     # K9. Tick thinning in bar axis: i % step != 0 → SizedBox.shrink().
     #     Without this, a 24-month "all" view would overlap labels.
-    mb_block_idx = trends.find("SideTitles _monthBarSideTitles(")
+    mb_block_idx = trends.find(f"SideTitles {_k3_name}(")
     mb_block = trends[mb_block_idx:mb_block_idx + 1200] if mb_block_idx >= 0 else ""
     if mb_block and "i % step != 0" in mb_block and \
        "SizedBox.shrink()" in mb_block:
@@ -1224,8 +1268,11 @@ if int(pv) >= 45:
     # L7. Real-range filter now uses kMinDistForRangeKm in the
     #     aggregator. Verify both the constant declaration and the
     #     conditional that uses it.
-    if "kMinDistForRangeKm = 3.0" in agg_src and \
-       "dist >= kMinDistForRangeKm" in agg_src:
+    if int(pv) >= 130:
+        ok("L7 superseded by +130 Trends v2 (real-range card removed; "
+           "short-hop guard lives on as kMinDistForConsumptionKm)")
+    elif "kMinDistForRangeKm = 3.0" in agg_src and \
+         "dist >= kMinDistForRangeKm" in agg_src:
         ok("L7 real-range short-trip filter (≥3 km) added to aggregator")
     else:
         fail("L7 real-range distance filter missing — would leak 2.4-km anomalies")
@@ -1233,15 +1280,23 @@ if int(pv) >= 45:
     # L8. Every card type now requires a `footer` parameter — the
     #     caller composes the meaningful string. Verify the required
     #     keyword shows up in each class.
-    line_def = trends[trends.find("class _LineCard"):trends.find("class _ScatterTrendCard")]
-    scatter_def = trends[trends.find("class _ScatterTrendCard"):trends.find("class _BarCard")]
-    bar_def = trends[trends.find("class _BarCard"):trends.find("// ── shared chart helpers ──")]
-    if "required this.footer," in line_def and \
-       "required this.footer," in scatter_def and \
-       "required this.footer," in bar_def:
-        ok("L8 all three card classes require an explicit footer parameter")
+    def _class_body(name):
+        _i = trends.find(f"class {name}")
+        if _i < 0: return None
+        _j = trends.find("class _", _i + 10)
+        return trends[_i:_j if _j > 0 else len(trends)]
+    if int(pv) >= 131:
+        _l8_classes = ["_LineCard", "_SpreadCard", "_SohComboCard", "_BarCard"]
+    elif int(pv) >= 130:
+        _l8_classes = ["_LineCard", "_SohComboCard", "_BarCard"]
     else:
-        fail("L8 footer parameter missing from at least one card class")
+        _l8_classes = ["_LineCard", "_ScatterTrendCard", "_BarCard"]
+    _l8_missing = [c for c in _l8_classes
+                   if not (_class_body(c) or "").count("required this.footer,")]
+    if not _l8_missing:
+        ok(f"L8 footer required in every card class ({', '.join(_l8_classes)})")
+    else:
+        fail(f"L8 footer parameter missing in: {_l8_missing}")
 
     # L9. _buildSections must wire all six footers explicitly. Check
     #     each composition string fragment shows up.
@@ -1251,7 +1306,7 @@ if int(pv) >= 45:
         "consFooter",
         "regenFooter",
         "sohFooter",
-        "rangeFooter",
+        "spreadFooter" if int(pv) >= 130 else "rangeFooter",
     ]
     missing = [f for f in footer_fragments if f not in trends]
     if not missing:
@@ -2015,7 +2070,7 @@ if int(pv) >= 53:
     pub = open("pubspec.yaml").read()
     dash = open("lib/screens/dashboard.dart").read()
     csync = open("lib/services/cloud_sync_service.dart").read()
-    expected = f"0.1.29+{pv}"
+    expected = full_ver
     if f"version: {expected}" in pub and \
        f"_kDiagVersion = 'v{expected}'" in dash and \
        f"'{expected}'" in csync:
@@ -2116,7 +2171,7 @@ if int(pv) >= 54:
     pub = open("pubspec.yaml").read()
     dash = open("lib/screens/dashboard.dart").read()
     csync = open("lib/services/cloud_sync_service.dart").read()
-    expected = f"0.1.29+{pv}"
+    expected = full_ver
     if f"version: {expected}" in pub and \
        f"_kDiagVersion = 'v{expected}'" in dash and \
        f"'{expected}'" in csync:
@@ -3079,6 +3134,13 @@ if int(pv) >= 66:
         'lib/screens/wide/head_unit_scaffold.dart': ['useHalForGear'],
         'lib/screens/wide/charging_view_wide.dart': ['useHalForSoc'],
     }
+    if int(pv) >= 131:
+        # +131: displayed SOC resolves through the ONE resolver
+        # (resolveUiSocPct honours the user's SocSource setting); the raw
+        # useHalForSoc ternary survives only at deliberate math sites.
+        for _f in _sites:
+            _sites[_f] = ['resolveUiSocPct' if _n == 'useHalForSoc' else _n
+                          for _n in _sites[_f]]
     _missing = []
     for _f, _needs in _sites.items():
         _body = (root / _f).read_text()

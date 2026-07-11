@@ -483,10 +483,16 @@ class _TotalsGrid extends StatelessWidget {
     // space (owner feedback). On head unit lay them out in ONE row; on
     // phone keep two columns but make the cells much flatter.
     if (isWide) {
+      // v0.1.33+132: 58 dp was NOT enough — Card carries a default 4 dp
+      // margin on every side (usable height 50), while the content needs
+      // ~62 (8+16 header + 4 gap + ~26 value line + 8). The 19 pt values
+      // painted straight across the bottom rounded edge (field photo
+      // 2026-07-12). Margin is zeroed (the Row's 10 dp SizedBox already
+      // spaces the cards), padding trimmed 10→8, height 58→64.
       return Row(
         children: [
           for (var i = 0; i < cards.length; i++) ...[
-            Expanded(child: SizedBox(height: 58, child: cards[i])),
+            Expanded(child: SizedBox(height: 64, child: cards[i])),
             if (i != cards.length - 1) const SizedBox(width: 10),
           ],
         ],
@@ -505,8 +511,12 @@ class _TotalsGrid extends StatelessWidget {
 
   Widget _metric(IconData icon, String label, String value) {
     return Card(
+      // v0.1.33+132: no implicit margin — the wide Row spaces cards itself
+      // and the phone GridView has its own crossAxisSpacing; the default
+      // 4 dp margin only ate fixed-height budget (see the Row above).
+      margin: EdgeInsets.zero,
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisAlignment: MainAxisAlignment.center,
@@ -767,8 +777,18 @@ class _SpreadCard extends StatelessWidget {
         : Builder(builder: (context) {
             final ys = [for (final p in points) p.y];
             // p95 by rank on a sorted copy (n is small — trips in window).
+            // v0.1.33+132: at n ≤ 11 the rank-p95 index IS the maximum, so
+            // a single spike still owned the axis (the exact failure this
+            // cap exists to prevent). With ≥ 4 points the axis reference
+            // is capped at the SECOND-largest value — one outlier can
+            // never set the scale; two independent high readings can,
+            // which is no longer an outlier but a trend.
             final sorted = List<double>.from(ys)..sort();
-            final p95 = sorted[(0.95 * (sorted.length - 1)).round()];
+            var rank = (0.95 * (sorted.length - 1)).round();
+            if (sorted.length >= 4 && rank > sorted.length - 2) {
+              rank = sorted.length - 2;
+            }
+            final p95 = sorted[rank];
             final maxY = (p95 * 1.3) > 50.0 ? (p95 * 1.3) : 50.0;
 
             // Raw dots, clamped to the axis cap so an outlier renders
