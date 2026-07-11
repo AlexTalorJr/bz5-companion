@@ -125,6 +125,16 @@ enum CloudSyncStatus {
   /// Server returned 401. Token is bad — user must re-register with
   /// a fresh setup token from the owner.
   authFailed,
+
+  /// v0.1.34+133: server gate — the account exists but the owner has
+  /// not approved it yet (403 account_pending). Token and data intact;
+  /// the periodic tick keeps probing, so approval is picked up
+  /// automatically with zero user action.
+  pendingApproval,
+
+  /// v0.1.34+133: server gate — account_rejected / account_blocked.
+  /// Permanent until the owner flips it; token and LOCAL DATA intact.
+  accessDenied,
 }
 
 /// Vehicle row from GET /v1/setup/vehicles.
@@ -1092,6 +1102,15 @@ class CloudSyncService extends ChangeNotifier {
       _lastError = e.toString();
       _status = CloudSyncStatus.error;
       await _persistError(_lastError!);
+    } on _AccountGateException catch (e) {
+      // v0.1.34+133: not an error — a state. Token, cursors and timers
+      // stay; the next periodic tick re-probes, so an approval flips us
+      // back to normal flow automatically (server SPEC §2/§8).
+      _status = e.code == 'account_pending'
+          ? CloudSyncStatus.pendingApproval
+          : CloudSyncStatus.accessDenied;
+      _lastError = e.code;
+      await _persistError(e.code);
     } on _BridgeException catch (e) {
       _lastError = e.message;
       _status = CloudSyncStatus.error;
@@ -1459,6 +1478,10 @@ class CloudSyncService extends ChangeNotifier {
 
   Future<void> _sendHeartbeat() async {
     if (!_enabled || !isRegistered) return;
+    if (_status == CloudSyncStatus.pendingApproval ||
+        _status == CloudSyncStatus.accessDenied) {
+      return; // v0.1.34+133: gated — syncOnce's probe is enough traffic.
+    }
     try {
       await _postIngest('/v1/data/ingest/heartbeat',
           {'client_version': await _readAppVersion()});
@@ -2143,6 +2166,16 @@ class CloudSyncService extends ChangeNotifier {
       if (v2Probe && (code == 400 || code == 404 || code == 405)) {
         throw const _EndpointNotDeployedException();
       }
+      // v0.1.34+133: data-plane approval gate (server SPEC §2) on the
+      // pull/restore path. Recognized BEFORE the permanent-4xx collapse.
+      if (code == 403) {
+        final errCode = _parseErrorCode(resp.body);
+        if (errCode == 'account_pending' ||
+            errCode == 'account_rejected' ||
+            errCode == 'account_blocked') {
+          throw _AccountGateException(errCode!);
+        }
+      }
       // 400 / 403 / 404 / 409 / other 4xx → permanent client error.
       throw _BridgeException(
           'HTTP $code on $path: ${_briefBody(resp.body)}');
@@ -2366,6 +2399,14 @@ class CloudSyncService extends ChangeNotifier {
       // remember samples_disabled, log other 403s. Not retryable.
       if (code == 403) {
         final errCode = _parseErrorCode(resp.body);
+        // v0.1.34+133: data-plane approval gate (server SPEC §2).
+        // Same nested wire shape as samples_disabled — _parseErrorCode
+        // already unwraps detail.error.code.
+        if (errCode == 'account_pending' ||
+            errCode == 'account_rejected' ||
+            errCode == 'account_blocked') {
+          throw _AccountGateException(errCode!);
+        }
         if (path.contains('/samples') && errCode == 'samples_disabled') {
           await _markSamplesRejected();
           throw _BridgeException('Samples ingest disabled on server');
@@ -2733,7 +2774,7 @@ class CloudSyncService extends ChangeNotifier {
   /// Read app version from the static value baked into the build.
   /// We don't have package_info_plus as a dep — pubspec-version is
   /// hardcoded here. Update when bumping. Off-by-one tolerated.
-  Future<String> _readAppVersion() async => '0.1.33+132';
+  Future<String> _readAppVersion() async => '0.1.34+133';
 }
 
 // ─── Internal exceptions ────────────────────────────────────────────
@@ -2743,6 +2784,13 @@ class _BridgeException implements Exception {
   const _BridgeException(this.message);
   @override
   String toString() => message;
+}
+
+/// v0.1.34+133: data-plane approval gate (server SPEC §2). Carries the
+/// server error code so syncOnce can map pending vs rejected/blocked.
+class _AccountGateException implements Exception {
+  final String code; // 'account_pending' | 'account_rejected' | 'account_blocked'
+  const _AccountGateException(this.code);
 }
 
 /// v0.1.29+117 (C1): the requested endpoint answered 404/405 and the caller

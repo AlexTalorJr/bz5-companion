@@ -627,6 +627,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
       case CloudSyncStatus.authFailed:
       case CloudSyncStatus.error:
       case CloudSyncStatus.pausedByUser:
+      // v0.1.34+133: approval gate — pending with the paused group,
+      // denied with the auth/error group; menu row is amber for both.
+      case CloudSyncStatus.pendingApproval:
+      case CloudSyncStatus.accessDenied:
         return Colors.amber;
       default: // idle | syncing | transient disconnected
         return Colors.lightGreenAccent;
@@ -641,6 +645,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
         return S.of('cloud.menu.auth_error');
       case CloudSyncStatus.pausedByUser:
         return S.of('cloud.menu.paused');
+      // v0.1.34+133: approval gate states get their own labels.
+      case CloudSyncStatus.pendingApproval:
+        return S.of('cloud.status.pending_approval');
+      case CloudSyncStatus.accessDenied:
+        return S.of('cloud.status.access_denied');
       default: // idle | syncing | transient disconnected
         return S.of('cloud.menu.connected');
     }
@@ -1213,7 +1222,9 @@ class _CloudServicesScreenState extends State<CloudServicesScreen> {
                   style: const TextStyle(fontSize: 12, color: Colors.grey),
                 ),
               ),
-            if (cs.lastError != null) ...[
+            if (cs.lastError != null &&
+                cs.status != CloudSyncStatus.pendingApproval &&
+                cs.status != CloudSyncStatus.accessDenied) ...[
               const SizedBox(height: 4),
               Container(
                 padding: const EdgeInsets.all(8),
@@ -1223,6 +1234,38 @@ class _CloudServicesScreenState extends State<CloudServicesScreen> {
                 ),
                 child: Text(
                   cs.lastError!,
+                  style: const TextStyle(fontSize: 12, color: Colors.redAccent),
+                ),
+              ),
+            ],
+            // v0.1.34+133: approval-gate hints replace the raw error box
+            // (the raw box would show the bare server code) — same visual
+            // pattern, state-appropriate colors (Alex decision Q1).
+            if (cs.status == CloudSyncStatus.pendingApproval) ...[
+              const SizedBox(height: 4),
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.orange.withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  S.of('cloud.pending_approval.hint'),
+                  style: const TextStyle(
+                      fontSize: 12, color: Colors.orangeAccent),
+                ),
+              ),
+            ],
+            if (cs.status == CloudSyncStatus.accessDenied) ...[
+              const SizedBox(height: 4),
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.red.withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  S.of('cloud.access_denied.hint'),
                   style: const TextStyle(fontSize: 12, color: Colors.redAccent),
                 ),
               ),
@@ -1353,6 +1396,11 @@ class _CloudServicesScreenState extends State<CloudServicesScreen> {
         return Colors.amber;
       case CloudSyncStatus.disconnected:
         return Colors.grey;
+      // v0.1.34+133: approval gate (Alex decision Q1: pending = orange).
+      case CloudSyncStatus.pendingApproval:
+        return Colors.orangeAccent;
+      case CloudSyncStatus.accessDenied:
+        return Colors.redAccent;
     }
   }
 
@@ -1372,6 +1420,11 @@ class _CloudServicesScreenState extends State<CloudServicesScreen> {
         return S.of('cloud.status.error');
       case CloudSyncStatus.authFailed:
         return S.of('cloud.status.auth_failed');
+      // v0.1.34+133: approval gate states.
+      case CloudSyncStatus.pendingApproval:
+        return S.of('cloud.status.pending_approval');
+      case CloudSyncStatus.accessDenied:
+        return S.of('cloud.status.access_denied');
     }
   }
 

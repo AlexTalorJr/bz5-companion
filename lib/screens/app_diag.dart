@@ -226,6 +226,11 @@ class _AppDiagScreenState extends State<AppDiagScreen> {
       ('last success', dt(cloud.lastSuccessAt), false),
       ('last restore', dt(cloud.lastRestoreAt), false),
       ('restore status', cloud.restoreStatus.name, false),
+      // v0.1.34+133: approval-gate state — server code if gated,
+      // otherwise the plain sync status name.
+      ('account approval', cloud.lastError?.startsWith('account_') == true
+          ? cloud.lastError!
+          : cloud.status.name, false),
       ('last error', cloud.lastError ?? '—', cloud.lastError != null),
     ];
     // v0.1.29+124 (C2): account-plane state alongside the device-plane
