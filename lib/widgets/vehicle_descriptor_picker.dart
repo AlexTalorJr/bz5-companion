@@ -3,10 +3,11 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../data/dilink_vehicles.dart';
+import '../data/dilink_vehicles.dart'; // makeFromVin (VIN → make prefill)
 import '../l10n/strings.dart';
 import '../services/cloud_sync_service.dart';
 import '../services/native_car_channel.dart';
+import '../services/vehicle_catalog_service.dart';
 
 /// v0.1.35+134: reusable make/model picker for the pair/start vehicle
 /// descriptor. Used inline on the pairing screen and inside the
@@ -48,18 +49,24 @@ class _VehicleDescriptorPickerState extends State<VehicleDescriptorPicker> {
     _customModel = TextEditingController();
     _name = TextEditingController();
     final cs = context.read<CloudSyncService>();
-    _seedFromSaved(cs);
+    // v0.1.36+135: seed against the CURRENT catalog (server cache or
+    // built-in), then kick a fire-and-forget staleness check. This one
+    // call site covers both hosts of the picker — the pairing screen
+    // and the "My vehicle" dialog (Q1: both, same widget).
+    final vc = context.read<VehicleCatalogService>();
+    _seedFromSaved(cs, vc);
     if (_make == null) _tryVinPrefill();
+    unawaited(vc.refreshIfStale());
   }
 
-  void _seedFromSaved(CloudSyncService cs) {
+  void _seedFromSaved(CloudSyncService cs, VehicleCatalogService vc) {
     final make = cs.vehDescMake;
     final model = cs.vehDescModel;
     _name.text = cs.vehDescName ?? '';
     if (make == null || make.isEmpty) return;
-    if (kDiLinkMakes.contains(make)) {
+    if (vc.makes.contains(make)) {
       _make = make;
-      final models = kDiLinkModels[make] ?? const [];
+      final models = vc.modelsFor(make);
       if (model != null && models.contains(model)) {
         _model = model;
       } else if (model != null && model.isNotEmpty) {
@@ -125,15 +132,22 @@ class _VehicleDescriptorPickerState extends State<VehicleDescriptorPicker> {
 
   @override
   Widget build(BuildContext context) {
+    // v0.1.36+135: chips come from the catalog service (server cache or
+    // built-in seed — the picker never learns which). watch() rebuilds
+    // the chip set if a newer catalog lands mid-session; the saved
+    // "model vanished from the new catalog" case is already covered by
+    // the existing Other-chip fallback in _seedFromSaved.
+    final vc = context.watch<VehicleCatalogService>();
     final isOtherMake = _make == _kOther;
-    final models =
-        isOtherMake ? const <String>[] : (kDiLinkModels[_make] ?? const []);
+    final models = isOtherMake || _make == null
+        ? const <String>[]
+        : vc.modelsFor(_make!);
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Text(S.of('vehicle.make'),
           style: const TextStyle(fontSize: 12, color: Colors.grey)),
       const SizedBox(height: 4),
       Wrap(spacing: 8, runSpacing: 4, children: [
-        for (final m in kDiLinkMakes)
+        for (final m in vc.makes)
           ChoiceChip(
             label: Text(m),
             selected: _make == m,

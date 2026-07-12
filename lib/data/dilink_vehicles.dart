@@ -15,6 +15,8 @@
 ///     sees and confirms the values before pairing.
 library;
 
+import 'dart:convert';
+
 /// Preset makes, in display order. 'Other' is appended by the UI.
 const List<String> kDiLinkMakes = ['Toyota', 'BYD', 'Denza'];
 
@@ -75,5 +77,64 @@ String? makeFromVin(String? vin) {
       return 'BYD';
     default:
       return null;
+  }
+}
+
+/// v0.1.36+135: parsed + validated server catalog (S8,
+/// GET /v2/meta/vehicle-catalog). Returns null on ANY violation —
+/// the caller falls back to the built-in seed silently. Limits mirror
+/// the server SPEC §2: body ≤ 32 KB, 1..20 makes, 1..60 models per
+/// make, every string 1..80 chars, no duplicate makes or models,
+/// version int > 0. The catalog is a UI hint only: pair/start and the
+/// "Other" free-form path never depend on it.
+class VehicleCatalog {
+  final int version;
+
+  /// Display order preserved exactly as the server sent it.
+  final List<String> makes;
+  final Map<String, List<String>> models;
+
+  const VehicleCatalog(this.version, this.makes, this.models);
+
+  /// Strict parse of the raw response body. Null on any violation;
+  /// never throws. The size check runs BEFORE jsonDecode so an
+  /// oversized body is rejected without paying the decode cost.
+  static VehicleCatalog? tryParse(String body) {
+    if (body.length > 32 * 1024) return null;
+    Object? root;
+    try {
+      root = jsonDecode(body);
+    } catch (_) {
+      return null;
+    }
+    if (root is! Map<String, dynamic>) return null;
+    final version = root['version'];
+    if (version is! int || version <= 0) return null;
+    final rawMakes = root['makes'];
+    if (rawMakes is! List || rawMakes.isEmpty || rawMakes.length > 20) {
+      return null;
+    }
+    final makes = <String>[];
+    final models = <String, List<String>>{};
+    for (final entry in rawMakes) {
+      if (entry is! Map<String, dynamic>) return null;
+      final make = entry['make'];
+      if (make is! String || make.isEmpty || make.length > 80) return null;
+      if (models.containsKey(make)) return null; // duplicate make
+      final rawModels = entry['models'];
+      if (rawModels is! List || rawModels.isEmpty || rawModels.length > 60) {
+        return null;
+      }
+      final list = <String>[];
+      for (final m in rawModels) {
+        if (m is! String || m.isEmpty || m.length > 80) return null;
+        if (list.contains(m)) return null; // duplicate model within make
+        list.add(m);
+      }
+      makes.add(make);
+      models[make] = List.unmodifiable(list);
+    }
+    return VehicleCatalog(
+        version, List.unmodifiable(makes), Map.unmodifiable(models));
   }
 }

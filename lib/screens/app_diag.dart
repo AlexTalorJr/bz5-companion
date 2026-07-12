@@ -9,6 +9,7 @@ import '../services/cloud_sync_service.dart';
 import '../services/diag_dump_file.dart';
 import '../services/hal_telemetry_service.dart';
 import '../services/locale_service.dart';
+import '../services/vehicle_catalog_service.dart';
 import 'dashboard.dart' show kAppVersion;
 
 /// v0.1.29+122: App Diagnostics — the on-device answer to "no ADB".
@@ -167,6 +168,15 @@ class _AppDiagScreenState extends State<AppDiagScreen> {
 
   Widget _cloudCard(BuildContext context) {
     final cloud = context.watch<CloudSyncService>();
+    final vcat = context.watch<VehicleCatalogService>();
+    // Compact cache age for the catalog row: 45m / 3h / 2d.
+    String age(DateTime t) {
+      final d = DateTime.now().difference(t);
+      if (d.inHours < 1) return '${d.inMinutes}m';
+      if (d.inDays < 1) return '${d.inHours}h';
+      return '${d.inDays}d';
+    }
+
     final wm = cloud.uuidMapWatermarks;
     final st = cloud.stats;
     String dt(DateTime? t) => t == null
@@ -194,6 +204,16 @@ class _AppDiagScreenState extends State<AppDiagScreen> {
       (
         'vehicle',
         '${cloud.vehicleName ?? '—'} (${cloud.vehicleId ?? '—'})',
+        false
+      ),
+      // v0.1.36+135 (Q2): catalog observability for field check §6 —
+      // seed vs cached server version + cache age, one cheap row.
+      (
+        'vehicle catalog',
+        vcat.catalog == null
+            ? 'seed (built-in)'
+            : 'v${vcat.cachedVersion}'
+                ' (${vcat.fetchedAt == null ? '—' : age(vcat.fetchedAt!)})',
         false
       ),
       (
