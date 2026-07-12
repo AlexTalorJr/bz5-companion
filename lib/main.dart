@@ -144,7 +144,15 @@ class _BZ5AppState extends State<BZ5App> with WidgetsBindingObserver {
           create: (_) => CostSettings()..load(),
         ),
         ChangeNotifierProvider<CloudSyncService>(
-          create: (_) => CloudSyncService(db: widget.db)..init(),
+          // v0.1.37+136 (F3): HU-gate callback for sync-down. HAL is
+          // registered BELOW this provider — safe: ctx.read is lazy and
+          // fires only inside _syncPull, by which time the tree is alive
+          // and provider create-on-demand resolves it (AA2: callback,
+          // never an import of the HAL class).
+          create: (ctx) => CloudSyncService(
+            db: widget.db,
+            isHeadUnit: () => ctx.read<HalTelemetryService>().canUseHal,
+          )..init(),
         ),
         // v0.1.36+135: server vehicle catalog (S8, public endpoint).
         // Separate lightweight service by design — CloudSyncService owns

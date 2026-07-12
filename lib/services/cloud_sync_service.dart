@@ -253,9 +253,17 @@ class CloudRestoreProgress {
 // ─── Service ───────────────────────────────────────────────────────
 
 class CloudSyncService extends ChangeNotifier {
-  CloudSyncService({required AppDatabase db}) : _db = db;
+  CloudSyncService({required AppDatabase db, this.isHeadUnit}) : _db = db;
 
   final AppDatabase _db;
+
+  /// v0.1.37+136 (F3): head-unit probe for the pull gate. Callback, not
+  /// an import (AA2 rule, same shape as HAL's currentTripId): the head
+  /// unit must never pull its own pushes back. Read lazily at _syncPull
+  /// time — the HAL provider is created after this service in main.dart,
+  /// which is fine because provider create is lazy and _syncPull only
+  /// runs once the tree is alive.
+  final bool Function()? isHeadUnit;
 
   // ── persistence keys ──
   static const _kEnabled = 'cloud_sync_enabled';
@@ -272,6 +280,17 @@ class CloudSyncService extends ChangeNotifier {
   static const _kCursorCanMonitor = 'cloud_sync_cursor_canmonitor';
   static const _kLastSuccessAt = 'cloud_sync_last_success_at';
   static const _kLastError = 'cloud_sync_last_error';
+  // v0.1.37+136 (F3): incremental sync-down state. Cursor is the global
+  // server_seq (§3.9); absent key = 0 → the first pull on an existing
+  // install replays the whole history idempotently (this IS the phone
+  // migration — no token rotation needed). The trip map links server
+  // trips to local autoincrement ids across pulls so snapshots arriving
+  // in a later page (or a later pull) still relink. Key: "device:ctid" —
+  // device_id is canonical per-row (first-write-wins, curl-confirmed
+  // 2026-07-13), used ONLY as a map key, never as a self-echo test.
+  static const _kPullCursor = 'cloud_pull_cursor';
+  static const _kPullLastAt = 'cloud_pull_last_at';
+  static const _kPullTripMap = 'cloud_pull_trip_map';
   static const _kSamplesRejectedAt = 'cloud_sync_samples_rejected_at';
   // v0.1.35+134: self-service vehicle descriptor sent on pair/start
   // (server head 0011). NOT the server-assigned _kVehicleId/_kVehicleName
@@ -356,6 +375,16 @@ class CloudSyncService extends ChangeNotifier {
   /// v0.1.29+29: cursor for CAN monitor session uploads. Same semantics
   /// as [_cursorLiveLog].
   int _cursorCanMonitor = 0;
+
+  // v0.1.37+136 (F3): sync-down state (see the _kPull* key block).
+  int _pullCursor = 0;
+  DateTime? _lastPullAt;
+  String? _lastPullError;
+  int _lastPullTrips = 0;
+  int _lastPullTripsUpdated = 0;
+  int _lastPullSnaps = 0;
+  /// "device:ctid" → local trip id. Persisted as JSON (~1 row/trip).
+  final Map<String, int> _pullTripMap = {};
 
   // v0.1.29+20: tracks which trip ids have been successfully pushed
   // since this device's registration. Loaded from SharedPrefs as a
@@ -447,6 +476,14 @@ class CloudSyncService extends ChangeNotifier {
   int get cursorCanMonitor => _cursorCanMonitor;
   int get pushedTripCount => _pushedTripIds.length;
 
+  // v0.1.37+136 (F3): sync-down observability for AppDiagScreen.
+  int get pullCursor => _pullCursor;
+  DateTime? get lastPullAt => _lastPullAt;
+  String? get lastPullError => _lastPullError;
+  int get lastPullTrips => _lastPullTrips;
+  int get lastPullTripsUpdated => _lastPullTripsUpdated;
+  int get lastPullSnaps => _lastPullSnaps;
+
   // ─── init / disposal ─────────────────────────────────────────────
 
   /// Load persisted state + start background timers if conditions met.
@@ -492,6 +529,29 @@ class CloudSyncService extends ChangeNotifier {
       _lastRestoreAt = DateTime.fromMillisecondsSinceEpoch(lastRestoreTs);
     }
     _restoreError = prefs.getString(_kLastRestoreError);
+
+    // v0.1.37+136 (F3): sync-down state. Errors in the map JSON are
+    // swallowed to an empty map — worst case a few snapshots relink via
+    // the unique-ctid fallback or land with tripId=null (degradation,
+    // not corruption).
+    _pullCursor = prefs.getInt(_kPullCursor) ?? 0;
+    final pullTs = prefs.getInt(_kPullLastAt);
+    if (pullTs != null) {
+      _lastPullAt = DateTime.fromMillisecondsSinceEpoch(pullTs);
+    }
+    final mapRaw = prefs.getString(_kPullTripMap);
+    if (mapRaw != null) {
+      try {
+        final decoded = jsonDecode(mapRaw);
+        if (decoded is Map<String, dynamic>) {
+          decoded.forEach((k, v) {
+            if (v is int) _pullTripMap[k] = v;
+          });
+        }
+      } catch (_) {
+        // ignore — see above.
+      }
+    }
 
     // v0.1.29+20: load pushed-trip-id set. Stored as JSON int list
     // (SharedPreferences supports List<String> natively but ints get
@@ -788,7 +848,16 @@ class CloudSyncService extends ChangeNotifier {
             _finishPairing(CloudPairingStatus.paired);
             debugPrint('CloudSync: pairing complete — device attached '
                 'to account (token unchanged, '
-                'attach_mode=${_lastAttachMode ?? '?'})');
+                'attach_mode=${_lastAttachMode ?? '?'}), '
+                'auto-starting restore');
+            // v0.1.37+136 (F2): scenario (a) attach-by-token — the token
+            // did not change, so restore runs with our OWN token:
+            // probeRestoreToken (GET /v1/data/trips?limit=1, not gated)
+            // passes with it, the identity swap degenerates to a no-op,
+            // and the +126 barrier applies as usual. Pairing is a rare
+            // event — a full since=0 pull is acceptable and useful here
+            // (re-seeds the pull cursor and the trip map).
+            unawaited(startRestore(oldClientToken: _clientToken!));
           }
         } else if (st == 'expired') {
           _finishPairing(CloudPairingStatus.expired);
@@ -1126,6 +1195,11 @@ class CloudSyncService extends ChangeNotifier {
       // uuid-less on the server until C4.) Deviation from the plan doc §1.4
       // ("before _syncTrips") — server contract is unaffected.
       await _syncUuidMapping();
+      // v0.1.37+136 (F3): incremental sync-down — LAST, after every push
+      // step, so a just-closed local trip is already server-side (and thus
+      // a uuid-hit skip) by the time the pull echoes it back. Pull errors
+      // never taint the push status (own _lastPullError; see the method).
+      await _syncPull();
       _lastSuccessAt = DateTime.now();
       _lastError = null;
       final prefs = await SharedPreferences.getInstance();
@@ -1654,11 +1728,241 @@ class CloudSyncService extends ChangeNotifier {
   /// its own trip in seq order, which would break tripIdMap relinking in a
   /// single streamed pass. Buffer cost is bounded by history size (a few MB
   /// at current volumes — fine; revisit if history grows 100×).
+  /// v0.1.37+136 (F3): incremental sync-down. Pulls /v2/sync/pull pages
+  /// from `max(0, cursor - 100)` (contract overlap recommendation --
+  /// re-application is idempotent by client_uuid) and applies each page
+  /// two-pass (trips, then snapshots). Unlike the restore, only the PAGE
+  /// is buffered, never the whole history -- cross-page snapshot-to-trip
+  /// links resolve through the persistent map (see _kPullTripMap).
+  ///
+  /// Gates: head unit never pulls (its DB is the origin of the pushes --
+  /// isHeadUnit callback); throttled to one pull per 5 min (syncOnce
+  /// ticks every minute, so every 5th tick; server limit 120/min gives
+  /// 600x headroom); the +126 restore barrier already ran at syncOnce
+  /// entry.
+  ///
+  /// Error semantics: any network/parse failure logs to _lastPullError
+  /// and returns WITHOUT advancing the cursor (no seq holes -- the next
+  /// pull replays the same pages idempotently). Pull failures never
+  /// taint the push-side _lastError/_status. A 400/404/405 probe result
+  /// (endpoint not deployed / vehicle unknown) is a silent no-op.
+  Future<void> _syncPull() async {
+    if (isHeadUnit?.call() == true) return;
+    if (_lastPullAt != null &&
+        DateTime.now().difference(_lastPullAt!) <
+            const Duration(minutes: 5)) {
+      return;
+    }
+    var since = _pullCursor > 100 ? _pullCursor - 100 : 0;
+    var finalCursor = _pullCursor;
+    var tIns = 0, tUpd = 0, sIns = 0;
+    var mapDirty = false;
+    try {
+      while (true) {
+        final resp = await _getJson('/v2/sync/pull',
+            query: {
+              if (_vehicleId != null) 'vehicle': _vehicleId!,
+              'since': '$since',
+              'limit': '500',
+            },
+            v2Probe: true);
+        final items = (resp['items'] as List?) ?? const [];
+        // Page-local two-pass split. A snapshot whose trip sits in a
+        // DIFFERENT page resolves via the persistent trip map.
+        final tripRows = <Map<String, dynamic>>[];
+        final snapRows = <Map<String, dynamic>>[];
+        for (final raw in items) {
+          if (raw is! Map<String, dynamic>) continue;
+          if (raw['deleted_at'] != null) {
+            // Tombstones are reserved (contract) -- always null today;
+            // skip defensively if one ever appears.
+            debugPrint('CloudSync: pull -- tombstone skipped '
+                '(${raw['entity']}/${raw['client_uuid']})');
+            continue;
+          }
+          final data = raw['data'];
+          if (data is! Map<String, dynamic>) continue;
+          // Envelope client_uuid is authoritative (same as the restore).
+          final uuid = raw['client_uuid'];
+          if (uuid is String && data['client_uuid'] is! String) {
+            data['client_uuid'] = uuid;
+          }
+          switch (raw['entity']) {
+            case 'trips':
+              tripRows.add(data);
+            case 'snapshots':
+              snapRows.add(data);
+          }
+        }
+        // -- Pass 1: trips --
+        for (final data in tripRows) {
+          final r = await _applyPulledTrip(data);
+          if (r == _PullApply.inserted) tIns++;
+          if (r == _PullApply.updated) tUpd++;
+          if (r != _PullApply.skippedBad) mapDirty = true;
+        }
+        // -- Pass 2: snapshots --
+        for (final data in snapRows) {
+          if (await _applyPulledSnapshot(data)) sIns++;
+        }
+        final next = resp['next_since'];
+        if (next is int && next > finalCursor) finalCursor = next;
+        // Progress guard -- same shape as the restore loop.
+        if (resp['has_more'] != true || next is! int || next <= since) {
+          break;
+        }
+        since = next;
+      }
+      _pullCursor = finalCursor;
+      _lastPullAt = DateTime.now();
+      _lastPullError = null;
+      _lastPullTrips = tIns;
+      _lastPullTripsUpdated = tUpd;
+      _lastPullSnaps = sIns;
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt(_kPullCursor, _pullCursor);
+      await prefs.setInt(_kPullLastAt, _lastPullAt!.millisecondsSinceEpoch);
+      if (mapDirty) {
+        await prefs.setString(_kPullTripMap, jsonEncode(_pullTripMap));
+      }
+      debugPrint('CloudSync: pull -- trips +$tIns (~$tUpd upd), '
+          'snaps +$sIns, cursor=$_pullCursor');
+    } on _EndpointNotDeployedException {
+      // Server without S4 or vehicle unknown -- silent, not an error.
+      return;
+    } catch (e) {
+      _lastPullError = e.toString();
+      debugPrint('CloudSync: pull failed -- $e '
+          '(cursor kept at $_pullCursor)');
+    }
+  }
+
+  /// v0.1.37+136 (F3): apply one pulled trip row.
+  ///
+  /// uuid present locally: UPDATE only when incoming ended_at != null
+  /// (finalize rule) -- open echo states are never mirrored; the phone
+  /// receives the trip at close. The same rule doubles as the self-echo
+  /// guard without any device_id knowledge: the phone's OWN open trip
+  /// can't be regressed by its echo. A device_id "mine" test is
+  /// explicitly rejected -- the canonical first-write-wins device_id
+  /// stops matching the current identity after a re-pair. The update
+  /// writes the companion MINUS identity: id is not in the companion at
+  /// all, clientUuid is stripped via copyWith. Local snapshots.tripId
+  /// references the local autoincrement id -- an update never moves it.
+  ///
+  /// uuid absent locally: insert. Null-uuid legacy rows: dedup by
+  /// started_at plus distance_km as in the restore; insert-only, never
+  /// update (finalize needs a uuid identity).
+  Future<_PullApply> _applyPulledTrip(Map<String, dynamic> data) async {
+    final uuid = data['client_uuid'];
+    final ctid = data['client_trip_id'];
+    final dev = data['device_id'];
+    void mapPut(int localId) {
+      if (dev is String && ctid is int) {
+        _pullTripMap['$dev:$ctid'] = localId;
+      }
+    }
+
+    if (uuid is! String) {
+      // Legacy identity -- same contract as restore/v1.
+      final startedAtStr = data['started_at'];
+      if (startedAtStr is! String) return _PullApply.skippedBad;
+      final startedAt = DateTime.parse(startedAtStr).toLocal();
+      final distanceKm = (data['distance_km'] as num?)?.toDouble();
+      final query = _db.select(_db.trips)..limit(1);
+      query.where((t) => t.startedAt.equals(startedAt));
+      if (distanceKm != null) {
+        query.where((t) => t.distanceKm.equals(distanceKm));
+      } else {
+        query.where((t) => t.distanceKm.isNull());
+      }
+      final legacy = await query.getSingleOrNull();
+      if (legacy != null) {
+        mapPut(legacy.id);
+        return _PullApply.skippedExisting;
+      }
+      final newId =
+          await _db.into(_db.trips).insert(_tripCompanionFromJson(data));
+      mapPut(newId);
+      return _PullApply.inserted;
+    }
+    final existing = await _db.getTripByClientUuid(uuid);
+    if (existing == null) {
+      final newId =
+          await _db.into(_db.trips).insert(_tripCompanionFromJson(data));
+      mapPut(newId);
+      return _PullApply.inserted;
+    }
+    mapPut(existing.id);
+    if (data['ended_at'] == null) {
+      // Open echo -- finalize rule: don't mirror.
+      return _PullApply.skippedExisting;
+    }
+    final companion = _tripCompanionFromJson(data)
+        .copyWith(clientUuid: const Value.absent());
+    await (_db.update(_db.trips)
+          ..where((t) => t.clientUuid.equals(uuid)))
+        .write(companion);
+    return _PullApply.updated;
+  }
+
+  /// v0.1.37+136 (F3): apply one pulled snapshot row. Server-side
+  /// snapshots are insert-only ingest -- uuid hit means skip, never
+  /// update. Returns true when a row was inserted.
+  Future<bool> _applyPulledSnapshot(Map<String, dynamic> data) async {
+    final uuid = data['client_uuid'];
+    if (uuid is String) {
+      final existing = await _db.getSnapshotByClientUuid(uuid);
+      if (existing != null) return false;
+    } else {
+      // Legacy dedup by captured_at, as in the restore.
+      final capturedAtStr = data['captured_at'];
+      if (capturedAtStr is! String) return false;
+      final capturedAt = DateTime.parse(capturedAtStr).toLocal();
+      final existing = await (_db.select(_db.snapshots)
+            ..where((s) => s.capturedAt.equals(capturedAt))
+            ..limit(1))
+          .getSingleOrNull();
+      if (existing != null) return false;
+    }
+    await _db.into(_db.snapshots).insert(
+        _snapshotCompanionFromJson(data, tripId: _resolvePullTripId(data)));
+    return true;
+  }
+
+  /// v0.1.37+136 (F3): server trip reference to local trip id via the
+  /// persistent map. Exact key "device:ctid" first. Re-pair seam: a
+  /// snapshot pushed AFTER a re-pair (new device_id) referencing a trip
+  /// pushed BEFORE (old device_id) misses the exact key -- fall back to
+  /// a unique-ctid match; ambiguous (ctid seen from two or more
+  /// devices) yields null (honest degradation, not corruption).
+  int? _resolvePullTripId(Map<String, dynamic> data) {
+    final ctid = data['client_trip_id'];
+    if (ctid is! int) return null;
+    final dev = data['device_id'];
+    if (dev is String) {
+      final exact = _pullTripMap['$dev:$ctid'];
+      if (exact != null) return exact;
+    }
+    final suffix = ':$ctid';
+    int? found;
+    for (final e in _pullTripMap.entries) {
+      if (!e.key.endsWith(suffix)) continue;
+      if (found != null) return null; // ambiguous: 2+ devices share ctid
+      found = e.value;
+    }
+    return found;
+  }
+
   Future<(int, int, int, int)?> _tryRestoreViaSyncPullV2(
       Map<int, int> tripIdMap) async {
     final tripRows = <Map<String, dynamic>>[];
     final snapRows = <Map<String, dynamic>>[];
     var since = 0;
+    // v0.1.37+136 (F3, §4): the restore doubles as the full sync-down
+    // initialization — track the final next_since so a successful run
+    // seeds cloud_pull_cursor (persisted at the successful return).
+    var pullCursorSeed = 0;
     while (true) {
       if (_restoreCancelRequested) {
         _restoreStatus = CloudRestoreStatus.cancelled;
@@ -1705,6 +2009,7 @@ class CloudSyncService extends ChangeNotifier {
       );
       notifyListeners();
       final next = resp['next_since'];
+      if (next is int && next > pullCursorSeed) pullCursorSeed = next;
       // Progress guard: a non-advancing cursor must terminate the loop, not
       // spin it — has_more with a stale next_since would otherwise re-pull
       // the same page forever.
@@ -1757,11 +2062,19 @@ class CloudSyncService extends ChangeNotifier {
           tSkipLegacy++;
         }
         if (clientTripId is int) tripIdMap[clientTripId] = existing.id;
+        final dev = data['device_id'];
+        if (dev is String && clientTripId is int) {
+          _pullTripMap['$dev:$clientTripId'] = existing.id;
+        }
         continue;
       }
       final newLocalId =
           await _db.into(_db.trips).insert(_tripCompanionFromJson(data));
       if (clientTripId is int) tripIdMap[clientTripId] = newLocalId;
+      final dev = data['device_id'];
+      if (dev is String && clientTripId is int) {
+        _pullTripMap['$dev:$clientTripId'] = newLocalId;
+      }
       ti++;
     }
     _restoreProgress = CloudRestoreProgress(
@@ -1817,6 +2130,16 @@ class CloudSyncService extends ChangeNotifier {
         '(skip uuid=$tSkipUuid legacy=$tSkipLegacy bad=$tSkipBad), '
         'snapshots ${snapRows.length}/$si new '
         '(skip uuid=$sSkipUuid legacy=$sSkipLegacy bad=$sSkipBad)');
+    // v0.1.37+136 (F3, §4): a completed restore IS the sync-down
+    // initialization — seed the pull cursor with the final next_since
+    // and persist the device-keyed trip map collected in pass 1. The
+    // legacy v1 fallback (null return above) deliberately does NOT
+    // touch the cursor: it stays 0 and the first _syncPull completes
+    // the initialization idempotently.
+    _pullCursor = pullCursorSeed;
+    final pullPrefs = await SharedPreferences.getInstance();
+    await pullPrefs.setInt(_kPullCursor, _pullCursor);
+    await pullPrefs.setString(_kPullTripMap, jsonEncode(_pullTripMap));
     return (tripRows.length, ti, snapRows.length, si);
   }
 
@@ -2842,7 +3165,7 @@ class CloudSyncService extends ChangeNotifier {
   /// Read app version from the static value baked into the build.
   /// We don't have package_info_plus as a dep — pubspec-version is
   /// hardcoded here. Update when bumping. Off-by-one tolerated.
-  Future<String> _readAppVersion() async => '0.1.36+135';
+  Future<String> _readAppVersion() async => '0.1.37+136';
 }
 
 // ─── Internal exceptions ────────────────────────────────────────────
@@ -2870,6 +3193,10 @@ class _EndpointNotDeployedException implements Exception {
   @override
   String toString() => 'endpoint not deployed (404/405)';
 }
+
+/// v0.1.37+136 (F3): per-row outcome of a pulled trip application, so
+/// _syncPull can count inserts vs finalize-updates for the diag line.
+enum _PullApply { inserted, updated, skippedExisting, skippedBad }
 
 /// Permanent auth failure: 3+ consecutive 401s, OR a single 409
 /// already_revoked. Causes the service to wipe the stored client_token,
