@@ -291,6 +291,18 @@ class S {
         'once the owner approves your account.',
     'cloud.access_denied.hint':
         'Cloud access is disabled for this account. Local data is intact.',
+    // v0.1.35+134: vehicle descriptor (pair/start provisioning)
+    'vehicle.section_title': 'Your vehicle',
+    'vehicle.make': 'Make',
+    'vehicle.model': 'Model',
+    'vehicle.other': 'Other',
+    'vehicle.name_label': 'Name (optional)',
+    'vehicle.not_set': 'Not set',
+    'vehicle.pairing_hint':
+        'Tell us what car this is — on first pairing it will be created '
+        'in your cloud account. The owner sees this when approving.',
+    'pairing.vehicle_required': 'Select make and model to continue',
+    'account.my_vehicle': 'My vehicle',
     // Restore progress lines (inline card)
     'cloud.restoring.validating': 'Restoring: validating token…',
     'cloud.restoring.trips': 'Restoring trips: {a} new / {b} fetched',
@@ -1150,6 +1162,19 @@ class S {
         'после одобрения аккаунта.',
     'cloud.access_denied.hint':
         'Облачный доступ для аккаунта отключён. Локальные данные целы.',
+    // v0.1.35+134: vehicle descriptor (pair/start provisioning)
+    'vehicle.section_title': 'Ваш автомобиль',
+    'vehicle.make': 'Марка',
+    'vehicle.model': 'Модель',
+    'vehicle.other': 'Другое',
+    'vehicle.name_label': 'Название (необязательно)',
+    'vehicle.not_set': 'Не указан',
+    'vehicle.pairing_hint':
+        'Укажите, что это за машина — при первой привязке она будет '
+        'создана в вашем облачном аккаунте. Владелец видит это при '
+        'одобрении.',
+    'pairing.vehicle_required': 'Выберите марку и модель, чтобы продолжить',
+    'account.my_vehicle': 'Мой автомобиль',
     // Restore progress lines (inline card)
     'cloud.restoring.validating': 'Восстановление: проверка токена…',
     'cloud.restoring.trips': 'Восстановление поездок: {a} новых / {b} получено',

@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import '../l10n/strings.dart';
 import '../services/cloud_sync_service.dart';
 import '../services/locale_service.dart';
+import '../widgets/vehicle_descriptor_picker.dart';
 
 /// v0.1.29+127 (C3): device-side pairing screen (CLIENT_API §1.2).
 ///
@@ -72,6 +73,12 @@ class _PairingScreenState extends State<PairingScreen> {
 
   List<Widget> _idle(CloudSyncService cs) {
     final busy = cs.pairingStatus == CloudPairingStatus.starting;
+    // v0.1.35+134: pair/start must carry a vehicle descriptor for
+    // fresh accounts (server provisions the vehicle at claim; without
+    // it → 400 no_vehicle and the account can never sync). Already-
+    // provisioned accounts get the block ignored, so requiring it here
+    // costs one tap and keeps onboarding unbreakable for everyone.
+    final vehicleReady = cs.hasVehicleDescriptor;
     return [
       Text(
         cs.isRegistered
@@ -98,6 +105,14 @@ class _PairingScreenState extends State<PairingScreen> {
         ],
       ),
       const SizedBox(height: 16),
+      Text(S.of('vehicle.section_title'),
+          style: const TextStyle(fontWeight: FontWeight.w600)),
+      const SizedBox(height: 4),
+      Text(S.of('vehicle.pairing_hint'),
+          style: const TextStyle(color: Colors.grey, fontSize: 12)),
+      const SizedBox(height: 8),
+      const VehicleDescriptorPicker(),
+      const SizedBox(height: 16),
       FilledButton.icon(
         icon: busy
             ? const SizedBox(
@@ -106,12 +121,17 @@ class _PairingScreenState extends State<PairingScreen> {
                 child: CircularProgressIndicator(strokeWidth: 2))
             : const Icon(Icons.qr_code_2),
         label: Text(S.of('pairing.get_code')),
-        onPressed: busy
+        onPressed: busy || !vehicleReady
             ? null
             : () => context
                 .read<CloudSyncService>()
                 .startPairing(kind: _kind),
       ),
+      if (!vehicleReady) ...[
+        const SizedBox(height: 6),
+        Text(S.of('pairing.vehicle_required'),
+            style: const TextStyle(color: Colors.orangeAccent, fontSize: 12)),
+      ],
     ];
   }
 

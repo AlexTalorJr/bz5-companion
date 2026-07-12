@@ -273,6 +273,13 @@ class CloudSyncService extends ChangeNotifier {
   static const _kLastSuccessAt = 'cloud_sync_last_success_at';
   static const _kLastError = 'cloud_sync_last_error';
   static const _kSamplesRejectedAt = 'cloud_sync_samples_rejected_at';
+  // v0.1.35+134: self-service vehicle descriptor sent on pair/start
+  // (server head 0011). NOT the server-assigned _kVehicleId/_kVehicleName
+  // pair above — this is what the USER declares their car to be, used
+  // by the server to provision a vehicle for accounts that have none.
+  static const _kVehDescMake = 'cloud_vehicle_desc_make';
+  static const _kVehDescModel = 'cloud_vehicle_desc_model';
+  static const _kVehDescName = 'cloud_vehicle_desc_name';
 
   // v0.1.29+20: per-row push tracking for trips. Trip rows in Drift
   // are MUTABLE (endTrip rewrites aggregates on close), unlike the
@@ -468,6 +475,10 @@ class CloudSyncService extends ChangeNotifier {
       _lastSuccessAt = DateTime.fromMillisecondsSinceEpoch(lastTs);
     }
     _lastError = prefs.getString(_kLastError);
+    // v0.1.35+134: user-declared vehicle descriptor.
+    _vehDescMake = prefs.getString(_kVehDescMake);
+    _vehDescModel = prefs.getString(_kVehDescModel);
+    _vehDescName = prefs.getString(_kVehDescName);
     final samplesRej = prefs.getInt(_kSamplesRejectedAt);
     if (samplesRej != null) {
       _samplesRejectedAt =
@@ -579,6 +590,51 @@ class CloudSyncService extends ChangeNotifier {
   // 'new' (fresh device row) or 'reattached' (existing row reused).
   String? _lastAttachMode;
 
+  // v0.1.35+134: vehicle descriptor (make/model/name) — persisted,
+  // always included in pair/start when set. For accounts that already
+  // own a vehicle the server ignores it; for fresh accounts it
+  // provisions the vehicle at claim (otherwise claim → 400 no_vehicle).
+  String? _vehDescMake;
+  String? _vehDescModel;
+  String? _vehDescName;
+
+  String? get vehDescMake => _vehDescMake;
+  String? get vehDescModel => _vehDescModel;
+  String? get vehDescName => _vehDescName;
+
+  /// True when pair/start will carry a vehicle block.
+  bool get hasVehicleDescriptor =>
+      (_vehDescMake?.isNotEmpty ?? false) &&
+      (_vehDescModel?.isNotEmpty ?? false);
+
+  /// v0.1.35+134: persist the user-declared vehicle. Values are stored
+  /// and sent AS-IS (trimmed, length-capped) — no brand is ever
+  /// substituted client- or server-side (multi-make contract rule).
+  Future<void> setVehicleDescriptor({
+    required String make,
+    required String model,
+    String? name,
+  }) async {
+    String cap(String s) {
+      final t = s.trim();
+      return t.length > 80 ? t.substring(0, 80) : t;
+    }
+
+    _vehDescMake = cap(make);
+    _vehDescModel = cap(model);
+    final n = name == null ? '' : cap(name);
+    _vehDescName = n.isEmpty ? null : n;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kVehDescMake, _vehDescMake!);
+    await prefs.setString(_kVehDescModel, _vehDescModel!);
+    if (_vehDescName != null) {
+      await prefs.setString(_kVehDescName, _vehDescName!);
+    } else {
+      await prefs.remove(_kVehDescName);
+    }
+    notifyListeners();
+  }
+
   CloudPairingStatus get pairingStatus => _pairingStatus;
   String? get pairUserCode => _pairUserCode;
   DateTime? get pairExpiresAt => _pairExpiresAt;
@@ -637,6 +693,18 @@ class CloudSyncService extends ChangeNotifier {
               // v0.1.30+129 (§1.2): lets the server reuse the existing
               // device row after reinstall instead of minting a new one.
               if (fp != null) 'hw_fingerprint': fp,
+              // v0.1.35+134 (§1.2, server head 0011): self-service
+              // vehicle provisioning. Rule per contract addendum:
+              // "always send it if you have it" — accounts that already
+              // own a vehicle get it ignored server-side; fresh accounts
+              // get their vehicle created at claim. Without this a new
+              // account hits 400 no_vehicle and cannot sync.
+              if (hasVehicleDescriptor)
+                'vehicle': {
+                  'make': _vehDescMake,
+                  'model': _vehDescModel,
+                  if (_vehDescName != null) 'name': _vehDescName,
+                },
             }),
           )
           .timeout(const Duration(seconds: 15));
@@ -2774,7 +2842,7 @@ class CloudSyncService extends ChangeNotifier {
   /// Read app version from the static value baked into the build.
   /// We don't have package_info_plus as a dep — pubspec-version is
   /// hardcoded here. Update when bumping. Off-by-one tolerated.
-  Future<String> _readAppVersion() async => '0.1.34+133';
+  Future<String> _readAppVersion() async => '0.1.35+134';
 }
 
 // ─── Internal exceptions ────────────────────────────────────────────
