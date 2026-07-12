@@ -246,6 +246,21 @@ class _AppDiagScreenState extends State<AppDiagScreen> {
       ('last success', dt(cloud.lastSuccessAt), false),
       ('last restore', dt(cloud.lastRestoreAt), false),
       ('restore status', cloud.restoreStatus.name, false),
+      // v0.1.37+136 (F3): sync-down observability — cursor (0 = not
+      // initialized), last pull timestamp with its insert counters, and
+      // the pull-plane error kept separate from the push-plane one.
+      ('pull cursor', '${cloud.pullCursor}', false),
+      (
+        'last pull',
+        cloud.lastPullAt == null
+            ? '—'
+            : '${dt(cloud.lastPullAt)} '
+                '+${cloud.lastPullTrips}'
+                '(~${cloud.lastPullTripsUpdated} upd)'
+                '/+${cloud.lastPullSnaps}',
+        false
+      ),
+      ('pull error', cloud.lastPullError ?? '—', cloud.lastPullError != null),
       // v0.1.34+133: approval-gate state — server code if gated,
       // otherwise the plain sync status name.
       ('account approval', cloud.lastError?.startsWith('account_') == true
