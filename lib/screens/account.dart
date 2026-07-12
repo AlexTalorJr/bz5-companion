@@ -5,7 +5,9 @@ import 'package:provider/provider.dart';
 
 import '../l10n/strings.dart';
 import '../services/account_auth_service.dart';
+import '../services/cloud_sync_service.dart';
 import '../services/locale_service.dart';
+import '../widgets/vehicle_descriptor_picker.dart';
 
 /// v0.1.29+124 (C2): Account screen — email-OTP sign-in (CLIENT_API §1.1)
 /// and device management (§1.3).
@@ -241,6 +243,26 @@ class _AccountScreenState extends State<AccountScreen> {
   }
 
   // ── signed in ──
+  // v0.1.35+134: vehicle descriptor editor. The picker persists every
+  // complete selection itself — the dialog only needs a Close button.
+  Future<void> _showVehicleDialog(BuildContext context) {
+    return showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(S.of('account.my_vehicle')),
+        content: const SingleChildScrollView(
+          child: SizedBox(width: 420, child: VehicleDescriptorPicker()),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: Text(S.of('common.close')),
+          ),
+        ],
+      ),
+    );
+  }
+
   List<Widget> _signedIn(AccountAuthService auth) {
     final err = _errorText(auth);
     return [
@@ -259,6 +281,25 @@ class _AccountScreenState extends State<AccountScreen> {
       ),
       if (err.isNotEmpty)
         Text(err, style: const TextStyle(color: Colors.orangeAccent)),
+      // v0.1.35+134: user-declared vehicle (sent on pair/start as the
+      // self-service provisioning descriptor). Editable here so a wrong
+      // pick at pairing time is fixable without re-pairing.
+      Builder(builder: (context) {
+        final cs = context.watch<CloudSyncService>();
+        final subtitle = cs.hasVehicleDescriptor
+            ? '${cs.vehDescMake} ${cs.vehDescModel}'
+                '${cs.vehDescName != null ? ' — ${cs.vehDescName}' : ''}'
+            : S.of('vehicle.not_set');
+        return ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: const Icon(Icons.directions_car_outlined,
+              color: Colors.lightBlueAccent),
+          title: Text(S.of('account.my_vehicle')),
+          subtitle: Text(subtitle),
+          trailing: const Icon(Icons.edit_outlined, size: 18),
+          onTap: () => _showVehicleDialog(context),
+        );
+      }),
       const Divider(height: 24),
       // v0.1.29+127 (C3): approve a device's pairing request — type the
       // short code the device shows (§1.2). Success auto-refreshes the
