@@ -10,6 +10,7 @@ import 'services/hal_telemetry_service.dart';
 import 'services/connection.dart';
 import 'services/cost_settings.dart';
 import 'services/cloud_sync_service.dart';
+import 'services/vehicle_catalog_service.dart';
 import 'services/bridge_diag_service.dart';
 import 'services/locale_service.dart';
 import 'screens/home.dart';
@@ -144,6 +145,17 @@ class _BZ5AppState extends State<BZ5App> with WidgetsBindingObserver {
         ),
         ChangeNotifierProvider<CloudSyncService>(
           create: (_) => CloudSyncService(db: widget.db)..init(),
+        ),
+        // v0.1.36+135: server vehicle catalog (S8, public endpoint).
+        // Separate lightweight service by design — CloudSyncService owns
+        // the authenticated device plane; the catalog is unauthenticated
+        // UI-hint data with its own 24h cache. baseUrl is read through a
+        // callback at fetch time so a custom base URL from settings is
+        // respected (same callback-not-import rule as HAL below).
+        ChangeNotifierProvider<VehicleCatalogService>(
+          create: (ctx) => VehicleCatalogService(
+            baseUrl: () => ctx.read<CloudSyncService>().baseUrl,
+          )..init(),
         ),
         ChangeNotifierProvider<BridgeDiagService>(
           create: (_) => BridgeDiagService(svc: widget.svc)..init(),
