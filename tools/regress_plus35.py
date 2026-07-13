@@ -3612,6 +3612,54 @@ if int(pv) >= 127:
 else:
     ok(f"Part AK skipped (build +{pv}, pairing lands in +127)")
 
+# ─────────────── Part AL: +139 phone stale dashboard ────────────────────────
+if int(pv) >= 139:
+    _dash = (root / 'lib/screens/dashboard.dart').read_text()
+    # AL1: the stale branch is HU-gated BEFORE any DB access — inside
+    # _BlockedBody's build, the onHeadUnit early-return to the old stub
+    # must precede the FutureBuilder (tall BZ3 uses this dashboard as
+    # its MAIN screen; its behaviour must stay bit-identical).
+    _bb = _dash.find('class _BlockedBodyState')
+    _hu = _dash.find('if (widget.onHeadUnit) return _NotConnected', _bb)
+    _fb = _dash.find('FutureBuilder<Snapshot?>', _bb)
+    if -1 < _bb < _hu < _fb:
+        ok('AL1 stale branch HU-gated before DB (stub early-return)')
+    else:
+        fail('AL1 HU gate missing or after FutureBuilder')
+    # AL2: empty DB (no snapshot) falls back to the OLD stub — the Q2
+    # decision; "connect adapter" stays the fresh-install guidance.
+    if 'if (s == null) return _NotConnected(halDead: widget.halDead);' \
+       in _dash:
+        ok('AL2 empty DB → old _NotConnected stub preserved')
+    else:
+        fail('AL2 empty-DB fallback to stub missing')
+    # AL3: charging badge guard (+128 lesson: OBD2 writes 0.0, HAL null
+    # when not charging) + cards render with the stale flag.
+    if 's.isCharging == true' in _dash and \
+       "s.chargingPowerKw! > 0.05" in _dash and \
+       _dash.count('stale: true') >= 3:
+        ok('AL3 badge guard (isCharging==true, >0.05 kW) + stale cards')
+    else:
+        fail('AL3 badge guard or stale-card flag missing')
+    # AL4 (К6 fix): the platform probe must be SETTLED before any stale
+    # render or timer — canUseHal reads false on a cold-starting BZ3
+    # too, so acting on it alone would flash the stale cards on the HU
+    # and leave a forever-ticking timer behind. Checks: the probed
+    # early-return sits between the HU return and the FutureBuilder,
+    # the want-predicate combines both flags, and the service exposes
+    # the flag set right after the probe.
+    _hal2 = (root / 'lib/services/hal_telemetry_service.dart').read_text()
+    _pr = _dash.find('if (!widget.probed)', _bb)
+    if -1 < _hu < _pr < _fb and \
+       '!widget.onHeadUnit && widget.probed' in _dash and \
+       'get platformProbed' in _hal2 and \
+       '_platformProbed = true' in _hal2:
+        ok('AL4 stale render/timer gated on settled platform probe')
+    else:
+        fail('AL4 probed gate missing (HU cold-start flash risk)')
+else:
+    ok(f"Part AL skipped (build +{pv}, stale dashboard lands in +139)")
+
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
 print(f"+35→+51 REGRESSION — build +{pv}")

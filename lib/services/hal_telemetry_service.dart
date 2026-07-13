@@ -125,6 +125,13 @@ class HalTelemetryService extends ChangeNotifier {
   bool _isHeadUnit = false;
   bool get canUseHal => _isHeadUnit;
 
+  // v0.1.40+139: false until the init() platform probe has actually run.
+  // The stale-dashboard gate needs to tell "phone" apart from "head unit
+  // whose probe hasn't settled yet" — canUseHal alone reads false in both
+  // cases, which would flash the stale cards on a cold-starting BZ3.
+  bool _platformProbed = false;
+  bool get platformProbed => _platformProbed;
+
   bool _running = false;
   bool get running => _running;
 
@@ -2195,6 +2202,10 @@ class HalTelemetryService extends ChangeNotifier {
     } catch (_) {
       _isHeadUnit = false;
     }
+    // v0.1.40+139: the probe verdict is in — from here on canUseHal is
+    // the truth, not a warm-up default. Widgets pick this up on the
+    // init-end notifyListeners (or any earlier rebuild trigger).
+    _platformProbed = true;
     if (!_isHeadUnit && _mode == HalSourceMode.halOnly) {
       _mode = HalSourceMode.obd2Only;
       await prefs.setString('hal_source_mode', _modeToString(_mode));
