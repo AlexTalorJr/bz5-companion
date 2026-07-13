@@ -295,6 +295,13 @@ class _AppDiagScreenState extends State<AppDiagScreen> {
 
     rows.addAll([
       ('soc source (ui)', hal.socSource.name, false),
+      // v0.1.39+138: HAL snapshot writer observability.
+      (
+        'hal snapshot last',
+        hal.lastHalSnapshotAt == null ? '—' : dt(hal.lastHalSnapshotAt),
+        false
+      ),
+      ('hal snapshots', '${hal.halSnapshotsWritten} (since start)', false),
       (
         'soc precise · display · battery',
         '${socV('soc_precise', 1)} · ${socV('soc_display')} · '
