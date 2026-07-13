@@ -1069,6 +1069,18 @@ class _ChartCard extends StatelessWidget {
       future: _loadPoints(),
       builder: (context, snap) {
         final data = snap.data;
+        // v0.1.39+138: an error must never hide behind hideWhenEmpty or
+        // an eternal spinner (today's lesson: the +136 Provider crash
+        // would have been invisible forever behind exactly that spinner).
+        if (snap.hasError) {
+          return Row(children: [
+            const Icon(Icons.error_outline, size: 16),
+            const SizedBox(width: 6),
+            Expanded(
+                child: Text(S.of('trip.chart_error'),
+                    style: Theme.of(context).textTheme.bodySmall)),
+          ]);
+        }
         if (hideWhenEmpty && (data == null || data.pts.isEmpty)) {
           // Loading or genuinely absent — either way, no placeholder
           // frame (honesty rule: no widget without flowing data).

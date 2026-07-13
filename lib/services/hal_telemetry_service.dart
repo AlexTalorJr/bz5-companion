@@ -26,6 +26,9 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+// v0.1.39+138: Value for the SnapshotsCompanion of the HAL snapshot
+// writer — same show-only import shape as connection.dart line 5.
+import 'package:drift/drift.dart' show Value;
 
 import '../data/database.dart';
 import 'hal_telemetry_channel.dart';
@@ -2332,6 +2335,11 @@ class HalTelemetryService extends ChangeNotifier {
     // export shows the real HAL stream and matches recon's schema. Throttled
     // per-name so the ~15 Hz stream doesn't bloat the DB. No-op without DB.
     _logHalDiag(e, d);
+    // v0.1.39+138: periodic HAL snapshot — same event path, own 60-s gate
+    // inside (no new timers). Restores the snapshots plane that died on
+    // 2026-06-24 with the move to HAL-only (OBD2 ConnectionService was
+    // the only snapshot writer; HAL never wrote any).
+    _maybeWriteHalSnapshot();
     // No notifyListeners() per event — at ~15 Hz aggregate that would
     // over-rebuild. The widgets already rebuild on the OBD2
     // ConnectionService poll cadence; the resolvers read our latest
@@ -2349,6 +2357,69 @@ class HalTelemetryService extends ChangeNotifier {
   }
 
   // ── HAL diagnostic logging (+87/+88) ──
+  //
+  // v0.1.39+138: periodic HAL snapshot writer state. Cadence gate lives
+  // inside _maybeWriteHalSnapshot (pattern of _halDiagThrottle below).
+  static const Duration _halSnapshotEvery = Duration(seconds: 60);
+  DateTime? _lastHalSnapshotAt;
+  int _halSnapshotsWritten = 0;
+
+  /// v0.1.39+138: app_diag observability.
+  DateTime? get lastHalSnapshotAt => _lastHalSnapshotAt;
+  int get halSnapshotsWritten => _halSnapshotsWritten;
+
+  /// v0.1.39+138: write one snapshots row from live HAL values, at most
+  /// once per [_halSnapshotEvery]. Ordered gates, each a silent return:
+  /// db → running → dongle → cadence → min-fields. Dongle present means
+  /// the OBD2 ConnectionService owns the snapshots plane (its two write
+  /// sites in connection.dart) — we stay silent so the two writers can
+  /// never double-write. insertSnapshot injects clientUuid, so cloud
+  /// push (_syncSnapshots) and phone pull pick these up with zero sync
+  /// changes. Charging comes free: the stream is alive on charge, so
+  /// isCharging/chargingPowerKw land in the same rows. gear stays NULL
+  /// on purpose — halGear is gear_enum, a different encoding than the
+  /// OBD2 raw 791/0009 this column historically holds; do not mix.
+  void _maybeWriteHalSnapshot() {
+    final db = _diagDb;
+    if (db == null) return;
+    if (!_running) return;
+    if (_dongleConnected?.call() == true) return;
+    final now = DateTime.now();
+    if (_lastHalSnapshotAt != null &&
+        now.difference(_lastHalSnapshotAt!) < _halSnapshotEvery) {
+      return;
+    }
+    final soc = halSocPct;
+    final packV = halPackVoltage;
+    if (soc == null && packV == null) return; // warm-up: no empty rows
+    final cellLo = halCellVLowest;
+    final cellHi = halCellVHighest;
+    _lastHalSnapshotAt = now;
+    unawaited(() async {
+      try {
+        await db.insertSnapshot(SnapshotsCompanion(
+          capturedAt: Value(now),
+          soc: Value(soc),
+          soh: Value(halSoh),
+          batteryTempC: Value(halBatteryTempC),
+          cellVoltageMin:
+              Value(cellLo == null ? null : (cellLo * 1000).roundToDouble()),
+          cellVoltageMax:
+              Value(cellHi == null ? null : (cellHi * 1000).roundToDouble()),
+          cellSpread: Value(halCellSpreadMv),
+          odometer: Value(halOdometerKm),
+          tripId: Value(_halTripDbId),
+          packVoltageV: Value(packV),
+          isCharging: Value(halChargingActive),
+          chargingPowerKw: Value(halChargePowerKw),
+        ));
+        _halSnapshotsWritten++;
+      } catch (e) {
+        debugPrint('HAL snapshot write failed: $e');
+      }
+    }());
+  }
+
   //
   // Per-name throttle so a high-rate signal writes at most once per window.
   // soc_precise is slow (~1 frame / 15 s) so it is NOT throttled away — the

@@ -703,6 +703,22 @@ class _ChartCard extends StatelessWidget {
       future: _loadPoints(),
       builder: (context, snap) {
         final data = snap.data;
+        // v0.1.39+138: same honesty rule as the narrow twin — an error
+        // renders as an error, never as an eternal spinner.
+        if (snap.hasError) {
+          return Card(
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Row(children: [
+                const Icon(Icons.error_outline, size: 16),
+                const SizedBox(width: 6),
+                Expanded(
+                    child: Text(S.of('trip.chart_error'),
+                        style: Theme.of(context).textTheme.bodySmall)),
+              ]),
+            ),
+          );
+        }
         return Card(
           child: Padding(
             padding: const EdgeInsets.all(12),

@@ -597,6 +597,7 @@ class S {
     'trip.pack_v_filtered': 'Pack voltage (filtered)',
     // v0.1.29+128: snapshot-fallback charts
     'trip.chart_src_snapshots': '· BMS snapshots (~1/min)',
+    'trip.chart_error': 'Chart failed to load',
     'trip.charging_power': 'Charging power',
     'trip.hv_bus_v': 'HV bus voltage',
     'trip.power_profile': 'Power / regen',
@@ -1466,6 +1467,7 @@ class S {
     'trip.pack_v_filtered': 'Напряжение пака (фильтр.)',
     // v0.1.29+128: графики из снапшотов
     'trip.chart_src_snapshots': '· BMS-снапшоты (~1/мин)',
+    'trip.chart_error': 'График не загрузился',
     'trip.charging_power': 'Мощность зарядки',
     'trip.hv_bus_v': 'Напряжение HV bus',
     'trip.power_profile': 'Мощность / реген',
