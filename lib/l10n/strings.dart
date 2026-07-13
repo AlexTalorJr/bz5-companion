@@ -478,6 +478,9 @@ class S {
     'dash.modules_hdr': '{n} MODULES · MIN..MAX mV · TEMP',
     'dash.no_temp': 'no temp',
     'dash.find_hint': 'Settings → Find adapter',
+    // v0.1.40+139: phone stale dashboard (last known snapshot cards).
+    'dash.stale.title': 'Last known state',
+    'dash.stale.updated': 'Updated {age}',
     'dash.good': 'good',
     'dash.fair': 'fair',
     'dash.good_cap': 'Good',
@@ -1349,6 +1352,9 @@ class S {
     'dash.modules_hdr': '{n} МОДУЛЕЙ · MIN..MAX mV · ТЕМП',
     'dash.no_temp': 'нет темп.',
     'dash.find_hint': 'Настройки → Найти адаптер',
+    // v0.1.40+139: стейл-дашборд телефона (последний снапшот).
+    'dash.stale.title': 'Последние данные',
+    'dash.stale.updated': 'Обновлено {age}',
     'dash.good': 'хорошо',
     'dash.fair': 'средне',
     'dash.good_cap': 'Хорошо',

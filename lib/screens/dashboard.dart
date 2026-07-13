@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../data/database.dart';
 import '../l10n/strings.dart';
 import '../services/connection.dart';
 import '../services/hal_telemetry_service.dart';
@@ -50,7 +51,16 @@ class DashboardScreen extends StatelessWidget {
         ],
       ),
       body: blocked
-          ? _NotConnected(
+          // v0.1.40+139: on the PHONE the blocked state is no longer a dead
+          // wall — _BlockedBody shows the last known car state from the
+          // local snapshots mirror (sync-down +136 / HAL snapshots +138).
+          // On a head unit (canUseHal — including tall BZ3, whose MAIN
+          // screen is this very dashboard) it returns the old stub
+          // untouched, before ever touching the DB.
+          ? _BlockedBody(
+              svc: svc,
+              onHeadUnit: hal.canUseHal,
+              probed: hal.platformProbed,
               halDead: hal.mode == HalSourceMode.halOnly && !hal.running)
           : _Connected(svc: svc),
     );
@@ -92,6 +102,260 @@ class _NotConnected extends StatelessWidget {
       ),
     );
   }
+}
+
+/// v0.1.40+139: blocked-state router. Head unit → the old stub verbatim
+/// (BEFORE any DB access — this dashboard is the MAIN screen on tall
+/// BZ3, its behaviour must stay bit-identical). Phone → last-known
+/// snapshot cards, or the stub when the DB has no snapshot at all
+/// (fresh install: "Settings → Find adapter" is the right guidance
+/// there; the F2 auto-restore fills the DB for cloud users anyway).
+class _BlockedBody extends StatefulWidget {
+  final ConnectionService svc;
+  final bool onHeadUnit;
+  final bool probed; // v0.1.40+139: platform probe settled (К6 fix)
+  final bool halDead;
+  const _BlockedBody(
+      {required this.svc,
+      required this.onHeadUnit,
+      required this.probed,
+      required this.halDead});
+
+  @override
+  State<_BlockedBody> createState() => _BlockedBodyState();
+}
+
+class _BlockedBodyState extends State<_BlockedBody> {
+  late Future<Snapshot?> _latest;
+  Timer? _refresh;
+
+  // The stale machinery (future + timer) may run only on a CONFIRMED
+  // phone: probe settled AND not a head unit. Before the probe settles
+  // canUseHal reads false on a cold-starting BZ3 too — acting on it
+  // would flash the stale cards on the HU and leave a forever-ticking
+  // timer behind (State survives the widget update, initState doesn't
+  // re-run). _want is re-evaluated on every widget update instead.
+  bool get _want => !widget.onHeadUnit && widget.probed;
+
+  @override
+  void initState() {
+    super.initState();
+    if (_want) _startStale();
+  }
+
+  @override
+  void didUpdateWidget(covariant _BlockedBody old) {
+    super.didUpdateWidget(old);
+    final have = _refresh != null;
+    if (_want && !have) {
+      _startStale(); // probe just settled on a phone → seed + arm
+    } else if (!_want && have) {
+      _refresh!.cancel(); // flipped to HU (probe settled) → stop cold
+      _refresh = null;
+    }
+  }
+
+  void _startStale() {
+    _latest = _load();
+    _scheduleRefresh();
+  }
+
+  Future<Snapshot?> _load() async {
+    final s = await widget.svc.db.getLatestSnapshot();
+    // Diag trail (AppDiagLog +122 intercepts debugPrint). Lives in the
+    // loader, not build(), so the 1500-line ring buffer sees at most
+    // one line per timer tick.
+    if (s == null) {
+      debugPrint('StaleDash: empty DB');
+    } else {
+      final age = DateTime.now().difference(s.capturedAt);
+      debugPrint('StaleDash: snapshot ${s.capturedAt.toIso8601String()} '
+          'age=${age.inSeconds}s');
+    }
+    return s;
+  }
+
+  // One 60s cadence covers both concerns: picking up rows a background
+  // pull just inserted (pull cadence 5 min on a 1-min sync timer) and
+  // aging the freshness label (minute granularity). Deliberately NOT
+  // a CloudSyncService watch: its notifyListeners fires in the finally
+  // of every syncOnce (~1/min) plus every status event — a watch would
+  // recreate the future on each rebuild (refetch anti-pattern).
+  // Shape: a self-rechaining ONE-SHOT Timer, never a periodic one —
+  // the whole-file P5 invariant (+50) keeps this dashboard free of
+  // periodic timers, and a one-shot chain is trivially equivalent here.
+  void _scheduleRefresh() {
+    _refresh = Timer(const Duration(seconds: 60), () {
+      if (!mounted) return;
+      setState(() => _latest = _load());
+      _scheduleRefresh();
+    });
+  }
+
+  @override
+  void dispose() {
+    _refresh?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (widget.onHeadUnit) return _NotConnected(halDead: widget.halDead);
+    if (!widget.probed) {
+      // Probe not settled — this might still turn out to be a head unit
+      // (cold-starting BZ3). The old stub is the only safe render; the
+      // stale cards must never flash on a warming HU. _latest is not
+      // even initialized on this path (late), by design.
+      return _NotConnected(halDead: widget.halDead);
+    }
+    return FutureBuilder<Snapshot?>(
+      future: _latest,
+      builder: (context, snap) {
+        if (snap.hasError) {
+          // +138 lesson: an error must never hide. Here it is a LOCAL
+          // read failure of an optional showcase — the safe floor is
+          // the old stub, with the error on the diag trail. A red
+          // screen because of the stale view is not acceptable.
+          debugPrint('StaleDash: getLatestSnapshot failed: ${snap.error}');
+          return _NotConnected(halDead: widget.halDead);
+        }
+        if (snap.connectionState != ConnectionState.done) {
+          // A local LIMIT-1 select resolves in milliseconds; a blank
+          // frame beats a stub flash. An eternal spinner is impossible:
+          // the future is a single DB query — done|error guaranteed.
+          return const SizedBox.shrink();
+        }
+        final s = snap.data;
+        if (s == null) return _NotConnected(halDead: widget.halDead);
+        return _StaleDashboard(snapshot: s);
+      },
+    );
+  }
+}
+
+/// v0.1.40+139: last-known car state, fed ONLY by one snapshots row —
+/// source-agnostic by design (a HAL row from the head unit, an OBD2 row
+/// from a past dongle session and a pulled cloud row are
+/// indistinguishable here, which is exactly right).
+class _StaleDashboard extends StatelessWidget {
+  final Snapshot snapshot;
+  const _StaleDashboard({required this.snapshot});
+
+  @override
+  Widget build(BuildContext context) {
+    final s = snapshot;
+    // Charging badge gate — the +128 lesson class ("a field existing ≠
+    // a field being meaningful"): the OBD2 writer stores 0.0, not NULL,
+    // when not charging, while the HAL writer stores NULL. isCharging
+    // == true decides the badge (covers bool? null too); the power text
+    // only appears above a 0.05 kW floor.
+    final charging = s.isCharging == true;
+    final powerTxt =
+        (charging && s.chargingPowerKw != null && s.chargingPowerKw! > 0.05)
+            ? ' · ${s.chargingPowerKw!.toStringAsFixed(1)} kW'
+            : '';
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        Row(
+          children: [
+            const Icon(Icons.history, color: Colors.grey, size: 32),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(S.of('dash.stale.title'),
+                      style: Theme.of(context).textTheme.headlineSmall),
+                  const SizedBox(height: 2),
+                  Text(
+                      S
+                          .of('dash.stale.updated')
+                          .replaceFirst('{age}', _relTime(s.capturedAt)),
+                      style: Theme.of(context)
+                          .textTheme
+                          .bodyMedium
+                          ?.copyWith(color: Colors.grey)),
+                ],
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        if (charging) ...[
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              child: Row(
+                children: [
+                  const Icon(Icons.bolt, color: Colors.greenAccent),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text('${S.of('dash.charging')}$powerTxt',
+                        style: const TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.greenAccent)),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+        ],
+        _GridCards(
+          crossAxisCount: 2,
+          children: [
+            _MetricCard(
+              icon: Icons.battery_full,
+              color: Colors.tealAccent,
+              label: 'SOC',
+              value: s.soc != null ? '${s.soc!.toStringAsFixed(0)}%' : '—',
+              stale: true,
+            ),
+            _MetricCard(
+              icon: Icons.speed,
+              color: Colors.blue,
+              label: S.of('dash.odometer_s'),
+              value: s.odometer != null
+                  ? '${s.odometer!.toStringAsFixed(1)} km'
+                  : '—',
+              stale: true,
+            ),
+            _MetricCard(
+              icon: Icons.favorite,
+              color: Colors.green,
+              label: 'SOH',
+              value: s.soh != null ? '${s.soh!.round()}%' : '—',
+              stale: true,
+            ),
+          ],
+        ),
+        const SizedBox(height: 24),
+        Text(S.of('dash.find_hint'),
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: Colors.grey, fontSize: 13)),
+      ],
+    );
+  }
+}
+
+/// v0.1.40+139: private copy of the relative-time formatter from
+/// settings.dart:_relTime (file-private there; a 12-line duplicate beats
+/// a new cross-file public symbol — the local-constant precedent of
+/// +130's 65.28). Same thresholds, same rel.* keys.
+String _relTime(DateTime t) {
+  final diff = DateTime.now().difference(t);
+  if (diff.inSeconds < 60) {
+    return S.of('rel.s_ago').replaceFirst('{n}', '${diff.inSeconds}');
+  }
+  if (diff.inMinutes < 60) {
+    return S.of('rel.m_ago').replaceFirst('{n}', '${diff.inMinutes}');
+  }
+  if (diff.inHours < 24) {
+    return S.of('rel.h_ago').replaceFirst('{n}', '${diff.inHours}');
+  }
+  return S.of('rel.d_ago').replaceFirst('{n}', '${diff.inDays}');
 }
 
 class _Connected extends StatelessWidget {
@@ -920,7 +1184,7 @@ class _TripCard extends StatelessWidget {
 
 /// Bump when changing the diagnostic format — helps cross-reference
 /// screenshots to specific app versions while iterating.
-const String _kDiagVersion = 'v0.1.39+138';
+const String _kDiagVersion = 'v0.1.40+139';
 
 /// v0.1.29+94: public alias of the build version string for display outside
 /// dashboard (e.g. the About screen's APP card). Single literal source — the
