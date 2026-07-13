@@ -144,15 +144,12 @@ class _BZ5AppState extends State<BZ5App> with WidgetsBindingObserver {
           create: (_) => CostSettings()..load(),
         ),
         ChangeNotifierProvider<CloudSyncService>(
-          // v0.1.37+136 (F3): HU-gate callback for sync-down. HAL is
-          // registered BELOW this provider — safe: ctx.read is lazy and
-          // fires only inside _syncPull, by which time the tree is alive
-          // and provider create-on-demand resolves it (AA2: callback,
-          // never an import of the HAL class).
-          create: (ctx) => CloudSyncService(
-            db: widget.db,
-            isHeadUnit: () => ctx.read<HalTelemetryService>().canUseHal,
-          )..init(),
+          // v0.1.38+137: back to the plain create. The +136 attempt to
+          // ctx.read<HalTelemetryService> from HERE was a direction
+          // error — Provider.of walks UP the tree, HAL sits BELOW.
+          // The HU-gate callback is wired inside the HAL provider's
+          // create instead (see below, same pattern as halOwnsTripCheck).
+          create: (_) => CloudSyncService(db: widget.db)..init(),
         ),
         // v0.1.36+135: server vehicle catalog (S8, public endpoint).
         // Separate lightweight service by design — CloudSyncService owns
@@ -181,7 +178,9 @@ class _BZ5AppState extends State<BZ5App> with WidgetsBindingObserver {
         // v0.1.29+87: pass the DB + a current-trip-id reader so the HAL
         // stream is throttle-logged to hal_samples for diagnostics.
         ChangeNotifierProvider<HalTelemetryService>(
-          create: (_) {
+          // v0.1.38+137: `_` → `ctx` — the create body now reads
+          // CloudSyncService (registered above) to wire the HU-gate.
+          create: (ctx) {
             final hal = HalTelemetryService(
               diagDb: widget.db,
               currentTripId: () => widget.svc.currentTripId,
@@ -201,6 +200,13 @@ class _BZ5AppState extends State<BZ5App> with WidgetsBindingObserver {
             // killing the two-simultaneous-ACTIVE-trips bug. AA2 holds: svc
             // receives a bool callback, never the HAL class.
             widget.svc.halOwnsTripCheck = () => hal.halOwnsTrip;
+            // v0.1.38+137: HU-gate for sync-down (F3). Wired HERE — the
+            // HAL provider's ctx CAN see CloudSyncService (it's above in
+            // the MultiProvider list), the reverse direction is what
+            // crashed +136. Same shape as halOwnsTripCheck one line up:
+            // a bool callback, never the HAL class itself (AA2).
+            ctx.read<CloudSyncService>().isHeadUnitCheck =
+                () => hal.canUseHal;
             hal.init();
             return hal;
           },

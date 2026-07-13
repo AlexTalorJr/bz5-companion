@@ -253,17 +253,21 @@ class CloudRestoreProgress {
 // ─── Service ───────────────────────────────────────────────────────
 
 class CloudSyncService extends ChangeNotifier {
-  CloudSyncService({required AppDatabase db, this.isHeadUnit}) : _db = db;
+  CloudSyncService({required AppDatabase db}) : _db = db;
 
   final AppDatabase _db;
 
-  /// v0.1.37+136 (F3): head-unit probe for the pull gate. Callback, not
-  /// an import (AA2 rule, same shape as HAL's currentTripId): the head
-  /// unit must never pull its own pushes back. Read lazily at _syncPull
-  /// time — the HAL provider is created after this service in main.dart,
-  /// which is fine because provider create is lazy and _syncPull only
-  /// runs once the tree is alive.
-  final bool Function()? isHeadUnit;
+  /// v0.1.38+137: head-unit probe for the pull gate — settable field, not
+  /// a constructor parameter. The +136 shape (`ctx.read<HAL>` inside THIS
+  /// provider's create) was wrong: Provider.of only walks UP the element
+  /// tree, and HAL is registered BELOW CloudSyncService in main.dart, so
+  /// the lookup threw ProviderNotFound on every _syncPull tick (field
+  /// evidence: HU log 2026-07-13 08:30–08:33, one error per minute).
+  /// Correct wiring mirrors the proven `halOwnsTripCheck` pattern: the
+  /// HAL provider's create (which CAN see CloudSyncService above it)
+  /// assigns this field once HAL exists. Callback, never an import of
+  /// the HAL class (AA2). Null / unwired → treated as "not a head unit".
+  bool Function()? isHeadUnitCheck;
 
   // ── persistence keys ──
   static const _kEnabled = 'cloud_sync_enabled';
@@ -1747,7 +1751,21 @@ class CloudSyncService extends ChangeNotifier {
   /// taint the push-side _lastError/_status. A 400/404/405 probe result
   /// (endpoint not deployed / vehicle unknown) is a silent no-op.
   Future<void> _syncPull() async {
-    if (isHeadUnit?.call() == true) return;
+    // v0.1.38+137: probe wrapped — a throwing callback must not leak
+    // into syncOnce's catch-all and taint the push status (that's
+    // exactly what the +136 Provider bug did). Fail-safe direction:
+    // if the probe itself fails we ASSUME head unit and skip the pull —
+    // a phone missing one pull tick is harmless; a head unit pulling
+    // its own echoes back is not.
+    bool hu;
+    try {
+      hu = isHeadUnitCheck?.call() ?? false;
+    } catch (e) {
+      debugPrint('CloudSync: isHeadUnitCheck threw ($e) — '
+          'skipping pull (fail-safe as HU)');
+      return;
+    }
+    if (hu) return;
     if (_lastPullAt != null &&
         DateTime.now().difference(_lastPullAt!) <
             const Duration(minutes: 5)) {
@@ -3165,7 +3183,7 @@ class CloudSyncService extends ChangeNotifier {
   /// Read app version from the static value baked into the build.
   /// We don't have package_info_plus as a dep — pubspec-version is
   /// hardcoded here. Update when bumping. Off-by-one tolerated.
-  Future<String> _readAppVersion() async => '0.1.37+136';
+  Future<String> _readAppVersion() async => '0.1.38+137';
 }
 
 // ─── Internal exceptions ────────────────────────────────────────────
