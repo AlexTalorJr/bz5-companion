@@ -266,6 +266,17 @@ class _AppDiagScreenState extends State<AppDiagScreen> {
       ('account approval', cloud.lastError?.startsWith('account_') == true
           ? cloud.lastError!
           : cloud.status.name, false),
+      // v0.1.42+141: device whoami (GET /v2/device/me) — masked email +
+      // account status + fetch age. Display-only plane; '—' = never
+      // fetched OK (no token / endpoint unreachable).
+      (
+        'device me',
+        cloud.deviceMeFetchedAt == null
+            ? '—'
+            : '${cloud.deviceMeLinked == false ? 'not linked' : '${cloud.deviceMeEmail ?? '?'} · ${cloud.deviceMeStatus ?? '?'}'}'
+                ' (${age(cloud.deviceMeFetchedAt!)})',
+        false
+      ),
       ('last error', cloud.lastError ?? '—', cloud.lastError != null),
     ];
     // v0.1.29+124 (C2): account-plane state alongside the device-plane

@@ -1560,6 +1560,34 @@ class AppDatabase extends _$AppDatabase {
         .getSingleOrNull();
   }
 
+  /// v0.1.42+141: fieldwise last-known for the phone stale dashboard.
+  /// Snapshot rows are heterogeneous by writer (a HAL row may carry
+  /// soc+soh without odometer, a charging row its own subset), so the
+  /// single newest row can hold NULL in a field an older row has —
+  /// the +139 cards showed '—' for data that exists. Returns, per
+  /// showcased field, the newest row where THAT field is non-null:
+  /// (soc, odometer, soh). Each card renders the value with its own
+  /// captured_at. Three LIMIT-1 index-friendly selects — same cost
+  /// class as getLatestSnapshot, ran once per 60s stale tick.
+  Future<(Snapshot?, Snapshot?, Snapshot?)> getLatestFieldwiseSnapshots() async {
+    Future<Snapshot?> latestWhere(
+        Expression<bool> Function($SnapshotsTable) pred) {
+      return (select(snapshots)
+            ..where(pred)
+            ..orderBy([
+              (s) => OrderingTerm(
+                  expression: s.capturedAt, mode: OrderingMode.desc)
+            ])
+            ..limit(1))
+          .getSingleOrNull();
+    }
+
+    final soc = await latestWhere((s) => s.soc.isNotNull());
+    final odo = await latestWhere((s) => s.odometer.isNotNull());
+    final soh = await latestWhere((s) => s.soh.isNotNull());
+    return (soc, odo, soh);
+  }
+
   // ── v0.1.41+140: trip_series helpers ────────────────────────────────
 
   /// Generator scan: trips after [afterId] in id order, ANY state — the
