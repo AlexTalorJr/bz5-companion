@@ -1182,6 +1182,13 @@ class CloudSyncService extends ChangeNotifier {
     notifyListeners();
     try {
       await _syncTrips();
+      // v0.1.41+140: trip_series — generate for newly-closed trips (and
+      // the throttled historical backfill), then push. AFTER _syncTrips
+      // so the owning trip is server-side before its series in the
+      // typical flow; the race remainder is covered server-side (orphan
+      // rows are stored, not rejected — SPEC §3).
+      await _generateTripSeries();
+      await _syncTripSeries();
       await _syncSnapshots();
       await _syncSweeps();
       await _syncLiveLogs();
@@ -1347,6 +1354,237 @@ class CloudSyncService extends ChangeNotifier {
       }
       if (pending.length <= batchSize) break;
     }
+  }
+
+  // ── v0.1.41+140: trip_series (SPEC trip_series, server migration 0012) ──
+
+  /// Series vocabulary → local sources. MUST mirror the _ChartCard source
+  /// ladder in trip_detail.dart/history_wide.dart (same tx/did/hal names)
+  /// so a stored series is bit-compatible with what the chart would have
+  /// loaded live. Order inside halNames = preference order.
+  static const List<({String series, String? ecuTx, String? did, List<String> halNames})>
+      _kTripSeriesSources = [
+    (series: 'soc', ecuTx: '790', did: '1FFD',
+        halNames: ['soc_precise', 'soc_display']),
+    (series: 'battery_temp_c', ecuTx: '790', did: '002F',
+        halNames: ['probe_highest_temp', 'battery_temp_bigdata']),
+    (series: 'pack_voltage_v', ecuTx: '740', did: '0022',
+        halNames: ['pack_voltage']),
+    (series: 'power_kw', ecuTx: null, did: null, halNames: ['motor_power']),
+  ];
+
+  static const int _kTripSeriesMaxPoints = 240;
+  static const String _kTripSeriesAlgo = 'lttb240';
+  static const int _kTripSeriesGenPerTick = 3;
+  static const String _kTsGenWatermark = 'cloud_tsgen_watermark';
+
+  /// LTTB (Largest-Triangle-Three-Buckets) downsampler. Deterministic;
+  /// n ≤ threshold → passthrough copy. Points are (epochSeconds, value),
+  /// strictly ascending ts. Endpoints are always preserved.
+  static List<(int, double)> lttbDownsample(
+      List<(int, double)> data, int threshold) {
+    final n = data.length;
+    if (threshold >= n || threshold < 3) return List.of(data);
+    final sampled = <(int, double)>[data.first];
+    final bucketSize = (n - 2) / (threshold - 2);
+    var a = 0; // index of the last selected point
+    for (var i = 0; i < threshold - 2; i++) {
+      // Average of the NEXT bucket (the "C" vertex).
+      var rs = (1 + (i + 1) * bucketSize).floor();
+      var re = (1 + (i + 2) * bucketSize).floor().clamp(0, n);
+      if (rs >= n) rs = n - 1;
+      double avgX = 0, avgY = 0;
+      final rl = (re - rs) > 0 ? (re - rs) : 1;
+      for (var j = rs; j < rs + rl && j < n; j++) {
+        avgX += data[j].$1;
+        avgY += data[j].$2;
+      }
+      avgX /= rl;
+      avgY /= rl;
+      // Current bucket: pick the point maximizing triangle area A-P-C.
+      final cs = (1 + i * bucketSize).floor();
+      final ce = (1 + (i + 1) * bucketSize).floor().clamp(0, n);
+      final ax = data[a].$1.toDouble(), ay = data[a].$2;
+      var maxArea = -1.0;
+      var maxIdx = cs;
+      for (var j = cs; j < ce; j++) {
+        final area = ((ax - avgX) * (data[j].$2 - ay) -
+                (ax - data[j].$1) * (avgY - ay))
+            .abs();
+        if (area > maxArea) {
+          maxArea = area;
+          maxIdx = j;
+        }
+      }
+      sampled.add(data[maxIdx]);
+      a = maxIdx;
+    }
+    sampled.add(data.last);
+    return sampled;
+  }
+
+  /// Generate series for closed trips past the watermark, ≤N per tick
+  /// (doubles as the throttled historical backfill). The watermark stops
+  /// at the first OPEN trip and never jumps over it. A closed trip
+  /// without client_uuid (pre-C1 relic) or without any source data
+  /// advances the watermark silently — nothing to protect.
+  Future<void> _generateTripSeries() async {
+    final prefs = await SharedPreferences.getInstance();
+    var wm = prefs.getInt(_kTsGenWatermark) ?? 0;
+    final trips = await _db.getTripsAfter(wm, _kTripSeriesGenPerTick);
+    if (trips.isEmpty) return;
+    var advanced = false;
+    for (final trip in trips) {
+      if (trip.endedAt == null) break; // open trip — stop, don't skip
+      final uuid = trip.clientUuid;
+      if (uuid != null) {
+        final existing = await _db.getTripSeriesByTripUuid(uuid);
+        if (existing.isEmpty) {
+          await _generateSeriesForTrip(trip, uuid);
+        } else if (existing.any((r) => r.tripId == null)) {
+          // Pulled before this trip existed locally — heal the link.
+          await _db.relinkOrphanTripSeries();
+        }
+      }
+      wm = trip.id;
+      advanced = true;
+    }
+    if (advanced) await prefs.setInt(_kTsGenWatermark, wm);
+  }
+
+  Future<void> _generateSeriesForTrip(Trip trip, String tripUuid) async {
+    var made = 0;
+    for (final src in _kTripSeriesSources) {
+      // Same ladder as _ChartCard._loadPoints: OBD2 first, HAL names in
+      // preference order. Raw numericValue — render-time transforms in
+      // the chart stay where they are.
+      List<(int, double)> raw = [];
+      if (src.ecuTx != null && src.did != null) {
+        final obd = await _db.getSamplesForTrip(trip.id,
+            ecuTx: src.ecuTx!, did: src.did!);
+        raw = [
+          for (final s in obd)
+            if (s.numericValue != null)
+              (s.timestamp.millisecondsSinceEpoch ~/ 1000, s.numericValue!)
+        ];
+      }
+      if (raw.isEmpty) {
+        for (final n in src.halNames) {
+          final hal = await _db.getHalSamplesForTripByName(trip.id, n);
+          raw = [
+            for (final s in hal)
+              if (s.numericValue != null)
+                (s.timestamp.millisecondsSinceEpoch ~/ 1000, s.numericValue!)
+          ];
+          if (raw.isNotEmpty) break;
+        }
+      }
+      if (raw.length < 2) continue; // SPEC §2.2: <2 points → not stored
+      raw.sort((a, b) => a.$1.compareTo(b.$1));
+      // Collapse ts duplicates (keep last) — the server requires strict
+      // ascent; throttled logs can land two frames in one second.
+      final dedup = <(int, double)>[];
+      for (final p in raw) {
+        if (dedup.isNotEmpty && dedup.last.$1 == p.$1) {
+          dedup[dedup.length - 1] = p;
+        } else {
+          dedup.add(p);
+        }
+      }
+      if (dedup.length < 2) continue;
+      final pts = lttbDownsample(dedup, _kTripSeriesMaxPoints);
+      final now = DateTime.now();
+      await _db.upsertTripSeries(TripSeriesCompanion(
+        clientUuid: Value(uuidV7()),
+        tripClientUuid: Value(tripUuid),
+        tripId: Value(trip.id),
+        series: Value(src.series),
+        algo: Value(_kTripSeriesAlgo),
+        pointCount: Value(pts.length),
+        tsMin: Value(
+            DateTime.fromMillisecondsSinceEpoch(pts.first.$1 * 1000)),
+        tsMax: Value(DateTime.fromMillisecondsSinceEpoch(pts.last.$1 * 1000)),
+        pointsJson: Value(jsonEncode([
+          for (final p in pts) [p.$1, double.parse(p.$2.toStringAsFixed(2))]
+        ])),
+        syncedAt: const Value(null),
+        updatedAt: Value(now),
+      ));
+      made++;
+    }
+    debugPrint('CloudSync: trip_series generated — trip #${trip.id} '
+        '($made series)');
+  }
+
+  /// Push unsynced series. 404 (server without migration 0012) is a
+  /// silent no-op via tolerateNotDeployed — retried next tick forever,
+  /// the SPEC §7 decoupling.
+  Future<void> _syncTripSeries() async {
+    final pending = await _db.getUnsyncedTripSeries();
+    if (pending.isEmpty) return;
+    const batchSize = 200; // blobs; server cap is 500
+    for (int off = 0; off < pending.length; off += batchSize) {
+      final end = (off + batchSize).clamp(0, pending.length);
+      final batch = pending.sublist(off, end);
+      try {
+        await _postIngest(
+          '/v1/data/ingest/tripseries',
+          {'items': batch.map(_tripSeriesToJson).toList()},
+          tolerateNotDeployed: true,
+        );
+      } on _EndpointNotDeployedException {
+        return; // server not there yet — keep rows unsynced, retry later
+      }
+      await _db.markTripSeriesSynced(
+          [for (final r in batch) r.id], DateTime.now());
+    }
+  }
+
+  Map<String, dynamic> _tripSeriesToJson(TripSeriesRow r) => {
+        'client_uuid': r.clientUuid,
+        'trip_client_uuid': r.tripClientUuid,
+        'series': r.series,
+        'algo': r.algo,
+        'point_count': r.pointCount,
+        'ts_min': r.tsMin.toUtc().toIso8601String(),
+        'ts_max': r.tsMax.toUtc().toIso8601String(),
+        'points': jsonDecode(r.pointsJson),
+      };
+
+  /// Apply one pulled/restored trip_series row. Shared by _syncPull and
+  /// the restore loop — linkage is via trip_client_uuid, so no tripIdMap
+  /// is needed in either path. Upsert semantics mirror the server:
+  /// identity (tripClientUuid, series), points overwritten, arriving row
+  /// is by definition server-side → syncedAt set (never re-pushed).
+  Future<bool> _applyPulledTripSeries(Map<String, dynamic> data) async {
+    final tripUuid = data['trip_client_uuid'];
+    final series = data['series'];
+    final points = data['points'];
+    if (tripUuid is! String || series is! String || points is! List) {
+      return false;
+    }
+    if (points.length < 2) return false;
+    final uuid = data['client_uuid'];
+    DateTime parseDt(Object? v) =>
+        v is String ? DateTime.parse(v).toLocal() : DateTime.now();
+    // Local trip link, when the trip already exists (trips pass runs
+    // first); otherwise stored as an orphan and re-linked lazily.
+    final trip = await _db.getTripByClientUuid(tripUuid);
+    final now = DateTime.now();
+    await _db.upsertTripSeries(TripSeriesCompanion(
+      clientUuid: Value(uuid is String ? uuid : uuidV7()),
+      tripClientUuid: Value(tripUuid),
+      tripId: Value(trip?.id),
+      series: Value(series),
+      algo: Value(data['algo'] is String ? data['algo'] as String : 'lttb240'),
+      pointCount: Value(points.length),
+      tsMin: Value(parseDt(data['ts_min'])),
+      tsMax: Value(parseDt(data['ts_max'])),
+      pointsJson: Value(jsonEncode(points)),
+      syncedAt: Value(now),
+      updatedAt: Value(now),
+    ));
+    return true;
   }
 
   Future<void> _syncSnapshots() async {
@@ -1773,7 +2011,7 @@ class CloudSyncService extends ChangeNotifier {
     }
     var since = _pullCursor > 100 ? _pullCursor - 100 : 0;
     var finalCursor = _pullCursor;
-    var tIns = 0, tUpd = 0, sIns = 0;
+    var tIns = 0, tUpd = 0, sIns = 0, srIns = 0;
     var mapDirty = false;
     try {
       while (true) {
@@ -1789,6 +2027,7 @@ class CloudSyncService extends ChangeNotifier {
         // DIFFERENT page resolves via the persistent trip map.
         final tripRows = <Map<String, dynamic>>[];
         final snapRows = <Map<String, dynamic>>[];
+        final seriesRows = <Map<String, dynamic>>[];
         for (final raw in items) {
           if (raw is! Map<String, dynamic>) continue;
           if (raw['deleted_at'] != null) {
@@ -1810,6 +2049,9 @@ class CloudSyncService extends ChangeNotifier {
               tripRows.add(data);
             case 'snapshots':
               snapRows.add(data);
+            // v0.1.41+140: third restore-scope entity (SPEC §4).
+            case 'trip_series':
+              seriesRows.add(data);
           }
         }
         // -- Pass 1: trips --
@@ -1823,6 +2065,11 @@ class CloudSyncService extends ChangeNotifier {
         for (final data in snapRows) {
           if (await _applyPulledSnapshot(data)) sIns++;
         }
+        // -- Pass 3: trip_series (v0.1.41+140) --
+        for (final data in seriesRows) {
+          if (await _applyPulledTripSeries(data)) srIns++;
+        }
+        if (seriesRows.isNotEmpty) await _db.relinkOrphanTripSeries();
         final next = resp['next_since'];
         if (next is int && next > finalCursor) finalCursor = next;
         // Progress guard -- same shape as the restore loop.
@@ -1844,7 +2091,7 @@ class CloudSyncService extends ChangeNotifier {
         await prefs.setString(_kPullTripMap, jsonEncode(_pullTripMap));
       }
       debugPrint('CloudSync: pull -- trips +$tIns (~$tUpd upd), '
-          'snaps +$sIns, cursor=$_pullCursor');
+          'snaps +$sIns, series +$srIns, cursor=$_pullCursor');
     } on _EndpointNotDeployedException {
       // Server without S4 or vehicle unknown -- silent, not an error.
       return;
@@ -1976,6 +2223,7 @@ class CloudSyncService extends ChangeNotifier {
       Map<int, int> tripIdMap) async {
     final tripRows = <Map<String, dynamic>>[];
     final snapRows = <Map<String, dynamic>>[];
+    final seriesRows = <Map<String, dynamic>>[];
     var since = 0;
     // v0.1.37+136 (F3, §4): the restore doubles as the full sync-down
     // initialization — track the final next_since so a successful run
@@ -2018,6 +2266,9 @@ class CloudSyncService extends ChangeNotifier {
             tripRows.add(data);
           case 'snapshots':
             snapRows.add(data);
+          // v0.1.41+140: restore-scope entity #3 (SPEC §4).
+          case 'trip_series':
+            seriesRows.add(data);
         }
       }
       _restoreProgress = CloudRestoreProgress(
@@ -2143,11 +2394,25 @@ class CloudSyncService extends ChangeNotifier {
           .insert(_snapshotCompanionFromJson(data, tripId: mappedTripId));
       si++;
     }
+    // ── Apply pass 3: trip_series (v0.1.41+140) ──
+    // Shared helper with _syncPull: linkage is via trip_client_uuid, so
+    // the restore's tripIdMap is not needed here at all.
+    var sri = 0;
+    for (final data in seriesRows) {
+      if (_restoreCancelRequested) {
+        _restoreStatus = CloudRestoreStatus.cancelled;
+        notifyListeners();
+        return (tripRows.length, ti, snapRows.length, si);
+      }
+      if (await _applyPulledTripSeries(data)) sri++;
+    }
+    if (seriesRows.isNotEmpty) await _db.relinkOrphanTripSeries();
     debugPrint('CloudSync: restore via /v2/sync/pull — trips '
         '${tripRows.length}/$ti new '
         '(skip uuid=$tSkipUuid legacy=$tSkipLegacy bad=$tSkipBad), '
         'snapshots ${snapRows.length}/$si new '
-        '(skip uuid=$sSkipUuid legacy=$sSkipLegacy bad=$sSkipBad)');
+        '(skip uuid=$sSkipUuid legacy=$sSkipLegacy bad=$sSkipBad), '
+        'series ${seriesRows.length}/$sri applied');
     // v0.1.37+136 (F3, §4): a completed restore IS the sync-down
     // initialization — seed the pull cursor with the final next_since
     // and persist the device-keyed trip map collected in pass 1. The
@@ -3183,7 +3448,7 @@ class CloudSyncService extends ChangeNotifier {
   /// Read app version from the static value baked into the build.
   /// We don't have package_info_plus as a dep — pubspec-version is
   /// hardcoded here. Update when bumping. Off-by-one tolerated.
-  Future<String> _readAppVersion() async => '0.1.40+139';
+  Future<String> _readAppVersion() async => '0.1.41+140';
 }
 
 // ─── Internal exceptions ────────────────────────────────────────────
