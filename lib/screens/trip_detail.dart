@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
@@ -106,6 +107,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                 did: '1FFD',
                 halName: 'soc_precise|soc_display',
                 snapshotField: 'soc',
+                seriesName: 'soc',
                 color: Colors.greenAccent,
                 unit: '%',
                 svc: svc,
@@ -118,6 +120,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                 did: '002F',
                 halName: 'probe_highest_temp|battery_temp_bigdata',
                 snapshotField: 'batteryTempC',
+                seriesName: 'battery_temp_c',
                 color: Colors.orangeAccent,
                 unit: '°C',
                 // v0.1.26+9: NO valueTransform — the registry decoder for
@@ -138,6 +141,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                 did: '0022',
                 halName: 'pack_voltage',
                 snapshotField: 'packVoltageV',
+                seriesName: 'pack_voltage_v',
                 color: Colors.yellowAccent,
                 unit: 'V',
                 // No valueTransform — registry decoder already applies scale 0.025
@@ -208,6 +212,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
           did: '1FFD',
           halName: 'soc_precise|soc_display',
           snapshotField: 'soc',
+                seriesName: 'soc',
           color: Colors.greenAccent,
           unit: '%',
           svc: svc,
@@ -221,6 +226,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
             did: '002F',
             halName: 'probe_highest_temp|battery_temp_bigdata',
             snapshotField: 'batteryTempC',
+                seriesName: 'battery_temp_c',
             color: Colors.orangeAccent,
             unit: '°C',
             // v0.1.26+9: see narrow-layout comment — registry already
@@ -234,6 +240,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
             did: '0022',
             halName: 'pack_voltage',
             snapshotField: 'packVoltageV',
+                seriesName: 'pack_voltage_v',
             color: Colors.yellowAccent,
             unit: 'V',
             svc: svc,
@@ -1048,6 +1055,9 @@ class _ChartCard extends StatelessWidget {
   /// by the charging-power chart, which only exists for trips whose
   /// snapshots actually recorded charging.
   final bool hideWhenEmpty;
+  /// v0.1.41+140: trip_series name for the 4th ladder step (restored
+  /// trips whose samples never left the device). null → step skipped.
+  final String? seriesName;
   const _ChartCard({
     required this.title,
     required this.tripId,
@@ -1060,6 +1070,7 @@ class _ChartCard extends StatelessWidget {
     this.halName,
     this.snapshotField,
     this.hideWhenEmpty = false,
+    this.seriesName,
   });
 
   @override
@@ -1183,6 +1194,30 @@ class _ChartCard extends StatelessWidget {
             ],
             fromSnapshots: false
           );
+        }
+      }
+    }
+    // v0.1.41+140: 4th ladder step — the cloud-synced downsampled series
+    // (SPEC trip_series). Fires only when both live sample tables are
+    // empty for this trip (the restored-trip case); ≤240 LTTB points are
+    // visually equivalent to live data, so no coarse-source caption.
+    final sName = seriesName;
+    if (sName != null) {
+      final row = await svc.db.getTripSeriesForChart(tripId, sName);
+      if (row != null) {
+        final decoded = jsonDecode(row.pointsJson);
+        if (decoded is List && decoded.length >= 2) {
+          final pts = <({DateTime ts, double? v})>[];
+          for (final p in decoded) {
+            if (p is List && p.length == 2 && p[0] is num && p[1] is num) {
+              pts.add((
+                ts: DateTime.fromMillisecondsSinceEpoch(
+                    (p[0] as num).toInt() * 1000),
+                v: (p[1] as num).toDouble()
+              ));
+            }
+          }
+          if (pts.length >= 2) return (pts: pts, fromSnapshots: false);
         }
       }
     }

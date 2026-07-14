@@ -376,7 +376,7 @@ if int(pv) >= 37:
     # table (+104), from<12 soh_estimates.source (+105, splits UDS
     # id=1 / HAL id=2), from<13 trips.last_alive_ts (+106), from<14
     # client_uuid x5 (+117).
-    _d1_expected = 15 if int(pv) >= 130 else 14
+    _d1_expected = 16 if int(pv) >= 140 else (15 if int(pv) >= 130 else 14)  # +140: trip_series (v16)
     if f"int get schemaVersion => {_d1_expected};" in db_src:
         ok(f"D1 schemaVersion = {_d1_expected} (per-era)")
     else:
@@ -3659,6 +3659,63 @@ if int(pv) >= 139:
         fail('AL4 probed gate missing (HU cold-start flash risk)')
 else:
     ok(f"Part AL skipped (build +{pv}, stale dashboard lands in +139)")
+
+# ─────────────── Part AM: +140 trip_series client ────────────────────────────
+if int(pv) >= 140:
+    _db2 = (root / 'lib/data/database.dart').read_text()
+    _cs2 = (root / 'lib/services/cloud_sync_service.dart').read_text()
+    _td2 = (root / 'lib/screens/trip_detail.dart').read_text()
+    _hw2 = (root / 'lib/screens/wide/history_wide.dart').read_text()
+    # AM1: schema v16 + additive migration + table registered.
+    if 'int get schemaVersion => 16;' in _db2 and \
+       '_createTableIfAbsent(m, tripSeries)' in _db2 and \
+       "@DataClassName('TripSeriesRow')" in _db2:
+        ok('AM1 trip_series table + v16 additive migration')
+    else:
+        fail('AM1 trip_series schema/migration missing')
+    # AM2: pipeline order — generate+push AFTER _syncTrips, BEFORE
+    # _syncSnapshots; push tolerates a not-yet-deployed endpoint.
+    _p_t = _cs2.find('await _syncTrips();')
+    _p_g = _cs2.find('await _generateTripSeries();')
+    _p_p = _cs2.find('await _syncTripSeries();')
+    _p_s = _cs2.find('await _syncSnapshots();')
+    if -1 < _p_t < _p_g < _p_p < _p_s and \
+       "'/v1/data/ingest/tripseries'" in _cs2 and \
+       'tolerateNotDeployed: true' in _cs2:
+        ok('AM2 pipeline order trips→series + endpoint-404 tolerance')
+    else:
+        fail('AM2 series pipeline order / 404 tolerance wrong')
+    # AM3: pull third pass + restore pass share ONE uuid-linked helper,
+    # and the orphan re-link runs after series application.
+    if _cs2.count('_applyPulledTripSeries(') >= 3 and \
+       "case 'trip_series':" in _cs2 and \
+       _cs2.count('relinkOrphanTripSeries()') >= 2:
+        ok('AM3 pull+restore series passes share uuid-linked apply')
+    else:
+        fail('AM3 series pull/restore passes incomplete')
+    # AM4: chart ladder order in BOTH twins — series step sits between
+    # the hal loop and the snapshot stage.
+    def _ladder_ok(srcname, s):
+        h = s.find('getHalSamplesForTripByName')
+        t = s.find('getTripSeriesForChart')
+        f = s.find('final field = snapshotField;')
+        return -1 < h < t < f
+    if _ladder_ok('td', _td2) and _ladder_ok('hw', _hw2) and \
+       _td2.count("seriesName: '") == 6 and _hw2.count("seriesName: '") == 3:
+        ok('AM4 chart 4th step between hal and snapshots, both twins')
+    else:
+        fail('AM4 chart ladder step order/call-sites wrong')
+    # AM5: LTTB bounds — 240 cap, <2-point series never stored, points
+    # rounded and strictly ascending (dedup collapse present).
+    if '_kTripSeriesMaxPoints = 240' in _cs2 and \
+       'if (raw.length < 2) continue;' in _cs2 and \
+       'toStringAsFixed(2)' in _cs2 and \
+       'dedup.last.$1 == p.$1' in _cs2:
+        ok('AM5 LTTB bounds (240 cap, min-2, rounding, ts dedup)')
+    else:
+        fail('AM5 LTTB bound guards missing')
+else:
+    ok(f"Part AM skipped (build +{pv}, trip_series lands in +140)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)

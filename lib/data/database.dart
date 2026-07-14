@@ -398,6 +398,49 @@ class SohHistory extends Table {
   TextColumn get clientUuid => text().nullable()();
 }
 
+/// v0.1.41+140: downsampled per-trip chart series (SPEC trip_series).
+/// One row = one series of one trip, points as a JSON blob
+/// `[[epoch_s, value], ...]` (≤240, LTTB). Synced to the cloud as a
+/// first-class restore-scope entity — the structural fix for "charts die
+/// on every head-unit reinstall" (samples/hal_samples never leave the
+/// device; these do). Identity is (tripClientUuid, series) — the trip's
+/// client_uuid, NOT its restart-prone local id; tripId here is only the
+/// local FK convenience link, re-derivable at any time.
+@DataClassName('TripSeriesRow')
+class TripSeries extends Table {
+  IntColumn get id => integer().autoIncrement()();
+
+  /// UUIDv7 of this row (pull idempotency); immutable server-side.
+  TextColumn get clientUuid => text()();
+
+  /// client_uuid of the owning trip — the wipe-safe linkage key.
+  TextColumn get tripClientUuid => text()();
+
+  /// Local trip FK (nullable: a pulled orphan may precede its trip;
+  /// re-linked lazily after every pull pass).
+  IntColumn get tripId => integer().nullable()();
+
+  /// Series vocabulary (client-owned): 'soc' | 'battery_temp_c' |
+  /// 'pack_voltage_v' | 'power_kw'.
+  TextColumn get series => text()();
+
+  /// Downsampler version tag, currently 'lttb240'.
+  TextColumn get algo => text()();
+
+  IntColumn get pointCount => integer()();
+  DateTimeColumn get tsMin => dateTime()();
+  DateTimeColumn get tsMax => dateTime()();
+
+  /// JSON text: [[epoch_s, value], ...] ascending, no nulls.
+  TextColumn get pointsJson => text()();
+
+  /// Push watermark: null → needs push; set on 200 from ingest.
+  /// Regeneration nulls it again.
+  DateTimeColumn get syncedAt => dateTime().nullable()();
+
+  DateTimeColumn get updatedAt => dateTime()();
+}
+
 @DriftDatabase(tables: [
   Samples, Trips, Snapshots,
   SweepRuns, SweepResults,
@@ -406,12 +449,13 @@ class SohHistory extends Table {
   HalSamples,
   SohEstimates,
   SohHistory,
+  TripSeries,
 ])
 class AppDatabase extends _$AppDatabase {
   AppDatabase() : super(_openConnection());
 
   @override
-  int get schemaVersion => 15;
+  int get schemaVersion => 16;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -549,6 +593,12 @@ class AppDatabase extends _$AppDatabase {
           // combo card shows the BMS line alone until then.
           if (from < 15) {
             await _createTableIfAbsent(m, sohHistory);
+          }
+          // v15 → v16 (v0.1.41+140): trip_series — downsampled chart
+          // series, cloud-synced restore-scope entity. Additive
+          // (createTable), idempotent via _createTableIfAbsent.
+          if (from < 16) {
+            await _createTableIfAbsent(m, tripSeries);
           }
           debugPrint('DB migrate: $from → $to complete');
         },
@@ -1508,6 +1558,88 @@ class AppDatabase extends _$AppDatabase {
               [(s) => OrderingTerm(expression: s.capturedAt, mode: OrderingMode.desc)])
           ..limit(1))
         .getSingleOrNull();
+  }
+
+  // ── v0.1.41+140: trip_series helpers ────────────────────────────────
+
+  /// Generator scan: trips after [afterId] in id order, ANY state — the
+  /// caller stops at the first open trip so the watermark never jumps
+  /// over it (single-ACTIVE-trip invariant makes that a clean prefix).
+  Future<List<Trip>> getTripsAfter(int afterId, int limit) {
+    return (select(trips)
+          ..where((t) => t.id.isBiggerThanValue(afterId))
+          ..orderBy([(t) => OrderingTerm(expression: t.id)])
+          ..limit(limit))
+        .get();
+  }
+
+  Future<List<TripSeriesRow>> getTripSeriesByTripUuid(String tripUuid) {
+    return (select(tripSeries)..where((r) => r.tripClientUuid.equals(tripUuid)))
+        .get();
+  }
+
+  /// Chart 4th ladder step: one series of one trip by the LOCAL id.
+  Future<TripSeriesRow?> getTripSeriesForChart(int tripId, String series) {
+    return (select(tripSeries)
+          ..where((r) => r.tripId.equals(tripId) & r.series.equals(series))
+          ..limit(1))
+        .getSingleOrNull();
+  }
+
+  /// Upsert by the identity key (tripClientUuid, series) — mirrors the
+  /// server's UNIQUE. Keeps the original clientUuid on update (immutable,
+  /// same rule as the server side). Returns the row id.
+  Future<int> upsertTripSeries(TripSeriesCompanion data) async {
+    final existing = await (select(tripSeries)
+          ..where((r) =>
+              r.tripClientUuid.equals(data.tripClientUuid.value) &
+              r.series.equals(data.series.value))
+          ..limit(1))
+        .getSingleOrNull();
+    if (existing == null) {
+      return into(tripSeries).insert(data);
+    }
+    await (update(tripSeries)..where((r) => r.id.equals(existing.id)))
+        .write(TripSeriesCompanion(
+      tripId: data.tripId,
+      algo: data.algo,
+      pointCount: data.pointCount,
+      tsMin: data.tsMin,
+      tsMax: data.tsMax,
+      pointsJson: data.pointsJson,
+      syncedAt: data.syncedAt,
+      updatedAt: data.updatedAt,
+    ));
+    return existing.id;
+  }
+
+  Future<List<TripSeriesRow>> getUnsyncedTripSeries() {
+    return (select(tripSeries)..where((r) => r.syncedAt.isNull())).get();
+  }
+
+  Future<void> markTripSeriesSynced(List<int> ids, DateTime at) async {
+    if (ids.isEmpty) return;
+    await (update(tripSeries)..where((r) => r.id.isIn(ids)))
+        .write(TripSeriesCompanion(syncedAt: Value(at)));
+  }
+
+  /// Lazy orphan re-link: pulled series whose trip arrived in the same
+  /// (or a later) pass. Cheap: orphans are rare and shrink to zero.
+  Future<int> relinkOrphanTripSeries() async {
+    final orphans =
+        await (select(tripSeries)..where((r) => r.tripId.isNull())).get();
+    var fixed = 0;
+    for (final o in orphans) {
+      final trip = await (select(trips)
+            ..where((t) => t.clientUuid.equals(o.tripClientUuid))
+            ..limit(1))
+          .getSingleOrNull();
+      if (trip == null) continue;
+      await (update(tripSeries)..where((r) => r.id.equals(o.id)))
+          .write(TripSeriesCompanion(tripId: Value(trip.id)));
+      fixed++;
+    }
+    return fixed;
   }
 
   Future<int> countAllSnapshots() async {
