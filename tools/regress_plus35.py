@@ -3621,7 +3621,11 @@ if int(pv) >= 139:
     # its MAIN screen; its behaviour must stay bit-identical).
     _bb = _dash.find('class _BlockedBodyState')
     _hu = _dash.find('if (widget.onHeadUnit) return _NotConnected', _bb)
-    _fb = _dash.find('FutureBuilder<Snapshot?>', _bb)
+    # +141 renamed the future's payload Snapshot? → _StaleData? (fieldwise
+    # rows); the gate ORDER under test is unchanged — anchor per era.
+    _fb = _dash.find(
+        'FutureBuilder<_StaleData?>' if int(pv) >= 141
+        else 'FutureBuilder<Snapshot?>', _bb)
     if -1 < _bb < _hu < _fb:
         ok('AL1 stale branch HU-gated before DB (stub early-return)')
     else:
@@ -3716,6 +3720,86 @@ if int(pv) >= 140:
         fail('AM5 LTTB bound guards missing')
 else:
     ok(f"Part AM skipped (build +{pv}, trip_series lands in +140)")
+
+# ─────────────── Part AN: +141 whoami / fieldwise stale / SOC gate ───────────
+if int(pv) >= 141:
+    _cs3 = (root / 'lib/services/cloud_sync_service.dart').read_text()
+    _dash3 = (root / 'lib/screens/dashboard.dart').read_text()
+    _set3 = (root / 'lib/screens/settings.dart').read_text()
+    _pair3 = (root / 'lib/screens/pairing.dart').read_text()
+    _res3 = (root / 'lib/services/soc_resolver.dart').read_text()
+    _db3 = (root / 'lib/data/database.dart').read_text()
+    _l10n3 = (root / 'lib/l10n/strings.dart').read_text()
+    # AN1: whoami plane is SELF-CONTAINED — display-only decree (Q3).
+    # fetchDeviceMe must not route through _getJson (whose 401 counter
+    # and _AccountGateException would couple planes) and must never
+    # touch _consecutiveAuthFailures or CloudSyncStatus. Body extracted
+    # by brace counting (interpolation braces are balanced too), NOT by
+    # a first-'}' heuristic — that terminated inside the method.
+    def _brace_body(src, start):
+        i = src.find('{', start)
+        if i == -1:
+            return ''
+        depth = 0
+        for j in range(i, len(src)):
+            if src[j] == '{':
+                depth += 1
+            elif src[j] == '}':
+                depth -= 1
+                if depth == 0:
+                    return src[i:j + 1]
+        return ''
+    _fm_start = _cs3.find('Future<void> fetchDeviceMe(')
+    # The signature's optional-parameter list opens with '{' too —
+    # anchor the body scan on the 'async' keyword past the params.
+    _fm_async = _cs3.find(' async ', _fm_start) if _fm_start != -1 else -1
+    _fm_body = _brace_body(_cs3, _fm_async) if _fm_async != -1 else ''
+    if _fm_body and '_getJson' not in _fm_body and \
+       '_consecutiveAuthFailures' not in _fm_body and \
+       '_status =' not in _fm_body and \
+       '/v2/device/me' in _fm_body and \
+       '_deviceMeInFlight' in _fm_body:
+        ok('AN1 whoami self-contained (no _getJson/auth-counter/status)')
+    else:
+        fail('AN1 fetchDeviceMe couples planes or missing')
+    # AN2: three call sites — init (token-gated), BOTH paired branches
+    # (minted with tokenOverride — the restore swaps _clientToken later).
+    if _cs3.count('fetchDeviceMe(') >= 4 and \
+       'fetchDeviceMe(tokenOverride: minted)' in _cs3 and \
+       'if (_clientToken != null) unawaited(fetchDeviceMe());' in _cs3:
+        ok('AN2 whoami call sites: init + both paired branches')
+    else:
+        fail('AN2 whoami call sites incomplete')
+    # AN3: fieldwise stale — DAO returns per-field newest rows, the
+    # dashboard renders each card with its OWN date, and the charging
+    # badge stays on the overall-latest row (a state of NOW).
+    if 'getLatestFieldwiseSnapshots' in _db3 and \
+       _dash3.count('_relTime(data.') >= 3 and \
+       'final charging = s.isCharging == true;' in _dash3 and \
+       'final s = data.latest;' in _dash3:
+        ok('AN3 fieldwise stale cards + badge pinned to latest row')
+    else:
+        fail('AN3 fieldwise stale wiring wrong')
+    # AN4: SOC setting hidden on a CONFIRMED phone only (probe settled),
+    # and the resolver force-returns precise behind the same predicate.
+    if 'hal.platformProbed && !hal.canUseHal' in _set3 and \
+       'hal.platformProbed && !hal.canUseHal' in _res3 and \
+       'return svc.socPrecisePct;' in _res3:
+        ok('AN4 SOC setting gated + resolver forces precise on phone')
+    else:
+        fail('AN4 SOC phone gate incomplete')
+    # AN5: UI lines exist (settings tap-to-refresh + pairing subtitle)
+    # and the l10n quartet is present in BOTH locales.
+    _keys = ["'cloud.device_me.linked'", "'cloud.device_me.not_linked'",
+             "'cloud.device_me.unknown'", "'cloud.device_me.approved'"]
+    if 'onTap: () => cs.fetchDeviceMe()' in _set3 and \
+       '_pairedIdentityLine(cs)' in _pair3 and \
+       all(_l10n3.count(k) == 2 for k in _keys):
+        ok('AN5 whoami UI lines + l10n quartet EN/RU')
+    else:
+        fail('AN5 whoami UI/l10n incomplete')
+else:
+    ok(f"Part AN skipped (build +{pv}, whoami lands in +141)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)

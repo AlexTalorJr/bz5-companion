@@ -606,6 +606,9 @@ class CloudSyncService extends ChangeNotifier {
         notifyListeners();
       }
     }).catchError((_) {}));
+    // v0.1.42+141: seed the "linked to account" line on startup.
+    // Fire-and-forget, display-only (see fetchDeviceMe).
+    if (_clientToken != null) unawaited(fetchDeviceMe());
   }
 
   @override
@@ -653,6 +656,90 @@ class CloudSyncService extends ChangeNotifier {
   // v0.1.30+129: attach_mode from the last paired response —
   // 'new' (fresh device row) or 'reattached' (existing row reused).
   String? _lastAttachMode;
+
+  // ─── v0.1.42+141: device whoami (GET /v2/device/me, Appendix A) ───
+  //
+  // Read-only self-identity by the DEVICE token: "linked to
+  // a***@mail.ru · pending". Closes the field complaint "entered the
+  // code — and silence": the head unit has no account session (by
+  // design) and until now had no way to show whom it belongs to.
+  //
+  // DISPLAY-ONLY by decree (Alex Q3, 14.07): this plane must never
+  // touch CloudSyncStatus and never contribute to
+  // _consecutiveAuthFailures — enforcement stays with the 403
+  // account_* machinery (+133). Hence a deliberately self-contained
+  // fetch below (direct _http.get, short timeout, no retries, all
+  // failures swallowed to a diag line) instead of _getJson, whose 401
+  // counter and _AccountGateException would couple the planes.
+  //
+  // email_masked arrives ALREADY masked by the server (first char +
+  // domain) — the head unit is a shared car screen, the full address
+  // never reaches this client. account:null = legacy device from the
+  // setup-token era that was never claimed to an account.
+  String? _deviceMeEmail; // masked, e.g. 'a***@mail.ru'
+  String? _deviceMeStatus; // pending|approved|rejected|blocked
+  bool? _deviceMeLinked; // null = never fetched OK; false = account:null
+  DateTime? _deviceMeFetchedAt;
+  bool _deviceMeInFlight = false;
+
+  String? get deviceMeEmail => _deviceMeEmail;
+  String? get deviceMeStatus => _deviceMeStatus;
+  bool? get deviceMeLinked => _deviceMeLinked;
+  DateTime? get deviceMeFetchedAt => _deviceMeFetchedAt;
+
+  /// Fetch /v2/device/me (not gated by approval — it exists precisely
+  /// so a PENDING device can say "waiting for approval" instead of
+  /// silence). Call sites: init() when a token is present, both paired
+  /// branches of the pair poll, and a manual tap on the settings line.
+  ///
+  /// [tokenOverride] serves the scenario-(b) paired branch: the minted
+  /// token is persisted to secure storage there but [_clientToken] is
+  /// swapped later by the auto-restore — whoami must not race that.
+  Future<void> fetchDeviceMe({String? tokenOverride}) async {
+    final token = tokenOverride ?? _clientToken;
+    if (token == null || _deviceMeInFlight) return;
+    _deviceMeInFlight = true;
+    try {
+      final resp = await _http.get(
+        Uri.parse('$_baseUrl/v2/device/me'),
+        headers: {'Authorization': 'Bearer $token'},
+      ).timeout(const Duration(seconds: 8));
+      if (resp.statusCode != 200) {
+        // 401 dead token, 404 not deployed, 5xx — all non-fatal here;
+        // the UI keeps the last known line (or '—' if never fetched).
+        debugPrint('CloudSync: device/me HTTP ${resp.statusCode} '
+            '(display-only, keeping last known)');
+        return;
+      }
+      final decoded = jsonDecode(resp.body);
+      if (decoded is! Map<String, dynamic>) {
+        debugPrint('CloudSync: device/me unexpected JSON shape');
+        return;
+      }
+      final acct = decoded['account'];
+      if (acct is Map<String, dynamic>) {
+        final em = acct['email_masked'];
+        final st = acct['status'];
+        _deviceMeEmail = (em is String && em.isNotEmpty) ? em : null;
+        _deviceMeStatus = st is String ? st : null;
+        _deviceMeLinked = true;
+      } else {
+        // account: null — legacy device, never claimed.
+        _deviceMeEmail = null;
+        _deviceMeStatus = null;
+        _deviceMeLinked = false;
+      }
+      _deviceMeFetchedAt = DateTime.now();
+      debugPrint('CloudSync: device/me ok — '
+          '${_deviceMeLinked == true ? '${_deviceMeEmail ?? '?'} · ${_deviceMeStatus ?? '?'}' : 'not linked'}');
+      notifyListeners();
+    } catch (e) {
+      // Network blip / malformed body — display-only plane, swallow.
+      debugPrint('CloudSync: device/me fetch failed (non-fatal): $e');
+    } finally {
+      _deviceMeInFlight = false;
+    }
+  }
 
   // v0.1.35+134: vehicle descriptor (make/model/name) — persisted,
   // always included in pair/start when set. For accounts that already
@@ -848,6 +935,10 @@ class CloudSyncService extends ChangeNotifier {
                 'minted and persisted, auto-starting restore '
                 '(attach_mode=${_lastAttachMode ?? '?'})');
             unawaited(startRestore(oldClientToken: minted));
+            // v0.1.42+141: immediate "linked to a***@… · status" on the
+            // pairing screen. Override because _clientToken is swapped
+            // by the restore above, possibly later than this call.
+            unawaited(fetchDeviceMe(tokenOverride: minted));
           } else {
             _finishPairing(CloudPairingStatus.paired);
             debugPrint('CloudSync: pairing complete — device attached '
@@ -862,6 +953,9 @@ class CloudSyncService extends ChangeNotifier {
             // event — a full since=0 pull is acceptable and useful here
             // (re-seeds the pull cursor and the trip map).
             unawaited(startRestore(oldClientToken: _clientToken!));
+            // v0.1.42+141: scenario (a) — token unchanged, whoami with
+            // the current one shows the just-attached account.
+            unawaited(fetchDeviceMe());
           }
         } else if (st == 'expired') {
           _finishPairing(CloudPairingStatus.expired);
@@ -3448,7 +3542,7 @@ class CloudSyncService extends ChangeNotifier {
   /// Read app version from the static value baked into the build.
   /// We don't have package_info_plus as a dep — pubspec-version is
   /// hardcoded here. Update when bumping. Off-by-one tolerated.
-  Future<String> _readAppVersion() async => '0.1.41+140';
+  Future<String> _readAppVersion() async => '0.1.42+141';
 }
 
 // ─── Internal exceptions ────────────────────────────────────────────

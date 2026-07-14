@@ -373,6 +373,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
       // resolver falls back to the exact value either way.
       Builder(builder: (context) {
         final hal = context.watch<HalTelemetryService>();
+        // v0.1.42+141: on a CONFIRMED phone the setting is gone (Alex,
+        // 14.07). Over a dongle the cluster figure does not exist in
+        // UDS — "Same as the car" silently degraded to a rounded
+        // precise value, so both options fed one source and the choice
+        // was noise. The resolver force-returns precise there (see
+        // soc_resolver.dart); head units (BZ5/BZ3) keep the setting.
+        // Probe discipline mirrors the +139 stale gate: canUseHal alone
+        // reads false on a cold-starting BZ3 too — hide only once the
+        // platform probe has settled, never flicker the block away on
+        // a warming head unit.
+        if (hal.platformProbed && !hal.canUseHal) {
+          return const SizedBox.shrink();
+        }
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -1079,6 +1092,36 @@ String _relTime(DateTime t) {
   return S.of('rel.d_ago').replaceFirst('{n}', '${diff.inDays}');
 }
 
+/// v0.1.42+141: the device-whoami line for the cloud block and the
+/// pairing screen. Never fetched OK → '—' placeholder key (tap
+/// refetches); account:null → "not linked"; otherwise
+/// "Linked to a***@… · <status>".
+String _deviceMeLine(CloudSyncService cs) {
+  if (cs.deviceMeFetchedAt == null) return S.of('cloud.device_me.unknown');
+  if (cs.deviceMeLinked == false) return S.of('cloud.device_me.not_linked');
+  final email = cs.deviceMeEmail ?? '?';
+  return '${S.of('cloud.device_me.linked').replaceFirst('{email}', email)}'
+      ' · ${_deviceMeStatusLabel(cs.deviceMeStatus)}';
+}
+
+/// Same status dictionary as /v2/account/me — the l10n keys are shared
+/// with the +133 gate where they exist (pending, rejected|blocked);
+/// 'approved' gets its own key. An unknown word passes through raw
+/// (server vocabulary may grow; raw beats hiding).
+String _deviceMeStatusLabel(String? st) {
+  switch (st) {
+    case 'pending':
+      return S.of('cloud.status.pending_approval');
+    case 'approved':
+      return S.of('cloud.device_me.approved');
+    case 'rejected':
+    case 'blocked':
+      return S.of('cloud.status.access_denied');
+    default:
+      return st ?? '—';
+  }
+}
+
 
 /// v0.1.29+110 (decision О1 — freeze & relocate): the ENTIRE cloud block
 /// moved VERBATIM from the Settings top level to this sub-screen behind
@@ -1209,6 +1252,20 @@ class _CloudServicesScreenState extends State<CloudServicesScreen> {
             else
               Text('${S.of('cloud.last_sync')}: ${S.of('cloud.never')}',
                   style: const TextStyle(fontSize: 12, color: Colors.grey)),
+            // v0.1.42+141: device whoami — "linked to a***@… · status".
+            // Tap = manual refetch (Alex Q2); shown on ALL platforms
+            // (Q1: email arrives masked, no reason to gate). Display-
+            // only: this line never drives CloudSyncStatus (Q3).
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: InkWell(
+                onTap: () => cs.fetchDeviceMe(),
+                child: Text(
+                  _deviceMeLine(cs),
+                  style: const TextStyle(fontSize: 12, color: Colors.grey),
+                ),
+              ),
+            ),
             if (cs.stats.totalPending > 0)
               Padding(
                 padding: const EdgeInsets.only(top: 2),

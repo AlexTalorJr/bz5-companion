@@ -126,7 +126,7 @@ class _BlockedBody extends StatefulWidget {
 }
 
 class _BlockedBodyState extends State<_BlockedBody> {
-  late Future<Snapshot?> _latest;
+  late Future<_StaleData?> _latest;
   Timer? _refresh;
 
   // The stale machinery (future + timer) may run only on a CONFIRMED
@@ -160,19 +160,30 @@ class _BlockedBodyState extends State<_BlockedBody> {
     _scheduleRefresh();
   }
 
-  Future<Snapshot?> _load() async {
+  Future<_StaleData?> _load() async {
     final s = await widget.svc.db.getLatestSnapshot();
     // Diag trail (AppDiagLog +122 intercepts debugPrint). Lives in the
     // loader, not build(), so the 1500-line ring buffer sees at most
     // one line per timer tick.
     if (s == null) {
       debugPrint('StaleDash: empty DB');
-    } else {
-      final age = DateTime.now().difference(s.capturedAt);
-      debugPrint('StaleDash: snapshot ${s.capturedAt.toIso8601String()} '
-          'age=${age.inSeconds}s');
+      return null;
     }
-    return s;
+    // v0.1.42+141: fieldwise last-known — the newest row per SHOWN
+    // field, not one row for all three (see the DAO doc). The overall
+    // newest row keeps two jobs: the header freshness line and the
+    // charging badge — a state of NOW, never taken fieldwise (a
+    // week-old isCharging=true rendered as "charging" would be a lie).
+    final (socRow, odoRow, sohRow) =
+        await widget.svc.db.getLatestFieldwiseSnapshots();
+    final age = DateTime.now().difference(s.capturedAt);
+    debugPrint('StaleDash: snapshot ${s.capturedAt.toIso8601String()} '
+        'age=${age.inSeconds}s fieldwise('
+        'soc=${socRow?.capturedAt.toIso8601String() ?? '—'} '
+        'odo=${odoRow?.capturedAt.toIso8601String() ?? '—'} '
+        'soh=${sohRow?.capturedAt.toIso8601String() ?? '—'})');
+    return _StaleData(
+        latest: s, socRow: socRow, odoRow: odoRow, sohRow: sohRow);
   }
 
   // One 60s cadence covers both concerns: picking up rows a background
@@ -208,7 +219,7 @@ class _BlockedBodyState extends State<_BlockedBody> {
       // even initialized on this path (late), by design.
       return _NotConnected(halDead: widget.halDead);
     }
-    return FutureBuilder<Snapshot?>(
+    return FutureBuilder<_StaleData?>(
       future: _latest,
       builder: (context, snap) {
         if (snap.hasError) {
@@ -227,23 +238,39 @@ class _BlockedBodyState extends State<_BlockedBody> {
         }
         final s = snap.data;
         if (s == null) return _NotConnected(halDead: widget.halDead);
-        return _StaleDashboard(snapshot: s);
+        return _StaleDashboard(data: s);
       },
     );
   }
 }
 
-/// v0.1.40+139: last-known car state, fed ONLY by one snapshots row —
+/// v0.1.42+141: everything the stale showcase renders, loaded in one
+/// pass. [latest] is the newest row overall (header freshness +
+/// charging badge); the three field rows are the newest rows where
+/// that particular field is non-null — see getLatestFieldwiseSnapshots.
+class _StaleData {
+  final Snapshot latest;
+  final Snapshot? socRow;
+  final Snapshot? odoRow;
+  final Snapshot? sohRow;
+  const _StaleData(
+      {required this.latest, this.socRow, this.odoRow, this.sohRow});
+}
+
+/// v0.1.40+139: last-known car state, fed ONLY by snapshots rows —
 /// source-agnostic by design (a HAL row from the head unit, an OBD2 row
 /// from a past dongle session and a pulled cloud row are
 /// indistinguishable here, which is exactly right).
+/// v0.1.42+141: fieldwise — each card shows the last row that CARRIED
+/// its value, with that row's own date, instead of '—' whenever the
+/// single newest row happened to hold NULL in the field.
 class _StaleDashboard extends StatelessWidget {
-  final Snapshot snapshot;
-  const _StaleDashboard({required this.snapshot});
+  final _StaleData data;
+  const _StaleDashboard({required this.data});
 
   @override
   Widget build(BuildContext context) {
-    final s = snapshot;
+    final s = data.latest;
     // Charging badge gate — the +128 lesson class ("a field existing ≠
     // a field being meaningful"): the OBD2 writer stores 0.0, not NULL,
     // when not charging, while the HAL writer stores NULL. isCharging
@@ -310,23 +337,36 @@ class _StaleDashboard extends StatelessWidget {
               icon: Icons.battery_full,
               color: Colors.tealAccent,
               label: 'SOC',
-              value: s.soc != null ? '${s.soc!.toStringAsFixed(0)}%' : '—',
+              value: data.socRow?.soc != null
+                  ? '${data.socRow!.soc!.toStringAsFixed(0)}%'
+                  : '—',
+              sub: data.socRow?.soc != null
+                  ? _relTime(data.socRow!.capturedAt)
+                  : null,
               stale: true,
             ),
             _MetricCard(
               icon: Icons.speed,
               color: Colors.blue,
               label: S.of('dash.odometer_s'),
-              value: s.odometer != null
-                  ? '${s.odometer!.toStringAsFixed(1)} km'
+              value: data.odoRow?.odometer != null
+                  ? '${data.odoRow!.odometer!.toStringAsFixed(1)} km'
                   : '—',
+              sub: data.odoRow?.odometer != null
+                  ? _relTime(data.odoRow!.capturedAt)
+                  : null,
               stale: true,
             ),
             _MetricCard(
               icon: Icons.favorite,
               color: Colors.green,
               label: 'SOH',
-              value: s.soh != null ? '${s.soh!.round()}%' : '—',
+              value: data.sohRow?.soh != null
+                  ? '${data.sohRow!.soh!.round()}%'
+                  : '—',
+              sub: data.sohRow?.soh != null
+                  ? _relTime(data.sohRow!.capturedAt)
+                  : null,
               stale: true,
             ),
           ],
@@ -1184,7 +1224,7 @@ class _TripCard extends StatelessWidget {
 
 /// Bump when changing the diagnostic format — helps cross-reference
 /// screenshots to specific app versions while iterating.
-const String _kDiagVersion = 'v0.1.41+140';
+const String _kDiagVersion = 'v0.1.42+141';
 
 /// v0.1.29+94: public alias of the build version string for display outside
 /// dashboard (e.g. the About screen's APP card). Single literal source — the
@@ -1234,9 +1274,17 @@ class _MetricCard extends StatelessWidget {
   // surface continuity without lying about freshness. Default false
   // preserves behaviour for all other cards.
   final bool stale;
+  // v0.1.42+141: optional small grey line under the value — the stale
+  // showcase puts each card's OWN last-update age here (fieldwise
+  // rows carry different dates). Rendered only in the phone Column
+  // layout; the compact one-row layout (tall portrait ≥3-col) has no
+  // vertical room and the stale showcase never renders there anyway
+  // (confirmed-phone only). Default null = no extra line anywhere.
+  final String? sub;
   const _MetricCard({
     required this.icon, required this.color, required this.label, required this.value,
     this.stale = false,
+    this.sub,
   });
 
   @override
@@ -1315,6 +1363,11 @@ class _MetricCard extends StatelessWidget {
                           fontSize: 24, fontWeight: FontWeight.w400)),
                 ),
               ),
+              // v0.1.42+141: per-card freshness (see the sub field doc).
+              if (sub != null)
+                Text(sub!,
+                    style: const TextStyle(fontSize: 10, color: Colors.grey),
+                    overflow: TextOverflow.ellipsis),
             ],
           ),
         ),

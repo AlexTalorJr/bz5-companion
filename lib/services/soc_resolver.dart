@@ -29,6 +29,17 @@ import 'hal_telemetry_service.dart';
 ///   - SocSource.precise : the pre-+131 resolution verbatim (BMS-true,
 ///     0.1% steps).
 double? resolveUiSocPct(HalTelemetryService hal, ConnectionService svc) {
+  // v0.1.42+141: CONFIRMED phone → the SocSource setting is hidden in
+  // Settings and precise is forced here, so a value chosen back when
+  // (or a shared-pref default) can't keep steering a control the user
+  // can no longer see. Over the dongle "display" never existed anyway
+  // — it silently degraded to round(precise); this returns the full
+  // fractional value instead. Same probe discipline as the settings
+  // gate: act only once the platform probe settled (canUseHal alone is
+  // false on a cold-starting head unit too).
+  if (hal.platformProbed && !hal.canUseHal) {
+    return svc.socPrecisePct;
+  }
   if (hal.socSource == SocSource.precise) {
     return hal.useHalForSoc ? hal.halSocPct : svc.socPrecisePct;
   }

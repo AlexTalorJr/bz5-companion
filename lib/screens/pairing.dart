@@ -186,6 +186,13 @@ class _PairingScreenState extends State<PairingScreen> {
         title: Text(fresh
             ? S.of('pairing.paired_fresh')
             : S.of('pairing.paired_live')),
+        // v0.1.42+141: "linked to a***@… · status" right on the pairing
+        // screen — the field complaint was "entered the code — and
+        // silence". fetchDeviceMe fires in both paired branches of the
+        // poll; until it lands the subtitle shows the '—' placeholder
+        // and fills in via the service's notifyListeners.
+        subtitle: Text(_pairedIdentityLine(cs),
+            style: const TextStyle(fontSize: 13, color: Colors.grey)),
       ),
       if (fresh) ...[
         const SizedBox(height: 8),
@@ -222,4 +229,27 @@ class _PairingScreenState extends State<PairingScreen> {
         ),
     ];
   }
+}
+
+/// v0.1.42+141: private copy of settings.dart:_deviceMeLine (file-
+/// private there; the small duplicate beats a new cross-file public
+/// symbol — the +139 _relTime precedent). Same keys, same dictionary.
+String _pairedIdentityLine(CloudSyncService cs) {
+  if (cs.deviceMeFetchedAt == null) return S.of('cloud.device_me.unknown');
+  if (cs.deviceMeLinked == false) return S.of('cloud.device_me.not_linked');
+  final email = cs.deviceMeEmail ?? '?';
+  final String st;
+  switch (cs.deviceMeStatus) {
+    case 'pending':
+      st = S.of('cloud.status.pending_approval');
+    case 'approved':
+      st = S.of('cloud.device_me.approved');
+    case 'rejected':
+    case 'blocked':
+      st = S.of('cloud.status.access_denied');
+    default:
+      st = cs.deviceMeStatus ?? '—';
+  }
+  return '${S.of('cloud.device_me.linked').replaceFirst('{email}', email)}'
+      ' · $st';
 }

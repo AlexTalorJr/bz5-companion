@@ -286,6 +286,11 @@ class S {
     // v0.1.34+133: account approval gate
     'cloud.status.pending_approval': 'Waiting for approval',
     'cloud.status.access_denied': 'Access denied by owner',
+    // v0.1.42+141: device whoami (GET /v2/device/me)
+    'cloud.device_me.linked': 'Linked to {email}',
+    'cloud.device_me.not_linked': 'Not linked to an account',
+    'cloud.device_me.unknown': 'Account link: — (tap to check)',
+    'cloud.device_me.approved': 'Approved',
     'cloud.pending_approval.hint':
         'Your data is stored locally. Cloud sync will start automatically '
         'once the owner approves your account.',
@@ -1161,6 +1166,11 @@ class S {
     // v0.1.34+133: account approval gate
     'cloud.status.pending_approval': 'Ожидает подтверждения',
     'cloud.status.access_denied': 'Доступ закрыт владельцем',
+    // v0.1.42+141: device whoami (GET /v2/device/me)
+    'cloud.device_me.linked': 'Привязано к {email}',
+    'cloud.device_me.not_linked': 'Не привязано к аккаунту',
+    'cloud.device_me.unknown': 'Привязка: — (нажмите для проверки)',
+    'cloud.device_me.approved': 'Подтверждено',
     'cloud.pending_approval.hint':
         'Данные хранятся локально. Синхронизация включится автоматически '
         'после одобрения аккаунта.',
