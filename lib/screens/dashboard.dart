@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 
 import '../data/database.dart';
 import '../l10n/strings.dart';
+import '../services/cloud_sync_service.dart';
 import '../services/connection.dart';
 import '../services/hal_telemetry_service.dart';
 import '../services/soc_resolver.dart';
@@ -174,16 +175,21 @@ class _BlockedBodyState extends State<_BlockedBody> {
     // newest row keeps two jobs: the header freshness line and the
     // charging badge — a state of NOW, never taken fieldwise (a
     // week-old isCharging=true rendered as "charging" would be a lie).
-    final (socRow, odoRow, sohRow) =
+    final (socRow, odoRow, sohRow, tempRow) =
         await widget.svc.db.getLatestFieldwiseSnapshots();
     final age = DateTime.now().difference(s.capturedAt);
     debugPrint('StaleDash: snapshot ${s.capturedAt.toIso8601String()} '
         'age=${age.inSeconds}s fieldwise('
         'soc=${socRow?.capturedAt.toIso8601String() ?? '—'} '
         'odo=${odoRow?.capturedAt.toIso8601String() ?? '—'} '
-        'soh=${sohRow?.capturedAt.toIso8601String() ?? '—'})');
+        'soh=${sohRow?.capturedAt.toIso8601String() ?? '—'} '
+        'temp=${tempRow?.capturedAt.toIso8601String() ?? '—'})');
     return _StaleData(
-        latest: s, socRow: socRow, odoRow: odoRow, sohRow: sohRow);
+        latest: s,
+        socRow: socRow,
+        odoRow: odoRow,
+        sohRow: sohRow,
+        tempRow: tempRow);
   }
 
   // One 60s cadence covers both concerns: picking up rows a background
@@ -201,6 +207,22 @@ class _BlockedBodyState extends State<_BlockedBody> {
       setState(() => _latest = _load());
       _scheduleRefresh();
     });
+  }
+
+  /// v0.1.43+142 §5: manual "kick the pull" — pull-to-refresh gesture and
+  /// the freshness-line tap both land here. syncOnce already carries the
+  /// +126 barriers (_syncInProgress / _restoreInProgress), so a repeated
+  /// call while one is in flight is a cheap no-op — no local debounce.
+  /// A sync error is NOT surfaced modally: the reloaded freshness line IS
+  /// the feedback (diag lines are written on the normal path anyway).
+  Future<void> _refreshNow() async {
+    try {
+      await context.read<CloudSyncService>().syncOnce(reason: 'stale_refresh');
+    } catch (e) {
+      debugPrint('StaleDash: manual syncOnce failed: $e');
+    }
+    if (!mounted) return;
+    setState(() => _latest = _load());
   }
 
   @override
@@ -238,7 +260,7 @@ class _BlockedBodyState extends State<_BlockedBody> {
         }
         final s = snap.data;
         if (s == null) return _NotConnected(halDead: widget.halDead);
-        return _StaleDashboard(data: s);
+        return _StaleDashboard(data: s, onRefresh: _refreshNow);
       },
     );
   }
@@ -253,8 +275,14 @@ class _StaleData {
   final Snapshot? socRow;
   final Snapshot? odoRow;
   final Snapshot? sohRow;
+  // v0.1.43+142 §3: newest row carrying batteryTempC — fourth card.
+  final Snapshot? tempRow;
   const _StaleData(
-      {required this.latest, this.socRow, this.odoRow, this.sohRow});
+      {required this.latest,
+      this.socRow,
+      this.odoRow,
+      this.sohRow,
+      this.tempRow});
 }
 
 /// v0.1.40+139: last-known car state, fed ONLY by snapshots rows —
@@ -266,7 +294,11 @@ class _StaleData {
 /// single newest row happened to hold NULL in the field.
 class _StaleDashboard extends StatelessWidget {
   final _StaleData data;
-  const _StaleDashboard({required this.data});
+  // v0.1.43+142 §5: manual sync kick — wired to both the pull-to-refresh
+  // gesture (idiomatic for a ListView) and a tap on the freshness line
+  // (Q4: both). Provided by _BlockedBodyState (syncOnce + reload).
+  final Future<void> Function() onRefresh;
+  const _StaleDashboard({required this.data, required this.onRefresh});
 
   @override
   Widget build(BuildContext context) {
@@ -281,7 +313,12 @@ class _StaleDashboard extends StatelessWidget {
         (charging && s.chargingPowerKw != null && s.chargingPowerKw! > 0.05)
             ? ' · ${s.chargingPowerKw!.toStringAsFixed(1)} kW'
             : '';
-    return ListView(
+    return RefreshIndicator(
+      onRefresh: onRefresh,
+      child: ListView(
+      // v0.1.43+142 §5: always-scrollable so the pull gesture works even
+      // when the content is shorter than the viewport.
+      physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.all(16),
       children: [
         Row(
@@ -295,14 +332,19 @@ class _StaleDashboard extends StatelessWidget {
                   Text(S.of('dash.stale.title'),
                       style: Theme.of(context).textTheme.headlineSmall),
                   const SizedBox(height: 2),
-                  Text(
-                      S
-                          .of('dash.stale.updated')
-                          .replaceFirst('{age}', _relTime(s.capturedAt)),
-                      style: Theme.of(context)
-                          .textTheme
-                          .bodyMedium
-                          ?.copyWith(color: Colors.grey)),
+                  // v0.1.43+142 §5: the freshness line is tappable — the
+                  // cheap second gesture with the same action.
+                  InkWell(
+                    onTap: onRefresh,
+                    child: Text(
+                        S
+                            .of('dash.stale.updated')
+                            .replaceFirst('{age}', _relTime(s.capturedAt)),
+                        style: Theme.of(context)
+                            .textTheme
+                            .bodyMedium
+                            ?.copyWith(color: Colors.grey)),
+                  ),
                 ],
               ),
             ),
@@ -369,6 +411,21 @@ class _StaleDashboard extends StatelessWidget {
                   : null,
               stale: true,
             ),
+            // v0.1.43+142 §3: battery temperature — fourth card, makes
+            // the grid an even 2×2. Same fieldwise contract: value +
+            // its OWN row's date.
+            _MetricCard(
+              icon: Icons.thermostat,
+              color: Colors.orange,
+              label: S.of('dash.stale.batt_temp'),
+              value: data.tempRow?.batteryTempC != null
+                  ? '${data.tempRow!.batteryTempC!.toStringAsFixed(0)} °C'
+                  : '—',
+              sub: data.tempRow?.batteryTempC != null
+                  ? _relTime(data.tempRow!.capturedAt)
+                  : null,
+              stale: true,
+            ),
           ],
         ),
         const SizedBox(height: 24),
@@ -376,6 +433,7 @@ class _StaleDashboard extends StatelessWidget {
             textAlign: TextAlign.center,
             style: const TextStyle(color: Colors.grey, fontSize: 13)),
       ],
+      ),
     );
   }
 }
@@ -396,6 +454,29 @@ String _relTime(DateTime t) {
     return S.of('rel.h_ago').replaceFirst('{n}', '${diff.inHours}');
   }
   return S.of('rel.d_ago').replaceFirst('{n}', '${diff.inDays}');
+}
+
+/// v0.1.43+142 §2: one-shot "SOH recomputed" SnackBar (variant A — no new
+/// dependencies). Consumes the flag SYNCHRONOUSLY in build (silent take, no
+/// notify → legal from build) so IndexedStack twins can never double-fire,
+/// then shows the snack post-frame. Deviation from the spec's "consume in
+/// the post-frame callback" is deliberate: on the head unit both wide
+/// dashboards build in the same frame and a post-frame consume would queue
+/// TWO snackbars. Private per-file copy — the _relTime duplicate precedent.
+void _maybeShowSohSnack(BuildContext context, HalTelemetryService hal,
+    ConnectionService svc) {
+  final halFresh = hal.takeSohFreshlyComputedAt();
+  final udsFresh = svc.takeSohFreshlyComputedAt();
+  if (halFresh == null && udsFresh == null) return;
+  final double? pct = hal.halSohAhPct ?? svc.sohAhPct;
+  if (pct == null) return;
+  final msg = S
+      .of('soh.recomputed_snack')
+      .replaceFirst('{pct}', pct.toStringAsFixed(1));
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  });
 }
 
 class _Connected extends StatelessWidget {
@@ -423,6 +504,17 @@ class _Connected extends StatelessWidget {
     final String sohDisplay = sohAh != null
         ? '${sohAh.round()}%'
         : (sohBms != null ? '${sohBms.toInt()}% (BMS)' : '—');
+    // v0.1.43+142 §2: card subtitle date, resolved by the SAME ladder as
+    // the percent — the date always belongs to the source whose value is
+    // shown. BMS fallback (no Ah estimate) → no subtitle at all.
+    final DateTime? sohDate = hal.halSohAhPct != null
+        ? hal.halSohComputedAt
+        : (svc.sohAhPct != null ? svc.sohComputedAt : null);
+    final String? sohSub = sohDate == null
+        ? null
+        : S.of('soh.computed_at').replaceFirst('{age}', _relTime(sohDate));
+    // v0.1.43+142 §2: one-shot "SOH recomputed" SnackBar (variant A).
+    _maybeShowSohSnack(context, hal, svc);
     final tempRaw = svc.readNumeric('790', '002F');
     final cellMin = svc.readNumeric('790', '002B');
     final cellMax = svc.readNumeric('790', '002D');
@@ -610,6 +702,7 @@ class _Connected extends StatelessWidget {
               color: Colors.green,
               label: 'SOH',
               value: sohDisplay,
+              sub: sohSub,
             ),
             _MetricCard(
               icon: Icons.thermostat,
@@ -1224,7 +1317,7 @@ class _TripCard extends StatelessWidget {
 
 /// Bump when changing the diagnostic format — helps cross-reference
 /// screenshots to specific app versions while iterating.
-const String _kDiagVersion = 'v0.1.42+141';
+const String _kDiagVersion = 'v0.1.43+142';
 
 /// v0.1.29+94: public alias of the build version string for display outside
 /// dashboard (e.g. the About screen's APP card). Single literal source — the

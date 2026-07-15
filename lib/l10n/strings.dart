@@ -302,6 +302,8 @@ class S {
     'vehicle.model': 'Model',
     'vehicle.other': 'Other',
     'vehicle.name_label': 'Name (optional)',
+    // v0.1.43+142 §6
+    'vehicle.year': 'Year (optional)',
     'vehicle.not_set': 'Not set',
     'vehicle.pairing_hint':
         'Tell us what car this is — on first pairing it will be created '
@@ -486,6 +488,8 @@ class S {
     // v0.1.40+139: phone stale dashboard (last known snapshot cards).
     'dash.stale.title': 'Last known state',
     'dash.stale.updated': 'Updated {age}',
+    // v0.1.43+142 §3
+    'dash.stale.batt_temp': 'Battery °C',
     'dash.good': 'good',
     'dash.fair': 'fair',
     'dash.good_cap': 'Good',
@@ -520,6 +524,8 @@ class S {
     'cells.min_v': 'Min',
     'cells.max_v': 'Max',
     'cells.pack_temp': 'Pack temp',
+    // v0.1.43+142 §1
+    'cells.insulation': 'Insulation',
     // v0.1.29+108: honest BZ3 battery-state screen (dongle-free). Title no
     // longer promises a per-cell picture we can't deliver without a dongle.
     'cells.tab_state': 'Battery state',
@@ -605,6 +611,11 @@ class S {
     'trip.pack_v_filtered': 'Pack voltage (filtered)',
     // v0.1.29+128: snapshot-fallback charts
     'trip.chart_src_snapshots': '· BMS snapshots (~1/min)',
+    // v0.1.43+142 §4
+    'trip.chart_src_series': '· downsampled series',
+    // v0.1.43+142 §2
+    'soh.computed_at': 'estimate: {age}',
+    'soh.recomputed_snack': 'Battery health recomputed: {pct}%',
     'trip.chart_error': 'Chart failed to load',
     'trip.charging_power': 'Charging power',
     'trip.hv_bus_v': 'HV bus voltage',
@@ -1182,6 +1193,8 @@ class S {
     'vehicle.model': 'Модель',
     'vehicle.other': 'Другое',
     'vehicle.name_label': 'Название (необязательно)',
+    // v0.1.43+142 §6
+    'vehicle.year': 'Год (необязательно)',
     'vehicle.not_set': 'Не указан',
     'vehicle.pairing_hint':
         'Укажите, что это за машина — при первой привязке она будет '
@@ -1365,6 +1378,8 @@ class S {
     // v0.1.40+139: стейл-дашборд телефона (последний снапшот).
     'dash.stale.title': 'Последние данные',
     'dash.stale.updated': 'Обновлено {age}',
+    // v0.1.43+142 §3
+    'dash.stale.batt_temp': 'Батарея °C',
     'dash.good': 'хорошо',
     'dash.fair': 'средне',
     'dash.good_cap': 'Хорошо',
@@ -1399,6 +1414,8 @@ class S {
     'cells.min_v': 'Мин',
     'cells.max_v': 'Макс',
     'cells.pack_temp': 'Темп. пакета',
+    // v0.1.43+142 §1
+    'cells.insulation': 'Изоляция',
     // v0.1.29+108: честный экран состояния батареи на BZ3 (без донгла).
     'cells.tab_state': 'Состояние батареи',
     'cells.state_intro':
@@ -1483,6 +1500,11 @@ class S {
     'trip.pack_v_filtered': 'Напряжение пака (фильтр.)',
     // v0.1.29+128: графики из снапшотов
     'trip.chart_src_snapshots': '· BMS-снапшоты (~1/мин)',
+    // v0.1.43+142 §4
+    'trip.chart_src_series': '· сжатый ряд',
+    // v0.1.43+142 §2
+    'soh.computed_at': 'оценка: {age}',
+    'soh.recomputed_snack': 'SOH пересчитан: {pct}%',
     'trip.chart_error': 'График не загрузился',
     'trip.charging_power': 'Мощность зарядки',
     'trip.hv_bus_v': 'Напряжение HV bus',

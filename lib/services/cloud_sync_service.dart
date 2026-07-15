@@ -303,6 +303,10 @@ class CloudSyncService extends ChangeNotifier {
   static const _kVehDescMake = 'cloud_vehicle_desc_make';
   static const _kVehDescModel = 'cloud_vehicle_desc_model';
   static const _kVehDescName = 'cloud_vehicle_desc_name';
+  // v0.1.43+142 §6: optional model year. Stored as int; the wire field
+  // `generation` is a STRING per the live /openapi.json (VehicleDescriptor:
+  // anyOf[string maxLength 80, null]) — serialized as '$year' in the body.
+  static const _kVehDescGeneration = 'cloud_vehicle_desc_generation';
 
   // v0.1.29+20: per-row push tracking for trips. Trip rows in Drift
   // are MUTABLE (endTrip rewrites aggregates on close), unlike the
@@ -520,6 +524,8 @@ class CloudSyncService extends ChangeNotifier {
     _vehDescMake = prefs.getString(_kVehDescMake);
     _vehDescModel = prefs.getString(_kVehDescModel);
     _vehDescName = prefs.getString(_kVehDescName);
+    // v0.1.43+142 §6: optional model year.
+    _vehDescGeneration = prefs.getInt(_kVehDescGeneration);
     final samplesRej = prefs.getInt(_kSamplesRejectedAt);
     if (samplesRej != null) {
       _samplesRejectedAt =
@@ -748,10 +754,14 @@ class CloudSyncService extends ChangeNotifier {
   String? _vehDescMake;
   String? _vehDescModel;
   String? _vehDescName;
+  // v0.1.43+142 §6: optional model year (int locally; sent as a string —
+  // the contract's `generation` field is a string, verified live Q5).
+  int? _vehDescGeneration;
 
   String? get vehDescMake => _vehDescMake;
   String? get vehDescModel => _vehDescModel;
   String? get vehDescName => _vehDescName;
+  int? get vehDescGeneration => _vehDescGeneration;
 
   /// True when pair/start will carry a vehicle block.
   bool get hasVehicleDescriptor =>
@@ -765,6 +775,7 @@ class CloudSyncService extends ChangeNotifier {
     required String make,
     required String model,
     String? name,
+    int? generation,
   }) async {
     String cap(String s) {
       final t = s.trim();
@@ -775,6 +786,12 @@ class CloudSyncService extends ChangeNotifier {
     _vehDescModel = cap(model);
     final n = name == null ? '' : cap(name);
     _vehDescName = n.isEmpty ? null : n;
+    // v0.1.43+142 §6: year sanity band 1990..2099 — anything outside
+    // (typos, partial input) is treated as "not set", never sent.
+    _vehDescGeneration =
+        (generation != null && generation >= 1990 && generation <= 2099)
+            ? generation
+            : null;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_kVehDescMake, _vehDescMake!);
     await prefs.setString(_kVehDescModel, _vehDescModel!);
@@ -782,6 +799,11 @@ class CloudSyncService extends ChangeNotifier {
       await prefs.setString(_kVehDescName, _vehDescName!);
     } else {
       await prefs.remove(_kVehDescName);
+    }
+    if (_vehDescGeneration != null) {
+      await prefs.setInt(_kVehDescGeneration, _vehDescGeneration!);
+    } else {
+      await prefs.remove(_kVehDescGeneration);
     }
     notifyListeners();
   }
@@ -854,6 +876,10 @@ class CloudSyncService extends ChangeNotifier {
                 'vehicle': {
                   'make': _vehDescMake,
                   'model': _vehDescModel,
+                  // v0.1.43+142 §6: contract type is STRING (live
+                  // /openapi.json, Q5) — serialize the int as text.
+                  if (_vehDescGeneration != null)
+                    'generation': '$_vehDescGeneration',
                   if (_vehDescName != null) 'name': _vehDescName,
                 },
             }),
@@ -3542,7 +3568,7 @@ class CloudSyncService extends ChangeNotifier {
   /// Read app version from the static value baked into the build.
   /// We don't have package_info_plus as a dep — pubspec-version is
   /// hardcoded here. Update when bumping. Off-by-one tolerated.
-  Future<String> _readAppVersion() async => '0.1.42+141';
+  Future<String> _readAppVersion() async => '0.1.43+142';
 }
 
 // ─── Internal exceptions ────────────────────────────────────────────

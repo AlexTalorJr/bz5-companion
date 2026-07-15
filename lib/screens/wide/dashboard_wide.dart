@@ -501,6 +501,17 @@ class _MiddleColumn extends StatelessWidget {
         : (sohHal != null
             ? '${sohHal.toInt()}%'
             : (sohBms != null ? '${sohBms.toInt()}% (BMS)' : '—'));
+    // v0.1.43+142 §2: card subtitle date, same ladder as the percent —
+    // the date belongs to the source whose value is shown. HAL-BigData /
+    // BMS fallbacks (no Ah estimate) → no subtitle.
+    final DateTime? sohDate = hal.halSohAhPct != null
+        ? hal.halSohComputedAt
+        : (svc.sohAhPct != null ? svc.sohComputedAt : null);
+    final String? sohSub = sohDate == null
+        ? null
+        : S.of('soh.computed_at').replaceFirst('{age}', _relTime(sohDate));
+    // v0.1.43+142 §2: one-shot "SOH recomputed" SnackBar (variant A).
+    _maybeShowSohSnack(context, hal, svc);
     final tempRaw = hal.useHalForBatteryTemp
         ? hal.halBatteryTempC
         : svc.readNumeric('790', '002F');
@@ -556,6 +567,7 @@ class _MiddleColumn extends StatelessWidget {
                         color: Colors.green,
                         label: 'SOH',
                         value: sohDisplay,
+                        sub: sohSub,
                       ),
                     ),
                     const SizedBox(width: 12),
@@ -661,12 +673,16 @@ class _SmallMetricCard extends StatelessWidget {
   final String label;
   final String value;
   final String? unit;
+  // v0.1.43+142 §2: optional small grey line under the value (SOH card
+  // "estimate: N min ago"). Null = no extra line, layout unchanged.
+  final String? sub;
   const _SmallMetricCard({
     required this.icon,
     required this.color,
     required this.label,
     required this.value,
     this.unit,
+    this.sub,
   });
 
   @override
@@ -713,11 +729,52 @@ class _SmallMetricCard extends StatelessWidget {
                 ],
               ),
             ),
+            // v0.1.43+142 §2: the optional sub line, small and grey.
+            if (sub != null)
+              Text(sub!,
+                  style:
+                      TextStyle(fontSize: 10, color: Colors.grey.shade600),
+                  overflow: TextOverflow.ellipsis),
           ],
         ),
       ),
     );
   }
+}
+
+/// v0.1.43+142 §2: private relative-time formatter — the 12-line duplicate
+/// precedent (+139/settings), rel.* keys shared.
+String _relTime(DateTime t) {
+  final diff = DateTime.now().difference(t);
+  if (diff.inSeconds < 60) {
+    return S.of('rel.s_ago').replaceFirst('{n}', '${diff.inSeconds}');
+  }
+  if (diff.inMinutes < 60) {
+    return S.of('rel.m_ago').replaceFirst('{n}', '${diff.inMinutes}');
+  }
+  if (diff.inHours < 24) {
+    return S.of('rel.h_ago').replaceFirst('{n}', '${diff.inHours}');
+  }
+  return S.of('rel.d_ago').replaceFirst('{n}', '${diff.inDays}');
+}
+
+/// v0.1.43+142 §2: one-shot "SOH recomputed" SnackBar — same contract as
+/// the dashboard.dart copy (synchronous silent take in build so the
+/// IndexedStack twin can't double-fire; snack shown post-frame).
+void _maybeShowSohSnack(BuildContext context, HalTelemetryService hal,
+    ConnectionService svc) {
+  final halFresh = hal.takeSohFreshlyComputedAt();
+  final udsFresh = svc.takeSohFreshlyComputedAt();
+  if (halFresh == null && udsFresh == null) return;
+  final double? pct = hal.halSohAhPct ?? svc.sohAhPct;
+  if (pct == null) return;
+  final msg = S
+      .of('soh.recomputed_snack')
+      .replaceFirst('{pct}', pct.toStringAsFixed(1));
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  });
 }
 
 /// v0.1.22: dual-temperature card for PDU heatsinks (740/0x0010 + 0x0011).
@@ -1344,18 +1401,46 @@ class _HalPackTempPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = hal.useHalForBatteryTemp ? hal.halBatteryTempC : null;
+    // v0.1.43+142 §1: insulation resistance under the pack temperature —
+    // same gate + colour rule as the cells.dart row (HAL-only, honesty:
+    // no value flowing → no line at all; red below 1.0 MΩ, no scale).
+    final double? insulationMOhm =
+        hal.useHalForInsulation ? hal.halInsulationMOhm : null;
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(14),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        child: Column(
           children: [
-            Text(S.of('cells.pack_temp'),
-                style: const TextStyle(
-                    fontSize: 11, letterSpacing: 1.0, color: Colors.grey)),
-            Text(t == null ? '—' : '+${t.toInt()}°C',
-                style: const TextStyle(
-                    fontSize: 20, fontWeight: FontWeight.w500)),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(S.of('cells.pack_temp'),
+                    style: const TextStyle(
+                        fontSize: 11, letterSpacing: 1.0, color: Colors.grey)),
+                Text(t == null ? '—' : '+${t.toInt()}°C',
+                    style: const TextStyle(
+                        fontSize: 20, fontWeight: FontWeight.w500)),
+              ],
+            ),
+            if (insulationMOhm != null) ...[
+              const SizedBox(height: 8),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(S.of('cells.insulation'),
+                      style: const TextStyle(
+                          fontSize: 11,
+                          letterSpacing: 1.0,
+                          color: Colors.grey)),
+                  Text('${insulationMOhm.toStringAsFixed(1)} MΩ',
+                      style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w500,
+                          color:
+                              insulationMOhm < 1.0 ? Colors.red : null)),
+                ],
+              ),
+            ],
           ],
         ),
       ),

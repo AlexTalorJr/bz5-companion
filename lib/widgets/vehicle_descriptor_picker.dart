@@ -40,6 +40,10 @@ class _VehicleDescriptorPickerState extends State<VehicleDescriptorPicker> {
   late final TextEditingController _customMake;
   late final TextEditingController _customModel;
   late final TextEditingController _name;
+  // v0.1.43+142 §6: optional model year (the approval bot shows
+  // "Make Model (year)"). NO VIN prefill by design — the 10th VIN char
+  // is unreliable on the CN market.
+  late final TextEditingController _year;
   Timer? _debounce;
 
   @override
@@ -48,6 +52,7 @@ class _VehicleDescriptorPickerState extends State<VehicleDescriptorPicker> {
     _customMake = TextEditingController();
     _customModel = TextEditingController();
     _name = TextEditingController();
+    _year = TextEditingController();
     final cs = context.read<CloudSyncService>();
     // v0.1.36+135: seed against the CURRENT catalog (server cache or
     // built-in), then kick a fire-and-forget staleness check. This one
@@ -63,6 +68,7 @@ class _VehicleDescriptorPickerState extends State<VehicleDescriptorPicker> {
     final make = cs.vehDescMake;
     final model = cs.vehDescModel;
     _name.text = cs.vehDescName ?? '';
+    _year.text = cs.vehDescGeneration?.toString() ?? '';
     if (make == null || make.isEmpty) return;
     if (vc.makes.contains(make)) {
       _make = make;
@@ -102,6 +108,7 @@ class _VehicleDescriptorPickerState extends State<VehicleDescriptorPicker> {
     _customMake.dispose();
     _customModel.dispose();
     _name.dispose();
+    _year.dispose();
     super.dispose();
   }
 
@@ -126,6 +133,9 @@ class _VehicleDescriptorPickerState extends State<VehicleDescriptorPicker> {
             make: make,
             model: model,
             name: _name.text,
+            // v0.1.43+142 §6: unparsable/partial input → null (the
+            // service re-validates the 1990..2099 band anyway).
+            generation: int.tryParse(_year.text.trim()),
           );
     });
   }
@@ -233,6 +243,22 @@ class _VehicleDescriptorPickerState extends State<VehicleDescriptorPicker> {
                     (_effectiveModel?.isNotEmpty ?? false)
                 ? '${_effectiveMake!} ${_effectiveModel!}'
                 : null,
+          ),
+          onChanged: (_) => _commit(),
+        ),
+        // v0.1.43+142 §6: optional model year — numeric, 4 digits, same
+        // debounced persist as the name field. Shared widget → shows up
+        // in BOTH hosts automatically (pairing screen + "My vehicle").
+        const SizedBox(height: 8),
+        TextField(
+          controller: _year,
+          keyboardType: TextInputType.number,
+          maxLength: 4,
+          decoration: InputDecoration(
+            isDense: true,
+            counterText: '',
+            border: const OutlineInputBorder(),
+            labelText: S.of('vehicle.year'),
           ),
           onChanged: (_) => _commit(),
         ),
