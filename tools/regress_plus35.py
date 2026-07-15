@@ -328,7 +328,20 @@ if int(pv) >= 36:
     #     scale → show kW/flow, never a hard 'X A' figure). We allow the
     #     getter packCurrentA to exist in connection.dart, but the UI files
     #     must not render an ampere unit.
-    amp_ui = (" A'" in dash) or (" A\"" in dash) or ("packCurrentA" in dash) or \
+    # v0.1.44+143 (era-aware, spec §A3): the charging banner NOW renders
+    # the HAL charge current — that is the CONFIRMED-scale
+    # BYDAutoChargingDevice|0x2D300018 double (verified vs UDS), not the
+    # provisional OBD2 figure this rule was written against. The rule
+    # still holds everywhere else: strip the banner class body before the
+    # scan (AP1 separately asserts the banner wiring).
+    dash_c3 = dash
+    if int(pv) >= 143:
+        _cb0 = dash.find('class _ChargingBanner')
+        _cb1 = dash.find('class _TripCard', max(_cb0, 0))
+        if -1 < _cb0 < _cb1:
+            dash_c3 = dash[:_cb0] + dash[_cb1:]
+    amp_ui = (" A'" in dash_c3) or (" A\"" in dash_c3) or \
+             ("packCurrentA" in dash_c3) or \
              (" A'" in driver) or ("packCurrentA" in driver)
     if not amp_ui:
         ok("C3 no raw-ampere readout in dashboard/driver UI")
@@ -3913,6 +3926,85 @@ if int(pv) >= 142:
         fail('AO6 generation wiring wrong')
 else:
     ok(f"Part AO skipped (build +{pv}, backlog pack lands in +142)")
+
+# ─────────────── Part AP: +143 charging pack ────────────────────────────────
+if int(pv) >= 143:
+    _dash6 = (root / 'lib/screens/dashboard.dart').read_text()
+    _dw6 = (root / 'lib/screens/wide/dashboard_wide.dart').read_text()
+    _hal6 = (root / 'lib/services/hal_telemetry_service.dart').read_text()
+    _ovr6 = (root / 'android/app/src/main/kotlin/com/bz5companion/'
+                    'bz5_companion/hal/CompanionDecoderOverrides.kt').read_text()
+    _reg6 = (root / 'android/app/src/main/kotlin/com/bz5companion/'
+                    'bz5_companion/hal/TargetRegistry.kt').read_text()
+    _l10n6 = (root / 'lib/l10n/strings.dart').read_text()
+    # AP1: banner session fields in BOTH twins — SOC+Δ, freshness-gated
+    # I/V at the call sites (6 s windows via halFresh), battery temp,
+    # ETA-to-80 next to ETA-to-100 (Q1 yes); ev_range NOT added (Q2 no);
+    # l10n pairs EN/RU.
+    def _ap1(src):
+        return ('socDeltaPct' in src and 'batteryTempC' in src and
+                "hal.halFresh('pack_current')" in src and
+                "hal.halFresh('pack_voltage')" in src and
+                'chargeCurrentA' in src and
+                'hal.halChargeSessionSocDeltaPct' in src and
+                'hal.halChargedThisSessionKwh' in src)
+    if _ap1(_dash6) and _ap1(_dw6) and \
+       'etaHours80' in _dash6 and "S.of('dash.eta80')" in _dash6 and \
+       "'→80% ${fmtH(" in _dw6 and "'→100% ${fmtH(" in _dw6 and \
+       "'ev_range'" not in _dash6 and "'ev_range'" not in _dw6 and \
+       _l10n6.count("'dash.eta80'") == 2 and \
+       _l10n6.count("'dash.chg_delta'") == 2:
+        ok('AP1 banner session stats ×2 twins, ETA-80, no ev_range')
+    else:
+        fail('AP1 banner session-stats wiring wrong')
+    # AP2: session getters exposed from the SOH machine, gated on an
+    # anchored session; the kWh figure uses the same ΔSOC×capacity formula
+    # as the UDS chargedThisSessionKwh.
+    if 'double? get halChargeSessionStartSoc' in _hal6 and \
+       'double? get halChargeSessionAh' in _hal6 and \
+       'double? get halChargeSessionSocDeltaPct' in _hal6 and \
+       'double? get halChargedThisSessionKwh' in _hal6 and \
+       '_halSohSessionAnchored ? _halSohStartSoc : null' in _hal6 and \
+       '_halSohSessionAnchored ? _halSohChargeAhAccum : null' in _hal6 and \
+       'd * _halPackCapacityKwh / 100.0' in _hal6:
+        ok('AP2 charge-session getters (anchored gate, ΔSOC-kWh formula)')
+    else:
+        fail('AP2 session getters wrong')
+    # AP3: charge_energy_kwh — decoder promoted in the overrides (no
+    # candidate suffix), subscription pre-existing in the vendored
+    # registry, consumed via _range, and the dE/dt detect is an OR with
+    # the current detect (never instead) in BOTH the state machine and
+    # the halChargingActive badge getter.
+    _ovr_energy = ('"BYDAutoChargingDevice|0x2C100818"' in _ovr6 and
+                   '"charge_energy_kwh"' in _ovr6 and
+                   'charge_energy_kwh_candidate' not in _ovr6)
+    if _ovr_energy and \
+       _reg6.count('0x2C100818') >= 2 and \
+       "'charge_energy_kwh': (0," in _hal6 and \
+       'chargingLevel || energyRising' in _hal6 and \
+       'stationary && (chargingLevel || energyRising)' in _hal6 and \
+       '_halEnergyRising(DateTime.now());' in _hal6 and \
+       'void _trackChargeEnergy(DateTime now)' in _hal6:
+        ok('AP3 charge_energy decoder + consumed + dE/dt OR detect (live)')
+    else:
+        fail('AP3 charge_energy detect wiring wrong')
+    # AP4: gun_connect CANDIDATE — decoder in the overrides only; the
+    # service logs value changes (diag journal + hal_samples) but never
+    # consumes it (NOT in _range → never reaches _latest); the name is
+    # absent from every screen file (p068/p083 rule).
+    _screens_clean = all(
+        'gun_connect' not in f.read_text()
+        for f in (root / 'lib/screens').rglob('*.dart'))
+    if '"BYDAutoChargingDevice|0x2EB00832"' in _ovr6 and \
+       '"charging_gun_connect_candidate"' in _ovr6 and \
+       "if (e.name == 'charging_gun_connect_candidate')" in _hal6 and \
+       "'charging_gun_connect_candidate': (" not in _hal6 and \
+       _screens_clean:
+        ok('AP4 gun_connect candidate log-only, absent from lib/screens')
+    else:
+        fail('AP4 gun_connect candidate leaked or unwired')
+else:
+    ok(f"Part AP skipped (build +{pv}, charging pack lands in +143)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)

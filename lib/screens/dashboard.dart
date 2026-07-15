@@ -547,7 +547,11 @@ class _Connected extends StatelessWidget {
     final packV = svc.packVoltageV;       // platform constant ~450V (fallback only)
     final hvBus = svc.hvBusV;              // HV bus (live but lies under charge)
     final parkingEngaged = svc.parkingPawlEngaged;
-    final chargedSession = svc.chargedThisSessionKwh;
+    // v0.1.44+143 §A2: dongle-free fallback — the UDS figure needs the
+    // dongle (anchored in ConnectionService); without one the HAL session
+    // supplies the SAME ΔSOC×capacity formula from its plug-in anchor.
+    final chargedSession =
+        svc.chargedThisSessionKwh ?? hal.halChargedThisSessionKwh;
     // v0.1.22: live signals from PDU (740) added to UI.
     final vehicleSpeed =
         hal.useHalForSpeed ? hal.halSpeedKmh : svc.vehicleSpeedKmh;
@@ -660,6 +664,15 @@ class _Connected extends StatelessWidget {
             halPowerKw: hal.halChargePowerKw,
             socOverridePct:
                 hal.useHalForSoc ? hal.halSocPct : svc.socPrecisePct,
+            // v0.1.44+143 §A3: live session stats — Δ from the HAL session
+            // anchor; current/voltage freshness-gated (6 s windows) per the
+            // spec; battery temp via the resolved getter. All honesty-nulls.
+            socDeltaPct: hal.halChargeSessionSocDeltaPct,
+            chargeCurrentA:
+                hal.halFresh('pack_current') ? hal.halValue('pack_current') : null,
+            packVoltageV:
+                hal.halFresh('pack_voltage') ? hal.halValue('pack_voltage') : null,
+            batteryTempC: hal.halBatteryTempC,
           ),
         if (isCharging) const SizedBox(height: 12),
         // v5: Parking pawl indicator. Moved BEFORE the grid on tall layout
@@ -1193,21 +1206,48 @@ class _ChargingBanner extends StatelessWidget {
   // SOC card already shows. Both null → identical to the old UDS-only path.
   final double? halPowerKw;
   final double? socOverridePct;
+  // v0.1.44+143 §A3: live session stats, all honesty-nulls — a row renders
+  // ONLY when its value is live. socDeltaPct = SOC gained since the HAL
+  // session anchor; current/voltage are freshness-gated (6 s) at the call
+  // site; batteryTempC via the resolved HAL getter. ev_range deliberately
+  // NOT here (Q2: no — companion shows its own computed range elsewhere).
+  final double? socDeltaPct;
+  final double? chargeCurrentA;
+  final double? packVoltageV;
+  final double? batteryTempC;
   const _ChargingBanner({
     required this.svc,
     this.chargedSession,
     this.halPowerKw,
     this.socOverridePct,
+    this.socDeltaPct,
+    this.chargeCurrentA,
+    this.packVoltageV,
+    this.batteryTempC,
   });
 
   @override
   Widget build(BuildContext context) {
     final udsPower = svc.chargingPowerKw;
     final power = udsPower > 0.1 ? udsPower : (halPowerKw ?? 0.0);
-    final soc =
-        socOverridePct ?? svc.readNumeric('790', '0005') ?? 0;
+    final socReal = socOverridePct ?? svc.readNumeric('790', '0005');
+    final soc = socReal ?? 0;
     final remainingKwh = (100 - soc) / 100 * 65.28;
     final etaHours = power > 0.1 ? remainingKwh / power : null;
+    // v0.1.44+143 §A3 (Q1 yes): ETA to 80% next to ETA to 100% — the DC
+    // etiquette figure. Gated on a REAL SOC below 80 (no `?? 0` here: a
+    // fabricated 0% would show a bogus 80%-ETA on every UDS-only charge).
+    final etaHours80 = (power > 0.1 && socReal != null && socReal < 80)
+        ? (80 - socReal) / 100 * 65.28 / power
+        : null;
+    // Compact live line: current · voltage · battery temp, present parts
+    // only (honesty — no dashes for dead values).
+    final liveParts = <String>[
+      if (chargeCurrentA != null) '${chargeCurrentA!.toStringAsFixed(1)} A',
+      if (packVoltageV != null) '${packVoltageV!.toStringAsFixed(0)} V',
+      if (batteryTempC != null) '${batteryTempC!.toStringAsFixed(0)}°C',
+    ];
+    final liveLine = liveParts.isEmpty ? null : liveParts.join(' · ');
 
     return Card(
       color: Colors.indigo.shade900,
@@ -1234,19 +1274,63 @@ class _ChargingBanner extends StatelessWidget {
                     ],
                   ),
                 ),
-                if (etaHours != null)
+                if (etaHours80 != null || etaHours != null)
                   Column(
                     crossAxisAlignment: CrossAxisAlignment.end,
                     children: [
-                      Text(S.of('dash.eta100'),
-                          style: const TextStyle(
-                              fontSize: 11, color: Colors.grey)),
-                      Text(_fmtHours(etaHours),
-                          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w500)),
+                      if (etaHours80 != null) ...[
+                        Text(S.of('dash.eta80'),
+                            style: const TextStyle(
+                                fontSize: 11, color: Colors.grey)),
+                        Text(_fmtHours(etaHours80),
+                            style: const TextStyle(
+                                fontSize: 15, fontWeight: FontWeight.w500)),
+                        const SizedBox(height: 4),
+                      ],
+                      if (etaHours != null) ...[
+                        Text(S.of('dash.eta100'),
+                            style: const TextStyle(
+                                fontSize: 11, color: Colors.grey)),
+                        Text(_fmtHours(etaHours),
+                            style: TextStyle(
+                                fontSize: etaHours80 != null ? 15 : 18,
+                                fontWeight: FontWeight.w500)),
+                      ],
                     ],
                   ),
               ],
             ),
+            // v0.1.44+143 §A3: SOC prominently + Δ since the session anchor
+            // (left) and the live I/V/temp line (right). The whole block is
+            // absent when nothing is live — no placeholder dashes.
+            if (socReal != null || liveLine != null) ...[
+              const Divider(height: 24, color: Colors.white24),
+              Row(
+                children: [
+                  if (socReal != null)
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('${socReal.toStringAsFixed(1)}%',
+                            style: const TextStyle(
+                                fontSize: 24, fontWeight: FontWeight.w500)),
+                        if (socDeltaPct != null)
+                          Text(
+                              S.of('dash.chg_delta').replaceFirst(
+                                  '{d}', socDeltaPct!.toStringAsFixed(1)),
+                              style: const TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.greenAccent)),
+                      ],
+                    ),
+                  const Spacer(),
+                  if (liveLine != null)
+                    Text(liveLine,
+                        style:
+                            const TextStyle(fontSize: 13, color: Colors.grey)),
+                ],
+              ),
+            ],
             // v5: Charged this session — заменяет старый "Lifetime in"
             if (chargedSession != null && chargedSession! > 0.05) ...[
               const Divider(height: 24, color: Colors.white24),
@@ -1317,7 +1401,7 @@ class _TripCard extends StatelessWidget {
 
 /// Bump when changing the diagnostic format — helps cross-reference
 /// screenshots to specific app versions while iterating.
-const String _kDiagVersion = 'v0.1.43+142';
+const String _kDiagVersion = 'v0.1.44+143';
 
 /// v0.1.29+94: public alias of the build version string for display outside
 /// dashboard (e.g. the About screen's APP card). Single literal source — the

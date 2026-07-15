@@ -73,6 +73,34 @@ object CompanionDecoderOverrides {
         "BYDAutoChargingDevice|0x0004CFF3" to Decoder(
             "charging_max_temp_allowed", "°C", ValueSource.INT,
             notes = "CANDIDATE charging-context; recon n=4 no events in drive — verify during a charge with HAL Test open"),
+
+        // PROMOTED (v0.1.44+143) — accumulated charge energy, kWh.
+        // Verified by recon on a live AC session (p084): monotonic
+        // counter, active on AC, dE/dt 1.74 kW vs 2.6–3.1 kW at the
+        // socket = OBC losses. Promoted WITHOUT a candidate stage per
+        // that verification (Alex, 15.07). The subscription has existed
+        // in the vendored TargetRegistry all along (both branches) —
+        // only the decoder was missing, so DecodedStreamSink dropped
+        // every frame. ⚠️ The counter is a LIFETIME total and NEVER
+        // resets between sessions: consumers must work strictly by
+        // derivative (rise = charging) and per-session DELTA from an
+        // anchored value — never by level.
+        "BYDAutoChargingDevice|0x2C100818" to Decoder(
+            "charge_energy_kwh", "kWh", ValueSource.DOUBLE,
+            notes = "recon p084 verified on AC; monotonic lifetime total — consume by derivative/delta only"),
+
+        // CANDIDATE (v0.1.44+143) — CHARGING_GUN_CONNECT_STATE. Same
+        // story: subscribed since the vendored registry, never decoded,
+        // frames dropped → the plug/unplug enum was never collected.
+        // Rule p068/p083: HAL Test + the diag journal ONLY, never a UI
+        // consumer — HalTelemetryService logs value CHANGES with
+        // timestamps to hal_samples so the next AC/DC plug/unplug run
+        // collects the enum for free. Phase B (sticky getter + session
+        // anchoring on gun-connect, OR with the current detector) is a
+        // separate patch once the enum is confirmed.
+        "BYDAutoChargingDevice|0x2EB00832" to Decoder(
+            "charging_gun_connect_candidate", "", ValueSource.INT,
+            notes = "CANDIDATE enum collection; log-only — do not wire to any UI card until the enum is confirmed"),
     )
 
     /**
