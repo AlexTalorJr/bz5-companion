@@ -302,6 +302,12 @@ class HalTelemetryService extends ChangeNotifier {
     // from BigData (0x044C b[7], °C = raw−40) shares the temp guard band.
     'soh': (0, 100),
     'battery_temp_bigdata': (-40, 150),
+    // v0.1.44+143: accumulated charge energy (BYDAutoChargingDevice|
+    // 0x2C100818, recon p084 — verified live on AC). A MONOTONIC lifetime
+    // total in kWh that never resets between sessions, so the guard is a
+    // wide sanity band only; the AC charge detector consumes it strictly
+    // by derivative (see _trackChargeEnergy). NOT sticky, NOT displayed.
+    'charge_energy_kwh': (0, 10000000),
   };
 
   final Map<String, ({double value, DateTime at})> _latest = {};
@@ -451,6 +457,31 @@ class HalTelemetryService extends ChangeNotifier {
   // held for the debounce → it's a charge, close the trip.
   static const double _kHalChargeCurrentA = -10.0; // more negative = charging
   static const Duration _kHalChargeConfirm = Duration(seconds: 20);
+
+  // v0.1.44+143 Part B: AC charge detect via the charge_energy_kwh counter.
+  // Single-phase AC (~3.5 kW) lands at ~−8…−9 A after the OBC at 350–400 V —
+  // structurally BELOW _kHalChargeCurrentA, so the current detector above
+  // never fires on slow AC (field complaint, 15.07). The counter
+  // (BYDAutoChargingDevice|0x2C100818, recon p084) is a MONOTONIC lifetime
+  // total that only rises while charging and NEVER resets between sessions →
+  // detection is strictly by DERIVATIVE (an increase observed within the
+  // window), never by level; per-session energy is a delta from the value
+  // latched at the session anchor. The window doubles as both the detect
+  // hold (counter LSBs land sparsely on slow AC) and the session-end
+  // latency: once the counter stops rising the detect decays after
+  // _kHalEnergyRiseWindow and the SOH machine finalizes.
+  static const Duration _kHalEnergyRiseWindow = Duration(seconds: 180);
+  static const double _kHalEnergyRiseEpsKwh = 0.001; // counter LSB noise floor
+  double? _halChargeEnergyLast;        // last counter value seen
+  DateTime? _halChargeEnergyLastAt;    // when that value was seen
+  DateTime? _halChargeEnergyRiseAt;    // last observed INCREASE
+  double _halChargeEnergyRiseRateKw = 0; // dE/dt across the last increase
+  DateTime? _halChargeEnergyRiseLogAt; // 60-s diag-line throttle
+  double? _halSohStartChargeEnergy;    // counter latched at the session anchor
+  // v0.1.44+143 Part B.3: last seen CHARGING_GUN_CONNECT_STATE candidate
+  // value — change-detect only (edge logging for enum collection), never a
+  // consumed signal. See the dedicated branch in _onEvent.
+  double? _gunConnectLastVal;
 
   bool _halTripActive = false;
   DateTime? _halTripStartedAt;
@@ -935,7 +966,47 @@ class HalTelemetryService extends ChangeNotifier {
   bool get halChargingActive {
     if (!_running || !_halSohCharging) return false;
     final pi = halValue('pack_current');
-    return pi != null && pi < _kHalChargeCurrentA;
+    if (pi != null && pi < _kHalChargeCurrentA) return true;
+    // v0.1.44+143: AC path — single-phase current (~−8 A) sits below the
+    // current threshold; a recent counter rise is the AC evidence. Same OR
+    // as the state machine (never instead); the rise window doubles as the
+    // freshness re-check that keeps a stalled stream from freezing the
+    // badge on.
+    return _halEnergyRising(DateTime.now());
+  }
+
+  // ── v0.1.44+143 §A1/§A2: charge-session getters for the banner. The
+  //    underlying fields have been maintained since the plug-in anchor
+  //    (+105/+116) — these only expose them, gated on an anchored session
+  //    so a stale value never leaks between sessions. ──
+
+  /// SOC latched at the session anchor (plug-in). Null when no session.
+  double? get halChargeSessionStartSoc =>
+      _halSohSessionAnchored ? _halSohStartSoc : null;
+
+  /// ∫|I|·dt so far this session, Ah. Diag/cross-check figure — the
+  /// banner's kWh value uses the ΔSOC path below for UDS consistency.
+  double? get halChargeSessionAh =>
+      _halSohSessionAnchored ? _halSohChargeAhAccum : null;
+
+  /// SOC gained since the anchor, % — the banner "+Δ" chip. Null when no
+  /// session or SOC is not up yet; negative (junk) reads as null.
+  double? get halChargeSessionSocDeltaPct {
+    final s = halChargeSessionStartSoc;
+    final cur = halSocForTrip;
+    if (s == null || cur == null) return null;
+    final d = cur - s;
+    return d >= 0 ? d : null;
+  }
+
+  /// v0.1.44+143 §A2: dongle-free "charged this session", kWh — the SAME
+  /// formula as UDS ConnectionService.chargedThisSessionKwh
+  /// ((SOC − startSoc) × capacity / 100), so the two sources agree by
+  /// construction. The Ah integral stays in diag for cross-checking.
+  double? get halChargedThisSessionKwh {
+    final d = halChargeSessionSocDeltaPct;
+    if (d == null || d <= 0) return null;
+    return d * _halPackCapacityKwh / 100.0;
   }
 
   /// v0.1.29+116: charge power for the badge/panel while halChargingActive —
@@ -1631,6 +1702,12 @@ class HalTelemetryService extends ChangeNotifier {
   // with too many gaps is discarded. On the charge→idle edge the session is
   // finalized (ΔSOC + coverage gates) and, if valid, written to id=2.
   void _updateHalCharge() {
+    final now = DateTime.now();
+    // v0.1.44+143: track the charge_energy_kwh counter BEFORE the ownership
+    // gate (cheap; avoids a stale anchor producing a phantom "rise" when
+    // ownership returns after a dongle interval). Detection itself is only
+    // consumed inside the owned path below.
+    _trackChargeEnergy(now);
     // v0.1.29+116: gate on OWNERSHIP (halOwnsTrip = stream live AND no
     // dongle), not display (halDriveActive) — the exact +106 rule the trip
     // machine already follows. The old halDriveActive gate additionally
@@ -1653,7 +1730,13 @@ class HalTelemetryService extends ChangeNotifier {
     final pi = halValue('pack_current');
     final stationary = sp == null || sp <= _halMovingKmh;
     final chargingLevel = pi != null && pi < _kHalChargeCurrentA;
-    final chargingNow = stationary && chargingLevel;
+    // v0.1.44+143: AC path — a recent charge_energy_kwh rise is charging
+    // evidence the current threshold can't see (~−8 A single-phase AC).
+    // OR with the current detect, NEVER instead (spec +143; Alex: live
+    // from day one). The existing 20 s debounce below applies to BOTH
+    // paths unchanged.
+    final energyRising = _halEnergyRising(now);
+    final chargingNow = stationary && (chargingLevel || energyRising);
 
     if (chargingNow) {
       // Anchor on the FIRST charge-level frame so the start SOC and the
@@ -1671,7 +1754,6 @@ class HalTelemetryService extends ChangeNotifier {
       // starting at the SAME instant, so the estimate stays unbiased; the
       // few seconds of charge lost before SOC arrives shrink the window,
       // never skew it.
-      final now = DateTime.now();
       if (!_halSohSessionAnchored) {
         final anchorSoc = halSocForTrip;
         if (anchorSoc == null) return; // SOC not up yet — retry next frame
@@ -1683,6 +1765,16 @@ class HalTelemetryService extends ChangeNotifier {
         _halSohLastIntegrationAt = now; // seed only; first dt next frame
         _halSohCoverageLiveSec = 0.0;
         _halSohCoverageTotalSec = 0.0;
+        // v0.1.44+143: latch the monotonic counter at the anchor — the
+        // per-session energy delta is counter(now) − this (diag cross-check
+        // against both the ΔSOC path and the Ah integral); plus the diag
+        // line that names WHICH detector anchored (post-+86 rule: the first
+        // AC session is confirmed via export/diag before trusting the path).
+        _halSohStartChargeEnergy = halValue('charge_energy_kwh');
+        debugPrint('hal charge anchor: src='
+            '${chargingLevel ? (energyRising ? 'both' : 'current') : 'energy'}'
+            ' soc=${anchorSoc.toStringAsFixed(1)}'
+            ' counter=${_halSohStartChargeEnergy?.toStringAsFixed(2) ?? '—'}');
         return;
       }
 
@@ -1693,6 +1785,12 @@ class HalTelemetryService extends ChangeNotifier {
           _halSohChargeConfirmStart != null &&
           now.difference(_halSohChargeConfirmStart!) >= _kHalChargeConfirm) {
         _halSohCharging = true;
+        // v0.1.44+143 diag: detect source + dE/dt + counter at confirm.
+        debugPrint('hal charge confirmed: src='
+            '${chargingLevel ? (energyRising ? 'both' : 'current') : 'energy'}'
+            ' dE/dt=${_halChargeEnergyRiseRateKw.toStringAsFixed(2)} kW'
+            ' counter='
+            '${halValue('charge_energy_kwh')?.toStringAsFixed(2) ?? '—'} kWh');
       }
 
       // Integrate ∫|I|·dt every frame from the anchor onward.
@@ -1736,11 +1834,77 @@ class HalTelemetryService extends ChangeNotifier {
       // past the debounce; either way reset so the next charge starts clean.
       // A glitch that anchored but never confirmed is dropped silently.
       if (_halSohSessionAnchored) {
+        // v0.1.44+143 diag: session end with the counter delta from the
+        // anchor — an independent third figure next to the Ah integral and
+        // the ΔSOC path for the first-AC export cross-check.
+        final eNow = halValue('charge_energy_kwh');
+        final eDelta = (eNow != null && _halSohStartChargeEnergy != null)
+            ? eNow - _halSohStartChargeEnergy!
+            : null;
+        debugPrint('hal charge session end:'
+            ' ah=${_halSohChargeAhAccum.toStringAsFixed(2)}'
+            ' counterΔ=${eDelta?.toStringAsFixed(2) ?? '—'} kWh'
+            ' confirmed=$_halSohCharging');
         if (_halSohCharging) _finalizeHalSohEstimate();
         _resetHalSohSession();
       }
     }
   }
+
+  // ── v0.1.44+143: charge_energy_kwh derivative tracker (AC detect) ──
+  //
+  // The counter is a monotonic lifetime kWh total (recon p084) that never
+  // resets between sessions — so "charging" is inferred ONLY from a rise
+  // observed within _kHalEnergyRiseWindow, never from the level. On slow
+  // AC the LSBs land sparsely (~0.01 kWh every tens of seconds at 3.5 kW),
+  // hence the generous window; it also sets the session-end latency once
+  // the counter stops rising. Rise instants and the dE/dt across the last
+  // increment are kept for the diag lines the +143 spec requires.
+  void _trackChargeEnergy(DateTime now) {
+    final e = halValue('charge_energy_kwh');
+    if (e == null) return;
+    final last = _halChargeEnergyLast;
+    if (last == null) {
+      _halChargeEnergyLast = e;
+      _halChargeEnergyLastAt = now;
+      return;
+    }
+    if (e > last + _kHalEnergyRiseEpsKwh) {
+      final wasRising = _halEnergyRising(now);
+      final dtH = _halChargeEnergyLastAt == null
+          ? null
+          : now.difference(_halChargeEnergyLastAt!).inMilliseconds / 3.6e6;
+      if (dtH != null && dtH > 0) {
+        _halChargeEnergyRiseRateKw = (e - last) / dtH;
+      }
+      _halChargeEnergyRiseAt = now;
+      _halChargeEnergyLast = e;
+      _halChargeEnergyLastAt = now;
+      // Diag: log the rise onset immediately, then at most once per 60 s.
+      if (!wasRising ||
+          _halChargeEnergyRiseLogAt == null ||
+          now.difference(_halChargeEnergyRiseLogAt!) >=
+              const Duration(seconds: 60)) {
+        _halChargeEnergyRiseLogAt = now;
+        debugPrint('charge_energy rising: ${e.toStringAsFixed(2)} kWh '
+            '(dE/dt ≈ ${_halChargeEnergyRiseRateKw.toStringAsFixed(2)} kW)');
+      }
+    } else if (e < last - 0.5) {
+      // The counter went BACKWARDS by a non-trivial amount — impossible for
+      // a monotonic total, so treat it as junk / a re-init and re-anchor
+      // silently. Sub-eps jitter and equal values leave the anchor alone so
+      // a slow counter still registers a rise the moment the next LSB lands
+      // (the dt then spans the true inter-increment interval → honest dE/dt).
+      _halChargeEnergyLast = e;
+      _halChargeEnergyLastAt = now;
+    }
+  }
+
+  /// True while a charge_energy_kwh increase was observed within the rise
+  /// window — the AC-charging evidence (OR'd with the current detect).
+  bool _halEnergyRising(DateTime now) =>
+      _halChargeEnergyRiseAt != null &&
+      now.difference(_halChargeEnergyRiseAt!) <= _kHalEnergyRiseWindow;
 
   /// Compute + persist the HAL SOH from the just-finished charge session, to
   /// soh_estimates id=2 (source 'hal'). Discards the session unless the SOC
@@ -1943,6 +2107,10 @@ class HalTelemetryService extends ChangeNotifier {
   /// Clear the HAL SOH session state for the next charge.
   void _resetHalSohSession() {
     _halSohCharging = false;
+    // v0.1.44+143: per-session counter anchor dies with the session; the
+    // derivative tracker state itself persists (the counter is a lifetime
+    // total shared across sessions).
+    _halSohStartChargeEnergy = null;
     _halSohSessionAnchored = false;
     _halSohChargeConfirmStart = null;
     _halSohStartedAt = null;
@@ -2342,6 +2510,13 @@ class HalTelemetryService extends ChangeNotifier {
     // restart with the car in a different state.
     _latest.clear();
     _lastGood.clear();
+    // v0.1.44+143: the energy-rise detect state must not survive a stop —
+    // a stale rise timestamp would keep the AC detect "on" for up to the
+    // window after a stream restart; the counter anchor is re-seeded from
+    // the first live frame of the next stream.
+    _halChargeEnergyLast = null;
+    _halChargeEnergyLastAt = null;
+    _halChargeEnergyRiseAt = null;
     // v0.1.29+85: a stopped stream must not keep a HAL trip "open" or let
     // the 1 s tick accumulate against a dead stream. Close it cleanly.
     _closeHalTrip();
@@ -2365,6 +2540,37 @@ class HalTelemetryService extends ChangeNotifier {
     // recon diffs against, and the one that answers "did 0x044C arrive?".
     if (e.name == 'bigdata_raw') {
       _logBigDataRaw(e);
+      return;
+    }
+    // v0.1.44+143 Part B.3: CHARGING_GUN_CONNECT_STATE enum-collection
+    // CANDIDATE (rule p068/p083 — HAL Test + the diag journal ONLY, never a
+    // UI consumer). Deliberately NOT in _range: it must never reach _latest,
+    // so no widget can ever read it. Every VALUE CHANGE is logged
+    // unthrottled (the fid is presumed edge-triggered — plug/unplug edges
+    // ARE the payload) to hal_samples + the diag journal with a timestamp,
+    // so the next AC/DC session collects the enum for free. Phase B (sticky
+    // getter + session anchoring) is a separate patch after the enum lands.
+    if (e.name == 'charging_gun_connect_candidate') {
+      final v = e.value?.toDouble();
+      if (v != null && v != _gunConnectLastVal) {
+        final prev = _gunConnectLastVal;
+        _gunConnectLastVal = v;
+        debugPrint('gun_connect candidate: ${v.toStringAsFixed(0)}'
+            '${prev == null ? '' : ' (was ${prev.toStringAsFixed(0)})'}');
+        final db = _diagDb;
+        if (db != null) {
+          final (target, subtypeHex) = _splitKey(e.key);
+          db
+              .insertHalSignal(
+                tripId: _halTripDbId ?? _currentTripId?.call(),
+                targetKey: target,
+                subtype: subtypeHex,
+                name: e.name,
+                numeric: v,
+              )
+              .catchError((_) => 0);
+        }
+      }
       return;
     }
     // v0.1.29+66: consume the overlapping-wave allowlist (speed,

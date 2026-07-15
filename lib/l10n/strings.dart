@@ -501,6 +501,9 @@ class S {
     'dash.battery_s': 'Battery',
     'dash.odometer_s': 'Odometer',
     'dash.eta100': 'ETA to 100%',
+    // v0.1.44+143: charging-banner session stats.
+    'dash.eta80': 'ETA to 80%',
+    'dash.chg_delta': '+{d}% this session',
     'dash.this_session_inline': 'This session: ',
     'dash.trip_live': 'Trip #{id} · LIVE',
     'dash.kwh_used': '{e} kWh used',
@@ -1391,6 +1394,9 @@ class S {
     'dash.battery_s': 'Батарея',
     'dash.odometer_s': 'Пробег',
     'dash.eta100': 'До 100%',
+    // v0.1.44+143: charging-banner session stats.
+    'dash.eta80': 'До 80%',
+    'dash.chg_delta': '+{d}% за сессию',
     'dash.this_session_inline': 'Эта сессия: ',
     'dash.trip_live': 'Поездка #{id} · LIVE',
     'dash.kwh_used': '{e} kWh израсходовано',

@@ -193,7 +193,24 @@ class _LeftColumn extends StatelessWidget {
           child: _ChargingPanel(
             isCharging: isCharging,
             powerKw: chargingPower,
-            chargedSession: svc.chargedThisSessionKwh,
+            // v0.1.44+143 §A2: dongle-free fallback — same ΔSOC×capacity
+            // formula from the HAL session anchor when the UDS figure is
+            // dead (no dongle).
+            chargedSession:
+                svc.chargedThisSessionKwh ?? hal.halChargedThisSessionKwh,
+            // v0.1.44+143 §A3: live session stats (honesty-nulls). SOC is
+            // deliberately NOT resolveUiSocPct — it feeds the ETA math,
+            // which stays on precise regardless of the display setting
+            // (same rule as the phone banner, +131).
+            socPct: hal.useHalForSoc ? hal.halSocPct : svc.socPrecisePct,
+            socDeltaPct: hal.halChargeSessionSocDeltaPct,
+            chargeCurrentA: hal.halFresh('pack_current')
+                ? hal.halValue('pack_current')
+                : null,
+            packVoltageV: hal.halFresh('pack_voltage')
+                ? hal.halValue('pack_voltage')
+                : null,
+            batteryTempC: hal.halBatteryTempC,
           ),
         ),
       ],
@@ -399,10 +416,25 @@ class _ChargingPanel extends StatelessWidget {
   final bool isCharging;
   final double powerKw;
   final double? chargedSession;
+  // v0.1.44+143 §A3: live session stats (the wide twin of the phone
+  // banner's additions, compacted to one FittedBox line — the panel lives
+  // in a height-fixed Expanded slot). All honesty-nulls: an absent value
+  // simply drops out of the line; the line itself is absent when empty.
+  // ev_range deliberately NOT here (Q2: no).
+  final double? socPct;
+  final double? socDeltaPct;
+  final double? chargeCurrentA;
+  final double? packVoltageV;
+  final double? batteryTempC;
   const _ChargingPanel({
     required this.isCharging,
     required this.powerKw,
     this.chargedSession,
+    this.socPct,
+    this.socDeltaPct,
+    this.chargeCurrentA,
+    this.packVoltageV,
+    this.batteryTempC,
   });
 
   @override
@@ -429,46 +461,84 @@ class _ChargingPanel extends StatelessWidget {
       );
     }
 
+    // v0.1.44+143 §A3: ETA to 80% (Q1 yes) and 100% from the live power +
+    // real SOC — both gated on a real SOC (no fabricated 0%).
+    String fmtH(double h) {
+      final hours = h.floor();
+      final mins = ((h - hours) * 60).round();
+      return hours > 0 ? '${hours}h ${mins}m' : '${mins}m';
+    }
+
+    final parts = <String>[
+      if (socPct != null)
+        '${socPct!.toStringAsFixed(1)}%'
+            '${socDeltaPct != null ? ' (+${socDeltaPct!.toStringAsFixed(1)})' : ''}',
+      if (chargeCurrentA != null) '${chargeCurrentA!.toStringAsFixed(1)} A',
+      if (packVoltageV != null) '${packVoltageV!.toStringAsFixed(0)} V',
+      if (batteryTempC != null) '${batteryTempC!.toStringAsFixed(0)}°C',
+      if (powerKw > 0.1 && socPct != null && socPct! < 80)
+        '→80% ${fmtH((80 - socPct!) / 100 * 65.28 / powerKw)}',
+      if (powerKw > 0.1 && socPct != null)
+        '→100% ${fmtH((100 - socPct!) / 100 * 65.28 / powerKw)}',
+    ];
+    final statsLine = parts.isEmpty ? null : parts.join(' · ');
+
     return Card(
       color: Colors.indigo.shade900,
       child: Padding(
         padding: const EdgeInsets.all(14),
-        child: Row(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const Icon(Icons.bolt, color: Colors.amber, size: 32),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(S.of('dash.charging'),
-                      style: const TextStyle(
-                          letterSpacing: 1.5,
-                          color: Colors.amber,
-                          fontSize: 12)),
-                  Text(
-                    powerKw > 0.1
-                        ? '${powerKw.toStringAsFixed(1)} kW'
-                        : S.of('dash.connected'),
-                    style: const TextStyle(
-                        fontSize: 24, fontWeight: FontWeight.w400),
+            Row(
+              children: [
+                const Icon(Icons.bolt, color: Colors.amber, size: 32),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(S.of('dash.charging'),
+                          style: const TextStyle(
+                              letterSpacing: 1.5,
+                              color: Colors.amber,
+                              fontSize: 12)),
+                      Text(
+                        powerKw > 0.1
+                            ? '${powerKw.toStringAsFixed(1)} kW'
+                            : S.of('dash.connected'),
+                        style: const TextStyle(
+                            fontSize: 24, fontWeight: FontWeight.w400),
+                      ),
+                    ],
                   ),
-                ],
-              ),
+                ),
+                if (chargedSession != null && chargedSession! > 0.05)
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Text(S.of('dash.this_session'),
+                          style: const TextStyle(
+                              fontSize: 11, color: Colors.lightBlueAccent)),
+                      Text('${chargedSession!.toStringAsFixed(2)} kWh',
+                          style: const TextStyle(
+                              fontSize: 18, fontWeight: FontWeight.w400)),
+                    ],
+                  ),
+              ],
             ),
-            if (chargedSession != null && chargedSession! > 0.05)
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  Text(S.of('dash.this_session'),
-                      style: const TextStyle(
-                          fontSize: 11, color: Colors.lightBlueAccent)),
-                  Text('${chargedSession!.toStringAsFixed(2)} kWh',
-                      style: const TextStyle(
-                          fontSize: 18, fontWeight: FontWeight.w400)),
-                ],
+            if (statsLine != null) ...[
+              const SizedBox(height: 6),
+              FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.centerLeft,
+                child: Text(statsLine,
+                    style: TextStyle(
+                        fontSize: 12, color: Colors.white.withOpacity(0.7))),
               ),
+            ],
           ],
         ),
       ),
