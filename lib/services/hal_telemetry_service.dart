@@ -575,6 +575,16 @@ class HalTelemetryService extends ChangeNotifier {
   // Cached latest HAL SOH percent (id=2), hydrated on init, refreshed on each
   // qualifying session close. Null until the first valid HAL charge session.
   double? _halSohAhPctCached;
+  // v0.1.43+142 §2: computedAt of the cached id=2 estimate — hydrated
+  // alongside the percent in loadHalSohEstimate, refreshed STRICTLY inside
+  // the +119 ordered section of _storeHalSohIfValid (after "upsert landed",
+  // before the crash-snapshot cleanup). Feeds the "estimate: {age}"
+  // subtitle on the SOH cards.
+  DateTime? _halSohComputedAtCached;
+  // v0.1.43+142 §2: one-shot "SOH just recomputed" marker (Q2 variant A —
+  // no new dependencies). Set in the same ordered section; the dashboards
+  // consume it via takeSohFreshlyComputedAt() and show a SnackBar once.
+  DateTime? _sohFreshlyComputedAt;
   // ~1 s tick that samples HAL speed into peak/avg while a trip is live.
   // Lives with the stream — started on first trip start, cancelled in
   // _stopStream() so a stopped stream never keeps accumulating.
@@ -980,6 +990,27 @@ class HalTelemetryService extends ChangeNotifier {
   /// this over the UDS estimate and the BMS value (HAL-priority). Computed by
   /// the _updateHalCharge state machine, hydrated by loadHalSohEstimate().
   double? get halSohAhPct => _halSohAhPctCached;
+
+  /// v0.1.43+142 §2: when the cached HAL estimate was computed — the date
+  /// half of [halSohAhPct], always from the SAME id=2 row / session, so the
+  /// card subtitle never mixes sources with the shown percent.
+  DateTime? get halSohComputedAt => _halSohComputedAtCached;
+
+  /// v0.1.43+142 §2: one-shot "SOH just recomputed" flag. Non-null exactly
+  /// once after a finalize/recovery lands; a dashboard build consumes it
+  /// via [takeSohFreshlyComputedAt].
+  DateTime? get sohFreshlyComputedAt => _sohFreshlyComputedAt;
+
+  /// Consume-once accessor for the snack flag. Resets SILENTLY (no
+  /// notifyListeners) — it is called from build(), where notifying would
+  /// re-enter the build phase. The IndexedStack twins (dashboard_wide +
+  /// driver_view_wide) both build per frame; consuming synchronously in
+  /// the first build guarantees a single SnackBar.
+  DateTime? takeSohFreshlyComputedAt() {
+    final v = _sohFreshlyComputedAt;
+    _sohFreshlyComputedAt = null;
+    return v;
+  }
 
   // ── odometer + trip meters (v0.1.29+74). All from BYDAutoStatistic-
   //    Device, decoder applies ×0.1 so values are already in km. Held via
@@ -1778,10 +1809,14 @@ class HalTelemetryService extends ChangeNotifier {
     // write lands; if the write never completes, the snapshot survives and
     // _recoverPendingSohSession recomputes the same estimate at next init.
     unawaited(() async {
+      // v0.1.43+142 §2: one stamp for the upsert, the history append and
+      // the subtitle cache — the three surfaces must agree on the session
+      // time (the UDS path already shares its `now` the same way).
+      final computedAt = DateTime.now();
       try {
         await db.upsertSohEstimate(
           sohAhPct: sohPct,
-          computedAt: DateTime.now(),
+          computedAt: computedAt,
           deltaSocCovered: deltaSocPct,
           rowId: 2,
           source: 'hal',
@@ -1789,6 +1824,16 @@ class HalTelemetryService extends ChangeNotifier {
         debugPrint('HalSoh: id=2 upsert landed '
             '(${sohPct.toStringAsFixed(1)}%, ΔSOC '
             '${deltaSocPct.toStringAsFixed(1)}%)');
+        // v0.1.43+142 §2: subtitle date + one-shot SnackBar flag — set
+        // strictly inside the +119 ordered section: AFTER the upsert
+        // landed (so the card never announces an estimate that isn't
+        // persisted), BEFORE the crash-snapshot cleanup. The recovery
+        // path converges here too, so "charged and locked the car" fires
+        // the snack on the next launch. notifyListeners re-renders the
+        // SOH cards and lets a dashboard pick the flag up.
+        _halSohComputedAtCached = computedAt;
+        _sohFreshlyComputedAt = computedAt;
+        notifyListeners();
         // v0.1.31+130 (Trends v2): append the same estimate to the
         // soh_history time series. Placement matters: AFTER the upsert
         // landed (so history never leads the dashboard), BEFORE the
@@ -1799,7 +1844,7 @@ class HalTelemetryService extends ChangeNotifier {
         try {
           await db.appendSohHistory(
             sohAhPct: sohPct,
-            computedAt: DateTime.now(),
+            computedAt: computedAt,
             deltaSocCovered: deltaSocPct,
             source: 'hal',
           );
@@ -1934,6 +1979,8 @@ class HalTelemetryService extends ChangeNotifier {
       final row = await db.getLatestSohEstimate(rowId: 2);
       if (row != null) {
         _halSohAhPctCached = row.sohAhPct;
+        // v0.1.43+142 §2: hydrate the subtitle date with the percent.
+        _halSohComputedAtCached = row.computedAt;
         debugPrint('HalSoh: hydrated id=2 → '
             '${row.sohAhPct.toStringAsFixed(1)}% '
             '(computed ${row.computedAt.toIso8601String()})');

@@ -1566,10 +1566,13 @@ class AppDatabase extends _$AppDatabase {
   /// single newest row can hold NULL in a field an older row has —
   /// the +139 cards showed '—' for data that exists. Returns, per
   /// showcased field, the newest row where THAT field is non-null:
-  /// (soc, odometer, soh). Each card renders the value with its own
-  /// captured_at. Three LIMIT-1 index-friendly selects — same cost
+  /// (soc, odometer, soh, batteryTemp). Each card renders the value with
+  /// its own captured_at. Four LIMIT-1 index-friendly selects — same cost
   /// class as getLatestSnapshot, ran once per 60s stale tick.
-  Future<(Snapshot?, Snapshot?, Snapshot?)> getLatestFieldwiseSnapshots() async {
+  /// v0.1.43+142 §3: fourth element — battery temperature (both writers
+  /// fill batteryTempC since +138), for the fourth stale card (2×2 grid).
+  Future<(Snapshot?, Snapshot?, Snapshot?, Snapshot?)>
+      getLatestFieldwiseSnapshots() async {
     Future<Snapshot?> latestWhere(
         Expression<bool> Function($SnapshotsTable) pred) {
       return (select(snapshots)
@@ -1585,7 +1588,8 @@ class AppDatabase extends _$AppDatabase {
     final soc = await latestWhere((s) => s.soc.isNotNull());
     final odo = await latestWhere((s) => s.odometer.isNotNull());
     final soh = await latestWhere((s) => s.soh.isNotNull());
-    return (soc, odo, soh);
+    final temp = await latestWhere((s) => s.batteryTempC.isNotNull());
+    return (soc, odo, soh, temp);
   }
 
   // ── v0.1.41+140: trip_series helpers ────────────────────────────────

@@ -3801,6 +3801,119 @@ if int(pv) >= 141:
 else:
     ok(f"Part AN skipped (build +{pv}, whoami lands in +141)")
 
+
+# ─────────────── Part AO: +142 backlog pack ─────────────────────────────────
+if int(pv) >= 142:
+    _cells4 = (root / 'lib/screens/cells.dart').read_text()
+    _dw4 = (root / 'lib/screens/wide/dashboard_wide.dart').read_text()
+    _dash4 = (root / 'lib/screens/dashboard.dart').read_text()
+    _drv4 = (root / 'lib/screens/wide/driver_view_wide.dart').read_text()
+    _hal4 = (root / 'lib/services/hal_telemetry_service.dart').read_text()
+    _con4 = (root / 'lib/services/connection.dart').read_text()
+    _cs4 = (root / 'lib/services/cloud_sync_service.dart').read_text()
+    _td4 = (root / 'lib/screens/trip_detail.dart').read_text()
+    _hw4 = (root / 'lib/screens/wide/history_wide.dart').read_text()
+    _db4 = (root / 'lib/data/database.dart').read_text()
+    _pick4 = (root / 'lib/widgets/vehicle_descriptor_picker.dart').read_text()
+    _l10n4 = (root / 'lib/l10n/strings.dart').read_text()
+    # AO1: insulation row in BOTH show points, gated on value+useHal, red
+    # threshold ONLY (no green/amber scale — Q1), l10n pair EN/RU.
+    _ins_gate = 'hal.useHalForInsulation ? hal.halInsulationMOhm : null'
+    _ins_red = 'insulationMOhm < 1.0 ? Colors.red : null'
+    _ins_scale_leak = any(
+        'insulation' in ln.lower() and
+        ('Colors.orange' in ln or 'Colors.green' in ln)
+        for src in (_cells4, _dw4) for ln in src.splitlines())
+    if _ins_gate in _cells4 and _ins_gate in _dw4 and \
+       _ins_red in _cells4 and _ins_red in _dw4 and \
+       'if (insulationMOhm != null)' in _cells4 and \
+       'if (insulationMOhm != null)' in _dw4 and \
+       not _ins_scale_leak and \
+       _l10n4.count("'cells.insulation'") == 2:
+        ok('AO1 insulation row ×2, null/useHal gate, red-only threshold')
+    else:
+        fail('AO1 insulation widget wiring wrong')
+    # AO2: SOH dates on 3 showcases resolved by the percent ladder; the
+    # HAL flag/date land POSITIONALLY after "upsert landed" inside
+    # _storeHalSohIfValid (the +119 ordered section); connection.dart
+    # stays HAL-free (AA2); l10n pairs EN/RU; snack consumed via a
+    # silent synchronous take (IndexedStack double-fire guard).
+    _sb = _hal4.find('void _storeHalSohIfValid(')
+    _se = _hal4.find('  /// v0.1.29+116: snapshot the CONFIRMED', _sb)
+    _sbody = _hal4[_sb:_se] if -1 < _sb < _se else ''
+    _landed = _sbody.find('upsert landed')
+    _flag = _sbody.find('_sohFreshlyComputedAt = computedAt;')
+    _date = _sbody.find('_halSohComputedAtCached = computedAt;')
+    _cleanup = _sbody.find('_clearPendingSohSession();', _landed)
+    _ladder = ('hal.halSohAhPct != null\n'
+               '        ? hal.halSohComputedAt\n'
+               '        : (svc.sohAhPct != null ? svc.sohComputedAt : null);')
+    if -1 < _landed < _date < _flag and _flag < _cleanup and \
+       all("soh.computed_at" in s and '_maybeShowSohSnack(context, hal, svc)'
+           in s and _ladder in s for s in (_dash4, _dw4, _drv4)) and \
+       'takeSohFreshlyComputedAt' in _hal4 and \
+       'takeSohFreshlyComputedAt' in _con4 and \
+       'hal_telemetry' not in _con4 and \
+       _l10n4.count("'soh.computed_at'") == 2 and \
+       _l10n4.count("'soh.recomputed_snack'") == 2:
+        ok('AO2 SOH dates ×3 (ladder), HAL flag after upsert-landed, AA2')
+    else:
+        fail('AO2 SOH date/snack wiring wrong')
+    # AO3: fieldwise 4-tuple + 4th temp card with its OWN date → 2×2.
+    if 'Future<(Snapshot?, Snapshot?, Snapshot?, Snapshot?)>' in _db4 and \
+       's.batteryTempC.isNotNull()' in _db4 and \
+       'tempRow' in _dash4 and \
+       "label: S.of('dash.stale.batt_temp')," in _dash4 and \
+       'Icons.thermostat' in _dash4 and \
+       _dash4.count('_relTime(data.') >= 4 and \
+       _l10n4.count("'dash.stale.batt_temp'") == 2:
+        ok('AO3 fieldwise 4-tuple + battery-temp stale card (2×2)')
+    else:
+        fail('AO3 stale temp card wiring wrong')
+    # AO4: series second stage in _bins() of BOTH twins, ONE shared
+    # binner (_binPoints) feeding both sources, source caption on the
+    # series branch only, hide-when-empty floor.
+    def _ao4(s):
+        return ("getTripSeriesForChart(trip.id, 'power_kw')" in s and
+                s.count('_binPoints(') >= 3 and  # def + 2 call sites
+                'FutureBuilder<(List<double>, bool)>' in s and
+                "if (fromSeries)" in s and
+                "S.of('trip.chart_src_series')" in s and
+                'return const SizedBox.shrink();' in s)
+    if _ao4(_td4) and _ao4(_hw4) and \
+       _l10n4.count("'trip.chart_src_series'") == 2:
+        ok('AO4 power_kw series stage + shared _binPoints, both twins')
+    else:
+        fail('AO4 power chart series stage wrong')
+    # AO5: pull-to-sync — RefreshIndicator + freshness-line tap, both
+    # landing on syncOnce (the +126 barriers ARE the debounce); the HU
+    # branch untouched (AL1/AL4 assert the gates independently).
+    if 'RefreshIndicator(' in _dash4 and \
+       'onRefresh: onRefresh' in _dash4 and \
+       "syncOnce(reason: 'stale_refresh')" in _dash4 and \
+       'onTap: onRefresh' in _dash4 and \
+       "import '../services/cloud_sync_service.dart';" in _dash4 and \
+       'AlwaysScrollableScrollPhysics' in _dash4:
+        ok('AO5 stale pull-to-sync (gesture + tap) via syncOnce barriers')
+    else:
+        fail('AO5 pull-to-sync wiring wrong')
+    # AO6: generation — prefs key, 1990..2099 band, STRING serialization
+    # in the vehicle block (live-contract Q5), picker numeric field with
+    # the shared debounce, l10n pair EN/RU.
+    if '_kVehDescGeneration' in _cs4 and \
+       "'generation': '$_vehDescGeneration'" in _cs4 and \
+       'generation >= 1990 && generation <= 2099' in _cs4 and \
+       'controller: _year' in _pick4 and \
+       'TextInputType.number' in _pick4 and \
+       'maxLength: 4' in _pick4 and \
+       'int.tryParse(_year.text' in _pick4 and \
+       _l10n4.count("'vehicle.year'") == 2:
+        ok('AO6 generation: prefs + validated + string body + picker field')
+    else:
+        fail('AO6 generation wiring wrong')
+else:
+    ok(f"Part AO skipped (build +{pv}, backlog pack lands in +142)")
+
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
 print(f"+35→+51 REGRESSION — build +{pv}")

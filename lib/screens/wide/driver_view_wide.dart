@@ -681,6 +681,16 @@ class _BottomStatusStrip extends StatelessWidget {
         : (sohHal != null
             ? 'SOH ${sohHal.toInt()} %'
             : (sohBms != null ? 'SOH ${sohBms.toInt()} % (BMS)' : 'SOH —'));
+    // v0.1.43+142 §2: subtitle date, same ladder as the percent (date from
+    // the source whose value is shown); HAL-BigData / BMS fallback → none.
+    final DateTime? sohDate = hal.halSohAhPct != null
+        ? hal.halSohComputedAt
+        : (svc.sohAhPct != null ? svc.sohComputedAt : null);
+    final String? sohSub = sohDate == null
+        ? null
+        : S.of('soh.computed_at').replaceFirst('{age}', _relTime(sohDate));
+    // v0.1.43+142 §2: one-shot "SOH recomputed" SnackBar (variant A).
+    _maybeShowSohSnack(context, hal, svc);
     final odo = hal.useHalForOdometer ? hal.halOdometerKm : svc.readNumeric('791', '0026');
     // v0.1.29+84: cell spread — HAL BigData cell_v pair when available
     // (halOnly drive, no OBD2 cells), else OBD2 global min/max. Invisible
@@ -729,7 +739,22 @@ class _BottomStatusStrip extends StatelessWidget {
         child: Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Text(sohDisplay),
+            // v0.1.43+142 §2: SOH cell grows a tiny sub line when an Ah
+            // estimate date exists. mainAxisSize.min keeps the strip
+            // auto-sized; the strip is a non-Expanded child of a Column
+            // with flex zones above, so +~11dp just cedes from those.
+            sohSub == null
+                ? Text(sohDisplay)
+                : Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(sohDisplay),
+                      Text(sohSub,
+                          style: TextStyle(
+                              fontSize: 9, color: Colors.grey.shade600)),
+                    ],
+                  ),
             const _Sep(),
             Text(batTempStr),
             const _Sep(),
@@ -768,3 +793,38 @@ class _Sep extends StatelessWidget {
 /// The thresholds align with our anchor data point: 16.7 kWh/100km on
 /// the 32 km mixed-city trip on 2026-05-19, which felt normal — so 17
 /// is the lower bound of "spirited".
+
+/// v0.1.43+142 §2: private relative-time formatter — the 12-line duplicate
+/// precedent (+139/settings), rel.* keys shared.
+String _relTime(DateTime t) {
+  final diff = DateTime.now().difference(t);
+  if (diff.inSeconds < 60) {
+    return S.of('rel.s_ago').replaceFirst('{n}', '${diff.inSeconds}');
+  }
+  if (diff.inMinutes < 60) {
+    return S.of('rel.m_ago').replaceFirst('{n}', '${diff.inMinutes}');
+  }
+  if (diff.inHours < 24) {
+    return S.of('rel.h_ago').replaceFirst('{n}', '${diff.inHours}');
+  }
+  return S.of('rel.d_ago').replaceFirst('{n}', '${diff.inDays}');
+}
+
+/// v0.1.43+142 §2: one-shot "SOH recomputed" SnackBar — same contract as
+/// the dashboard.dart copy (synchronous silent take in build so the
+/// IndexedStack twin can't double-fire; snack shown post-frame).
+void _maybeShowSohSnack(BuildContext context, HalTelemetryService hal,
+    ConnectionService svc) {
+  final halFresh = hal.takeSohFreshlyComputedAt();
+  final udsFresh = svc.takeSohFreshlyComputedAt();
+  if (halFresh == null && udsFresh == null) return;
+  final double? pct = hal.halSohAhPct ?? svc.sohAhPct;
+  if (pct == null) return;
+  final msg = S
+      .of('soh.recomputed_snack')
+      .replaceFirst('{pct}', pct.toStringAsFixed(1));
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  });
+}

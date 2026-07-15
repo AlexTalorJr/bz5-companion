@@ -3886,11 +3886,32 @@ class ConnectionService extends ChangeNotifier {
   /// This is the value the dashboard prefers over BMS 0x0029.
   double? get sohAhPct => _sohAhPctCached;
 
+  /// v0.1.43+142 §2: computedAt of the cached UDS estimate — the card
+  /// subtitle date for the UDS rung of the SOH ladder (mirror of the HAL
+  /// twin). Additive only per AA2.
+  DateTime? _sohComputedAtCached;
+  DateTime? get sohComputedAt => _sohComputedAtCached;
+
+  /// v0.1.43+142 §2: one-shot "SOH just recomputed" marker (dashboard
+  /// SnackBar, variant A). Consumed via take* by the first build that
+  /// sees it — silent reset, safe from build().
+  DateTime? _sohFreshlyComputedAt;
+  DateTime? get sohFreshlyComputedAt => _sohFreshlyComputedAt;
+  DateTime? takeSohFreshlyComputedAt() {
+    final v = _sohFreshlyComputedAt;
+    _sohFreshlyComputedAt = null;
+    return v;
+  }
+
   /// Load the persisted SOH estimate into the cache (called once at startup).
   Future<void> loadSohEstimate() async {
     try {
       final row = await db.getLatestSohEstimate();
-      if (row != null) _sohAhPctCached = row.sohAhPct;
+      if (row != null) {
+        _sohAhPctCached = row.sohAhPct;
+        // v0.1.43+142 §2: hydrate the subtitle date with the percent.
+        _sohComputedAtCached = row.computedAt;
+      }
     } catch (_) {/* no DB / not migrated yet — stay on BMS fallback */}
   }
 
@@ -3917,6 +3938,12 @@ class ConnectionService extends ChangeNotifier {
     _sohAhPctCached = sohPct;
     final coveredSoc = deltaSocPct;
     final now = DateTime.now();
+    // v0.1.43+142 §2: subtitle date + one-shot SnackBar flag, same stamp
+    // as both DB writes below. The UDS write is fire-and-forget by design
+    // (cache-first, +104), so unlike the HAL path there is no ordered
+    // section to respect — the adjacent-field mirror per the spec.
+    _sohComputedAtCached = now;
+    _sohFreshlyComputedAt = now;
     // Fire-and-forget DB write; the in-memory cache is already updated so the
     // dashboard reflects it immediately even if the write lags.
     unawaited(db

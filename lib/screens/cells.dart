@@ -103,6 +103,15 @@ class _HalCumulativeView extends StatelessWidget {
     final idxLo = hal.halCellIdxLowest;
     final idxHi = hal.halCellIdxHighest;
     final packTemp = hal.halBatteryTempC;
+    // v0.1.43+142 §1: insulation resistance (MΩ) — HAL-only signal
+    // (BigData/Statistic 0x47300018, flows dongle-free; the OBD2 side has
+    // no source per the migration page). Honesty rule: the row exists only
+    // while the data actually flows — null or a non-HAL resolve renders
+    // NOTHING (no dash placeholder). Red below 1.0 MΩ only; no green/amber
+    // scale — the ISO 6469 floor (~100 Ω/V ≈ 0.045 MΩ at 450 V) is an order
+    // of magnitude lower, so intermediate thresholds would be invented (Q1).
+    final double? insulationMOhm =
+        hal.useHalForInsulation ? hal.halInsulationMOhm : null;
 
     // Balance quality by the same mV thresholds the per-cell header uses, so
     // the colour language is consistent across both views.
@@ -234,6 +243,27 @@ class _HalCumulativeView extends StatelessWidget {
                     ),
                   ],
                 ),
+                // v0.1.43+142 §1: insulation row right under the pack
+                // chips — rendered only when the HAL value flows (see the
+                // insulationMOhm gate above).
+                if (insulationMOhm != null) ...[
+                  const SizedBox(height: 10),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(S.of('cells.insulation'),
+                          style: const TextStyle(
+                              fontSize: 12, color: Colors.grey)),
+                      Text(
+                        '${insulationMOhm.toStringAsFixed(1)} MΩ',
+                        style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w500,
+                            color: insulationMOhm < 1.0 ? Colors.red : null),
+                      ),
+                    ],
+                  ),
+                ],
                 const Divider(height: 24),
                 Text(
                   S
