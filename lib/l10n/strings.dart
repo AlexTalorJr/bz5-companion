@@ -128,6 +128,22 @@ class S {
     'about.title': 'About',
     'about.adv.progress': '{n} taps to unlock Advanced',
     'about.adv.unlocked': 'Advanced tools unlocked — see Settings',
+    // About — body strings (v0.1.45+144: were hardcoded EN in about.dart,
+    // now localizable). App name 'BZ5 Companion' stays untranslated (proper
+    // noun); 'OBD2 Bluetooth adapter' value stays EN (adapter name rule).
+    'about.intro.body':
+        'Companion app for Toyota/BYD EVs. Reads vehicle telemetry to '
+        'monitor battery health, trips and charging.',
+    'about.disclaimer.label': 'DISCLAIMER',
+    'about.disclaimer.body':
+        'This is not an official Toyota or BYD product. Readings are '
+        'informational and may be inaccurate — do not rely on them for '
+        'safety-critical decisions or warranty discussions.',
+    'about.app.label': 'APP',
+    'about.spec.version': 'Version',
+    'about.spec.source': 'Source code',
+    'about.spec.license': 'License',
+    'about.spec.hardware': 'Hardware',
 
     // Settings — cost
     'settings.cost.per_kwh.title': 'Cost per kWh',
@@ -1017,6 +1033,21 @@ class S {
     'about.title': 'О приложении',
     'about.adv.progress': 'Ещё {n} тапов до Advanced',
     'about.adv.unlocked': 'Инструменты Advanced разблокированы — в Настройках',
+    // About — тело (v0.1.45+144). 'BZ5 Companion' не переводим (имя);
+    // значение Hardware 'OBD2 Bluetooth adapter' остаётся EN (имя адаптера).
+    'about.intro.body':
+        'Приложение-компаньон для электромобилей Toyota/BYD. Читает '
+        'телеметрию машины: здоровье батареи, поездки и зарядку.',
+    'about.disclaimer.label': 'ДИСКЛЕЙМЕР',
+    'about.disclaimer.body':
+        'Это не официальный продукт Toyota или BYD. Показания '
+        'информационные и могут быть неточными — не полагайтесь на них '
+        'для решений, связанных с безопасностью, или для разговоров о гарантии.',
+    'about.app.label': 'ПРИЛОЖЕНИЕ',
+    'about.spec.version': 'Версия',
+    'about.spec.source': 'Исходный код',
+    'about.spec.license': 'Лицензия',
+    'about.spec.hardware': 'Оборудование',
 
     // Settings — cost
     'settings.cost.per_kwh.title': 'Стоимость 1 кВт·ч',
