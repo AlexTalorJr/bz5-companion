@@ -307,9 +307,14 @@ class _SocHero extends StatelessWidget {
                 valueColor: AlwaysStoppedAnimation(color),
               ),
             ),
-            const SizedBox(height: 10),
-            const Text('@ 14.4 kWh/100km · 65.28 kWh capacity',
-                style: TextStyle(fontSize: 12, color: Colors.grey)),
+            // v0.1.45+144: removed the hardcoded "@ 14.4 kWh/100km ·
+            // 65.28 kWh capacity" footer that lived here. Same reasoning
+            // as the phone dashboard (+129, dashboard.dart): 14.4 is a
+            // WLTP marketing figure not matching observed reality
+            // (16-18 kWh/100km on this car), and the 65.28 kWh capacity
+            // is BZ5-specific (BZ3 has 49.92 kWh) — wrong on a multi-model
+            // app. The phone screen dropped it two waves ago; the wide/
+            // head-unit twin was missed until now.
           ],
         ),
       ),

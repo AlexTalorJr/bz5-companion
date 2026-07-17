@@ -235,16 +235,34 @@ class TrendAggregator {
       for (final e in bucketDist.entries) PeriodBar(e.key, e.value),
     ]..sort((a, b) => a.start.compareTo(b.start));
 
-    // Regen share per bucket — only where energy was actually drawn.
-    // Clamp to a sane ceiling: a malformed trip with regen > used would
-    // otherwise spike the bar past 100%.
+    // Regen share per bucket. v0.1.45+144: denominator corrected.
+    //
+    // bucketEnergy = energyUsedKwh = (startSoc − endSoc) × capacity, i.e.
+    // the NET drop in battery state — regen has ALREADY been subtracted
+    // from it (regen slowed the SOC fall). Dividing GROSS regen by that
+    // net figure overstates the share badly: heavy regen shrinks the
+    // denominator while inflating the numerator, so city drives with
+    // hills spiked to 60-73% (physically impossible — that would imply
+    // recovering most of the traction energy). The .clamp below was
+    // papering over the symptom.
+    //
+    // Correct "regen share" = returned / gross-drawn, where
+    //   gross_drawn = net_used + regen
+    // (you pulled net_used + regen out of the pack for motion, then got
+    // regen back). This is always < 100% by construction and reads as a
+    // sane 20-40% in mixed driving. Still an estimate (regen is an
+    // integrated-power figure, net_used is ΔSOC×capacity — different
+    // provenance), but honest in magnitude. Clamp kept as a backstop.
     final regenBars = <PeriodBar>[
       for (final e in bucketEnergy.entries)
         PeriodBar(
             e.key,
-            ((bucketRegen[e.key] ?? 0) / e.value * 100)
-                .clamp(0.0, 100.0)
-                .toDouble()),
+            (() {
+              final regen = bucketRegen[e.key] ?? 0.0;
+              final gross = e.value + regen;
+              if (gross <= 0) return 0.0;
+              return (regen / gross * 100).clamp(0.0, 100.0).toDouble();
+            })()),
     ]..sort((a, b) => a.start.compareTo(b.start));
 
     return TrendAggregate(

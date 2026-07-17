@@ -2814,6 +2814,31 @@ if int(pv) >= 59:
         ok("W4 strings: system keys gone, about.adv.* present in _en and _ru")
     else:
         fail("W4 strings.dart language/unlock keys wrong")
+
+    # W5. v0.1.45+144: About body strings localized (were hardcoded EN in
+    #     about.dart). Each new key must exist in BOTH maps (count == 2) so
+    #     RU mode doesn't silently fall back to English. Also: no leftover
+    #     hardcoded EN body literals in about.dart.
+    if int(pv) >= 144:
+        _about_keys = [
+            'about.intro.body', 'about.disclaimer.label',
+            'about.disclaimer.body', 'about.app.label',
+            'about.spec.version', 'about.spec.source',
+            'about.spec.license', 'about.spec.hardware',
+        ]
+        _bad = [k for k in _about_keys if str_w.count(f"'{k}'") != 2]
+        _leftover = [
+            lit for lit in ("'DISCLAIMER'", "'APP'",
+                            "Companion app for Toyota")
+            if lit in about_w
+        ]
+        if not _bad and not _leftover:
+            ok("W5 About body keys present in _en+_ru; no hardcoded EN left")
+        else:
+            fail(f"W5 about l10n incomplete — keys off: {_bad}, "
+                 f"leftover literals: {_leftover}")
+    else:
+        ok(f"W5 skipped (build +{pv}, About l10n lands in +144)")
 else:
     ok(f"Part W skipped (build +{pv}, hidden Advanced lands in +59)")
 
