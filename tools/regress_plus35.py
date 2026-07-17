@@ -4031,6 +4031,57 @@ if int(pv) >= 143:
 else:
     ok(f"Part AP skipped (build +{pv}, charging pack lands in +143)")
 
+# ─────────────── Part AQ: +145 AC charging visibility ───────────────────────
+if int(pv) >= 145:
+    _hal7 = (root / 'lib/services/hal_telemetry_service.dart').read_text()
+    _dash7 = (root / 'lib/screens/dashboard.dart').read_text()
+    # AQ1: slope getter exists, is rise-gated, and enforces BOTH the
+    # min-span and the min-delta floor (a slope from 2 adjacent LSBs is
+    # exactly the +143 noise this getter exists to avoid).
+    if 'double? get halEnergySlopePowerKw' in _hal7 and \
+       '_halEnergyRising(DateTime.now())) return null' in _hal7 and \
+       'if (dt < _kHalSlopeMinSpan) return null;' in _hal7 and \
+       'if (dKwh < _kHalSlopeMinDeltaKwh) return null;' in _hal7:
+        ok('AQ1 energy-slope getter gated (rising + span + delta floors)')
+    else:
+        fail('AQ1 energy-slope getter missing or floor(s) dropped')
+    # AQ2: ring hygiene — points appended ONLY in the accepted-rise branch,
+    # evicted past max span, and CLEARED on the counter re-anchor (junk
+    # read must not bridge sessions).
+    if '_halEnergyPts.addLast((at: now, kwh: e));' in _hal7 and \
+       '> _kHalSlopeMaxSpan' in _hal7 and \
+       '_halEnergyPts.clear();' in _hal7:
+        ok('AQ2 slope ring: rise-only append, span evict, re-anchor clear')
+    else:
+        fail('AQ2 slope ring hygiene broken')
+    # AQ3: K2 — no hard-coded series count. The fallback must be gated on
+    # the latched estimate (BZ3 topology rule) and the latch must divide
+    # live pack_voltage by live cell avg, never assume 136.
+    if 'int? _halSeriesCellsEst;' in _hal7 and \
+       'void _maybeLatchSeriesCells()' in _hal7 and \
+       'if (n == null) return null;' in _hal7 and \
+       '(v / avg).round()' in _hal7:
+        ok('AQ3 cells→packV fallback latch-gated (no per-model const)')
+    else:
+        fail('AQ3 series-count latch missing or hard-coded')
+    # AQ4: banner chain order — slope strictly the LAST link (Alex 17.07:
+    # only when V×I unavailable), and the estimate marker is wired.
+    if 'hal.halChargePowerKw ?? hal.halEnergySlopePowerKw' in _dash7 and \
+       'powerIsEstimate:' in _dash7 and \
+       "powerIsEstimate ? '≈' : ''" in _dash7:
+        ok('AQ4 banner: slope last in chain, ≈ marker rendered')
+    else:
+        fail('AQ4 banner power chain/marker wrong')
+    # AQ5: Pack V card + banner live-line both pick up the cells fallback.
+    if 'svc.packVoltageFromCells ?? hal.halPackVoltageFromCells' in _dash7 and \
+       ': hal.halPackVoltageFromCells,' in _dash7:
+        ok('AQ5 Pack V card + banner live-line use cells fallback')
+    else:
+        fail('AQ5 voltage fallback not wired to both consumers')
+else:
+    ok(f"Part AQ skipped (build +{pv}, AC visibility lands in +145)")
+
+
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
 print(f"+35→+51 REGRESSION — build +{pv}")

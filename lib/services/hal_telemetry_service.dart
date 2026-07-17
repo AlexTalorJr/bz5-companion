@@ -23,6 +23,7 @@
 library;
 
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -472,6 +473,34 @@ class HalTelemetryService extends ChangeNotifier {
   // _kHalEnergyRiseWindow and the SOH machine finalizes.
   static const Duration _kHalEnergyRiseWindow = Duration(seconds: 180);
   static const double _kHalEnergyRiseEpsKwh = 0.001; // counter LSB noise floor
+  // v0.1.46+145 (K1): windowed dE/dt over the counter — the AC power
+  // fallback. Field evidence (AC session 17.07 21:15, export
+  // bz5_export_20260717-211753): pack_current died at 21:16:31 and
+  // pack_voltage at 21:16:53 (~90 s into the session) while the energy
+  // counter kept ticking every ~4 s to the end — so V×I power (and with it
+  // both ETAs) vanished ~2 min in, and the UDS SOC-derived path needs
+  // ~9 min at 2 kW for its first figure. The counter is the only power
+  // signal that provably survives a whole AC session. The single-increment
+  // dE/dt (+143, _halChargeEnergyRiseRateKw) is too noisy for display
+  // (LSB 0.002 kWh per ~4 s → timing jitter swings it ±30%); this ring
+  // integrates over ≥[_kHalSlopeMinSpan] for a stable figure. Points are
+  // appended only on an ACCEPTED rise (same eps as the detector), evicted
+  // past [_kHalSlopeMaxSpan], and cleared on the counter-went-backwards
+  // re-anchor so a junk read can't bridge two sessions.
+  static const Duration _kHalSlopeMinSpan = Duration(seconds: 45);
+  static const Duration _kHalSlopeMaxSpan = Duration(minutes: 5);
+  static const double _kHalSlopeMinDeltaKwh = 0.004; // ≥4 LSB above eps noise
+  final ListQueue<({DateTime at, double kwh})> _halEnergyPts =
+      ListQueue<({DateTime at, double kwh})>();
+  // v0.1.46+145 (K2): self-calibrated series cell count for the cells→pack-V
+  // fallback. NOT a per-model const (BZ3 has a different topology — a
+  // hard-coded 136 would render ~453 V on a ~280 V pack and sail through any
+  // sanity window): while pack_voltage AND the cell extremes are fresh
+  // together (driving; first ~90 s of a charge), latch
+  // round(pack_voltage / cell_avg). The fallback is armed only after a
+  // successful latch in THIS run — never calibrated → null → the card keeps
+  // its honest dash, exactly today's behaviour.
+  int? _halSeriesCellsEst;
   double? _halChargeEnergyLast;        // last counter value seen
   DateTime? _halChargeEnergyLastAt;    // when that value was seen
   DateTime? _halChargeEnergyRiseAt;    // last observed INCREASE
@@ -1018,6 +1047,75 @@ class HalTelemetryService extends ChangeNotifier {
     final p = halPowerKw;
     if (p == null) return null;
     return p.abs();
+  }
+
+  /// v0.1.46+145 (K1): AC power FALLBACK — windowed dE/dt over the
+  /// charge_energy_kwh counter, the one signal that survives a whole AC
+  /// session after the V×I streams die ~90 s in (field export 17.07).
+  /// Explicitly a fallback (Alex, 17.07: "только когда недоступен"):
+  /// callers chain `halChargePowerKw ?? halEnergySlopePowerKw`. Null until
+  /// the window spans ≥[_kHalSlopeMinSpan] AND ≥[_kHalSlopeMinDeltaKwh]
+  /// accumulated — the banner shows "Подключено" for the first ~minute of
+  /// a session, then a stable figure (vs ~9 min for the UDS path at 2 kW).
+  /// HONESTY: this is the DC-side (post-OBC) figure — reads ~15-20% below
+  /// the wall draw; the banner marks it with '≈'.
+  double? get halEnergySlopePowerKw {
+    if (!_halEnergyRising(DateTime.now())) return null;
+    if (_halEnergyPts.length < 2) return null;
+    final last = _halEnergyPts.last;
+    // Oldest point still inside the max window (eviction maintains this)
+    // that is at least minSpan older than the newest — maximises dt.
+    final first = _halEnergyPts.first;
+    final dt = last.at.difference(first.at);
+    if (dt < _kHalSlopeMinSpan) return null;
+    final dKwh = last.kwh - first.kwh;
+    if (dKwh < _kHalSlopeMinDeltaKwh) return null;
+    return dKwh / (dt.inMilliseconds / 3.6e6);
+  }
+
+  /// v0.1.46+145 (K2): pack voltage from the HAL cell extremes — the
+  /// dongle-free fallback for when pack_voltage (2D300008) goes quiet
+  /// during AC (field export 17.07: cells streamed to the last sample
+  /// while pack_voltage died at 21:16:53). (lo+hi)/2 ≈ pack mean is the
+  /// established +105 cell-spread approximation; on a 4 mV BZ5 spread the
+  /// error is <0.5 V (export cross-check: avg(3.328, 3.332) × 136 =
+  /// 452.9 V vs 452–453 V live). Armed ONLY after [_halSeriesCellsEst]
+  /// latched this run — see the field comment for why there is no
+  /// per-model constant here.
+  double? get halPackVoltageFromCells {
+    final n = _halSeriesCellsEst;
+    if (n == null) return null;
+    if (!_useHal('cell_v_lowest') || !_useHal('cell_v_highest')) return null;
+    final lo = halValue('cell_v_lowest') ?? _lastGood['cell_v_lowest']?.value;
+    final hi =
+        halValue('cell_v_highest') ?? _lastGood['cell_v_highest']?.value;
+    if (lo == null || hi == null) return null;
+    final avg = (lo + hi) / 2.0;
+    if (avg < 2.5 || avg > 3.7) return null; // LFP physical envelope
+    final packV = avg * n;
+    if (packV < 150 || packV > 500) return null; // BZ3 ~280 V … BZ5 ~460 V
+    return packV;
+  }
+
+  /// v0.1.46+145 (K2): latch series count while pack_voltage and the cell
+  /// extremes are fresh TOGETHER (driving; the first ~90 s of a charge).
+  /// Idempotent per tick; re-latches freely — the ratio is a physical
+  /// constant of the pack, so later latches only refine rounding.
+  void _maybeLatchSeriesCells() {
+    if (!halFresh('pack_voltage')) return;
+    final v = halValue('pack_voltage');
+    final lo = halValue('cell_v_lowest');
+    final hi = halValue('cell_v_highest');
+    if (v == null || lo == null || hi == null) return;
+    final avg = (lo + hi) / 2.0;
+    if (avg < 2.5 || avg > 3.7) return;
+    final n = (v / avg).round();
+    if (n < 60 || n > 220) return; // sanity: BZ3 ~85 … BZ5 136 … margin
+    if (_halSeriesCellsEst != n) {
+      _halSeriesCellsEst = n;
+      debugPrint('HAL: series cells latched — $n '
+          '(${v.toStringAsFixed(0)} V / ${avg.toStringAsFixed(3)} V)');
+    }
   }
 
   // ── temperatures (v0.1.29+72). Battery temp = probe_highest_temp
@@ -1708,6 +1806,11 @@ class HalTelemetryService extends ChangeNotifier {
     // ownership returns after a dongle interval). Detection itself is only
     // consumed inside the owned path below.
     _trackChargeEnergy(now);
+    // v0.1.46+145 (K2): opportunistic series-count latch — same cheap
+    // pre-ownership spot as the counter tracker, for the same reason: it
+    // must run while the V+cells overlap exists (driving / charge onset),
+    // not only when the owned path is active.
+    _maybeLatchSeriesCells();
     // v0.1.29+116: gate on OWNERSHIP (halOwnsTrip = stream live AND no
     // dongle), not display (halDriveActive) — the exact +106 rule the trip
     // machine already follows. The old halDriveActive gate additionally
@@ -1880,6 +1983,13 @@ class HalTelemetryService extends ChangeNotifier {
       _halChargeEnergyRiseAt = now;
       _halChargeEnergyLast = e;
       _halChargeEnergyLastAt = now;
+      // v0.1.46+145 (K1): windowed-slope ring — accepted rises only, so the
+      // eps filter above doubles as the ring's noise floor.
+      _halEnergyPts.addLast((at: now, kwh: e));
+      while (_halEnergyPts.isNotEmpty &&
+          now.difference(_halEnergyPts.first.at) > _kHalSlopeMaxSpan) {
+        _halEnergyPts.removeFirst();
+      }
       // Diag: log the rise onset immediately, then at most once per 60 s.
       if (!wasRising ||
           _halChargeEnergyRiseLogAt == null ||
@@ -1897,6 +2007,9 @@ class HalTelemetryService extends ChangeNotifier {
       // (the dt then spans the true inter-increment interval → honest dE/dt).
       _halChargeEnergyLast = e;
       _halChargeEnergyLastAt = now;
+      // v0.1.46+145 (K1): a re-anchor invalidates the slope window too — a
+      // junk read must not bridge into the next session's figure.
+      _halEnergyPts.clear();
     }
   }
 
