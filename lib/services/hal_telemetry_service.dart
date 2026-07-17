@@ -1677,7 +1677,16 @@ class HalTelemetryService extends ChangeNotifier {
   _HalTripAgg _collectHalTripAggregates({_HalStopSnapshot? asOf}) {
     return (
       endSoc: asOf?.soc ?? halSocForTrip,
-      endOdo: asOf?.odometerKm ?? _heldValue('odometer', _coreHold),
+      // v0.1.48+147 (K5): third link — last-good odometer. Field case id93
+      // (17.07 19:47): park-confirm fired ~11 min after the car stopped,
+      // the odometer stream had slept, the 90 s hold had expired → endOdo
+      // wrote NULL and 45 km vanished from the stats. The odometer is
+      // monotonic and FROZEN while parked, so the last-good value from the
+      // final moving moment IS the end anchor — this is recall of a true
+      // reading, not fabrication.
+      endOdo: asOf?.odometerKm ??
+          _heldValue('odometer', _coreHold) ??
+          _lastGood['odometer']?.value,
       distanceKm: halTripDistanceKm, // Δ trip_a (live display delta)
       energyKwh: halTripEnergyUsedKwh, // ΔSOC × capacity (EMA)
       consumption: halTripAvgConsumptionKwh100km,
@@ -2384,7 +2393,13 @@ class HalTelemetryService extends ChangeNotifier {
   double? get halTripDistanceKm {
     if (!_halTripActive) return null;
     final start = _halTripStartTripA;
-    final cur = _heldValue('trip_a', _coreHold);
+    // v0.1.48+147 (K5): same last-good rationale as the endOdo anchor —
+    // trip_a is frozen while parked, so when the fresh hold has expired
+    // (park-confirm close fires minutes after the stop) the last SEEN
+    // value is the true final reading. Pre-+147 this getter returned null
+    // at exactly the moment the close needed it (field case id93: 45 km
+    // driven, distance_km written NULL).
+    final cur = _heldValue('trip_a', _coreHold) ?? _halTripLastTripA;
     // trip_a can be null at the very start (frame not yet seen). Once it
     // arrives, latch it as the start so distance reads from zero.
     if (start == null) {
