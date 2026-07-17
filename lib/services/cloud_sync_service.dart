@@ -600,6 +600,14 @@ class CloudSyncService extends ChangeNotifier {
       _clientToken = null;
     }
     _initialized = true;
+    // v0.1.48+147 (K5): one-time repair of trips finalized with NULL end
+    // anchors (the pre-+147 hold-expiry defect — field case id93: 45 km
+    // driven, end_odometer + distance_km both NULL). Runs here, AFTER
+    // _pushedTripIds is loaded and BEFORE the timers start, so repaired
+    // rows are requeued and the very first syncOnce re-pushes them —
+    // push v2 UPSERTs by (vehicle_id, client_uuid), so the server row
+    // heals too and a future restore can't resurrect the nulls.
+    await _backfillTripEndAnchors(prefs);
     _recomputeStatus();
     await _recomputeStats();
     _restartTimers();
@@ -615,6 +623,87 @@ class CloudSyncService extends ChangeNotifier {
     // v0.1.42+141: seed the "linked to account" line on startup.
     // Fire-and-forget, display-only (see fetchDeviceMe).
     if (_clientToken != null) unawaited(fetchDeviceMe());
+  }
+
+  /// v0.1.48+147 (K5): repair closed trips whose end anchors were nulled by
+  /// the pre-+147 hold-expiry defect (park-confirm close firing after the
+  /// odometer/trip_a holds lapsed). For each closed trip with a NULL
+  /// end_odometer, adopt the odometer of the last snapshot captured INSIDE
+  /// the trip (started_at ≤ captured_at ≤ ended_at) — snapshots proved to be
+  /// the reliable odometer oracle in the 17.07 mileage audit (1619 vs 680 km).
+  /// A NULL distance_km is then recomputed as end−start when both anchors
+  /// exist and the delta is sane. Repaired rows leave _pushedTripIds so the
+  /// next syncOnce re-pushes them (uuid-keyed UPSERT heals the server row).
+  /// One-time via prefs flag; a fresh install after restore re-runs it
+  /// harmlessly (no null-anchor rows → no-op).
+  static const _kEndAnchorBackfillDone = 'trip_end_anchor_backfill_147';
+
+  Future<void> _backfillTripEndAnchors(SharedPreferences prefs) async {
+    if (prefs.getBool(_kEndAnchorBackfillDone) ?? false) return;
+    try {
+      final trips = await _db.getAllTrips();
+      final broken = trips
+          .where((t) =>
+              t.endedAt != null &&
+              (t.endOdometer == null || t.distanceKm == null))
+          .toList();
+      if (broken.isEmpty) {
+        await prefs.setBool(_kEndAnchorBackfillDone, true);
+        return;
+      }
+      // Snapshot odometer timeline, oldest→newest, nulls dropped.
+      final snaps = (await _db.getAllSnapshots())
+          .where((s) => s.odometer != null)
+          .toList()
+        ..sort((a, b) => a.capturedAt.compareTo(b.capturedAt));
+      var fixedOdo = 0, fixedDist = 0;
+      final requeue = <int>[];
+      for (final t in broken) {
+        double? endOdo = t.endOdometer;
+        if (endOdo == null) {
+          // Last in-trip snapshot. Linear scan is fine at our scale
+          // (~1.7k snapshots × a handful of broken rows, one-time).
+          for (final s in snaps.reversed) {
+            if (s.capturedAt.isAfter(t.endedAt!)) continue;
+            if (s.capturedAt.isBefore(t.startedAt)) break;
+            endOdo = s.odometer;
+            break;
+          }
+        }
+        double? dist = t.distanceKm;
+        if (dist == null &&
+            endOdo != null &&
+            t.startOdometer != null) {
+          final d = endOdo - t.startOdometer!;
+          // Sanity: non-negative, and no plausible single trip exceeds
+          // 2000 km (guards against a cross-trip snapshot mismatch).
+          if (d >= 0 && d < 2000) dist = d;
+        }
+        final wantOdo = t.endOdometer == null && endOdo != null;
+        final wantDist = t.distanceKm == null && dist != null;
+        if (!wantOdo && !wantDist) continue;
+        await (_db.update(_db.trips)..where((r) => r.id.equals(t.id)))
+            .write(TripsCompanion(
+          endOdometer: wantOdo ? Value(endOdo) : const Value.absent(),
+          distanceKm: wantDist ? Value(dist) : const Value.absent(),
+        ));
+        if (wantOdo) fixedOdo++;
+        if (wantDist) fixedDist++;
+        requeue.add(t.id);
+      }
+      if (requeue.isNotEmpty) {
+        _pushedTripIds.removeAll(requeue);
+        await prefs.setString(
+            _kPushedTripIds, jsonEncode(_pushedTripIds.toList()));
+      }
+      debugPrint('CloudSync: end-anchor backfill — scanned '
+          '${broken.length} null-anchor trip(s), repaired odo=$fixedOdo '
+          'dist=$fixedDist, requeued ${requeue.length} for re-push');
+      await prefs.setBool(_kEndAnchorBackfillDone, true);
+    } catch (e) {
+      // Best-effort: never block init. Flag NOT set — retried next launch.
+      debugPrint('CloudSync: end-anchor backfill failed ($e), will retry');
+    }
   }
 
   @override
@@ -3613,7 +3702,7 @@ class CloudSyncService extends ChangeNotifier {
   /// Read app version from the static value baked into the build.
   /// We don't have package_info_plus as a dep — pubspec-version is
   /// hardcoded here. Update when bumping. Off-by-one tolerated.
-  Future<String> _readAppVersion() async => '0.1.47+146';
+  Future<String> _readAppVersion() async => '0.1.48+147';
 }
 
 // ─── Internal exceptions ────────────────────────────────────────────

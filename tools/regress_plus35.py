@@ -4146,6 +4146,41 @@ if int(pv) >= 146:
 else:
     ok(f"Part AR skipped (build +{pv}, pipeline resilience lands in +146)")
 
+# ─────────────── Part AS: +147 end-anchor finalize fix ──────────────────────
+if int(pv) >= 147:
+    _hal9 = (root / 'lib/services/hal_telemetry_service.dart').read_text()
+    _css9 = (root / 'lib/services/cloud_sync_service.dart').read_text()
+    # AS1: both live-close fallbacks — endOdo falls to _lastGood, trip_a
+    # distance falls to the last SEEN value; neither returns null merely
+    # because the 90 s hold lapsed before a park-confirm close.
+    if "_lastGood['odometer']?.value," in _hal9 and \
+       "_heldValue('trip_a', _coreHold) ?? _halTripLastTripA;" in _hal9:
+        ok('AS1 close-time fallbacks: endOdo last-good + trip_a last-seen')
+    else:
+        fail('AS1 finalize fallback(s) missing')
+    # AS2: backfill — one-time flag, in-trip snapshot window (both bounds),
+    # sane distance guard, and requeue for re-push (server heals via uuid
+    # UPSERT). Flag must NOT be set on the failure path (retry semantics).
+    if "_kEndAnchorBackfillDone = 'trip_end_anchor_backfill_147'" in _css9 and \
+       'isAfter(t.endedAt!)' in _css9 and \
+       'isBefore(t.startedAt)' in _css9 and \
+       'd >= 0 && d < 2000' in _css9 and \
+       '_pushedTripIds.removeAll(requeue);' in _css9:
+        ok('AS2 backfill: in-trip window + sanity + requeue')
+    else:
+        fail('AS2 backfill wiring wrong')
+    # AS3: ordering — backfill runs after the pushed-set load and before
+    # timers, so the FIRST syncOnce already re-pushes repaired rows.
+    _i_loaded = _css9.find('final pushedJson = prefs.getString(_kPushedTripIds);')
+    _i_bf = _css9.find('await _backfillTripEndAnchors(prefs);')
+    _i_timers = _css9.find('_restartTimers();')
+    if -1 < _i_loaded < _i_bf < _i_timers:
+        ok('AS3 backfill ordered: pushed-set load -> backfill -> timers')
+    else:
+        fail('AS3 backfill ordering wrong')
+else:
+    ok(f"Part AS skipped (build +{pv}, end-anchor fix lands in +147)")
+
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
 print(f"+35→+51 REGRESSION — build +{pv}")
