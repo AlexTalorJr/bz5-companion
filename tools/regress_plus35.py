@@ -478,7 +478,11 @@ if int(pv) >= 37:
         ok("D1 404/405 branch scoped inside _postIngest (after its param)")
     else:
         fail("D1 404/405 branch outside _postIngest scope (the +117 bug)")
-    pos_can = cloud_src.find("await _syncCanMonitors();")
+    # +146: entities are wrapped in guardEntity — the ordering INVARIANT is
+    # unchanged, only the call syntax moved. Anchor per build.
+    pos_can = cloud_src.find(
+        "guardEntity('canmonitors', _syncCanMonitors)"
+        if int(pv) >= 146 else "await _syncCanMonitors();")
     pos_map = cloud_src.find("await _syncUuidMapping();")
     if pos_can != -1 and pos_map != -1 and pos_can < pos_map:
         ok("D1 uuid-mapping ordered after ingest pushes in syncOnce")
@@ -3717,10 +3721,18 @@ if int(pv) >= 140:
         fail('AM1 trip_series schema/migration missing')
     # AM2: pipeline order — generate+push AFTER _syncTrips, BEFORE
     # _syncSnapshots; push tolerates a not-yet-deployed endpoint.
-    _p_t = _cs2.find('await _syncTrips();')
+    # (+146: same invariant, guardEntity syntax — anchor per build.)
+    _g146 = int(pv) >= 146
+    _p_t = _cs2.find(
+        "guardEntity('trips', _syncTrips)" if _g146
+        else 'await _syncTrips();')
     _p_g = _cs2.find('await _generateTripSeries();')
-    _p_p = _cs2.find('await _syncTripSeries();')
-    _p_s = _cs2.find('await _syncSnapshots();')
+    _p_p = _cs2.find(
+        "guardEntity('trip_series', _syncTripSeries)" if _g146
+        else 'await _syncTripSeries();')
+    _p_s = _cs2.find(
+        "guardEntity('snapshots', _syncSnapshots)" if _g146
+        else 'await _syncSnapshots();')
     if -1 < _p_t < _p_g < _p_p < _p_s and \
        "'/v1/data/ingest/tripseries'" in _cs2 and \
        'tolerateNotDeployed: true' in _cs2:
@@ -4081,6 +4093,58 @@ if int(pv) >= 145:
 else:
     ok(f"Part AQ skipped (build +{pv}, AC visibility lands in +145)")
 
+# ─────────────── Part AR: +146 pipeline resilience ──────────────────────────
+if int(pv) >= 146:
+    _css8 = (root / 'lib/services/cloud_sync_service.dart').read_text()
+    # AR1: the guard exists, catches ONLY _BridgeException, and every push
+    # entity that talks HTTP goes through it. _generateTripSeries (local
+    # Drift work) stays bare.
+    _guard_ents = ['trips', 'trip_series', 'snapshots', 'sweeps',
+                   'livelogs', 'canmonitors']
+    if 'Future<void> guardEntity(' in _css8 and \
+       'on _BridgeException catch (e)' in _css8 and \
+       all(f"guardEntity('{n}'," in _css8 for n in _guard_ents) and \
+       'await _generateTripSeries();' in _css8 and \
+       "guardEntity('_generateTripSeries'" not in _css8:
+        ok('AR1 guard wraps all 6 HTTP push entities, catches bridge only')
+    else:
+        fail('AR1 guard missing, wrong scope, or wrong exception class')
+    # AR2: THE Phase-5 invariant — mapping and pull run AFTER the guarded
+    # block and are NOT themselves guarded (their failures keep whole-cycle
+    # semantics), i.e. a trips 4xx can no longer starve them. Source order
+    # check: last guardEntity call precedes _syncUuidMapping precedes
+    # _syncPull, and neither of the latter appears inside a guardEntity.
+    _i_guard_last = max(_css8.find(f"guardEntity('{n}'") for n in _guard_ents)
+    _i_map = _css8.find('await _syncUuidMapping();')
+    _i_pull = _css8.find('await _syncPull();')
+    if -1 < _i_guard_last < _i_map < _i_pull and \
+       "guardEntity('uuid" not in _css8 and \
+       "guardEntity('pull" not in _css8:
+        ok('AR2 mapping+pull downstream of guards, unguarded (Phase-5 fix)')
+    else:
+        fail('AR2 mapping/pull ordering or guard scope wrong')
+    # AR3: outer catches untouched — auth / transient / retryable /
+    # account-gate still abort the cycle (their whole-cycle semantics are
+    # the point; a guarded auth error would retry a dead token forever).
+    if 'on _AuthException {' in _css8 and \
+       'on _TransientAuthException catch (e)' in _css8 and \
+       'on _RetryableException catch (e)' in _css8 and \
+       'on _AccountGateException catch (e)' in _css8:
+        ok('AR3 outer exception ladder intact (auth/transient/retry/gate)')
+    else:
+        fail('AR3 outer catch ladder damaged')
+    # AR4: partial-failure honesty — a guarded cycle must NOT clear
+    # _lastError, NOT advance _lastSuccessAt, and must persist the error;
+    # a clean cycle keeps the old success path verbatim.
+    if 'if (guarded.isEmpty) {' in _css8 and \
+       "_lastError = 'Push blocked (permanent): ${guarded.first}'" in _css8 and \
+       '_status = CloudSyncStatus.error;' in _css8 and \
+       'await _persistError(_lastError!);' in _css8:
+        ok('AR4 guarded cycle: error persisted, success not faked')
+    else:
+        fail('AR4 partial-failure bookkeeping wrong')
+else:
+    ok(f"Part AR skipped (build +{pv}, pipeline resilience lands in +146)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)

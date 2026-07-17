@@ -1301,23 +1301,51 @@ class CloudSyncService extends ChangeNotifier {
     _status = CloudSyncStatus.syncing;
     notifyListeners();
     try {
-      await _syncTrips();
+      // v0.1.47+146 (Phase-5 companion): pipeline resilience. Before this
+      // patch every push ran bare in ONE try — a permanent 4xx
+      // (_BridgeException) on the FIRST entity aborted the whole tail:
+      // snapshots, sweeps, livelogs, uuid-mapping AND pull, every 5-min
+      // tick, forever (the exact control-flow that made a server-side
+      // hard-4xx on NULL-uuid a sync brick — see the Phase 5 exchange with
+      // Друг 2, 17.07). The guard catches ONLY _BridgeException (permanent
+      // client error, not retryable by definition) per entity: diag line,
+      // first error kept for _lastError, cycle continues. Auth, transient,
+      // retryable, account-gate and network exceptions keep their +9/+133
+      // whole-cycle semantics — they still abort via the outer catches,
+      // because a dead token or a gated account makes the tail pointless.
+      // Retry semantics are unchanged: a guarded entity's cursors/sets do
+      // not advance (its own code already guarantees that), so the next
+      // tick re-attempts it naturally.
+      final guarded = <String>[];
+      Future<void> guardEntity(
+          String name, Future<void> Function() fn) async {
+        try {
+          await fn();
+        } on _BridgeException catch (e) {
+          guarded.add('$name: ${e.message}');
+          debugPrint('CloudSync: $name push failed permanently '
+              '(${e.message}) — continuing cycle');
+        }
+      }
+
+      await guardEntity('trips', _syncTrips);
       // v0.1.41+140: trip_series — generate for newly-closed trips (and
       // the throttled historical backfill), then push. AFTER _syncTrips
       // so the owning trip is server-side before its series in the
       // typical flow; the race remainder is covered server-side (orphan
       // rows are stored, not rejected — SPEC §3).
+      // (+146: generation is local Drift work, no HTTP — stays unguarded.)
       await _generateTripSeries();
-      await _syncTripSeries();
-      await _syncSnapshots();
-      await _syncSweeps();
-      await _syncLiveLogs();
+      await guardEntity('trip_series', _syncTripSeries);
+      await guardEntity('snapshots', _syncSnapshots);
+      await guardEntity('sweeps', _syncSweeps);
+      await guardEntity('livelogs', _syncLiveLogs);
       // v0.1.29+29: CAN passive monitor sessions (+ child frames).
       // Ordered last so a heavy sweep / livelog push doesn't starve
       // the bus monitor data, and so the bridge sees them after the
       // related livelog (rarely co-located on the same drive, but
       // we keep the convention).
-      await _syncCanMonitors();
+      await guardEntity('canmonitors', _syncCanMonitors);
       // v0.1.29+117 (C1): uuid-mapping delta push, deliberately LAST — after
       // the ingest pushes above, so freshly-uploaded rows exist server-side
       // by the time their mapping arrives and land in `matched` rather than
@@ -1325,20 +1353,37 @@ class CloudSyncService extends ChangeNotifier {
       // would map into the void, advance the watermarks, and leave every row
       // uuid-less on the server until C4.) Deviation from the plan doc §1.4
       // ("before _syncTrips") — server contract is unaffected.
+      // (+146: deliberately NOT guarded — mapping/pull failures were never
+      // maskable by an earlier entity, and their own error paths are the
+      // outer catches' business, same as before.)
       await _syncUuidMapping();
       // v0.1.37+136 (F3): incremental sync-down — LAST, after every push
       // step, so a just-closed local trip is already server-side (and thus
       // a uuid-hit skip) by the time the pull echoes it back. Pull errors
       // never taint the push status (own _lastPullError; see the method).
       await _syncPull();
-      _lastSuccessAt = DateTime.now();
-      _lastError = null;
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setInt(
-          _kLastSuccessAt, _lastSuccessAt!.millisecondsSinceEpoch);
-      await prefs.remove(_kLastError);
+      if (guarded.isEmpty) {
+        _lastSuccessAt = DateTime.now();
+        _lastError = null;
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setInt(
+            _kLastSuccessAt, _lastSuccessAt!.millisecondsSinceEpoch);
+        await prefs.remove(_kLastError);
+      } else {
+        // Mirror the outer-catch semantics (status=error, no
+        // _recomputeStatus overwrite, error persisted) — a partially
+        // blocked cycle is NOT a success even though the tail ran.
+        // _lastSuccessAt deliberately not advanced: "last success" means
+        // a fully clean cycle, and the Diagnostics screen reads both.
+        _lastError = 'Push blocked (permanent): ${guarded.first}'
+            '${guarded.length > 1 ? ' (+${guarded.length - 1} more)' : ''}';
+        _status = CloudSyncStatus.error;
+        await _persistError(_lastError!);
+      }
       await _recomputeStats();
-      _recomputeStatus();
+      if (guarded.isEmpty) {
+        _recomputeStatus();
+      }
     } on _AuthException {
       // v0.1.29+9: permanent auth failure (3+ consecutive 401s OR
       // explicit 409 already_revoked). Wipe the token from secure
@@ -3568,7 +3613,7 @@ class CloudSyncService extends ChangeNotifier {
   /// Read app version from the static value baked into the build.
   /// We don't have package_info_plus as a dep — pubspec-version is
   /// hardcoded here. Update when bumping. Off-by-one tolerated.
-  Future<String> _readAppVersion() async => '0.1.46+145';
+  Future<String> _readAppVersion() async => '0.1.47+146';
 }
 
 // ─── Internal exceptions ────────────────────────────────────────────
