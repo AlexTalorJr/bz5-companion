@@ -543,7 +543,11 @@ class _Connected extends StatelessWidget {
     // fresh (445-454 V live-verified); OBD2 sum-of-cells is the fallback.
     final packFromCells = hal.useHalForPackV
         ? hal.halPackVoltage
-        : svc.packVoltageFromCells;
+        // v0.1.46+145 (K2): OBD sum-of-cells needs the dongle; when both it
+        // and HAL pack_voltage are out (AC session, ~90 s in — field export
+        // 17.07) the HAL cell extremes still stream → (lo+hi)/2 × latched
+        // series count. Null until calibrated this run (honesty dash).
+        : (svc.packVoltageFromCells ?? hal.halPackVoltageFromCells);
     final packV = svc.packVoltageV;       // platform constant ~450V (fallback only)
     final hvBus = svc.hvBusV;              // HV bus (live but lies under charge)
     final parkingEngaged = svc.parkingPawlEngaged;
@@ -661,7 +665,14 @@ class _Connected extends StatelessWidget {
             // v0.1.32+131: deliberately NOT resolveUiSocPct — this value
             // feeds the remaining-kWh/ETA math, and math stays on precise
             // regardless of the display setting.
-            halPowerKw: hal.halChargePowerKw,
+            // v0.1.46+145 (K1): third link — windowed dE/dt over the energy
+            // counter, the only power signal alive through a whole AC
+            // session. STRICTLY a fallback (Alex 17.07: slope only when V×I
+            // unavailable); powerIsEstimate marks it '≈' (DC-side figure).
+            halPowerKw: hal.halChargePowerKw ?? hal.halEnergySlopePowerKw,
+            powerIsEstimate: svc.chargingPowerKw <= 0.1 &&
+                hal.halChargePowerKw == null &&
+                hal.halEnergySlopePowerKw != null,
             socOverridePct:
                 hal.useHalForSoc ? hal.halSocPct : svc.socPrecisePct,
             // v0.1.44+143 §A3: live session stats — Δ from the HAL session
@@ -670,8 +681,11 @@ class _Connected extends StatelessWidget {
             socDeltaPct: hal.halChargeSessionSocDeltaPct,
             chargeCurrentA:
                 hal.halFresh('pack_current') ? hal.halValue('pack_current') : null,
-            packVoltageV:
-                hal.halFresh('pack_voltage') ? hal.halValue('pack_voltage') : null,
+            // v0.1.46+145 (K2): same cells-derived fallback as the Pack V
+            // card — the live line keeps a voltage after 2D300008 sleeps.
+            packVoltageV: hal.halFresh('pack_voltage')
+                ? hal.halValue('pack_voltage')
+                : hal.halPackVoltageFromCells,
             batteryTempC: hal.halBatteryTempC,
           ),
         if (isCharging) const SizedBox(height: 12),
@@ -1206,6 +1220,11 @@ class _ChargingBanner extends StatelessWidget {
   // SOC card already shows. Both null → identical to the old UDS-only path.
   final double? halPowerKw;
   final double? socOverridePct;
+  // v0.1.46+145 (K1): true when the shown power is the energy-counter
+  // slope (DC-side estimate) rather than a direct measurement — rendered
+  // with an '≈' prefix. Honesty marker, computed at the call site where
+  // all three chain links are visible.
+  final bool powerIsEstimate;
   // v0.1.44+143 §A3: live session stats, all honesty-nulls — a row renders
   // ONLY when its value is live. socDeltaPct = SOC gained since the HAL
   // session anchor; current/voltage are freshness-gated (6 s) at the call
@@ -1220,6 +1239,7 @@ class _ChargingBanner extends StatelessWidget {
     this.chargedSession,
     this.halPowerKw,
     this.socOverridePct,
+    this.powerIsEstimate = false,
     this.socDeltaPct,
     this.chargeCurrentA,
     this.packVoltageV,
@@ -1268,7 +1288,9 @@ class _ChargingBanner extends StatelessWidget {
                               letterSpacing: 1.5, color: Colors.amber)),
                       Text(
                           power > 0.1
-                              ? '${power.toStringAsFixed(1)} kW'
+                              // v0.1.46+145 (K1): '≈' = energy-counter slope
+                              // (DC-side, ~15-20% under the wall figure).
+                              ? '${powerIsEstimate ? '≈' : ''}${power.toStringAsFixed(1)} kW'
                               : S.of('dash.connected'),
                           style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w500)),
                     ],
@@ -1401,7 +1423,7 @@ class _TripCard extends StatelessWidget {
 
 /// Bump when changing the diagnostic format — helps cross-reference
 /// screenshots to specific app versions while iterating.
-const String _kDiagVersion = 'v0.1.45+144';
+const String _kDiagVersion = 'v0.1.46+145';
 
 /// v0.1.29+94: public alias of the build version string for display outside
 /// dashboard (e.g. the About screen's APP card). Single literal source — the
