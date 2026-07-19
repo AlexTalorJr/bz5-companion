@@ -1766,8 +1766,16 @@ class CloudSyncService extends ChangeNotifier {
       ));
       made++;
     }
-    debugPrint('CloudSync: trip_series generated — trip #${trip.id} '
-        '($made series)');
+    // v0.1.49+148: quiet when nothing was generated. Restored trips have
+    // no raw samples/hal_samples (raw data dies with the wipe), so the
+    // one-time throttled sweep after a restore printed "(0 series)" ×3 a
+    // minute for ~32 minutes (19.07 log). The sweep is finite either way —
+    // the watermark advances per trip regardless of `made` — this only
+    // removes the noise. Trips that DO yield series still log.
+    if (made > 0) {
+      debugPrint('CloudSync: trip_series generated — trip #${trip.id} '
+          '($made series)');
+    }
   }
 
   /// Push unsynced series. 404 (server without migration 0012) is a
@@ -2896,12 +2904,16 @@ class CloudSyncService extends ChangeNotifier {
       // the restored identity, and the server would dedupe most
       // (old_device_id, client_*_id) collisions silently.
       final allTrips = await _db.getAllTrips();
-      final allSnapsRecent = await _db.getRecentSnapshots(limit: 1);
       final maxTripId = allTrips.isEmpty
           ? 0
           : allTrips.map((t) => t.id).reduce((a, b) => a > b ? a : b);
-      final maxSnapId =
-          allSnapsRecent.isEmpty ? 0 : allSnapsRecent.first.id;
+      // v0.1.49+148: MAX(id) directly. The old getRecentSnapshots(limit:1)
+      // proxy picked the row with the newest captured_at — a live HAL
+      // snapshot written mid-restore (the HAL writer runs outside the +126
+      // barrier) owns that with a mid-range id, so the cursor/watermark
+      // stopped UNDER the restored tail (19.07: wm 1105 of 1865 → 760
+      // uuid-mapping conflicts + a re-push window).
+      final maxSnapId = await _db.maxSnapshotId();
       _cursorTrip = maxTripId;
       _cursorSnapshot = maxSnapId;
       await prefs.setInt(_kCursorTrip, _cursorTrip);
@@ -3702,7 +3714,7 @@ class CloudSyncService extends ChangeNotifier {
   /// Read app version from the static value baked into the build.
   /// We don't have package_info_plus as a dep — pubspec-version is
   /// hardcoded here. Update when bumping. Off-by-one tolerated.
-  Future<String> _readAppVersion() async => '0.1.48+147';
+  Future<String> _readAppVersion() async => '0.1.49+148';
 }
 
 // ─── Internal exceptions ────────────────────────────────────────────

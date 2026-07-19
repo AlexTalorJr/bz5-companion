@@ -103,25 +103,29 @@ class _TrendsScreenState extends State<TrendsScreen> {
               final bucket = _window == _Window.d30
                   ? TrendBucket.day
                   : TrendBucket.month;
-              final agg = TrendAggregator.build(
-                trips,
-                costPerKwh: cost.costPerKwh,
-                bucket: bucket,
-              );
-
-              if (agg.isEmpty) {
-                return _emptyState();
-              }
-
-              // SOH comes from snapshots and (v0.1.31+130) the Ah-method
-              // history — fetch both and merge once resolved. Nested
-              // builders with `data ?? const []` keep the original
-              // loading behaviour: sections render immediately off the
-              // trips aggregate, health series pop in when ready.
+              // v0.1.49+148 (K4): the aggregate is built from snapshots
+              // too (odometer/SOC walks), so they are awaited BEFORE the
+              // build — the honest figures can't render without them.
+              // SOH history still pops in lazily as before.
               return FutureBuilder<List<Snapshot>>(
                 future: svc.db.getSnapshotsInRange(from, now),
                 builder: (context, snapSnap) {
-                  final snapshots = snapSnap.data ?? const <Snapshot>[];
+                  if (!snapSnap.hasData) {
+                    return const Center(
+                        child: CircularProgressIndicator());
+                  }
+                  final snapshots = snapSnap.data!;
+                  final agg = TrendAggregator.build(
+                    trips,
+                    costPerKwh: cost.costPerKwh,
+                    bucket: bucket,
+                    snapshots: snapshots,
+                  );
+
+                  if (agg.isEmpty) {
+                    return _emptyState();
+                  }
+
                   return FutureBuilder<List<SohHistoryData>>(
                     future: svc.db.getSohHistoryInRange(from, now),
                     builder: (context, sohSnap) {
@@ -253,12 +257,22 @@ class _TrendsScreenState extends State<TrendsScreen> {
                 .map((p) => p.value)
                 .reduce((a, b) => a + b) /
             agg.regenSharePerPeriod.length;
-    final regenFooter = avgRegen == null
-        ? '—'
-        : S
-            .of('trends.avg_regen_period_fmt')
-            .replaceFirst('{x}', avgRegen.toStringAsFixed(1))
-            .replaceFirst('{n}', '${agg.regenSharePerPeriod.length}');
+    // v0.1.49+148 (K4): regen is the one figure still summed from TRIP
+    // rows (snapshots don't know it), so its footer carries the coverage
+    // marker — "одометр X · записано Y (Z%)" — telling the reader what
+    // share of the real (odometer) distance those trips actually saw.
+    // Null coverage (legacy trips-only fallback) omits the marker.
+    final coverage = agg.tripCoveragePct;
+    final coverageSuffix = coverage == null
+        ? ''
+        : ' · ${S.of('trends.coverage_fmt').replaceFirst('{x}', _fmtKm(agg.totalDistanceKm)).replaceFirst('{y}', _fmtKm(agg.recordedTripDistanceKm)).replaceFirst('{z}', coverage.toStringAsFixed(0))}';
+    final regenFooter = (avgRegen == null
+            ? '—'
+            : S
+                .of('trends.avg_regen_period_fmt')
+                .replaceFirst('{x}', avgRegen.toStringAsFixed(1))
+                .replaceFirst('{n}', '${agg.regenSharePerPeriod.length}')) +
+        coverageSuffix;
 
     // v0.1.31+130 SOH combo footer: Ah-method "was → now" when the history
     // has points, "accumulating" until the first qualifying session; the
