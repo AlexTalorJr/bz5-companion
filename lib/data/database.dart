@@ -1529,6 +1529,21 @@ class AppDatabase extends _$AppDatabase {
           ? data
           : data.copyWith(clientUuid: Value(uuidV7())));
 
+  /// v0.1.49+148: direct MAX(id). The restore hook previously proxied
+  /// "max snapshot id" via getRecentSnapshots(limit: 1) — which orders by
+  /// captured_at DESC, not id. A live HAL snapshot written mid-restore
+  /// carries the newest captured_at with a MID-RANGE local id, so the
+  /// proxy under-reported the max and left the tail of restored rows
+  /// above the push cursor / uuid-map watermark (19.07 field: watermark
+  /// 1105 of 1865 → 760 mapping conflicts on reattach).
+  Future<int> maxSnapshotId() async {
+    final row = await customSelect(
+      'SELECT COALESCE(MAX(id), 0) AS m FROM snapshots',
+      readsFrom: {snapshots},
+    ).getSingle();
+    return row.read<int>('m');
+  }
+
   Future<List<Snapshot>> getRecentSnapshots({int limit = 1000}) {
     return (select(snapshots)
           ..orderBy(

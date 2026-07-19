@@ -501,6 +501,14 @@ class HalTelemetryService extends ChangeNotifier {
   // successful latch in THIS run — never calibrated → null → the card keeps
   // its honest dash, exactly today's behaviour.
   int? _halSeriesCellsEst;
+  // v0.1.49+148 (K6): latch stabilizers. Candidates are collected only at
+  // standstill and the MODE of a short window latches — see
+  // _maybeLatchSeriesCells for the field rationale (19.07 log: 26
+  // re-latches flapping 135/136/137 in a 7-minute drive).
+  final List<int> _seriesCellCandidates = <int>[];
+  DateTime? _seriesLatchLogAt;
+  static const int _kSeriesLatchWindow = 9;
+  static const Duration _kSeriesLatchLogEvery = Duration(seconds: 60);
   double? _halChargeEnergyLast;        // last counter value seen
   DateTime? _halChargeEnergyLastAt;    // when that value was seen
   DateTime? _halChargeEnergyRiseAt;    // last observed INCREASE
@@ -1099,21 +1107,57 @@ class HalTelemetryService extends ChangeNotifier {
 
   /// v0.1.46+145 (K2): latch series count while pack_voltage and the cell
   /// extremes are fresh TOGETHER (driving; the first ~90 s of a charge).
-  /// Idempotent per tick; re-latches freely — the ratio is a physical
-  /// constant of the pack, so later latches only refine rounding.
+  /// v0.1.49+148 (K6): the +145 "re-latches freely" rule flapped in the
+  /// field — under load pack_voltage sags at a different instant than the
+  /// cell extremes are sampled, so the rounded ratio oscillated
+  /// 135/136/137 (19.07 log: 26 re-latches in 7 minutes of driving).
+  /// Now: candidates are collected ONLY at standstill (coherent samples —
+  /// no sag skew), the MODE of a short window latches instead of every
+  /// instantaneous ratio, and the diag line is throttled (first latch
+  /// always prints; refinements at most once a minute).
   void _maybeLatchSeriesCells() {
     if (!halFresh('pack_voltage')) return;
     final v = halValue('pack_voltage');
     final lo = halValue('cell_v_lowest');
     final hi = halValue('cell_v_highest');
     if (v == null || lo == null || hi == null) return;
+    // K6: standstill gate. Movement also clears the window so a
+    // stop-light latch never mixes in driving samples.
+    final spd = halValue('speed');
+    if (spd != null && spd > 1.0) {
+      _seriesCellCandidates.clear();
+      return;
+    }
     final avg = (lo + hi) / 2.0;
     if (avg < 2.5 || avg > 3.7) return;
     final n = (v / avg).round();
     if (n < 60 || n > 220) return; // sanity: BZ3 ~85 … BZ5 136 … margin
-    if (_halSeriesCellsEst != n) {
-      _halSeriesCellsEst = n;
-      debugPrint('HAL: series cells latched — $n '
+    _seriesCellCandidates.add(n);
+    if (_seriesCellCandidates.length < _kSeriesLatchWindow) return;
+    // Mode of the window — at rest pack_voltage ticks ~1-2 Hz, so a full
+    // window arrives within seconds of any stop / charge onset.
+    final counts = <int, int>{};
+    for (final c in _seriesCellCandidates) {
+      counts[c] = (counts[c] ?? 0) + 1;
+    }
+    var mode = _seriesCellCandidates.first;
+    var best = 0;
+    counts.forEach((k, c) {
+      if (c > best) {
+        best = c;
+        mode = k;
+      }
+    });
+    _seriesCellCandidates.clear();
+    if (_halSeriesCellsEst == mode) return;
+    final firstLatch = _halSeriesCellsEst == null;
+    _halSeriesCellsEst = mode;
+    final now = DateTime.now();
+    if (firstLatch ||
+        _seriesLatchLogAt == null ||
+        now.difference(_seriesLatchLogAt!) >= _kSeriesLatchLogEvery) {
+      _seriesLatchLogAt = now;
+      debugPrint('HAL: series cells latched — $mode '
           '(${v.toStringAsFixed(0)} V / ${avg.toStringAsFixed(3)} V)');
     }
   }

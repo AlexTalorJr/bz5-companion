@@ -4181,6 +4181,73 @@ if int(pv) >= 147:
 else:
     ok(f"Part AS skipped (build +{pv}, end-anchor fix lands in +147)")
 
+# ─────────── Part AT: +148 honest trends (K4) + K6 latch/watermark ───────────
+if int(pv) >= 148:
+    _hal10 = (root / 'lib/services/hal_telemetry_service.dart').read_text()
+    _css10 = (root / 'lib/services/cloud_sync_service.dart').read_text()
+    _db10 = (root / 'lib/data/database.dart').read_text()
+    # AT1 (K4): the aggregator carries the snapshot walks — odometer-walk
+    # distance with the trip sum kept separately for the coverage marker,
+    # and an explicit source flag for the fallback path.
+    if 'List<Snapshot> snapshots = const <Snapshot>[]' in agg_src and \
+       'recordedTripDistanceKm' in agg_src and \
+       'distanceFromOdometer' in agg_src and \
+       'kMaxWalkPairGap' in agg_src and \
+       'kMaxWalkStepKm' in agg_src:
+        ok('AT1 aggregator: snapshot walks + coverage fields + fallback flag')
+    else:
+        fail('AT1 aggregator walk plumbing missing')
+    # AT2 (K4): SOC walk hygiene — charging pairs excluded, only DROPS
+    # count (a rise without the flag = hole-masked charging, skipped).
+    if "(p.isCharging ?? false) || (s.isCharging ?? false)" in agg_src and \
+       'if (drop > 0 && drop <= 100)' in agg_src:
+        ok('AT2 SOC walk: charging pairs excluded, drops only')
+    else:
+        fail('AT2 SOC walk hygiene broken')
+    # AT3 (K4): regen stays trips-sourced and the +144 gross-denominator
+    # formula is intact — walk energy must NOT leak into the regen share.
+    if 'final gross = e.value + regen;' in agg_src and \
+       'regenSharePerPeriod: regenBars,' in agg_src:
+        ok('AT3 regen share: trips-sourced, +144 gross formula intact')
+    else:
+        fail('AT3 regen share source/formula changed')
+    # AT4 (K4): trends.dart awaits snapshots BEFORE building the aggregate
+    # and renders the coverage marker; the l10n key exists in BOTH maps.
+    if 'snapshots: snapshots,' in trends and \
+       "S.of('trends.coverage_fmt')" in trends and \
+       _strings_src.count("'trends.coverage_fmt'") == 2:
+        ok('AT4 trends: snapshots awaited pre-build + coverage marker ×2 l10n')
+    else:
+        fail('AT4 trends wiring / coverage l10n missing')
+    # AT5 (K6): series latch — standstill gate, windowed mode, throttled
+    # diag line (19.07 log: 26 re-latches flapping 135/136/137).
+    if '_seriesCellCandidates' in _hal10 and \
+       'spd != null && spd > 1.0' in _hal10 and \
+       '_kSeriesLatchLogEvery' in _hal10 and \
+       '_kSeriesLatchWindow' in _hal10:
+        ok('AT5 series latch: standstill + window mode + log throttle')
+    else:
+        fail('AT5 series latch stabilizers missing')
+    # AT6: restore hook takes MAX(id) directly — the recent-by-capturedAt
+    # proxy left the restored tail above the cursor/watermark when a live
+    # HAL snapshot landed mid-restore (19.07: 760 mapping conflicts).
+    if 'await _db.maxSnapshotId();' in _css10 and \
+       'COALESCE(MAX(id), 0)' in _db10 and \
+       'allSnapsRecent' not in _css10:
+        ok('AT6 restore hook: watermark/cursor from MAX(id)')
+    else:
+        fail('AT6 MAX(id) watermark fix missing')
+    # AT7: the trip_series generator only logs when it actually made
+    # series (restored trips have no raw samples — the sweep was finite
+    # but noisy). The sweep/watermark structure itself is untouched.
+    if 'if (made > 0) {' in _css10 and \
+       "trip_series generated — trip #" in _css10:
+        ok('AT7 series generator: 0-series log quieted, sweep intact')
+    else:
+        fail('AT7 generator log gate missing')
+else:
+    ok(f"Part AT skipped (build +{pv}, honest trends land in +148)")
+
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
 print(f"+35→+51 REGRESSION — build +{pv}")

@@ -80,6 +80,16 @@ class TrendAggregate {
   /// Only buckets where Σ energy > 0 appear.
   final List<PeriodBar> regenSharePerPeriod;
 
+  // ── v0.1.49+148 (K4 honest trends) ──
+  /// Σ distanceKm over TRIP rows — what the app actually *recorded* as
+  /// trips. When [distanceFromOdometer] is true this is the "записано Y"
+  /// half of the coverage marker; totalDistanceKm is the odometer truth.
+  final double recordedTripDistanceKm;
+
+  /// True when totals/bars come from the snapshot odometer/SOC walks;
+  /// false = legacy trips-only fallback (no usable snapshots in window).
+  final bool distanceFromOdometer;
+
   const TrendAggregate({
     required this.totalDistanceKm,
     required this.totalEnergyKwh,
@@ -91,9 +101,22 @@ class TrendAggregate {
     required this.consumptionPerPeriod,
     required this.distancePerPeriod,
     required this.regenSharePerPeriod,
+    this.recordedTripDistanceKm = 0,
+    this.distanceFromOdometer = false,
   });
 
-  bool get isEmpty => tripCount == 0;
+  /// v0.1.49+148 (K4): what share of the odometer distance the recorded
+  /// trips cover — the honesty valve for the trips-sourced figures
+  /// (regen). Null when the walk didn't run (legacy fallback) so the UI
+  /// simply omits the marker.
+  double? get tripCoveragePct =>
+      (distanceFromOdometer && totalDistanceKm > 0)
+          ? (recordedTripDistanceKm / totalDistanceKm * 100)
+              .clamp(0.0, 100.0)
+              .toDouble()
+          : null;
+
+  bool get isEmpty => tripCount == 0 && totalDistanceKm <= 0;
 
   /// v0.1.31+130: derived full-charge range for the consumption-card
   /// footer ("≈ N км на 100%"). Window totals over the usable capacity —
@@ -142,9 +165,33 @@ const double kMinDistForConsumptionKm = 2.0;
 /// are untouched, this only gates the per-period bar.
 const double kMinBucketDistKm = 5.0;
 
+/// v0.1.49+148 (K4): sanity ceiling for a single odometer step between two
+/// consecutive snapshots. The odometer is monotone, so a negative delta is
+/// a data glitch (skip); a step above this is a corrupt reading, not a
+/// coverage hole (the June holes were ~380 km).
+const double kMaxWalkStepKm = 2000.0;
+
+/// v0.1.49+148 (K4): pairs of snapshots further apart than this are a
+/// COVERAGE HOLE. Their deltas still count toward window totals (that is
+/// the whole point — the odometer doesn't lie across app downtime) and the
+/// cumulative curve (a running total jumping over a hole is truthful), but
+/// they are NOT attributed to a per-bucket bar: painting a 380-km June
+/// hole as one huge "day" bar would trade one lie for another.
+const Duration kMaxWalkPairGap = Duration(hours: 6);
+
 class TrendAggregator {
   /// Build the full aggregate for [trips] (assumed already filtered to the
   /// window and sorted ascending by startedAt — getTripsInRange does both).
+  ///
+  /// v0.1.49+148 (K4 honest trends): [snapshots] (same window, ascending
+  /// by capturedAt — getSnapshotsInRange does both) now drive distance,
+  /// energy, money and consumption via odometer/SOC WALKS. Trips missed
+  /// the field audit badly (17.07: odometer 1619 km vs Σtrips 680 km, 42%)
+  /// — app downtime, zombie trips and null-finalizations all silently
+  /// shrink the trip sum, while the odometer cannot lie. Regen stays
+  /// trips-sourced (snapshots don't know it) with a coverage marker
+  /// (tripCoveragePct) as the honesty valve. Empty/unusable snapshots →
+  /// legacy trips-only behaviour, marker absent.
   ///
   /// [costPerKwh] is the user's tariff (0 ⇒ cost section reads as zero,
   /// which the UI hides when CostSettings.isConfigured is false).
@@ -156,8 +203,9 @@ class TrendAggregator {
     List<Trip> trips, {
     required double costPerKwh,
     required TrendBucket bucket,
+    List<Snapshot> snapshots = const <Snapshot>[],
   }) {
-    if (trips.isEmpty) return TrendAggregate.empty;
+    if (trips.isEmpty && snapshots.isEmpty) return TrendAggregate.empty;
 
     double totalDistance = 0;
     double totalEnergy = 0;
@@ -265,17 +313,117 @@ class TrendAggregator {
             })()),
     ]..sort((a, b) => a.start.compareTo(b.start));
 
+    // ── v0.1.49+148 (K4): snapshot walks ──
+    //
+    // Odometer walk: Σ of positive per-pair deltas = the distance the CAR
+    // says it drove, immune to app downtime. SOC walk: Σ of per-pair SOC
+    // drops × capacity = energy drawn, with is_charging pairs excluded
+    // (a rising SOC pair without the flag — charging inside a coverage
+    // hole — yields drop ≤ 0 and is skipped too; note that such a hole
+    // MASKS the consumption that happened around it, which is exactly
+    // what tripCoveragePct exists to disclose). Pairs wider than
+    // kMaxWalkPairGap feed totals + the cumulative curve but not the
+    // per-bucket bars (see the constant's comment).
+    double walkDist = 0;
+    double walkEnergy = 0;
+    final walkDistBucket = <DateTime, double>{};
+    final walkEnergyBucket = <DateTime, double>{};
+    final walkMonthEnergy = <DateTime, double>{};
+    final walkCumByBucket = <DateTime, double>{};
+    Snapshot? prev;
+    for (final s in snapshots) {
+      final p = prev;
+      prev = s;
+      if (p == null) continue;
+      final gap = s.capturedAt.difference(p.capturedAt);
+      final inBar = gap <= kMaxWalkPairGap;
+      final b = _bucketStart(s.capturedAt, bucket);
+
+      final po = p.odometer, so = s.odometer;
+      if (po != null && so != null) {
+        final d = so - po;
+        if (d > 0 && d < kMaxWalkStepKm) {
+          walkDist += d;
+          walkCumByBucket[b] = walkDist;
+          if (inBar) {
+            walkDistBucket[b] = (walkDistBucket[b] ?? 0) + d;
+          }
+        }
+      }
+
+      final psoc = p.soc, ssoc = s.soc;
+      final charging = (p.isCharging ?? false) || (s.isCharging ?? false);
+      if (psoc != null && ssoc != null && !charging) {
+        final drop = psoc - ssoc;
+        if (drop > 0 && drop <= 100) {
+          final e = drop * kUsableCapacityKwh / 100;
+          walkEnergy += e;
+          // Money is ALWAYS monthly and coarse — hole pairs stay in so
+          // Σ(month bars) keeps equalling totals × tariff.
+          final m = DateTime(s.capturedAt.year, s.capturedAt.month);
+          walkMonthEnergy[m] = (walkMonthEnergy[m] ?? 0) + e;
+          if (inBar) {
+            walkEnergyBucket[b] = (walkEnergyBucket[b] ?? 0) + e;
+          }
+        }
+      }
+    }
+
+    // Source selection: each figure independently prefers its walk and
+    // falls back to the trip sum when the walk yielded nothing (no/sparse
+    // snapshots — e.g. a phone that never synced). Regen is ALWAYS trips.
+    final useWalkDist = walkDist > 0;
+    final useWalkEnergy = useWalkDist && walkEnergy > 0;
+
+    final honestDistance = useWalkDist ? walkDist : totalDistance;
+    final honestEnergy = useWalkEnergy ? walkEnergy : totalEnergy;
+
+    final honestCumulative = useWalkDist
+        ? (<TrendPoint>[
+            for (final e in walkCumByBucket.entries)
+              TrendPoint(
+                  e.key.millisecondsSinceEpoch.toDouble(), e.value),
+          ]..sort((a, b) => a.x.compareTo(b.x)))
+        : cumulative;
+
+    final honestCostMonths = useWalkEnergy
+        ? (walkMonthEnergy.entries
+            .map((e) => PeriodBar(e.key, e.value * costPerKwh))
+            .toList()
+          ..sort((a, b) => a.start.compareTo(b.start)))
+        : costMonths;
+
+    final honestDistanceBars = useWalkDist
+        ? (<PeriodBar>[
+            for (final e in walkDistBucket.entries)
+              PeriodBar(e.key, e.value),
+          ]..sort((a, b) => a.start.compareTo(b.start)))
+        : distanceBars;
+
+    // Consumption per bucket from the walks, same bucket floor as the
+    // trips path (kMinBucketDistKm) — a bucket of yard-crawl noise stays
+    // absent, not zero.
+    final honestConsumptionBars = (useWalkDist && useWalkEnergy)
+        ? (<PeriodBar>[
+            for (final e in walkEnergyBucket.entries)
+              if ((walkDistBucket[e.key] ?? 0) >= kMinBucketDistKm)
+                PeriodBar(e.key, e.value / walkDistBucket[e.key]! * 100),
+          ]..sort((a, b) => a.start.compareTo(b.start)))
+        : consumptionBars;
+
     return TrendAggregate(
-      totalDistanceKm: totalDistance,
-      totalEnergyKwh: totalEnergy,
-      totalCostMoney: totalEnergy * costPerKwh,
+      totalDistanceKm: honestDistance,
+      totalEnergyKwh: honestEnergy,
+      totalCostMoney: honestEnergy * costPerKwh,
       totalRegenKwh: totalRegen,
       tripCount: trips.length,
-      cumulativeOdometer: cumulative,
-      costPerMonth: costMonths,
-      consumptionPerPeriod: consumptionBars,
-      distancePerPeriod: distanceBars,
+      cumulativeOdometer: honestCumulative,
+      costPerMonth: honestCostMonths,
+      consumptionPerPeriod: honestConsumptionBars,
+      distancePerPeriod: honestDistanceBars,
       regenSharePerPeriod: regenBars,
+      recordedTripDistanceKm: totalDistance,
+      distanceFromOdometer: useWalkDist,
     );
   }
 
