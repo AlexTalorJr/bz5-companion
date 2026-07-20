@@ -1332,9 +1332,15 @@ if int(pv) >= 45:
         fail(f"L9 missing footer composition: {missing}")
 
     # L10. Logic port: weighted-average consumption is total energy /
-    #      total distance × 100 (not per-trip average). Verify the
-    #      formula explicitly.
-    if "agg.totalEnergyKwh / agg.totalDistanceKm * 100" in trends:
+    #      total distance × 100 (not per-trip average). Era-aware: from
+    #      +150 the weighted average lives in the aggregate as the
+    #      co-covered ratio (still Σenergy/Σdistance, cleaner window) and
+    #      the footer reads it from there.
+    _l10_ok = ("agg.totalEnergyKwh / agg.totalDistanceKm * 100" in trends
+               if int(pv) < 150
+               else ("agg.avgConsumptionKwh100" in trends and
+                     "pairedEnergy / pairedDist * 100" in agg_src))
+    if _l10_ok:
         ok("L10 average consumption is weighted (energy/distance), not per-trip mean")
     else:
         fail("L10 average consumption formula wrong — would skew with short trips")
@@ -4274,6 +4280,30 @@ if int(pv) >= 149:
         fail('AU2 charging poison flag missing/weakened')
 else:
     ok(f"Part AU skipped (build +{pv}, walk anchors land in +149)")
+
+# ─────────── Part AV: +150 honest average (co-covered consumption) ───────────
+if int(pv) >= 150:
+    # AV1: the average consumption is computed over co-covered day buckets
+    # (both walks present), not the mismatched totals ratio; the aggregate
+    # carries the value and its honest denominator.
+    if 'avgConsumptionKwh100' in agg_src and \
+       'consumptionCoveredKm' in agg_src and \
+       'pairedDist += d;' in agg_src and \
+       'pairedEnergy += e.value;' in agg_src:
+        ok('AV1 co-covered average lives in the aggregate')
+    else:
+        fail('AV1 co-covered average missing from aggregator')
+    # AV2: the footer consumes the aggregate's number — the local diluted
+    # totals ratio must be gone from trends.dart; range derives from the
+    # same honest number inside estRangeKm.
+    if 'agg.avgConsumptionKwh100' in trends and \
+       'agg.totalEnergyKwh / agg.totalDistanceKm * 100' not in trends and \
+       'kUsableCapacityKwh / cons * 100' in agg_src:
+        ok('AV2 footer + range read the honest average')
+    else:
+        fail('AV2 footer still on diluted totals ratio')
+else:
+    ok(f"Part AV skipped (build +{pv}, honest average lands in +150)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)

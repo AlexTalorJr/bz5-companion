@@ -233,14 +233,13 @@ class _TrendsScreenState extends State<TrendsScreen> {
             .replaceFirst('{v}', costTotal.toStringAsFixed(1))
             .replaceFirst('{n}', '${agg.costPerMonth.length}');
 
-    // Weighted average consumption: total energy / total distance × 100.
-    // More honest than averaging per-trip consumption (which would
-    // overweight short trips). Falls back to '—' when either total is
-    // missing. v0.1.31+130: the derived full-charge range (estRangeKm)
-    // rides along in the same footer — deliberately a number, not a chart.
-    final avgCons = (agg.totalDistanceKm > 0 && agg.totalEnergyKwh > 0)
-        ? agg.totalEnergyKwh / agg.totalDistanceKm * 100
-        : null;
+    // v0.1.51+150: the average comes from the aggregate's co-covered
+    // computation (days where the walks saw BOTH km and SOC) — the local
+    // totals ratio diluted it with charge-masked hole distance (10.1 vs
+    // real ~15.7 on the 20.07 export). Trips-fallback mode returns the
+    // old totals ratio from the same getter, so behaviour there is 1:1.
+    // estRangeKm rides along and is derived from the same honest number.
+    final avgCons = agg.avgConsumptionKwh100;
     final estRange = agg.estRangeKm;
     final consFooter = avgCons == null
         ? '—'
