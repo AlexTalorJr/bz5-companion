@@ -4400,6 +4400,23 @@ if int(pv) >= 151:
         ok('AW9 idle auto-stop (7 d) + A/B picker cleared on mutation')
     else:
         fail('AW9 auto-stop / picker hygiene missing')
+    # AW10 (+152): the head unit renders history_wide.dart, NOT the
+    # phone HistoryScreen — the +151 field miss («сборка правильная,
+    # вкладки нет», server logs 20.07). The «Замеры» segment must live
+    # in the WIDE screen: third enum value, canUseHal-gated segment,
+    # SpeedProfileScreen body, recording dot.
+    if int(pv) >= 152:
+        hw = (root / 'lib/screens/wide/history_wide.dart').read_text()
+        if '_Tab { trips, trends, measure }' in hw and \
+           'if (canHal)' in hw and \
+           "S.of('hist.tab_measure')" in hw and \
+           '_Tab.measure => const SpeedProfileScreen()' in hw and \
+           '_MeasureSegIcon(recording: recording)' in hw:
+            ok('AW10 «Замеры» wired into the WIDE history (the HU entry point)')
+        else:
+            fail('AW10 wide-history measure segment missing/incomplete')
+    else:
+        ok(f"Part AW10 skipped (build +{pv}, wide wiring lands in +152)")
 else:
     ok(f"Part AW skipped (build +{pv}, speed profile lands in +151)")
 
