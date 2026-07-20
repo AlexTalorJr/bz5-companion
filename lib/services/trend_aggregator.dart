@@ -90,6 +90,18 @@ class TrendAggregate {
   /// false = legacy trips-only fallback (no usable snapshots in window).
   final bool distanceFromOdometer;
 
+  // ── v0.1.51+150 (honest average) ──
+  /// Weighted average consumption computed ONLY over co-covered day
+  /// buckets — days where the walks saw BOTH kilometres and SOC drops.
+  /// The naive totals ratio divides energy that EXCLUDES charge-masked
+  /// coverage holes by distance that INCLUDES them, diluting the average
+  /// (20.07 export: 10.1 vs the real ~15.7). Null when nothing co-covered.
+  final double? avgConsumptionKwh100;
+
+  /// Kilometres actually inside the co-covered buckets — the honest
+  /// denominator behind [avgConsumptionKwh100].
+  final double consumptionCoveredKm;
+
   const TrendAggregate({
     required this.totalDistanceKm,
     required this.totalEnergyKwh,
@@ -103,6 +115,8 @@ class TrendAggregate {
     required this.regenSharePerPeriod,
     this.recordedTripDistanceKm = 0,
     this.distanceFromOdometer = false,
+    this.avgConsumptionKwh100,
+    this.consumptionCoveredKm = 0,
   });
 
   /// v0.1.49+148 (K4): what share of the odometer distance the recorded
@@ -123,9 +137,17 @@ class TrendAggregate {
   /// no per-trip SOC bookkeeping, so none of the short-hop pathologies
   /// that killed the old realRangePer100 chart. Null when totals are
   /// empty. Footer-only: there is deliberately NO chart behind it.
-  double? get estRangeKm => (totalDistanceKm > 0 && totalEnergyKwh > 0)
-      ? totalDistanceKm / totalEnergyKwh * kUsableCapacityKwh
-      : null;
+  /// v0.1.51+150: prefers the co-covered average (avgConsumptionKwh100) —
+  /// the totals ratio inflated range to ~647 km on the 20.07 export
+  /// because its denominator hid charge-masked energy while its
+  /// numerator counted every kilometre.
+  double? get estRangeKm {
+    final cons = avgConsumptionKwh100;
+    if (cons != null && cons > 0) return kUsableCapacityKwh / cons * 100;
+    return (totalDistanceKm > 0 && totalEnergyKwh > 0)
+        ? totalDistanceKm / totalEnergyKwh * kUsableCapacityKwh
+        : null;
+  }
 
   static const empty = TrendAggregate(
     totalDistanceKm: 0,
@@ -400,6 +422,29 @@ class TrendAggregator {
     final useWalkDist = walkDist > 0;
     final useWalkEnergy = useWalkDist && walkEnergy > 0;
 
+    // v0.1.51+150: honest average consumption — Σ over day buckets where
+    // BOTH walks produced data (co-covered days). Hole pairs never enter
+    // buckets, so charge-masked distance stays out of this denominator.
+    // Trips fallback keeps the old totals ratio (both sums same source).
+    double pairedDist = 0;
+    double pairedEnergy = 0;
+    for (final e in walkEnergyBucket.entries) {
+      final d = walkDistBucket[e.key];
+      if (d != null && d > 0) {
+        pairedDist += d;
+        pairedEnergy += e.value;
+      }
+    }
+    final double? honestAvgCons = (useWalkDist && useWalkEnergy)
+        ? (pairedDist > 0 && pairedEnergy > 0
+            ? pairedEnergy / pairedDist * 100
+            : null)
+        : ((totalDistance > 0 && totalEnergy > 0)
+            ? totalEnergy / totalDistance * 100
+            : null);
+    final honestCoveredKm =
+        (useWalkDist && useWalkEnergy) ? pairedDist : totalDistance;
+
     final honestDistance = useWalkDist ? walkDist : totalDistance;
     final honestEnergy = useWalkEnergy ? walkEnergy : totalEnergy;
 
@@ -449,6 +494,8 @@ class TrendAggregator {
       regenSharePerPeriod: regenBars,
       recordedTripDistanceKm: totalDistance,
       distanceFromOdometer: useWalkDist,
+      avgConsumptionKwh100: honestAvgCons,
+      consumptionCoveredKm: honestCoveredKm,
     );
   }
 
