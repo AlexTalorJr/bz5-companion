@@ -9,6 +9,8 @@ import '../l10n/strings.dart';
 import '../services/connection.dart';
 import '../services/hal_telemetry_service.dart';
 import '../services/locale_service.dart';
+import '../services/speed_profile_service.dart';
+import 'speed_profile.dart';
 import 'trip_detail.dart';
 import 'trends.dart';
 
@@ -25,8 +27,21 @@ class HistoryScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     // v0.1.29+60: re-render on language switch (per-screen subscription).
     context.watch<LocaleService>();
+    // v0.1.52+151: the third tab («Замеры») exists ONLY on the head
+    // unit — on a phone there is no HAL stream, so there is nothing to
+    // measure and the tab is hidden ENTIRELY (the honesty rule, spec
+    // Q6/§6). canUseHal is the settled platform-probe verdict (+139).
+    final canHal =
+        context.select<HalTelemetryService, bool>((h) => h.canUseHal);
+    // Recording dot on the tab icon while a session is writing.
+    final recording =
+        context.select<SpeedProfileService, bool>((s) => s.active);
     return DefaultTabController(
-      length: 2,
+      // Rebuilding a DefaultTabController with a different length over
+      // the same element tree throws — key the controller on the
+      // verdict so the 2↔3 flip replaces it cleanly.
+      key: ValueKey<bool>(canHal),
+      length: canHal ? 3 : 2,
       child: Scaffold(
         appBar: AppBar(
           title: Text(S.of('hist.title')),
@@ -38,16 +53,53 @@ class HistoryScreen extends StatelessWidget {
               Tab(
                   text: S.of('hist.tab_trends'),
                   icon: const Icon(Icons.show_chart, size: 18)),
+              if (canHal)
+                Tab(
+                  text: S.of('hist.tab_measure'),
+                  icon: _MeasureTabIcon(recording: recording),
+                ),
             ],
           ),
         ),
-        body: const TabBarView(
+        body: TabBarView(
           children: [
-            _TripsTab(),
-            TrendsScreen(),
+            const _TripsTab(),
+            const TrendsScreen(),
+            if (canHal) const SpeedProfileScreen(),
           ],
         ),
       ),
+    );
+  }
+}
+
+/// v0.1.52+151: the «Замеры» tab icon with a recording dot while a
+/// speed-profile session is writing in the background (spec §6 — the
+/// single entry point still tells you a session is live).
+class _MeasureTabIcon extends StatelessWidget {
+  final bool recording;
+  const _MeasureTabIcon({required this.recording});
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        const Icon(Icons.speed, size: 18),
+        if (recording)
+          Positioned(
+            right: -4,
+            top: -3,
+            child: Container(
+              width: 7,
+              height: 7,
+              decoration: const BoxDecoration(
+                color: Colors.redAccent,
+                shape: BoxShape.circle,
+              ),
+            ),
+          ),
+      ],
     );
   }
 }

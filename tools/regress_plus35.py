@@ -3020,6 +3020,13 @@ if int(pv) >= 61:
     _hal_allow = {'hal_telemetry_channel.dart', 'hal_test.dart'}
     if int(pv) >= 64:
         _hal_allow.add('hal_telemetry_service.dart')
+    if int(pv) >= 151:
+        # +151: SpeedProfileService imports the channel for the HalEvent
+        # TYPE only — it observes hal.rawEvents through the HAL-Test
+        # retain/release bracket and never touches the native
+        # subscription itself (AW1 enforces the bracket). Same
+        # allowlist-growth pattern as the +64 speed pilot.
+        _hal_allow.add('speed_profile_service.dart')
     _consumers = []
     for _f in (root / 'lib').rglob('*.dart'):
         if _f.name in _hal_allow:
@@ -4304,6 +4311,97 @@ if int(pv) >= 150:
         fail('AV2 footer still on diluted totals ratio')
 else:
     ok(f"Part AV skipped (build +{pv}, honest average lands in +150)")
+
+# ─────────── Part AW: +151 speed profile («Замеры») ───────────
+if int(pv) >= 151:
+    sps = (root / 'lib/services/speed_profile_service.dart').read_text()
+    spu = (root / 'lib/screens/speed_profile.dart').read_text()
+    hist = (root / 'lib/screens/history.dart').read_text()
+    # AW1: the service exists, observes the stream through the HAL Test
+    # path (rawEvents + retain/release bracket) and NEVER imports
+    # connection.dart (AA2) or touches Drift.
+    if "import 'connection.dart'" not in sps and \
+       "connection.dart'" not in sps and \
+       '.rawEvents.listen' in sps and \
+       'retainStream()' in sps and 'releaseStream()' in sps and \
+       'database.dart' not in sps:
+        ok('AW1 service on the HAL-Test path, AA2 + no-Drift hold')
+    else:
+        fail('AW1 service plumbing broken (import/stream bracket)')
+    # AW2: tick qualification — all gates present: steady-accel window,
+    # positive-power (regen never written), the ±3 round-ten band
+    # window, and the dt integration guard.
+    if 'accelKmhPerS.abs() > kSteadyAccelMax' in sps and \
+       'p == null || p <= 0' in sps and \
+       '(vDash - band).abs() > kBandHalfWidthKmh' in sps and \
+       'd <= kDtGuardS' in sps:
+        ok('AW2 tick qualification: steady + P>0 + band window + dt-guard')
+    else:
+        fail('AW2 tick qualification gate(s) missing')
+    # AW3: the steady threshold is the named field-tuning constant
+    # (spec Q2), value 1.5.
+    if 'const double kSteadyAccelMax = 1.5;' in sps:
+        ok('AW3 kSteadyAccelMax named constant = 1.5')
+    else:
+        fail('AW3 kSteadyAccelMax constant missing/renamed')
+    # AW4: dash/real split — bands detect on DASH speed, distance and
+    # the 0–100 finish integrate REAL (× kSpeedRealFactor = 0.98).
+    if 'const double kSpeedRealFactor = 0.98;' in sps and \
+       'vDash * kSpeedRealFactor * dtS' in sps and \
+       'vDash * kSpeedRealFactor;' in sps and \
+       'vReal >= 100.0' in sps:
+        ok('AW4 dash detects, real integrates (×0.98), finish on real 100')
+    else:
+        fail('AW4 dash/real split broken')
+    # AW5: the stopwatch interpolates BOTH ends (launch threshold and
+    # the real-100 crossing) and voids on peak-drop / 30 s timeout.
+    if '(2.0 - pv) / (vDash - pv)' in sps and \
+       '(100.0 - prevReal) / (vReal - prevReal)' in sps and \
+       '_zPeakDash - 2.0' in sps and '30000' in sps:
+        ok('AW5 0–100 interpolated both ends + abort rules')
+    else:
+        fail('AW5 stopwatch interpolation/abort missing')
+    # AW6: crash-safe persistence — the three prefs keys + the 30 s
+    # snapshot timer (the +116 SOH-session pattern).
+    if "'speed_profile_session'" in sps and \
+       "'speed_profile_active'" in sps and \
+       "'speed_profile_archive'" in sps and \
+       'Duration(seconds: 30)' in sps:
+        ok('AW6 crash-safe prefs snapshot (3 keys + 30 s timer)')
+    else:
+        fail('AW6 persistence keys / 30 s snapshot missing')
+    # AW7: the tab is gated by the platform verdict — hidden entirely
+    # on a phone (honesty: nothing to measure without HAL) and the
+    # strict-freshness power path is used, not the 90 s display hold.
+    if 'canUseHal' in hist and \
+       "S.of('hist.tab_measure')" in hist and \
+       'if (canHal)' in hist and \
+       '_freshPowerKw' in sps and '_hal.halPowerKw' not in sps:
+        ok('AW7 tab HU-gated + strict 6 s power freshness (no 90 s hold)')
+    else:
+        fail('AW7 tab gating / power freshness path wrong')
+    # AW8: no-data ≠ zero — a band materialises only past the 60 s
+    # threshold and empty bands never render.
+    if 'const double kBandMinSeconds = 60.0;' in sps and \
+       'timeS >= kBandMinSeconds' in sps and \
+       'visibleBands' in spu:
+        ok('AW8 60 s band threshold, empty bands do not exist')
+    else:
+        fail('AW8 band-materialisation threshold missing')
+    # AW9 (review p.3/p.7): idle auto-stop — a movement-less week
+    # releases the retained stream (constant + idle clock + check wired
+    # into BOTH the 30 s timer and init-resume); and the A/B picker is
+    # cleared on EVERY archive mutation (delete AND save/evict).
+    if 'const int kAutoStopIdleDays = 7;' in sps and \
+       'lastMoveMs' in sps and \
+       '_maybeAutoStop' in sps and \
+       '_idleTooLong(_session!)' in sps and \
+       spu.count('setState(_compareSel.clear)') >= 2:
+        ok('AW9 idle auto-stop (7 d) + A/B picker cleared on mutation')
+    else:
+        fail('AW9 auto-stop / picker hygiene missing')
+else:
+    ok(f"Part AW skipped (build +{pv}, speed profile lands in +151)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
