@@ -558,6 +558,45 @@ class S {
     'hist.hdr': 'HISTORY',
     'hist.tab_trips': 'Trips',
     'hist.tab_trends': 'Trends',
+    'hist.tab_measure': 'Measure',
+
+    // v0.1.52+151 «Замеры» — speed profile + 0–100
+    'measure.start': 'Start',
+    'measure.stop': 'Stop',
+    'measure.reset': 'Reset',
+    'measure.status_idle': 'No session',
+    'measure.status_running': 'recording',
+    'measure.status_stopped': 'stopped — can be saved',
+    'measure.min': 'min',
+    'measure.bands': 'bands',
+    'measure.chart_title': 'Consumption per speed band',
+    'measure.no_data':
+        'No bands yet — hold a steady 40–180 km/h and they will appear',
+    'measure.kwh100': 'kWh/100km',
+    'measure.range_suffix': 'km per charge',
+    'measure.m': 'm',
+    'measure.s': 's',
+    'measure.z100_title': '0–100 runs',
+    'measure.z100_best': 'Best',
+    'measure.z100_none':
+        'No completed 0–100 runs yet — only runs reaching a real 100 count',
+    'measure.z100_sec': 's',
+    'measure.archive_title': 'Session archive',
+    'measure.archive_empty':
+        'No saved sessions — stop one and save it to compare later',
+    'measure.save_q': 'Save session?',
+    'measure.save_name': 'Name',
+    'measure.save_note': 'Note (tyres, climate…)',
+    'measure.delete_q': 'Delete session?',
+    'measure.evict_q': 'Archive is full (24) — evict the oldest?',
+    'measure.compare': 'Compare A/B',
+    'measure.compare_title': 'Comparison',
+    'measure.band': 'Band',
+    'measure.cold_pack': 'cold pack',
+    'measure.temp_passport': 'Pack temp min/avg/max',
+    'measure.sleep_note':
+        'A sleeping head unit measures nothing — sessions only accumulate '
+            'while the screen unit is awake.',
     'hist.empty_title': 'No trips yet',
     'hist.empty_hint': 'Connect the adapter and drive — '
         'history will fill in automatically.',
@@ -1466,6 +1505,46 @@ class S {
     'hist.hdr': 'ИСТОРИЯ',
     'hist.tab_trips': 'Поездки',
     'hist.tab_trends': 'Тренды',
+    'hist.tab_measure': 'Замеры',
+
+    // v0.1.52+151 «Замеры» — скоростной профиль + 0–100
+    'measure.start': 'Старт',
+    'measure.stop': 'Стоп',
+    'measure.reset': 'Сброс',
+    'measure.status_idle': 'Сессии нет',
+    'measure.status_running': 'идёт',
+    'measure.status_stopped': 'остановлена — можно сохранить',
+    'measure.min': 'мин',
+    'measure.bands': 'полос',
+    'measure.chart_title': 'Расход по полосам скорости',
+    'measure.no_data':
+        'Полос пока нет — держите ровные 40–180 км/ч, и они появятся',
+    'measure.kwh100': 'кВт·ч/100км',
+    'measure.range_suffix': 'км на заряде',
+    'measure.m': 'м',
+    'measure.s': 'с',
+    'measure.z100_title': 'Замеры 0–100',
+    'measure.z100_best': 'Лучший',
+    'measure.z100_none':
+        'Доведённых до сотни разгонов пока нет — считаются только '
+            'реальные 100',
+    'measure.z100_sec': 'с',
+    'measure.archive_title': 'Архив сессий',
+    'measure.archive_empty':
+        'Сохранённых сессий нет — остановите и сохраните, чтобы сравнивать',
+    'measure.save_q': 'Сохранить сессию?',
+    'measure.save_name': 'Название',
+    'measure.save_note': 'Заметка (шины, климат…)',
+    'measure.delete_q': 'Удалить сессию?',
+    'measure.evict_q': 'Архив полон (24) — вытеснить старейшую?',
+    'measure.compare': 'Сравнить А/Б',
+    'measure.compare_title': 'Сравнение',
+    'measure.band': 'Полоса',
+    'measure.cold_pack': 'холодный пак',
+    'measure.temp_passport': 'Температура пака min/сред/max',
+    'measure.sleep_note':
+        'Спящее ГУ не меряет — сессия копится только при живом экране '
+            'головного устройства.',
     'hist.empty_title': 'Поездок пока нет',
     'hist.empty_hint': 'Подключитесь к адаптеру и поезжайте — '
         'история начнёт заполняться автоматически.',

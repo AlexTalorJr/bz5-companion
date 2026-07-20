@@ -13,6 +13,7 @@ import 'services/cloud_sync_service.dart';
 import 'services/vehicle_catalog_service.dart';
 import 'services/bridge_diag_service.dart';
 import 'services/locale_service.dart';
+import 'services/speed_profile_service.dart';
 import 'screens/home.dart';
 
 void main() async {
@@ -209,6 +210,20 @@ class _BZ5AppState extends State<BZ5App> with WidgetsBindingObserver {
                 () => hal.canUseHal;
             hal.init();
             return hal;
+          },
+        ),
+        // v0.1.52+151: speed-profile sessions («Замеры»). A passive
+        // observer of the HAL stream — created AFTER the HAL provider
+        // so ctx.read can hand it the instance (the allowed downward
+        // direction; the service itself never imports connection.dart,
+        // AA2 holds). init() silently resumes a session that survived
+        // a head-unit restart (crash-safe prefs snapshot, spec §5).
+        ChangeNotifierProvider<SpeedProfileService>(
+          create: (ctx) {
+            final sp =
+                SpeedProfileService(ctx.read<HalTelemetryService>());
+            sp.init();
+            return sp;
           },
         ),
       ],
