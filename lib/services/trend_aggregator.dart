@@ -317,53 +317,78 @@ class TrendAggregator {
     //
     // Odometer walk: Σ of positive per-pair deltas = the distance the CAR
     // says it drove, immune to app downtime. SOC walk: Σ of per-pair SOC
-    // drops × capacity = energy drawn, with is_charging pairs excluded
-    // (a rising SOC pair without the flag — charging inside a coverage
-    // hole — yields drop ≤ 0 and is skipped too; note that such a hole
-    // MASKS the consumption that happened around it, which is exactly
-    // what tripCoveragePct exists to disclose). Pairs wider than
+    // drops × capacity = energy drawn, with charging excluded (a rising
+    // SOC pair without the flag — charging inside a coverage hole —
+    // yields drop ≤ 0 and is skipped too; note that such a hole MASKS the
+    // consumption that happened around it, which is exactly what
+    // tripCoveragePct exists to disclose). Pairs wider than
     // kMaxWalkPairGap feed totals + the cumulative curve but not the
     // per-bucket bars (see the constant's comment).
+    //
+    // v0.1.50+149: a pair is two consecutive NON-NULL readings of the
+    // SAME signal, tracked by separate anchors — NOT two adjacent rows.
+    // 12% of real snapshots carry SOC without an odometer (phone/OBD2
+    // rows); adjacent-row pairing let each such row break TWO pairs and
+    // silently drop the distance across it (20.07 field export: 152
+    // broken pairs ate 838 of 1766 km — 47% of the month). Null rows are
+    // now transparent to the other signal's walk.
     double walkDist = 0;
     double walkEnergy = 0;
     final walkDistBucket = <DateTime, double>{};
     final walkEnergyBucket = <DateTime, double>{};
     final walkMonthEnergy = <DateTime, double>{};
     final walkCumByBucket = <DateTime, double>{};
-    Snapshot? prev;
+    Snapshot? odoAnchor;
+    Snapshot? socAnchor;
+    // v0.1.50+149: a charging row BETWEEN two SOC anchors must poison the
+    // pair even when that row itself carries no SOC value — otherwise the
+    // +148 endpoint rule (either end charging ⇒ excluded) would silently
+    // weaken to "only endpoints checked".
+    var chargedSinceSocAnchor = false;
     for (final s in snapshots) {
-      final p = prev;
-      prev = s;
-      if (p == null) continue;
-      final gap = s.capturedAt.difference(p.capturedAt);
-      final inBar = gap <= kMaxWalkPairGap;
-      final b = _bucketStart(s.capturedAt, bucket);
+      if (s.isCharging ?? false) chargedSinceSocAnchor = true;
 
-      final po = p.odometer, so = s.odometer;
-      if (po != null && so != null) {
-        final d = so - po;
-        if (d > 0 && d < kMaxWalkStepKm) {
-          walkDist += d;
-          walkCumByBucket[b] = walkDist;
-          if (inBar) {
-            walkDistBucket[b] = (walkDistBucket[b] ?? 0) + d;
+      final so = s.odometer;
+      if (so != null) {
+        final p = odoAnchor;
+        odoAnchor = s;
+        if (p != null) {
+          final d = so - p.odometer!;
+          if (d > 0 && d < kMaxWalkStepKm) {
+            final gap = s.capturedAt.difference(p.capturedAt);
+            final b = _bucketStart(s.capturedAt, bucket);
+            walkDist += d;
+            walkCumByBucket[b] = walkDist;
+            if (gap <= kMaxWalkPairGap) {
+              walkDistBucket[b] = (walkDistBucket[b] ?? 0) + d;
+            }
           }
         }
       }
 
-      final psoc = p.soc, ssoc = s.soc;
-      final charging = (p.isCharging ?? false) || (s.isCharging ?? false);
-      if (psoc != null && ssoc != null && !charging) {
-        final drop = psoc - ssoc;
-        if (drop > 0 && drop <= 100) {
-          final e = drop * kUsableCapacityKwh / 100;
-          walkEnergy += e;
-          // Money is ALWAYS monthly and coarse — hole pairs stay in so
-          // Σ(month bars) keeps equalling totals × tariff.
-          final m = DateTime(s.capturedAt.year, s.capturedAt.month);
-          walkMonthEnergy[m] = (walkMonthEnergy[m] ?? 0) + e;
-          if (inBar) {
-            walkEnergyBucket[b] = (walkEnergyBucket[b] ?? 0) + e;
+      final ssoc = s.soc;
+      if (ssoc != null) {
+        final p = socAnchor;
+        final poisoned = chargedSinceSocAnchor;
+        socAnchor = s;
+        // "Since anchor" restarts here; the new anchor's own charging
+        // state seeds the flag so an anchored charging row poisons the
+        // NEXT pair too (endpoint semantics of +148 preserved).
+        chargedSinceSocAnchor = s.isCharging ?? false;
+        if (p != null && !poisoned) {
+          final drop = p.soc! - ssoc;
+          if (drop > 0 && drop <= 100) {
+            final gap = s.capturedAt.difference(p.capturedAt);
+            final b = _bucketStart(s.capturedAt, bucket);
+            final e = drop * kUsableCapacityKwh / 100;
+            walkEnergy += e;
+            // Money is ALWAYS monthly and coarse — hole pairs stay in so
+            // Σ(month bars) keeps equalling totals × tariff.
+            final m = DateTime(s.capturedAt.year, s.capturedAt.month);
+            walkMonthEnergy[m] = (walkMonthEnergy[m] ?? 0) + e;
+            if (gap <= kMaxWalkPairGap) {
+              walkEnergyBucket[b] = (walkEnergyBucket[b] ?? 0) + e;
+            }
           }
         }
       }

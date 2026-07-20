@@ -4197,10 +4197,14 @@ if int(pv) >= 148:
         ok('AT1 aggregator: snapshot walks + coverage fields + fallback flag')
     else:
         fail('AT1 aggregator walk plumbing missing')
-    # AT2 (K4): SOC walk hygiene — charging pairs excluded, only DROPS
-    # count (a rise without the flag = hole-masked charging, skipped).
-    if "(p.isCharging ?? false) || (s.isCharging ?? false)" in agg_src and \
-       'if (drop > 0 && drop <= 100)' in agg_src:
+    # AT2 (K4): SOC walk hygiene — charging excluded, only DROPS count
+    # (a rise without the flag = hole-masked charging, skipped).
+    # Era-aware: +149 replaced adjacent-row pairing with per-signal
+    # anchors, so the charging exclusion moved to the poison flag.
+    _at2_chg = ("(p.isCharging ?? false) || (s.isCharging ?? false)" in agg_src
+                if int(pv) == 148
+                else 'chargedSinceSocAnchor' in agg_src)
+    if _at2_chg and 'if (drop > 0 && drop <= 100)' in agg_src:
         ok('AT2 SOC walk: charging pairs excluded, drops only')
     else:
         fail('AT2 SOC walk hygiene broken')
@@ -4247,6 +4251,29 @@ if int(pv) >= 148:
         fail('AT7 generator log gate missing')
 else:
     ok(f"Part AT skipped (build +{pv}, honest trends land in +148)")
+
+# ─────────── Part AU: +149 walk anchors (null-transparent pairing) ───────────
+if int(pv) >= 149:
+    # AU1: per-signal anchors replace adjacent-row pairing — null-odometer
+    # rows (12% in the field) must be transparent to the odometer walk
+    # (20.07 export: adjacent pairing lost 838 of 1766 km).
+    if 'Snapshot? odoAnchor;' in agg_src and \
+       'Snapshot? socAnchor;' in agg_src and \
+       'Snapshot? prev;' not in agg_src:
+        ok('AU1 walk: per-signal anchors, adjacent-row prev gone')
+    else:
+        fail('AU1 anchor mechanism missing / old prev pairing survives')
+    # AU2: charging BETWEEN SOC anchors poisons the pair (flag set on any
+    # charging row, consumed at pair time, re-seeded from the new anchor's
+    # own charging state — +148 endpoint semantics preserved).
+    if 'var chargedSinceSocAnchor = false;' in agg_src and \
+       'final poisoned = chargedSinceSocAnchor;' in agg_src and \
+       'chargedSinceSocAnchor = s.isCharging ?? false;' in agg_src:
+        ok('AU2 SOC walk: between-anchor charging poison flag intact')
+    else:
+        fail('AU2 charging poison flag missing/weakened')
+else:
+    ok(f"Part AU skipped (build +{pv}, walk anchors land in +149)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
