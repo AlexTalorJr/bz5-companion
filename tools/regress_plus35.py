@@ -4332,7 +4332,7 @@ if int(pv) >= 151:
     # positive-power (regen never written), the ±3 round-ten band
     # window, and the dt integration guard.
     if 'accelKmhPerS.abs() > kSteadyAccelMax' in sps and \
-       'p == null || p <= 0' in sps and \
+       'if (p == null)' in sps and 'if (p <= 0)' in sps and \
        '(vDash - band).abs() > kBandHalfWidthKmh' in sps and \
        'd <= kDtGuardS' in sps:
         ok('AW2 tick qualification: steady + P>0 + band window + dt-guard')
@@ -4417,6 +4417,25 @@ if int(pv) >= 151:
             fail('AW10 wide-history measure segment missing/incomplete')
     else:
         ok(f"Part AW10 skipped (build +{pv}, wide wiring lands in +152)")
+    # AW11 (+153): tick-gate diagnostics (TEMP — remove with the
+    # counters) + the PERMANENT maturing-band progress UX: sub-60 s
+    # bands render dimmed with «N из 60 с» so the first hour of use
+    # never looks dead.
+    if int(pv) >= 153:
+        if 'class TickDiag' in sps and \
+           'd.total++' in sps and 'd.qualified++' in sps and \
+           "'diag': diag.toJson()" in sps and \
+           'maturingBands' in sps and \
+           '_MaturingCard' in spu and '_TickDiagRow' in spu and \
+           "S.of('measure.of60')" in spu and \
+           'dumpDiag' in sps and \
+           'DiagDumpFile.instance.append' in sps and \
+           "S.of('measure.dump')" in spu:
+            ok('AW11 tick-gate diag (TEMP) + maturing UX + diag-file dump')
+        else:
+            fail('AW11 diag counters / maturing progress missing')
+    else:
+        ok(f"Part AW11 skipped (build +{pv}, tick diag lands in +153)")
 else:
     ok(f"Part AW skipped (build +{pv}, speed profile lands in +151)")
 

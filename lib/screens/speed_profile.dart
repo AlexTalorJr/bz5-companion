@@ -38,8 +38,16 @@ class _SpeedProfileScreenState extends State<SpeedProfileScreen> {
           _BandBarCard(session: s),
           const SizedBox(height: 12),
           _BandTableCard(session: s),
+          if (s.maturingBands.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            _MaturingCard(session: s),
+          ],
           const SizedBox(height: 12),
           _ZeroTo100Card(session: s),
+          // TEMP DIAG (+153): tick-gate counters — REMOVE after the
+          // field diagnosis, the user never needs raw gate numbers.
+          const SizedBox(height: 8),
+          _TickDiagRow(diag: s.diag),
         ],
         const SizedBox(height: 12),
         _buildArchive(context, svc),
@@ -239,12 +247,115 @@ class _SpeedProfileScreenState extends State<SpeedProfileScreen> {
   }
 }
 
+// ──────────────── maturing bands («полоса зреет») ────────────────
+
+/// Permanent progress UX (+153): bands that are accumulating but have
+/// not yet earned their table row. Without this the first hour of use
+/// looks dead — the user must SEE that steady driving is being
+/// counted, and how far each band is from materialising.
+class _MaturingCard extends StatelessWidget {
+  final SpeedProfileSession session;
+  const _MaturingCard({required this.session});
+
+  @override
+  Widget build(BuildContext context) {
+    final maturing = session.maturingBands;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(S.of('measure.maturing'),
+                style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.white.withOpacity(0.6))),
+            const SizedBox(height: 8),
+            for (final b in maturing)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 3),
+                child: Row(children: [
+                  SizedBox(
+                      width: 44,
+                      child: Text('$b',
+                          style: TextStyle(
+                              fontSize: 14,
+                              color: Colors.white.withOpacity(0.6)))),
+                  Expanded(
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(3),
+                      child: LinearProgressIndicator(
+                        value: (session.bands[b]!.timeS / kBandMinSeconds)
+                            .clamp(0.0, 1.0),
+                        minHeight: 5,
+                        backgroundColor: Colors.white.withOpacity(0.08),
+                        color:
+                            Colors.tealAccent.shade400.withOpacity(0.55),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    '${session.bands[b]!.timeS.floor()} ${S.of('measure.of60')}',
+                    style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.white.withOpacity(0.5)),
+                  ),
+                ]),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ─────────────── TEMP DIAG (+153): tick-gate counters ───────────────
+
+/// REMOVE after the field diagnosis. Raw first-failing-gate counters:
+/// «тик · безΔv · |a|> · вне · V/I · P≤0 · ✓». One drive with these
+/// numbers names the gate that starves the bands.
+class _TickDiagRow extends StatelessWidget {
+  final TickDiag diag;
+  const _TickDiagRow({required this.diag});
+
+  @override
+  Widget build(BuildContext context) {
+    final d = diag;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      child: Text(
+        'diag: тик ${d.total} · безΔv ${d.noAccel} · |a|> ${d.accelHigh}'
+        ' · вне ${d.outOfBand} · V/I ${d.powerStale}'
+        ' · P≤0 ${d.powerNonPos} · ✓ ${d.qualified}',
+        style: TextStyle(
+            fontSize: 11,
+            fontFamily: 'monospace',
+            color: Colors.white.withOpacity(0.35)),
+      ),
+    );
+  }
+}
+
 // ─────────────────────────── status card ───────────────────────────
 
 class _StatusCard extends StatelessWidget {
   final SpeedProfileService svc;
   final VoidCallback onStop;
   const _StatusCard({required this.svc, required this.onStop});
+
+  // TEMP DIAG (+153): remove with the counters.
+  Future<void> _onDump(
+      BuildContext context, SpeedProfileService svc) async {
+    final res = await svc.dumpDiag();
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(res == null
+          ? S.of('measure.dump_fail')
+          : '${S.of('measure.dump_ok')} ${res.path}'),
+    ));
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -279,23 +390,31 @@ class _StatusCard extends StatelessWidget {
                       Text(status, style: const TextStyle(fontSize: 14))),
             ]),
             const SizedBox(height: 10),
-            Row(children: [
+            Wrap(spacing: 8, runSpacing: 8, children: [
               FilledButton.icon(
                 icon: const Icon(Icons.play_arrow, size: 18),
                 label: Text(S.of('measure.start')),
                 onPressed: svc.active ? null : () => svc.start(),
               ),
-              const SizedBox(width: 8),
               OutlinedButton.icon(
                 icon: const Icon(Icons.stop, size: 18),
                 label: Text(S.of('measure.stop')),
                 onPressed: svc.active ? onStop : null,
               ),
-              const SizedBox(width: 8),
               OutlinedButton.icon(
                 icon: const Icon(Icons.replay, size: 18),
                 label: Text(S.of('measure.reset')),
                 onPressed: svc.session == null ? null : () => svc.reset(),
+              ),
+              // TEMP DIAG (+153): dump the session JSON into
+              // bz5_companion_diag.md (Downloads → USB, the Native
+              // Explorer diary workflow). Remove with the counters.
+              OutlinedButton.icon(
+                icon: const Icon(Icons.save_alt, size: 18),
+                label: Text(S.of('measure.dump')),
+                onPressed: svc.session == null
+                    ? null
+                    : () => _onDump(context, svc),
               ),
             ]),
           ],
