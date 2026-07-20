@@ -597,6 +597,11 @@ class S {
     'measure.sleep_note':
         'A sleeping head unit measures nothing — sessions only accumulate '
             'while the screen unit is awake.',
+    'measure.maturing': 'Bands maturing',
+    'measure.of60': 'of 60 s',
+    'measure.dump': 'Diag dump',
+    'measure.dump_ok': 'Dump written:',
+    'measure.dump_fail': 'Dump failed — storage unavailable',
     'hist.empty_title': 'No trips yet',
     'hist.empty_hint': 'Connect the adapter and drive — '
         'history will fill in automatically.',
@@ -1545,6 +1550,11 @@ class S {
     'measure.sleep_note':
         'Спящее ГУ не меряет — сессия копится только при живом экране '
             'головного устройства.',
+    'measure.maturing': 'Полосы зреют',
+    'measure.of60': 'из 60 с',
+    'measure.dump': 'Диаг-дамп',
+    'measure.dump_ok': 'Дамп записан:',
+    'measure.dump_fail': 'Дамп не записан — хранилище недоступно',
     'hist.empty_title': 'Поездок пока нет',
     'hist.empty_hint': 'Подключитесь к адаптеру и поезжайте — '
         'история начнёт заполняться автоматически.',

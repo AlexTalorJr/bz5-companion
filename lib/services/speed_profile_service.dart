@@ -30,6 +30,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'diag_dump_file.dart';
 import 'hal_telemetry_channel.dart';
 import 'hal_telemetry_service.dart';
 
@@ -97,6 +98,50 @@ class ZeroTo100Run {
       (j['ts'] as num).toInt(), (j['s'] as num).toDouble());
 }
 
+/// TEMP DIAG (+153): per-session tick-gate counters. One field per
+/// rejection reason (first failing gate wins), so one drive names the
+/// gate that eats ticks. REMOVE after the field diagnosis — the user
+/// never needs these; the permanent progress UX is maturingBands.
+class TickDiag {
+  int total; // integration ticks entering the band pipeline
+  int noAccel; // accel window not filled yet (null)
+  int accelHigh; // |a| > kSteadyAccelMax
+  int outOfBand; // dash speed outside every ±3 round-ten window
+  int powerStale; // V/I freshness gate failed (P null)
+  int powerNonPos; // P <= 0 (regen/coast)
+  int qualified;
+
+  TickDiag({
+    this.total = 0,
+    this.noAccel = 0,
+    this.accelHigh = 0,
+    this.outOfBand = 0,
+    this.powerStale = 0,
+    this.powerNonPos = 0,
+    this.qualified = 0,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'tot': total,
+        'na': noAccel,
+        'ah': accelHigh,
+        'ob': outOfBand,
+        'ps': powerStale,
+        'pn': powerNonPos,
+        'q': qualified,
+      };
+
+  static TickDiag fromJson(Map<String, dynamic> j) => TickDiag(
+        total: (j['tot'] as num?)?.toInt() ?? 0,
+        noAccel: (j['na'] as num?)?.toInt() ?? 0,
+        accelHigh: (j['ah'] as num?)?.toInt() ?? 0,
+        outOfBand: (j['ob'] as num?)?.toInt() ?? 0,
+        powerStale: (j['ps'] as num?)?.toInt() ?? 0,
+        powerNonPos: (j['pn'] as num?)?.toInt() ?? 0,
+        qualified: (j['q'] as num?)?.toInt() ?? 0,
+      );
+}
+
 /// Whole-session state — bands, 0–100 runs, total distance (for the
 /// auto-name) and the pack-temperature passport (U4).
 class SpeedProfileSession {
@@ -118,6 +163,9 @@ class SpeedProfileSession {
   double tempTimeS; // Σ dt with a fresh temp reading
   double tempBelow10S;
 
+  /// TEMP DIAG (+153) — remove with the counters.
+  TickDiag diag;
+
   SpeedProfileSession({
     required this.startedAtMs,
     int? lastMoveMs,
@@ -129,9 +177,11 @@ class SpeedProfileSession {
     this.tempWeightedSum = 0,
     this.tempTimeS = 0,
     this.tempBelow10S = 0,
+    TickDiag? diag,
   })  : lastMoveMs = lastMoveMs ?? startedAtMs,
         bands = bands ?? {},
-        runs = runs ?? [];
+        runs = runs ?? [],
+        diag = diag ?? TickDiag();
 
   static SpeedProfileSession fresh() => SpeedProfileSession(
       startedAtMs: DateTime.now().millisecondsSinceEpoch);
@@ -164,6 +214,18 @@ class SpeedProfileSession {
     return keys;
   }
 
+  /// Bands accumulating but not yet past the 60 s threshold — the
+  /// permanent «полоса зреет» progress UX: the user must SEE the
+  /// process even before a row earns its place.
+  List<int> get maturingBands {
+    final keys = bands.entries
+        .where((e) => e.value.timeS > 0 && e.value.timeS < kBandMinSeconds)
+        .map((e) => e.key)
+        .toList()
+      ..sort();
+    return keys;
+  }
+
   Map<String, dynamic> toJson() => {
         'startedAtMs': startedAtMs,
         'lastMoveMs': lastMoveMs,
@@ -175,6 +237,7 @@ class SpeedProfileSession {
         'tempWeightedSum': tempWeightedSum,
         'tempTimeS': tempTimeS,
         'tempBelow10S': tempBelow10S,
+        'diag': diag.toJson(),
       };
 
   static SpeedProfileSession fromJson(Map<String, dynamic> j) {
@@ -201,6 +264,9 @@ class SpeedProfileSession {
       tempWeightedSum: (j['tempWeightedSum'] as num?)?.toDouble() ?? 0,
       tempTimeS: (j['tempTimeS'] as num?)?.toDouble() ?? 0,
       tempBelow10S: (j['tempBelow10S'] as num?)?.toDouble() ?? 0,
+      diag: j['diag'] is Map<String, dynamic>
+          ? TickDiag.fromJson(j['diag'] as Map<String, dynamic>)
+          : null,
     );
   }
 }
@@ -423,6 +489,42 @@ class SpeedProfileService extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// TEMP DIAG (+153): dump the CURRENT session (raw band aggregates
+  /// including sub-threshold ones, gate counters, 0–100 runs, temp
+  /// passport) as a fenced JSON section into the proven diagnostic
+  /// channel — bz5_companion_diag.md in public Downloads, the same
+  /// file the Native Explorer diary uses and the same USB pickup
+  /// workflow. The active constants ride along so the analysis knows
+  /// which thresholds produced the numbers. Remove with the counters.
+  Future<DiagDumpAppendResult?> dumpDiag() async {
+    final s = _session;
+    if (s == null) return null;
+    final payload = <String, dynamic>{
+      'schema': 'speed_profile_diag_v1',
+      'dumped_at': DateTime.now().toIso8601String(),
+      'active': _active,
+      'constants': {
+        'kSteadyAccelMax': kSteadyAccelMax,
+        'kSpeedRealFactor': kSpeedRealFactor,
+        'kBandHalfWidthKmh': kBandHalfWidthKmh,
+        'kBandMinKmh': kBandMinKmh,
+        'kBandMaxKmh': kBandMaxKmh,
+        'kBandMinSeconds': kBandMinSeconds,
+        'kDtGuardS': kDtGuardS,
+        'packCapacityKwh': _kPackCapacityKwh,
+      },
+      'session': s.toJson(),
+    };
+    try {
+      return await DiagDumpFile.instance.append(
+        title: 'Замеры — диаг-дамп сессии',
+        body: '```json\n${jsonEncode(payload)}\n```',
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
   @override
   void dispose() {
     _sub?.cancel();
@@ -604,14 +706,35 @@ class SpeedProfileService extends ChangeNotifier {
     //   3) power > 0 — regen/coast is never written;
     //   4) V/I freshness ≤ 6 s (inside _freshPowerKw);
     //   5) dt ≤ 2 s (already guarded by the caller).
-    if (accelKmhPerS == null || accelKmhPerS.abs() > kSteadyAccelMax) {
+    // TEMP DIAG (+153): each rejection increments its counter (first
+    // failing gate wins) — a single drive names the guilty gate.
+    final d = s.diag;
+    d.total++;
+    if (accelKmhPerS == null) {
+      d.noAccel++;
+      return;
+    }
+    if (accelKmhPerS.abs() > kSteadyAccelMax) {
+      d.accelHigh++;
       return;
     }
     final band = (vDash / 10.0).round() * 10;
-    if (band < kBandMinKmh || band > kBandMaxKmh) return;
-    if ((vDash - band).abs() > kBandHalfWidthKmh) return;
+    if (band < kBandMinKmh ||
+        band > kBandMaxKmh ||
+        (vDash - band).abs() > kBandHalfWidthKmh) {
+      d.outOfBand++;
+      return;
+    }
     final p = _freshPowerKw();
-    if (p == null || p <= 0) return;
+    if (p == null) {
+      d.powerStale++;
+      return;
+    }
+    if (p <= 0) {
+      d.powerNonPos++;
+      return;
+    }
+    d.qualified++;
 
     final agg = s.bands.putIfAbsent(band, SpeedBandAgg.new);
     agg.energyKwh += p * dtS / 3600.0;
