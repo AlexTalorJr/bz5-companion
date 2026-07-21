@@ -297,7 +297,7 @@ class _MaturingCard extends StatelessWidget {
                   ),
                   const SizedBox(width: 8),
                   Text(
-                    '${session.bands[b]!.timeS.floor()} ${S.of('measure.of60')}',
+                    '${session.bands[b]!.timeS.floor()} ${S.of('measure.of')} ${kBandMinSeconds.floor()} ${S.of('measure.s')}',
                     style: TextStyle(
                         fontSize: 12,
                         color: Colors.white.withOpacity(0.5)),

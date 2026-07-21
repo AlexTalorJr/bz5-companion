@@ -598,7 +598,7 @@ class S {
         'A sleeping head unit measures nothing — sessions only accumulate '
             'while the screen unit is awake.',
     'measure.maturing': 'Bands maturing',
-    'measure.of60': 'of 60 s',
+    'measure.of': 'of',
     'measure.dump': 'Diag dump',
     'measure.dump_ok': 'Dump written:',
     'measure.dump_fail': 'Dump failed — storage unavailable',
@@ -1551,7 +1551,7 @@ class S {
         'Спящее ГУ не меряет — сессия копится только при живом экране '
             'головного устройства.',
     'measure.maturing': 'Полосы зреют',
-    'measure.of60': 'из 60 с',
+    'measure.of': 'из',
     'measure.dump': 'Диаг-дамп',
     'measure.dump_ok': 'Дамп записан:',
     'measure.dump_fail': 'Дамп не записан — хранилище недоступно',

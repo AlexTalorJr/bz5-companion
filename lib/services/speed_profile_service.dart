@@ -35,9 +35,13 @@ import 'hal_telemetry_channel.dart';
 import 'hal_telemetry_service.dart';
 
 /// Steady-state gate: |acceleration| must stay under this (km/h per
-/// second, ~1 s estimation window) for a tick to count into a band.
-/// A named constant on purpose — field tuning knob (spec Q2).
-const double kSteadyAccelMax = 1.5;
+/// second) for a tick to count into a band. A named constant on
+/// purpose — field tuning knob (spec Q2). Field calibration 21.07
+/// (+154): 1.5 → 2.5 — at the real ~2.5 Hz speed cadence the honest
+/// «держу 40» wander reads as 1.5–2 km/h/s and 1.5 starved the bands
+/// (79% of ticks rejected); real launches live at 5–8 km/h/s, so 2.5
+/// still separates cleanly.
+const double kSteadyAccelMax = 2.5;
 
 /// Cluster-to-real speed correction (dash reads ~2% high; Alex's
 /// measurement, spec §2). Bands detect on dash speed, distance and the
@@ -45,11 +49,13 @@ const double kSteadyAccelMax = 1.5;
 const double kSpeedRealFactor = 0.98;
 
 /// Band shape: round tens, ±3 km/h dash window, 40…180 range. A band
-/// materialises only after `kBandMinSeconds` of qualified time.
+/// materialises only after `kBandMinSeconds` of qualified time
+/// (+154: 60 → 120 s — Alex's call: a two-minute floor makes a row
+/// statistically worth trusting before it starts promising range).
 const int kBandHalfWidthKmh = 3;
 const int kBandMinKmh = 40;
 const int kBandMaxKmh = 180;
-const double kBandMinSeconds = 60.0;
+const double kBandMinSeconds = 120.0;
 
 /// Integration guard: stream gaps longer than this are not integrated
 /// (dt-гард, same idea as the trip integrators).
@@ -656,18 +662,35 @@ class SpeedProfileService extends ChangeNotifier {
     final now = DateTime.now().millisecondsSinceEpoch;
 
     _speedBuf.add(_SpeedFrame(now, vDash));
-    while (_speedBuf.length > 2 && now - _speedBuf.first.ms > 1300) {
+    while (_speedBuf.length > 2 && now - _speedBuf.first.ms > 2000) {
       _speedBuf.removeAt(0);
     }
 
-    // ~1 s acceleration estimate (edge-to-edge over the buffer). Null
-    // until the window spans ≥400 ms — an unknown acceleration NEVER
-    // qualifies a tick (no data ≠ steady).
+    // Steady-state slope — least squares over ALL buffer frames in a
+    // ~2 s window (+154). Edge-to-edge was the +153 field failure: at
+    // the real ~2.5 Hz cadence it stood on two samples, so an honest
+    // ±1 km/h wander read as a launch and 79% of ticks died at the
+    // accel gate. LSQ over every frame averages the jitter out while
+    // a real ramp still shows its true slope. Null until the window
+    // spans ≥400 ms — an unknown acceleration NEVER qualifies a tick
+    // (no data ≠ steady).
     double? accelKmhPerS;
-    final first = _speedBuf.first;
-    final spanMs = now - first.ms;
-    if (_speedBuf.length >= 2 && spanMs >= 400) {
-      accelKmhPerS = (vDash - first.v) * 1000.0 / spanMs;
+    if (_speedBuf.length >= 2 && now - _speedBuf.first.ms >= 400) {
+      double sumT = 0, sumV = 0;
+      final n = _speedBuf.length;
+      for (final f in _speedBuf) {
+        sumT += f.ms;
+        sumV += f.v;
+      }
+      final meanT = sumT / n;
+      final meanV = sumV / n;
+      double sTT = 0, sTV = 0;
+      for (final f in _speedBuf) {
+        final dt = (f.ms - meanT).toDouble();
+        sTT += dt * dt;
+        sTV += dt * (f.v - meanV);
+      }
+      if (sTT > 0) accelKmhPerS = sTV / sTT * 1000.0;
     }
 
     final last = _lastTickMs;
