@@ -12,6 +12,7 @@ import 'services/cost_settings.dart';
 import 'services/cloud_sync_service.dart';
 import 'services/vehicle_catalog_service.dart';
 import 'services/bridge_diag_service.dart';
+import 'services/autostart_arm.dart';
 import 'services/locale_service.dart';
 import 'services/speed_profile_service.dart';
 import 'screens/home.dart';
@@ -209,6 +210,9 @@ class _BZ5AppState extends State<BZ5App> with WidgetsBindingObserver {
             ctx.read<CloudSyncService>().isHeadUnitCheck =
                 () => hal.canUseHal;
             hal.init();
+            // v0.1.56+155: arm the autostart net once the head-unit
+            // verdict settles (no-op on phones).
+            AutostartArm.attach(hal);
             return hal;
           },
         ),

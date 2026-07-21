@@ -34,14 +34,16 @@ import 'diag_dump_file.dart';
 import 'hal_telemetry_channel.dart';
 import 'hal_telemetry_service.dart';
 
-/// Steady-state gate: |acceleration| must stay under this (km/h per
-/// second) for a tick to count into a band. A named constant on
-/// purpose — field tuning knob (spec Q2). Field calibration 21.07
-/// (+154): 1.5 → 2.5 — at the real ~2.5 Hz speed cadence the honest
-/// «держу 40» wander reads as 1.5–2 km/h/s and 1.5 starved the bands
-/// (79% of ticks rejected); real launches live at 5–8 km/h/s, so 2.5
-/// still separates cleanly.
-const double kSteadyAccelMax = 2.5;
+/// Corridor-dwell gate (+155): a tick qualifies once the dash speed
+/// has stayed INSIDE one band window (±3) continuously for this long.
+/// This replaced the slope estimator (+153 edge, +154 LSQ): both died
+/// in the field — the 21.07 dumps showed the accel gate still eating
+/// 65% of city ticks, a physically implausible share, i.e. the
+/// estimator systematically over-read the ~2.7 Hz quantized stream.
+/// Dwell IS a steadiness measurement, but a robust one: you cannot
+/// accelerate harder than ~2 km/h/s and remain 3 s inside a 6-km/h
+/// corridor — the physics does the filtering, the estimator retires.
+const double kBandDwellS = 3.0;
 
 /// Cluster-to-real speed correction (dash reads ~2% high; Alex's
 /// measurement, spec §2). Bands detect on dash speed, distance and the
@@ -110,40 +112,36 @@ class ZeroTo100Run {
 /// never needs these; the permanent progress UX is maturingBands.
 class TickDiag {
   int total; // integration ticks entering the band pipeline
-  int noAccel; // accel window not filled yet (null)
-  int accelHigh; // |a| > kSteadyAccelMax
+  int warming; // inside a band window but dwell < kBandDwellS
   int outOfBand; // dash speed outside every ±3 round-ten window
   int powerStale; // V/I freshness gate failed (P null)
-  int powerNonPos; // P <= 0 (regen/coast)
+  int negPower; // INFORMATIONAL: qualified ticks written with P <= 0
   int qualified;
 
   TickDiag({
     this.total = 0,
-    this.noAccel = 0,
-    this.accelHigh = 0,
+    this.warming = 0,
     this.outOfBand = 0,
     this.powerStale = 0,
-    this.powerNonPos = 0,
+    this.negPower = 0,
     this.qualified = 0,
   });
 
   Map<String, dynamic> toJson() => {
         'tot': total,
-        'na': noAccel,
-        'ah': accelHigh,
+        'wu': warming,
         'ob': outOfBand,
         'ps': powerStale,
-        'pn': powerNonPos,
+        'pn': negPower,
         'q': qualified,
       };
 
   static TickDiag fromJson(Map<String, dynamic> j) => TickDiag(
         total: (j['tot'] as num?)?.toInt() ?? 0,
-        noAccel: (j['na'] as num?)?.toInt() ?? 0,
-        accelHigh: (j['ah'] as num?)?.toInt() ?? 0,
+        warming: (j['wu'] as num?)?.toInt() ?? 0,
         outOfBand: (j['ob'] as num?)?.toInt() ?? 0,
         powerStale: (j['ps'] as num?)?.toInt() ?? 0,
-        powerNonPos: (j['pn'] as num?)?.toInt() ?? 0,
+        negPower: (j['pn'] as num?)?.toInt() ?? 0,
         qualified: (j['q'] as num?)?.toInt() ?? 0,
       );
 }
@@ -341,8 +339,12 @@ class SpeedProfileService extends ChangeNotifier {
 
   // ── tick state (not persisted; a 30 s tail is the accepted loss) ──
   int? _lastTickMs;
-  final List<_SpeedFrame> _speedBuf = [];
   int _lastNotifyMs = 0;
+  // Corridor dwell (+155): which band window the dash currently sits
+  // in and since when. Leaving the window (or hopping to a neighbour)
+  // resets the clock; ticks qualify only past kBandDwellS.
+  int? _dwellBand;
+  int? _dwellSinceMs;
 
   // ── 0–100 state machine ──
   _ZPhase _zPhase = _ZPhase.idle;
@@ -510,7 +512,7 @@ class SpeedProfileService extends ChangeNotifier {
       'dumped_at': DateTime.now().toIso8601String(),
       'active': _active,
       'constants': {
-        'kSteadyAccelMax': kSteadyAccelMax,
+        'kBandDwellS': kBandDwellS,
         'kSpeedRealFactor': kSpeedRealFactor,
         'kBandHalfWidthKmh': kBandHalfWidthKmh,
         'kBandMinKmh': kBandMinKmh,
@@ -588,7 +590,8 @@ class SpeedProfileService extends ChangeNotifier {
 
   void _resetTickState() {
     _lastTickMs = null;
-    _speedBuf.clear();
+    _dwellBand = null;
+    _dwellSinceMs = null;
     _zPhase = _ZPhase.idle;
     _zBelowSinceMs = null;
     _zT0Ms = null;
@@ -657,40 +660,23 @@ class SpeedProfileService extends ChangeNotifier {
 
     // Wall clock over HalEvent.ts — the framework timestamp base is
     // unspecified (boot vs epoch); receipt time is uniform and the
-    // stream is fast enough that transport jitter is noise at 1 s
-    // acceleration windows and 2 s dt guards.
+    // stream is fast enough that transport jitter is noise at the
+    // 3 s dwell and 2 s dt guards.
     final now = DateTime.now().millisecondsSinceEpoch;
 
-    _speedBuf.add(_SpeedFrame(now, vDash));
-    while (_speedBuf.length > 2 && now - _speedBuf.first.ms > 2000) {
-      _speedBuf.removeAt(0);
-    }
-
-    // Steady-state slope — least squares over ALL buffer frames in a
-    // ~2 s window (+154). Edge-to-edge was the +153 field failure: at
-    // the real ~2.5 Hz cadence it stood on two samples, so an honest
-    // ±1 km/h wander read as a launch and 79% of ticks died at the
-    // accel gate. LSQ over every frame averages the jitter out while
-    // a real ramp still shows its true slope. Null until the window
-    // spans ≥400 ms — an unknown acceleration NEVER qualifies a tick
-    // (no data ≠ steady).
-    double? accelKmhPerS;
-    if (_speedBuf.length >= 2 && now - _speedBuf.first.ms >= 400) {
-      double sumT = 0, sumV = 0;
-      final n = _speedBuf.length;
-      for (final f in _speedBuf) {
-        sumT += f.ms;
-        sumV += f.v;
-      }
-      final meanT = sumT / n;
-      final meanV = sumV / n;
-      double sTT = 0, sTV = 0;
-      for (final f in _speedBuf) {
-        final dt = (f.ms - meanT).toDouble();
-        sTT += dt * dt;
-        sTV += dt * (f.v - meanV);
-      }
-      if (sTT > 0) accelKmhPerS = sTV / sTT * 1000.0;
+    // Corridor dwell (+155): the slope estimators are retired — see
+    // kBandDwellS. Track which band window the dash sits in; any exit
+    // or hop resets the clock.
+    final cand = (vDash / 10.0).round() * 10;
+    final inWindow = cand >= kBandMinKmh &&
+        cand <= kBandMaxKmh &&
+        (vDash - cand).abs() <= kBandHalfWidthKmh;
+    if (!inWindow) {
+      _dwellBand = null;
+      _dwellSinceMs = null;
+    } else if (_dwellBand != cand) {
+      _dwellBand = cand;
+      _dwellSinceMs = now;
     }
 
     final last = _lastTickMs;
@@ -705,7 +691,7 @@ class SpeedProfileService extends ChangeNotifier {
       // Total real distance — the auto-name «82 км» and nothing else.
       s.totalDistKm += vDash * kSpeedRealFactor * dtS / 3600.0;
       _accumTemp(s, dtS);
-      _accumBand(s, vDash, accelKmhPerS, dtS);
+      _accumBand(s, vDash, now, dtS);
     }
 
     // Idle clock for the auto-stop (p.7): any real movement resets it.
@@ -721,31 +707,31 @@ class SpeedProfileService extends ChangeNotifier {
     }
   }
 
-  void _accumBand(SpeedProfileSession s, double vDash,
-      double? accelKmhPerS, double dtS) {
-    // Tick qualification — ALL gates at once (spec §3):
-    //   1) dash speed inside a round-ten band window (±3);
-    //   2) steady state: |a| ≤ kSteadyAccelMax over the ~1 s window;
-    //   3) power > 0 — regen/coast is never written;
-    //   4) V/I freshness ≤ 6 s (inside _freshPowerKw);
-    //   5) dt ≤ 2 s (already guarded by the caller).
-    // TEMP DIAG (+153): each rejection increments its counter (first
-    // failing gate wins) — a single drive names the guilty gate.
+  void _accumBand(
+      SpeedProfileSession s, double vDash, int nowMs, double dtS) {
+    // Tick qualification (+155 redesign after the 21.07 field dumps):
+    //   1) the dash has dwelt INSIDE one ±3 round-ten window for
+    //      ≥ kBandDwellS (corridor gate — replaces the slope
+    //      estimators that over-rejected 65-79% of honest city ticks);
+    //   2) V/I fresh (ps was 1/2861 in the field — the gate is cheap
+    //      and stays);
+    //   3) dt ≤ 2 s (guarded by the caller).
+    // Energy is integrated SIGNED (+155): the old «P ≤ 0 не пишем»
+    // rule skewed city bands to the traction-pulse phase only — the
+    // 19:55 dump read 32.4 kWh/100km at band 40 and FALLING with
+    // speed, inverted EV physics. A band answers «что суммарно стоит
+    // держать эту скорость здесь», so regen/coast inside the corridor
+    // must субtract exactly like they do in trip averages.
     final d = s.diag;
     d.total++;
-    if (accelKmhPerS == null) {
-      d.noAccel++;
-      return;
-    }
-    if (accelKmhPerS.abs() > kSteadyAccelMax) {
-      d.accelHigh++;
-      return;
-    }
-    final band = (vDash / 10.0).round() * 10;
-    if (band < kBandMinKmh ||
-        band > kBandMaxKmh ||
-        (vDash - band).abs() > kBandHalfWidthKmh) {
+    final band = _dwellBand;
+    final since = _dwellSinceMs;
+    if (band == null || since == null) {
       d.outOfBand++;
+      return;
+    }
+    if (nowMs - since < kBandDwellS * 1000.0) {
+      d.warming++;
       return;
     }
     final p = _freshPowerKw();
@@ -753,11 +739,8 @@ class SpeedProfileService extends ChangeNotifier {
       d.powerStale++;
       return;
     }
-    if (p <= 0) {
-      d.powerNonPos++;
-      return;
-    }
     d.qualified++;
+    if (p <= 0) d.negPower++; // informational — the tick IS written
 
     final agg = s.bands.putIfAbsent(band, SpeedBandAgg.new);
     agg.energyKwh += p * dtS / 3600.0;
@@ -846,8 +829,3 @@ class SpeedProfileService extends ChangeNotifier {
 
 enum _ZPhase { idle, armed, running }
 
-class _SpeedFrame {
-  final int ms;
-  final double v;
-  const _SpeedFrame(this.ms, this.v);
-}
