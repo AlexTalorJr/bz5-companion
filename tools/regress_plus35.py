@@ -4339,11 +4339,14 @@ if int(pv) >= 151:
     else:
         fail('AW2 tick qualification gate(s) missing')
     # AW3: the steady threshold is the named field-tuning constant
-    # (spec Q2), value 1.5.
-    if 'const double kSteadyAccelMax = 1.5;' in sps:
-        ok('AW3 kSteadyAccelMax named constant = 1.5')
+    # (spec Q2). 1.5 until +153; 2.5 from +154 (field calibration
+    # 21.07: LSQ slope + widened gate after 79% accel-gate starvation).
+    _aw3 = ('const double kSteadyAccelMax = 2.5;'
+            if int(pv) >= 154 else 'const double kSteadyAccelMax = 1.5;')
+    if _aw3 in sps:
+        ok('AW3 kSteadyAccelMax constant matches the era')
     else:
-        fail('AW3 kSteadyAccelMax constant missing/renamed')
+        fail('AW3 kSteadyAccelMax constant missing/wrong value for era')
     # AW4: dash/real split — bands detect on DASH speed, distance and
     # the 0–100 finish integrate REAL (× kSpeedRealFactor = 0.98).
     if 'const double kSpeedRealFactor = 0.98;' in sps and \
@@ -4382,12 +4385,14 @@ if int(pv) >= 151:
         fail('AW7 tab gating / power freshness path wrong')
     # AW8: no-data ≠ zero — a band materialises only past the 60 s
     # threshold and empty bands never render.
-    if 'const double kBandMinSeconds = 60.0;' in sps and \
+    _aw8 = ('const double kBandMinSeconds = 120.0;'
+            if int(pv) >= 154 else 'const double kBandMinSeconds = 60.0;')
+    if _aw8 in sps and \
        'timeS >= kBandMinSeconds' in sps and \
        'visibleBands' in spu:
-        ok('AW8 60 s band threshold, empty bands do not exist')
+        ok('AW8 band threshold matches the era, no zero rows')
     else:
-        fail('AW8 band-materialisation threshold missing')
+        fail('AW8 band-materialisation threshold missing/wrong era value')
     # AW9 (review p.3/p.7): idle auto-stop — a movement-less week
     # releases the retained stream (constant + idle clock + check wired
     # into BOTH the 30 s timer and init-resume); and the A/B picker is
@@ -4427,7 +4432,7 @@ if int(pv) >= 151:
            "'diag': diag.toJson()" in sps and \
            'maturingBands' in sps and \
            '_MaturingCard' in spu and '_TickDiagRow' in spu and \
-           "S.of('measure.of60')" in spu and \
+           "S.of('measure.of')" in spu and \
            'dumpDiag' in sps and \
            'DiagDumpFile.instance.append' in sps and \
            "S.of('measure.dump')" in spu:
@@ -4436,6 +4441,19 @@ if int(pv) >= 151:
             fail('AW11 diag counters / maturing progress missing')
     else:
         ok(f"Part AW11 skipped (build +{pv}, tick diag lands in +153)")
+    # AW12 (+154): the steady-slope estimator is LEAST SQUARES over the
+    # whole ~2 s buffer, not edge-to-edge — the 21.07 field calibration
+    # (edge slope on a ~2.5 Hz cadence read jitter as launches, 79%
+    # starvation).
+    if int(pv) >= 154:
+        if 'sTV / sTT * 1000.0' in sps and \
+           '> 2000' in sps and \
+           '(vDash - first.v)' not in sps:
+            ok('AW12 LSQ slope over 2 s buffer (edge-to-edge retired)')
+        else:
+            fail('AW12 LSQ estimator missing / edge slope resurrected')
+    else:
+        ok(f"Part AW12 skipped (build +{pv}, LSQ lands in +154)")
 else:
     ok(f"Part AW skipped (build +{pv}, speed profile lands in +151)")
 
