@@ -326,9 +326,9 @@ class _TickDiagRow extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 4),
       child: Text(
-        'diag: тик ${d.total} · безΔv ${d.noAccel} · |a|> ${d.accelHigh}'
+        'diag: тик ${d.total} · прогрев ${d.warming}'
         ' · вне ${d.outOfBand} · V/I ${d.powerStale}'
-        ' · P≤0 ${d.powerNonPos} · ✓ ${d.qualified}',
+        ' · ✓ ${d.qualified} (из них P≤0 ${d.negPower})',
         style: TextStyle(
             fontSize: 11,
             fontFamily: 'monospace',
@@ -479,15 +479,18 @@ class _BandBarCard extends StatelessWidget {
 
   Widget _chart(List<int> bands) {
     double maxV = 0;
+    double minV = 0;
     for (final b in bands) {
       final c = session.bands[b]!.consumptionKwh100 ?? 0;
       if (c > maxV) maxV = c;
+      if (c < minV) minV = c;
     }
     // Index-based x (the Trends _BarCard pattern) — band values as x
     // would make fl_chart title interpolated ticks between the bars.
     return BarChart(
       BarChartData(
         maxY: maxV * 1.15 + 0.1,
+        minY: minV < 0 ? minV * 1.15 - 0.1 : 0,
         barTouchData: BarTouchData(enabled: false),
         gridData: const FlGridData(show: false),
         borderData: FlBorderData(show: false),
@@ -568,8 +571,18 @@ class _BandTableCard extends StatelessWidget {
   Widget _bandRow(int band, SpeedBandAgg agg) {
     final cons = agg.consumptionKwh100;
     if (cons == null) return const SizedBox.shrink();
-    final rangeKm =
-        SpeedProfileService.packCapacityKwh / cons * 100.0;
+    // +155: energy is signed — a long descent can legitimately push a
+    // band near or below zero. The range translation only makes sense
+    // for a meaningful positive draw; below that show the number alone.
+    final String line;
+    if (cons > 0.5) {
+      final rangeKm =
+          SpeedProfileService.packCapacityKwh / cons * 100.0;
+      line =
+          '${cons.toStringAsFixed(1)} ${S.of('measure.kwh100')} · ≈ ${rangeKm.round()} ${S.of('measure.range_suffix')}';
+    } else {
+      line = '${cons.toStringAsFixed(1)} ${S.of('measure.kwh100')}';
+    }
     final mins = (agg.timeS / 60).floor();
     final secs = (agg.timeS % 60).floor();
     return Row(
@@ -582,7 +595,7 @@ class _BandTableCard extends StatelessWidget {
         ),
         Expanded(
           child: Text(
-            '${cons.toStringAsFixed(1)} ${S.of('measure.kwh100')} · ≈ ${rangeKm.round()} ${S.of('measure.range_suffix')}',
+            line,
             style: const TextStyle(fontSize: 14),
           ),
         ),

@@ -1,7 +1,9 @@
 package com.bz5companion.bz5_companion
 
+import android.content.Intent
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.MethodChannel
 
 /**
  * MainActivity for BZ5 Companion.
@@ -16,5 +18,40 @@ class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         flutterEngine.plugins.add(BydNativePlugin())
+        // v0.1.56+155: autostart net arm/disarm. Dart calls "arm" once
+        // per launch on the head unit (canUseHal gate) — the initial
+        // manual wind-up that the START_STICKY contract requires.
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            "bz5/autostart",
+        ).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "arm" -> {
+                    try {
+                        val i = Intent(this, AutostartService::class.java)
+                            .setAction(AutostartService.ACTION_ARM)
+                        if (android.os.Build.VERSION.SDK_INT >= 26) {
+                            startForegroundService(i)
+                        } else {
+                            startService(i)
+                        }
+                        result.success(true)
+                    } catch (t: Throwable) {
+                        result.success(false)
+                    }
+                }
+                "disarm" -> {
+                    try {
+                        val i = Intent(this, AutostartService::class.java)
+                            .setAction(AutostartService.ACTION_STOP)
+                        startService(i)
+                        result.success(true)
+                    } catch (t: Throwable) {
+                        result.success(false)
+                    }
+                }
+                else -> result.notImplemented()
+            }
+        }
     }
 }

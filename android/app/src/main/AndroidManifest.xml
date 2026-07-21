@@ -126,6 +126,13 @@
          App is touch-driven but does not strictly require it for install. -->
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
     <uses-feature android:name="android.hardware.faketouch" android:required="false" />
+    <!-- v0.1.56+155: autostart net (AutostartService, START_STICKY).
+         FOREGROUND_SERVICE is a normal-level permission required since
+         SDK 28 to call startForeground. No BOOT_COMPLETED here — the
+         boot-receiver path is a proven wall on this firmware (recon
+         p112/p113); resurrection rides on START_STICKY alone. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+
     <application
         android:label="BZ5 Companion"
         android:name="${applicationName}"
@@ -159,6 +166,12 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+        <!-- v0.1.56+155: the autostart net. Not exported: armed only
+             from our own Dart side via MethodChannel("bz5/autostart"),
+             resurrected only by ActivityManager (START_STICKY). -->
+        <service
+            android:name=".AutostartService"
+            android:exported="false" />
     </application>
     <queries>
         <intent>

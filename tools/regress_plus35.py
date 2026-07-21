@@ -4331,7 +4331,15 @@ if int(pv) >= 151:
     # AW2: tick qualification — all gates present: steady-accel window,
     # positive-power (regen never written), the ±3 round-ten band
     # window, and the dt integration guard.
-    if 'accelKmhPerS.abs() > kSteadyAccelMax' in sps and \
+    if int(pv) >= 155:
+        if 'nowMs - since < kBandDwellS * 1000.0' in sps and \
+           'if (p == null)' in sps and \
+           '(vDash - cand).abs() <= kBandHalfWidthKmh' in sps and \
+           'd <= kDtGuardS' in sps:
+            ok('AW2 tick qualification: corridor dwell + V/I fresh + dt-guard')
+        else:
+            fail('AW2 corridor qualification gate(s) missing')
+    elif 'accelKmhPerS.abs() > kSteadyAccelMax' in sps and \
        'if (p == null)' in sps and 'if (p <= 0)' in sps and \
        '(vDash - band).abs() > kBandHalfWidthKmh' in sps and \
        'd <= kDtGuardS' in sps:
@@ -4341,12 +4349,19 @@ if int(pv) >= 151:
     # AW3: the steady threshold is the named field-tuning constant
     # (spec Q2). 1.5 until +153; 2.5 from +154 (field calibration
     # 21.07: LSQ slope + widened gate after 79% accel-gate starvation).
-    _aw3 = ('const double kSteadyAccelMax = 2.5;'
-            if int(pv) >= 154 else 'const double kSteadyAccelMax = 1.5;')
-    if _aw3 in sps:
-        ok('AW3 kSteadyAccelMax constant matches the era')
+    if int(pv) >= 155:
+        if 'const double kBandDwellS = 3.0;' in sps and \
+           'kSteadyAccelMax' not in sps:
+            ok('AW3 kBandDwellS = 3.0, slope-estimator knob retired')
+        else:
+            fail('AW3 dwell constant missing / retired knob resurrected')
     else:
-        fail('AW3 kSteadyAccelMax constant missing/wrong value for era')
+        _aw3 = ('const double kSteadyAccelMax = 2.5;'
+                if int(pv) >= 154 else 'const double kSteadyAccelMax = 1.5;')
+        if _aw3 in sps:
+            ok('AW3 kSteadyAccelMax constant matches the era')
+        else:
+            fail('AW3 kSteadyAccelMax constant missing/wrong value for era')
     # AW4: dash/real split — bands detect on DASH speed, distance and
     # the 0–100 finish integrate REAL (× kSpeedRealFactor = 0.98).
     if 'const double kSpeedRealFactor = 0.98;' in sps and \
@@ -4445,7 +4460,13 @@ if int(pv) >= 151:
     # whole ~2 s buffer, not edge-to-edge — the 21.07 field calibration
     # (edge slope on a ~2.5 Hz cadence read jitter as launches, 79%
     # starvation).
-    if int(pv) >= 154:
+    if int(pv) >= 155:
+        if 'sTV / sTT' not in sps and '_speedBuf' not in sps and \
+           'accelKmhPerS' not in sps:
+            ok('AW12 slope estimators fully retired (+155 corridor era)')
+        else:
+            fail('AW12 an estimator survived into the corridor era')
+    elif int(pv) >= 154:
         if 'sTV / sTT * 1000.0' in sps and \
            '> 2000' in sps and \
            '(vDash - first.v)' not in sps:
@@ -4454,6 +4475,48 @@ if int(pv) >= 151:
             fail('AW12 LSQ estimator missing / edge slope resurrected')
     else:
         ok(f"Part AW12 skipped (build +{pv}, LSQ lands in +154)")
+    # AW13 (+155): SIGNED band energy. The «P ≤ 0 не пишем» rule skewed
+    # city bands to the traction-pulse phase (19:55 field dump: 32.4 at
+    # band 40, consumption FALLING with speed — inverted EV physics).
+    # Regen/coast inside the corridor must subtract; negPower is
+    # informational only; the UI must survive a negative band.
+    if int(pv) >= 155:
+        if 'd.negPower++; // informational' in sps and \
+           'if (p <= 0) return;' not in sps and \
+           'cons > 0.5' in spu and \
+           'minY: minV < 0' in spu:
+            ok('AW13 signed band energy; UI survives negative bands')
+        else:
+            fail('AW13 signed-energy semantics broken')
+    else:
+        ok(f"Part AW13 skipped (build +{pv}, signed energy lands in +155)")
+    # AW14 (+155): the autostart net (вариант D). Kotlin FGS with
+    # START_STICKY whose null-intent resurrection path NEVER hits the
+    # stop branch; manifest-registered, not exported; armed from Dart
+    # behind the canUseHal gate; marker log for the BAL field question.
+    if int(pv) >= 155:
+        auto_kt = root / ('android/app/src/main/kotlin/com/bz5companion/'
+                          'bz5_companion/AutostartService.kt')
+        mani = (root / 'android/app/src/main/AndroidManifest.xml').read_text()
+        arm = (root / 'lib/services/autostart_arm.dart').read_text()
+        mact = (root / ('android/app/src/main/kotlin/com/bz5companion/'
+                        'bz5_companion/MainActivity.kt')).read_text()
+        akt = auto_kt.read_text() if auto_kt.exists() else ''
+        if 'return START_STICKY' in akt and \
+           'return START_NOT_STICKY' in akt and \
+           'intent?.action == ACTION_STOP' in akt and \
+           'if (intent == null)' in akt and \
+           'bz5_companion_autostart_log.txt' in akt and \
+           'android:name=".AutostartService"' in mani and \
+           'android:exported="false"' in mani and \
+           'android.permission.FOREGROUND_SERVICE' in mani and \
+           'hal.canUseHal' in arm and \
+           '"bz5/autostart"' in mact:
+            ok('AW14 autostart net: STICKY service + gated arm + marker log')
+        else:
+            fail('AW14 autostart net incomplete')
+    else:
+        ok(f"Part AW14 skipped (build +{pv}, autostart lands in +155)")
 else:
     ok(f"Part AW skipped (build +{pv}, speed profile lands in +151)")
 
