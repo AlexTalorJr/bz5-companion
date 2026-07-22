@@ -7,25 +7,44 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
+import android.os.Process
+import android.os.SystemClock
 import android.util.Log
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.random.Random
 
 /**
  * v0.1.56+155 — autostart net (вариант D, spec Друга 3 20.07).
+ * v0.1.58+157 — heartbeat instrumentation (Друг 3, 22.07 retraction).
  *
- * The head unit (DiLink 5.0, Android 12, restricted standby bucket)
- * blocks FGS launches from boot receivers, but a START_STICKY service
- * is resurrected by ActivityManager itself — recon's LiveMonitorService
- * proved it in the field (self-revived after a night's sleep, 27 min
- * of recording, autostart-receiver log empty). Companion had NO Android
- * service at all, so there was nothing to resurrect; this is that
- * service. Its ONE job on resurrection: bring MainActivity (and with it
- * the whole ordinary Dart pipeline) back up. No data path of its own —
- * no chunks, no second engine, nothing to merge later.
+ * HISTORY, corrected. The +155 premise — «recon's LiveMonitorService
+ * proved STICKY resurrection in the field» — was RETRACTED by Друг 3
+ * on 22.07 after a real re-read of the recon raw data: the four 20.07
+ * restarts were full process births (fresh session_ts, first CAN frame
+ * 0.2 s after it), the autostart-receiver log was empty, and the FGS
+ * launch-check (mAllowStartForeground false, p113) should wall a
+ * system-driven STICKY restart exactly like it walls the receiver.
+ * What actually restarted recon is UNKNOWN; the best-standing guess is
+ * the standby bucket (recon was hand-opened constantly during debug →
+ * active bucket → lenient restart policy; companion is not → restricted
+ * → no restarts). Field 22.07 on companion agrees: only `armed:` lines,
+ * zero `resurrected:`, the «взведён» notification gone after HU sleep.
+ *
+ * +157 therefore adds the ONLY instrument that yields facts instead of
+ * hypotheses — a heartbeat trail: `born` (onCreate, pid + per-process
+ * tag + fresh-boot flag), `beat` every 5 min (uptime/elapsedRealtime
+ * pair — their divergence between beats of one tag is a suspend the
+ * process SURVIVED), `destroy` (onDestroy — its ABSENCE before a new
+ * `born` is a silent kill, i.e. force-stop-like). One day of ordinary
+ * drives answers: does the process die at ignition-off, is it ever
+ * reborn by the system, does anything survive suspend. No self-healing
+ * in this patch — pure observation.
  *
  * Known open question (marker log answers it from the field): Android
  * 12 Background-Activity-Launch policy may silently block startActivity
@@ -47,15 +66,63 @@ class AutostartService : Service() {
         private const val CHANNEL_ID = "bz5_autostart"
         private const val NOTIF_ID = 4151
         private const val MARKER = "bz5_companion_autostart_log.txt"
+
+        /** +157 heartbeat cadence. 5 min: coarse enough to be free,
+         *  fine enough to time a kill to the ignition-off it matches. */
+        private const val HEARTBEAT_MS = 5 * 60 * 1000L
+
+        /** One tag per PROCESS — a companion-object val initialises
+         *  once per class load, i.e. once per process. Lines sharing a
+         *  tag came from one living process; a new tag is a full
+         *  process rebirth (Друг 3's session_ts evidence, made cheap). */
+        private val PROC_TAG = "%04x".format(Random.nextInt(0x10000))
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    // ── +157 heartbeat: pure observation, no self-healing here ──
+
+    private val hbHandler = Handler(Looper.getMainLooper())
+    private val hbTick = object : Runnable {
+        override fun run() {
+            marker("beat: ${ident()}")
+            hbHandler.postDelayed(this, HEARTBEAT_MS)
+        }
+    }
+
+    /** pid + process tag + the uptime/elapsedRealtime pair. `up`
+     *  excludes deep sleep, `el` includes it: `el` jumping ahead of
+     *  `up` between two beats of the SAME tag is a suspend the process
+     *  survived; both restarting near zero with a NEW tag is a reboot. */
+    private fun ident(): String =
+        "pid=${Process.myPid()} tag=$PROC_TAG" +
+            " up=${SystemClock.uptimeMillis() / 1000}s" +
+            " el=${SystemClock.elapsedRealtime() / 1000}s"
+
+    override fun onCreate() {
+        super.onCreate()
+        // fresh-boot flag (Друг 3): elapsedRealtime under ~5 min means
+        // the OS itself just started — separates reboots from ordinary
+        // ignition cycles without any PID bookkeeping.
+        val freshBoot = SystemClock.elapsedRealtime() < 5 * 60 * 1000L
+        marker("born: ${ident()} fresh-boot=$freshBoot")
+        hbHandler.postDelayed(hbTick, HEARTBEAT_MS)
+    }
+
+    override fun onDestroy() {
+        // A polite kill logs this line; a force-stop never reaches it.
+        // The ABSENCE of `destroy` before the next `born` is itself the
+        // measurement.
+        hbHandler.removeCallbacks(hbTick)
+        marker("destroy: ${ident()}")
+        super.onDestroy()
+    }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         // Explicit stop only — a null intent is a STICKY resurrection
         // and must fall through to the relaunch path below.
         if (intent?.action == ACTION_STOP) {
-            marker("stop: explicit ACTION_STOP")
+            marker("stop: explicit ACTION_STOP · ${ident()}")
             stopSelf()
             return START_NOT_STICKY
         }
@@ -66,9 +133,9 @@ class AutostartService : Service() {
             // Resurrected by the system after a kill/sleep — the whole
             // point of the net. Bring the app up.
             val ok = tryLaunchActivity()
-            marker("resurrected: launch=${if (ok) "attempted-no-throw" else "threw"}")
+            marker("resurrected: launch=${if (ok) "attempted-no-throw" else "threw"} · ${ident()}")
         } else {
-            marker("armed: ${intent.action ?: "no-action"}")
+            marker("armed: ${intent.action ?: "no-action"} · ${ident()}")
         }
         return START_STICKY
     }
