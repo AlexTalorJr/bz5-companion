@@ -19,7 +19,12 @@
 //     electronics) — the table answers "what does it really cost to
 //     hold 100", not "clean traction";
 //   • a band with no data does not exist (no zero rows);
-//   • regen/coast ticks (P ≤ 0) are never written;
+//   • band energy is SIGNED (+155): regen/coast inside the corridor
+//     subtract, exactly like they do in trip averages;
+//   • the HAL speed fid is ON-CHANGE (+156 field proof, 22.07: 25 of
+//     69 odometer km lost to >2 s stream silences at steady speed) —
+//     a 1 Hz virtual-tick pump carries the last dash value forward,
+//     because a value that did not change did not emit;
 //   • pack temperature is session METADATA, not a season classifier —
 //     a heated LFP pack shows plus in winter, a binary label would lie
 //     exactly on the target sessions.
@@ -62,6 +67,20 @@ const double kBandMinSeconds = 120.0;
 /// Integration guard: stream gaps longer than this are not integrated
 /// (dt-гард, same idea as the trip integrators).
 const double kDtGuardS = 2.0;
+
+/// Virtual-tick cadence (+156). The HAL speed fid is ON-CHANGE: at a
+/// held speed the dash value does not change, so NO events arrive, the
+/// inter-tick gap blows past kDtGuardS and the steadiest stretches —
+/// the exact target of the whole feature — were structurally invisible
+/// (22.07 field: totalDistKm 44.05 vs одометр 69.3, −36%; the third
+/// starvation in a row after +153/+154, this time the mechanism is
+/// proven by the distance loss, which ONLY the dt-guard can cause).
+/// A periodic pump re-integrates the LAST dash value: on-change
+/// semantics guarantee the carry-forward is honest — the speed cannot
+/// change without emitting an event. Liveness is gated on fresh V/I
+/// (the 6 s windows the energy path already requires): a dead stream
+/// freezes the whole tick, so an ignition-off never grows phantom km.
+const double kVirtualTickS = 1.0;
 
 /// A session forgotten for this long without any movement stops
 /// itself: an idle-but-active session would hold the native stream
@@ -111,12 +130,18 @@ class ZeroTo100Run {
 /// gate that eats ticks. REMOVE after the field diagnosis — the user
 /// never needs these; the permanent progress UX is maturingBands.
 class TickDiag {
-  int total; // integration ticks entering the band pipeline
+  int total; // integration ticks entering the band pipeline (v ≥ 2)
   int warming; // inside a band window but dwell < kBandDwellS
   int outOfBand; // dash speed outside every ±3 round-ten window
   int powerStale; // V/I freshness gate failed (P null)
   int negPower; // INFORMATIONAL: qualified ticks written with P <= 0
   int qualified;
+  // +156 on-change proof counters. After the virtual pump, gapDrops
+  // must collapse to ~0 while the car is alive — the one-drive field
+  // confirmation that the starvation mechanism is closed.
+  int virtualTicks; // integrated ticks that came from the 1 Hz pump
+  int gapDrops; // ticks rejected by the dt-guard (gap > kDtGuardS)
+  double maxGapS; // longest observed inter-tick gap
 
   TickDiag({
     this.total = 0,
@@ -125,6 +150,9 @@ class TickDiag {
     this.powerStale = 0,
     this.negPower = 0,
     this.qualified = 0,
+    this.virtualTicks = 0,
+    this.gapDrops = 0,
+    this.maxGapS = 0,
   });
 
   Map<String, dynamic> toJson() => {
@@ -134,6 +162,9 @@ class TickDiag {
         'ps': powerStale,
         'pn': negPower,
         'q': qualified,
+        'vt': virtualTicks,
+        'gd': gapDrops,
+        'gm': maxGapS,
       };
 
   static TickDiag fromJson(Map<String, dynamic> j) => TickDiag(
@@ -143,6 +174,9 @@ class TickDiag {
         powerStale: (j['ps'] as num?)?.toInt() ?? 0,
         negPower: (j['pn'] as num?)?.toInt() ?? 0,
         qualified: (j['q'] as num?)?.toInt() ?? 0,
+        virtualTicks: (j['vt'] as num?)?.toInt() ?? 0,
+        gapDrops: (j['gd'] as num?)?.toInt() ?? 0,
+        maxGapS: (j['gm'] as num?)?.toDouble() ?? 0,
       );
 }
 
@@ -340,6 +374,11 @@ class SpeedProfileService extends ChangeNotifier {
   // ── tick state (not persisted; a 30 s tail is the accepted loss) ──
   int? _lastTickMs;
   int _lastNotifyMs = 0;
+  // +156 carry-forward pump: the last dash value seen on the stream
+  // (on-change ⇒ still the true value until the next event) and the
+  // 1 Hz timer that re-integrates it through the SAME clock/guards.
+  double? _lastSpeedDash;
+  Timer? _virtualTimer;
   // Corridor dwell (+155): which band window the dash currently sits
   // in and since when. Leaving the window (or hopping to a neighbour)
   // resets the clock; ticks qualify only past kBandDwellS.
@@ -519,6 +558,7 @@ class SpeedProfileService extends ChangeNotifier {
         'kBandMaxKmh': kBandMaxKmh,
         'kBandMinSeconds': kBandMinSeconds,
         'kDtGuardS': kDtGuardS,
+        'kVirtualTickS': kVirtualTickS,
         'packCapacityKwh': _kPackCapacityKwh,
       },
       'session': s.toJson(),
@@ -537,6 +577,7 @@ class SpeedProfileService extends ChangeNotifier {
   void dispose() {
     _sub?.cancel();
     _persistTimer?.cancel();
+    _virtualTimer?.cancel();
     if (_retained) {
       _retained = false;
       _hal.releaseStream();
@@ -556,6 +597,10 @@ class SpeedProfileService extends ChangeNotifier {
       _maybeAutoStop();
       _persist();
     });
+    // +156: the carry-forward pump lives exactly as long as the
+    // subscription — attach starts it, detach kills it.
+    _virtualTimer ??= Timer.periodic(
+        const Duration(seconds: 1), (_) => _onVirtualTick());
   }
 
   bool _idleTooLong(SpeedProfileSession s) =>
@@ -581,6 +626,8 @@ class SpeedProfileService extends ChangeNotifier {
     _sub = null;
     _persistTimer?.cancel();
     _persistTimer = null;
+    _virtualTimer?.cancel();
+    _virtualTimer = null;
     if (_retained) {
       _retained = false;
       await _hal.releaseStream();
@@ -590,6 +637,7 @@ class SpeedProfileService extends ChangeNotifier {
 
   void _resetTickState() {
     _lastTickMs = null;
+    _lastSpeedDash = null;
     _dwellBand = null;
     _dwellSinceMs = null;
     _zPhase = _ZPhase.idle;
@@ -664,9 +712,48 @@ class SpeedProfileService extends ChangeNotifier {
     // 3 s dwell and 2 s dt guards.
     final now = DateTime.now().millisecondsSinceEpoch;
 
+    _lastSpeedDash = vDash; // feed the +156 carry-forward pump
+    _integrate(s, vDash, now, virtual: false);
+
+    // The 0–100 automaton stays on REAL events only: it needs actual
+    // threshold crossings for the two-sided interpolation, and during
+    // a hard launch the on-change stream is dense by construction.
+    _stepZeroTo100(s, vDash, now);
+
+    _maybeNotify(now);
+  }
+
+  /// +156: one virtual tick of the carry-forward pump. Re-runs the
+  /// SAME integration path with the last dash value — on-change
+  /// semantics make this honest (the value did not change, or an
+  /// event would have arrived first). The whole tick — distance, temp
+  /// AND bands — is gated on stream liveness (fresh V/I, the same 6 s
+  /// windows the energy path requires): a dead stream must never grow
+  /// phantom kilometres out of a frozen speed. A rejected tick does
+  /// NOT touch _lastTickMs, so on revival the dt-guard resets the
+  /// integration baseline cleanly on the first real event.
+  void _onVirtualTick() {
+    if (!_active) return;
+    final s = _session;
+    if (s == null) return;
+    final vDash = _lastSpeedDash;
+    if (vDash == null) return; // no speed seen yet on this attach
+    if (_freshPowerKw() == null) return; // stream dead — freeze
+    final now = DateTime.now().millisecondsSinceEpoch;
+    _integrate(s, vDash, now, virtual: true);
+    _maybeNotify(now);
+  }
+
+  /// Shared integration step — real events and virtual ticks run the
+  /// SAME clock (_lastTickMs), so interleaving can never double-count:
+  /// every dt slice is consumed exactly once.
+  void _integrate(SpeedProfileSession s, double vDash, int now,
+      {required bool virtual}) {
     // Corridor dwell (+155): the slope estimators are retired — see
     // kBandDwellS. Track which band window the dash sits in; any exit
-    // or hop resets the clock.
+    // or hop resets the clock. Virtual ticks re-run this with the
+    // carried value: same window ⇒ the dwell clock keeps maturing —
+    // silence IS holding the speed.
     final cand = (vDash / 10.0).round() * 10;
     final inWindow = cand >= kBandMinKmh &&
         cand <= kBandMaxKmh &&
@@ -685,22 +772,31 @@ class SpeedProfileService extends ChangeNotifier {
     if (last != null) {
       final d = (now - last) / 1000.0;
       if (d > 0 && d <= kDtGuardS) dtS = d;
+      if (d > kDtGuardS) {
+        // +156 on-change proof: with the pump alive these must stay
+        // ~0 while driving; a nonzero share names a real stream hole.
+        s.diag.gapDrops++;
+        if (d > s.diag.maxGapS) s.diag.maxGapS = d;
+      }
     }
 
     if (dtS != null) {
       // Total real distance — the auto-name «82 км» and nothing else.
       s.totalDistKm += vDash * kSpeedRealFactor * dtS / 3600.0;
-      _accumTemp(s, dtS);
-      _accumBand(s, vDash, now, dtS);
+      // +156: the temp passport describes DRIVING — a 40-minute
+      // charging stop must not out-weigh the trip now that the pump
+      // also ticks at standstill.
+      if (vDash >= 2.0) _accumTemp(s, dtS);
+      _accumBand(s, vDash, now, dtS, virtual: virtual);
     }
 
     // Idle clock for the auto-stop (p.7): any real movement resets it.
     if (vDash >= 2.0) s.lastMoveMs = now;
+  }
 
-    _stepZeroTo100(s, vDash, now);
-
-    // The screen may be open while recording — repaint at most 1/s so
-    // a ~10 Hz speed stream doesn't burn the UI thread.
+  /// The screen may be open while recording — repaint at most 1/s so
+  /// a ~10 Hz speed stream doesn't burn the UI thread.
+  void _maybeNotify(int now) {
     if (now - _lastNotifyMs >= 1000) {
       _lastNotifyMs = now;
       notifyListeners();
@@ -708,7 +804,8 @@ class SpeedProfileService extends ChangeNotifier {
   }
 
   void _accumBand(
-      SpeedProfileSession s, double vDash, int nowMs, double dtS) {
+      SpeedProfileSession s, double vDash, int nowMs, double dtS,
+      {required bool virtual}) {
     // Tick qualification (+155 redesign after the 21.07 field dumps):
     //   1) the dash has dwelt INSIDE one ±3 round-ten window for
     //      ≥ kBandDwellS (corridor gate — replaces the slope
@@ -723,7 +820,12 @@ class SpeedProfileService extends ChangeNotifier {
     // держать эту скорость здесь», so regen/coast inside the corridor
     // must субtract exactly like they do in trip averages.
     final d = s.diag;
+    // +156: standstill ticks (the pump runs at red lights and while
+    // charging) are invisible to the counters — otherwise `вне` drowns
+    // in parked seconds and the ✓-доля stops meaning anything.
+    if (vDash < 2.0) return;
     d.total++;
+    if (virtual) d.virtualTicks++;
     final band = _dwellBand;
     final since = _dwellSinceMs;
     if (band == null || since == null) {
