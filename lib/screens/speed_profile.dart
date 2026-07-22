@@ -328,7 +328,9 @@ class _TickDiagRow extends StatelessWidget {
       child: Text(
         'diag: тик ${d.total} · прогрев ${d.warming}'
         ' · вне ${d.outOfBand} · V/I ${d.powerStale}'
-        ' · ✓ ${d.qualified} (из них P≤0 ${d.negPower})',
+        ' · ✓ ${d.qualified} (из них P≤0 ${d.negPower})'
+        ' · вирт ${d.virtualTicks} · дроп ${d.gapDrops}'
+        ' (макс ${d.maxGapS.toStringAsFixed(1)}с)',
         style: TextStyle(
             fontSize: 11,
             fontFamily: 'monospace',

@@ -4517,6 +4517,36 @@ if int(pv) >= 151:
             fail('AW14 autostart net incomplete')
     else:
         ok(f"Part AW14 skipped (build +{pv}, autostart lands in +155)")
+    # AW15 (+156): the carry-forward pump. The HAL speed fid is
+    # ON-CHANGE — a held speed emits nothing, the dt-guard starved the
+    # steadiest stretches (22.07 field: 44.05 counted vs 69.3 odometer
+    # km, −36%; third starvation after +153/+154). The fix: a 1 Hz
+    # virtual tick re-integrates the last dash value through the SAME
+    # clock (no double count), the WHOLE virtual tick is gated on fresh
+    # V/I (no phantom km after ignition-off), the temp passport counts
+    # driving only (v ≥ 2), standstill is invisible to the diag
+    # counters, and the on-change proof counters (vt/gd/gm) ride in the
+    # dump. TEMP diag itself must SURVIVE this patch — the field
+    # re-check needs it; removal is +157.
+    if int(pv) >= 156:
+        if 'const double kVirtualTickS = 1.0;' in sps and \
+           '_onVirtualTick' in sps and \
+           '_lastSpeedDash' in sps and \
+           'if (_freshPowerKw() == null) return; // stream dead — freeze' in sps and \
+           'void _integrate(' in sps and \
+           'if (vDash >= 2.0) _accumTemp(s, dtS);' in sps and \
+           'if (vDash < 2.0) return;' in sps and \
+           "'vt': virtualTicks" in sps and \
+           "'gd': gapDrops" in sps and \
+           "'gm': maxGapS" in sps and \
+           's.diag.gapDrops++' in sps and \
+           '_virtualTimer?.cancel();' in sps and \
+           'class TickDiag' in sps and 'dumpDiag' in sps:
+            ok('AW15 carry-forward pump: 1 Hz virtual tick, V/I-gated, shared clock')
+        else:
+            fail('AW15 carry-forward pump incomplete')
+    else:
+        ok(f"Part AW15 skipped (build +{pv}, virtual pump lands in +156)")
 else:
     ok(f"Part AW skipped (build +{pv}, speed profile lands in +151)")
 
