@@ -4547,6 +4547,37 @@ if int(pv) >= 151:
             fail('AW15 carry-forward pump incomplete')
     else:
         ok(f"Part AW15 skipped (build +{pv}, virtual pump lands in +156)")
+    # AW16 (+157): heartbeat instrumentation of the autostart service —
+    # the ONLY truth instrument left after Друг 3's 22.07 retraction of
+    # both the STICKY-resurrection and the BYD-intent-wakeup hypotheses.
+    # born (onCreate: pid + per-process tag + fresh-boot flag), beat
+    # every 5 min (uptime/elapsedRealtime pair), destroy (onDestroy;
+    # its absence before the next born = silent force-stop-like kill),
+    # handler cleaned up on destroy, ident riding on the +155 marker
+    # lines, and NO self-healing: the resurrection/stop semantics of
+    # AW14 must survive untouched.
+    if int(pv) >= 157:
+        auto_kt2 = root / ('android/app/src/main/kotlin/com/bz5companion/'
+                           'bz5_companion/AutostartService.kt')
+        akt2 = auto_kt2.read_text() if auto_kt2.exists() else ''
+        if 'const val HEARTBEAT_MS = 5 * 60 * 1000L' in akt2 and \
+           'val PROC_TAG = "%04x".format(Random.nextInt(0x10000))' in akt2 and \
+           'override fun onCreate()' in akt2 and \
+           'override fun onDestroy()' in akt2 and \
+           '"born: ${ident()} fresh-boot=$freshBoot"' in akt2 and \
+           '"beat: ${ident()}"' in akt2 and \
+           '"destroy: ${ident()}"' in akt2 and \
+           'SystemClock.uptimeMillis()' in akt2 and \
+           'SystemClock.elapsedRealtime()' in akt2 and \
+           'Process.myPid()' in akt2 and \
+           'hbHandler.removeCallbacks(hbTick)' in akt2 and \
+           'hbHandler.postDelayed(hbTick, HEARTBEAT_MS)' in akt2 and \
+           'elapsedRealtime() < 5 * 60 * 1000L' in akt2:
+            ok('AW16 heartbeat: born/beat/destroy + up/el pair + fresh-boot')
+        else:
+            fail('AW16 heartbeat instrumentation incomplete')
+    else:
+        ok(f"Part AW16 skipped (build +{pv}, heartbeat lands in +157)")
 else:
     ok(f"Part AW skipped (build +{pv}, speed profile lands in +151)")
 
