@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import '../data/database.dart';
 import '../l10n/strings.dart';
 import '../services/connection.dart';
+import '../services/hal_telemetry_service.dart';
 import '../services/locale_service.dart';
 import 'trip_detail.dart';
 import 'trends.dart';
