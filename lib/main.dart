@@ -15,6 +15,7 @@ import 'services/bridge_diag_service.dart';
 import 'services/autostart_arm.dart';
 import 'services/locale_service.dart';
 import 'services/speed_profile_service.dart';
+import 'screens/dashboard.dart' show kAppVersion;
 import 'screens/home.dart';
 
 void main() async {
@@ -224,8 +225,16 @@ class _BZ5AppState extends State<BZ5App> with WidgetsBindingObserver {
         // a head-unit restart (crash-safe prefs snapshot, spec §5).
         ChangeNotifierProvider<SpeedProfileService>(
           create: (ctx) {
-            final sp =
-                SpeedProfileService(ctx.read<HalTelemetryService>());
+            // v0.1.59+158: the service owns the atlas freeze funnel —
+            // it gets the shared AppDatabase (the HAL _diagDb
+            // precedent) and the build version for snapshot provenance
+            // (kAppVersion re-export; a service must not import a
+            // screen, so main hands the literal down).
+            final sp = SpeedProfileService(
+              ctx.read<HalTelemetryService>(),
+              db: widget.db,
+              appVersion: kAppVersion,
+            );
             sp.init();
             return sp;
           },

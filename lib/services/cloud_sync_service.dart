@@ -391,6 +391,8 @@ class CloudSyncService extends ChangeNotifier {
   int _lastPullTrips = 0;
   int _lastPullTripsUpdated = 0;
   int _lastPullSnaps = 0;
+  int _lastPullAtlas = 0;
+  int _lastPullReveals = 0;
   /// "device:ctid" → local trip id. Persisted as JSON (~1 row/trip).
   final Map<String, int> _pullTripMap = {};
 
@@ -491,6 +493,10 @@ class CloudSyncService extends ChangeNotifier {
   int get lastPullTrips => _lastPullTrips;
   int get lastPullTripsUpdated => _lastPullTripsUpdated;
   int get lastPullSnaps => _lastPullSnaps;
+  // v0.1.59+158: atlas pull counters (diag visibility on the phone —
+  // the field check of the sync half reads these).
+  int get lastPullAtlas => _lastPullAtlas;
+  int get lastPullReveals => _lastPullReveals;
 
   // ─── init / disposal ─────────────────────────────────────────────
 
@@ -1426,6 +1432,12 @@ class CloudSyncService extends ChangeNotifier {
       // (+146: generation is local Drift work, no HTTP — stays unguarded.)
       await _generateTripSeries();
       await guardEntity('trip_series', _syncTripSeries);
+      // v0.1.59+158: atlas entities (снимки полос + reveal-очередь).
+      // Rows are BORN with client_uuid (no legacy generation), so the
+      // uuid-mapping pass below never sees them — push v2 + pull only
+      // (Друг 2, 23.07: no _ENTITY_MAP server-side either).
+      await guardEntity('atlas_snapshots', _syncAtlasSnapshots);
+      await guardEntity('atlas_reveals', _syncAtlasReveals);
       await guardEntity('snapshots', _syncSnapshots);
       await guardEntity('sweeps', _syncSweeps);
       await guardEntity('livelogs', _syncLiveLogs);
@@ -1847,6 +1859,147 @@ class CloudSyncService extends ChangeNotifier {
       updatedAt: Value(now),
     ));
     return true;
+  }
+
+  // ── v0.1.59+158: atlas entities (contract 3a6ca9ed…48faf) ──────────
+  //
+  // Both mirror trip_series exactly: batches ≤200 to
+  // /v1/data/ingest/atlas_*, tolerateNotDeployed, syncedAt watermark;
+  // pull/restore via the unified /v2/sync/pull entity cases. Snapshots
+  // are immutable append-only; reveals are write-once on revealed_at
+  // (server COALESCE merge — a LOCAL reveal in patch 2 nulls syncedAt
+  // to re-push the row).
+
+  Future<void> _syncAtlasSnapshots() async {
+    final pending = await _db.getUnsyncedAtlasSnapshots();
+    if (pending.isEmpty) return;
+    const batchSize = 200;
+    for (int off = 0; off < pending.length; off += batchSize) {
+      final end = (off + batchSize).clamp(0, pending.length);
+      final batch = pending.sublist(off, end);
+      try {
+        await _postIngest(
+          '/v1/data/ingest/atlas_snapshots',
+          {'items': batch.map(_atlasSnapshotToJson).toList()},
+          tolerateNotDeployed: true,
+        );
+      } on _EndpointNotDeployedException {
+        return; // server half not there yet — retry next cycle
+      }
+      await _db.markAtlasSnapshotsSynced(
+          [for (final r in batch) r.id], DateTime.now());
+    }
+  }
+
+  Future<void> _syncAtlasReveals() async {
+    final pending = await _db.getUnsyncedAtlasReveals();
+    if (pending.isEmpty) return; // always empty in +158 — generation is №2
+    const batchSize = 200;
+    for (int off = 0; off < pending.length; off += batchSize) {
+      final end = (off + batchSize).clamp(0, pending.length);
+      final batch = pending.sublist(off, end);
+      try {
+        await _postIngest(
+          '/v1/data/ingest/atlas_reveals',
+          {'items': batch.map(_atlasRevealToJson).toList()},
+          tolerateNotDeployed: true,
+        );
+      } on _EndpointNotDeployedException {
+        return;
+      }
+      await _db.markAtlasRevealsSynced(
+          [for (final r in batch) r.id], DateTime.now());
+    }
+  }
+
+  Map<String, dynamic> _atlasSnapshotToJson(AtlasSnapshotRow r) => {
+        'client_uuid': r.clientUuid,
+        'session_uid': r.sessionUid,
+        'source': r.source,
+        'band_kmh': r.bandKmh,
+        'temp_window_c': r.tempWindowC,
+        'kwh_100': r.kwh100,
+        'steady_seconds': r.steadySeconds,
+        'pack_temp_avg_c': r.packTempAvgC,
+        'started_at': r.startedAt.toUtc().toIso8601String(),
+        'frozen_at': r.frozenAt.toUtc().toIso8601String(),
+        'app_version': r.appVersion,
+      };
+
+  Map<String, dynamic> _atlasRevealToJson(AtlasRevealRow r) => {
+        'client_uuid': r.clientUuid,
+        'session_uid': r.sessionUid,
+        'type': r.type,
+        'payload': jsonDecode(r.payloadJson),
+        'created_at': r.createdAt.toUtc().toIso8601String(),
+        'revealed_at': r.revealedAt?.toUtc().toIso8601String(),
+        'revealed_by': r.revealedBy,
+      };
+
+  /// Apply one pulled/restored atlas snapshot. Idempotent by
+  /// client_uuid, NEVER updates (immutable); arriving rows are
+  /// server-side by definition → syncedAt set (the trip_series echo
+  /// rule). Shared by _syncPull and the restore loop.
+  Future<bool> _applyPulledAtlasSnapshot(Map<String, dynamic> data) async {
+    final uuid = data['client_uuid'];
+    final sessionUid = data['session_uid'];
+    final band = data['band_kmh'];
+    final kwh = data['kwh_100'];
+    final steady = data['steady_seconds'];
+    if (uuid is! String ||
+        sessionUid is! String ||
+        band is! int ||
+        kwh is! num ||
+        steady is! num) {
+      return false;
+    }
+    DateTime parseDt(Object? v) =>
+        v is String ? DateTime.parse(v).toLocal() : DateTime.now();
+    final now = DateTime.now();
+    return _db.applyPulledAtlasSnapshot(AtlasSnapshotsCompanion(
+      clientUuid: Value(uuid),
+      sessionUid: Value(sessionUid),
+      source: Value(data['source'] is String ? data['source'] as String : 'hu'),
+      bandKmh: Value(band),
+      tempWindowC: Value((data['temp_window_c'] as num?)?.toInt()),
+      kwh100: Value(kwh.toDouble()),
+      steadySeconds: Value(steady.toDouble()),
+      packTempAvgC: Value((data['pack_temp_avg_c'] as num?)?.toDouble()),
+      startedAt: Value(parseDt(data['started_at'])),
+      frozenAt: Value(parseDt(data['frozen_at'])),
+      appVersion: Value(
+          data['app_version'] is String ? data['app_version'] as String : null),
+      syncedAt: Value(now),
+      updatedAt: Value(now),
+    ));
+  }
+
+  /// Apply one pulled/restored atlas reveal — the DAO does the
+  /// write-once merge (client mirror of the server COALESCE).
+  Future<bool> _applyPulledAtlasReveal(Map<String, dynamic> data) async {
+    final uuid = data['client_uuid'];
+    final sessionUid = data['session_uid'];
+    final type = data['type'];
+    if (uuid is! String || sessionUid is! String || type is! String) {
+      return false;
+    }
+    DateTime parseDt(Object? v) =>
+        v is String ? DateTime.parse(v).toLocal() : DateTime.now();
+    final revealedAtRaw = data['revealed_at'];
+    final now = DateTime.now();
+    return _db.applyPulledAtlasReveal(AtlasRevealsCompanion(
+      clientUuid: Value(uuid),
+      sessionUid: Value(sessionUid),
+      type: Value(type),
+      payloadJson: Value(jsonEncode(data['payload'] ?? const {})),
+      createdAt: Value(parseDt(data['created_at'])),
+      revealedAt: Value(
+          revealedAtRaw is String ? DateTime.parse(revealedAtRaw).toLocal() : null),
+      revealedBy: Value(
+          data['revealed_by'] is String ? data['revealed_by'] as String : null),
+      syncedAt: Value(now),
+      updatedAt: Value(now),
+    ));
   }
 
   Future<void> _syncSnapshots() async {
@@ -2274,6 +2427,7 @@ class CloudSyncService extends ChangeNotifier {
     var since = _pullCursor > 100 ? _pullCursor - 100 : 0;
     var finalCursor = _pullCursor;
     var tIns = 0, tUpd = 0, sIns = 0, srIns = 0;
+    var aIns = 0, arIns = 0; // v0.1.59+158: atlas counters
     var mapDirty = false;
     try {
       while (true) {
@@ -2290,6 +2444,8 @@ class CloudSyncService extends ChangeNotifier {
         final tripRows = <Map<String, dynamic>>[];
         final snapRows = <Map<String, dynamic>>[];
         final seriesRows = <Map<String, dynamic>>[];
+        final atlasRows = <Map<String, dynamic>>[];
+        final revealRows = <Map<String, dynamic>>[];
         for (final raw in items) {
           if (raw is! Map<String, dynamic>) continue;
           if (raw['deleted_at'] != null) {
@@ -2314,6 +2470,12 @@ class CloudSyncService extends ChangeNotifier {
             // v0.1.41+140: third restore-scope entity (SPEC §4).
             case 'trip_series':
               seriesRows.add(data);
+            // v0.1.59+158: atlas entities (contract 3a6ca9ed…48faf) —
+            // standalone, no trip linkage, no id maps.
+            case 'atlas_snapshots':
+              atlasRows.add(data);
+            case 'atlas_reveals':
+              revealRows.add(data);
           }
         }
         // -- Pass 1: trips --
@@ -2332,6 +2494,13 @@ class CloudSyncService extends ChangeNotifier {
           if (await _applyPulledTripSeries(data)) srIns++;
         }
         if (seriesRows.isNotEmpty) await _db.relinkOrphanTripSeries();
+        // -- Passes 4/5: atlas snapshots + reveals (v0.1.59+158) --
+        for (final data in atlasRows) {
+          if (await _applyPulledAtlasSnapshot(data)) aIns++;
+        }
+        for (final data in revealRows) {
+          if (await _applyPulledAtlasReveal(data)) arIns++;
+        }
         final next = resp['next_since'];
         if (next is int && next > finalCursor) finalCursor = next;
         // Progress guard -- same shape as the restore loop.
@@ -2346,6 +2515,8 @@ class CloudSyncService extends ChangeNotifier {
       _lastPullTrips = tIns;
       _lastPullTripsUpdated = tUpd;
       _lastPullSnaps = sIns;
+      _lastPullAtlas = aIns;
+      _lastPullReveals = arIns;
       final prefs = await SharedPreferences.getInstance();
       await prefs.setInt(_kPullCursor, _pullCursor);
       await prefs.setInt(_kPullLastAt, _lastPullAt!.millisecondsSinceEpoch);
@@ -2353,7 +2524,8 @@ class CloudSyncService extends ChangeNotifier {
         await prefs.setString(_kPullTripMap, jsonEncode(_pullTripMap));
       }
       debugPrint('CloudSync: pull -- trips +$tIns (~$tUpd upd), '
-          'snaps +$sIns, series +$srIns, cursor=$_pullCursor');
+          'snaps +$sIns, series +$srIns, atlas +$aIns/+$arIns, '
+          'cursor=$_pullCursor');
     } on _EndpointNotDeployedException {
       // Server without S4 or vehicle unknown -- silent, not an error.
       return;
@@ -2486,6 +2658,8 @@ class CloudSyncService extends ChangeNotifier {
     final tripRows = <Map<String, dynamic>>[];
     final snapRows = <Map<String, dynamic>>[];
     final seriesRows = <Map<String, dynamic>>[];
+    final atlasRows = <Map<String, dynamic>>[]; // v0.1.59+158
+    final revealRows = <Map<String, dynamic>>[]; // v0.1.59+158
     var since = 0;
     // v0.1.37+136 (F3, §4): the restore doubles as the full sync-down
     // initialization — track the final next_since so a successful run
@@ -2531,6 +2705,13 @@ class CloudSyncService extends ChangeNotifier {
           // v0.1.41+140: restore-scope entity #3 (SPEC §4).
           case 'trip_series':
             seriesRows.add(data);
+          // v0.1.59+158: atlas — the whole point of облако-канон (BZ5
+          // reinstalls wipe the local DB; the atlas is a lifetime
+          // collection and MUST come back whole).
+          case 'atlas_snapshots':
+            atlasRows.add(data);
+          case 'atlas_reveals':
+            revealRows.add(data);
         }
       }
       _restoreProgress = CloudRestoreProgress(
@@ -2669,12 +2850,32 @@ class CloudSyncService extends ChangeNotifier {
       if (await _applyPulledTripSeries(data)) sri++;
     }
     if (seriesRows.isNotEmpty) await _db.relinkOrphanTripSeries();
+    // ── Apply passes 4/5: atlas snapshots + reveals (v0.1.59+158) ──
+    // Same shared helpers as _syncPull; no id maps, no linkage.
+    var ai = 0, ari = 0;
+    for (final data in atlasRows) {
+      if (_restoreCancelRequested) {
+        _restoreStatus = CloudRestoreStatus.cancelled;
+        notifyListeners();
+        return (tripRows.length, ti, snapRows.length, si);
+      }
+      if (await _applyPulledAtlasSnapshot(data)) ai++;
+    }
+    for (final data in revealRows) {
+      if (_restoreCancelRequested) {
+        _restoreStatus = CloudRestoreStatus.cancelled;
+        notifyListeners();
+        return (tripRows.length, ti, snapRows.length, si);
+      }
+      if (await _applyPulledAtlasReveal(data)) ari++;
+    }
     debugPrint('CloudSync: restore via /v2/sync/pull — trips '
         '${tripRows.length}/$ti new '
         '(skip uuid=$tSkipUuid legacy=$tSkipLegacy bad=$tSkipBad), '
         'snapshots ${snapRows.length}/$si new '
         '(skip uuid=$sSkipUuid legacy=$sSkipLegacy bad=$sSkipBad), '
-        'series ${seriesRows.length}/$sri applied');
+        'series ${seriesRows.length}/$sri applied, '
+        'atlas ${atlasRows.length}/$ai + ${revealRows.length}/$ari applied');
     // v0.1.37+136 (F3, §4): a completed restore IS the sync-down
     // initialization — seed the pull cursor with the final next_since
     // and persist the device-keyed trip map collected in pass 1. The
@@ -3714,7 +3915,7 @@ class CloudSyncService extends ChangeNotifier {
   /// Read app version from the static value baked into the build.
   /// We don't have package_info_plus as a dep — pubspec-version is
   /// hardcoded here. Update when bumping. Off-by-one tolerated.
-  Future<String> _readAppVersion() async => '0.1.58+157';
+  Future<String> _readAppVersion() async => '0.1.59+158';
 }
 
 // ─── Internal exceptions ────────────────────────────────────────────

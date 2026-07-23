@@ -57,6 +57,9 @@ class S {
     // Navigation — head-unit rail
     'nav.driving': 'Driving',
     'nav.vehicle': 'Vehicle',
+    // v0.1.59+158: «Замеры» promoted to its own navigation section
+    // (вариант B — identical third position on every form factor).
+    'nav.measure': 'Measure',
 
     // Relative time
     'rel.s_ago': '{n}s ago',
@@ -1013,6 +1016,7 @@ class S {
     // Navigation — head-unit rail
     'nav.driving': 'Вождение',
     'nav.vehicle': 'Автомобиль',
+    'nav.measure': 'Замеры',
 
     // Relative time
     'rel.s_ago': '{n} с назад',

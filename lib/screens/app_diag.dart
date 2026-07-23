@@ -260,6 +260,13 @@ class _AppDiagScreenState extends State<AppDiagScreen> {
                 '/+${cloud.lastPullSnaps}',
         false
       ),
+      // v0.1.59+158: atlas counters of the last pull — the phone-side
+      // field check of the atlas sync half reads this row.
+      (
+        'atlas (last pull)',
+        '+${cloud.lastPullAtlas} snapshots / +${cloud.lastPullReveals} reveals',
+        false
+      ),
       ('pull error', cloud.lastPullError ?? '—', cloud.lastPullError != null),
       // v0.1.34+133: approval-gate state — server code if gated,
       // otherwise the plain sync status name.
