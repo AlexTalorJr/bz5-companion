@@ -389,7 +389,7 @@ if int(pv) >= 37:
     # table (+104), from<12 soh_estimates.source (+105, splits UDS
     # id=1 / HAL id=2), from<13 trips.last_alive_ts (+106), from<14
     # client_uuid x5 (+117).
-    _d1_expected = 16 if int(pv) >= 140 else (15 if int(pv) >= 130 else 14)  # +140: trip_series (v16)
+    _d1_expected = 17 if int(pv) >= 158 else (16 if int(pv) >= 140 else (15 if int(pv) >= 130 else 14))  # +158: atlas (v17); +140: trip_series (v16)
     if f"int get schemaVersion => {_d1_expected};" in db_src:
         ok(f"D1 schemaVersion = {_d1_expected} (per-era)")
     else:
@@ -2363,11 +2363,15 @@ if int(pv) >= 56:
     #     Driver-first. So from +108 home.dart legitimately has 8
     #     NavigationDestination( (2 scaffolds × 4). ECU Explorer stays out
     #     of both.
-    _home_nav_want = 8 if int(pv) >= 108 else 4
+    #     v0.1.59+158 (навигация B): the TALL scaffold gained «Замеры»
+    #     (5 destinations); the PHONE scaffold stays 4 until patch №3 —
+    #     so home.dart totals 9. The phone half is pinned separately by
+    #     AX5 (nav.measure absent from the phone block).
+    _home_nav_want = 9 if int(pv) >= 158 else (8 if int(pv) >= 108 else 4)
     if home.count("NavigationDestination(") == _home_nav_want and \
        "EcuExplorerScreen()" not in home:
         ok("U1 phone nav 4 tabs"
-           + (" + tall scaffold 4 tabs" if int(pv) >= 108 else "")
+           + (" + tall scaffold" if int(pv) >= 108 else "")
            + ", ECU Explorer demoted")
     else:
         fail("U1 phone nav wrong shape")
@@ -2395,8 +2399,9 @@ if int(pv) >= 56:
     #     must match (5 each on +56/+57; 4 each from +58). The
     #     v0.1.26+13 accident (lost tabs) was exactly this kind of drift.
     hus_dests = hus.count("NavigationRailDestination(")
-    hus_screens = hus.count("WideScreen(),") + hus.count("NativeExplorerWide(")
-    want = 4 if int(pv) >= 58 else 5
+    hus_screens = hus.count("WideScreen(),") + hus.count("NativeExplorerWide(") \
+        + hus.count("SpeedProfileScreen(),")  # +158: «Замеры» on the rail
+    want = 5 if int(pv) >= 158 else (4 if int(pv) >= 58 else 5)
     if hus_dests == want and hus_screens == want:
         ok(f"U3 HU rail: destinations ({hus_dests}) == screens ({hus_screens})")
     else:
@@ -2711,15 +2716,16 @@ if int(pv) >= 58:
 
         # V9. HAL Explorer relocation: gone from the rail, present in
         #     Settings → Advanced with its own detector lifecycle.
+        _v9_want = 5 if int(pv) >= 158 else 4  # +158: «Замеры» joined the rail
         rail_clean = ('NativeExplorerWide(' not in rail_src
                       and "Text('HAL Explorer')" not in rail_src
-                      and rail_src.count('NavigationRailDestination(') == 4)
+                      and rail_src.count('NavigationRailDestination(') == _v9_want)
         settings_hosts = ('_HalExplorerRoute' in settings_src
                           and 'NativeExplorerWide(detector: _detector)' in settings_src
                           and '_detector = NativeDetector();' in settings_src
                           and '_detector.dispose();' in settings_src)
         if rail_clean:
-            ok("V9 rail is 4 destinations, NativeExplorerWide removed")
+            ok(f"V9 rail is {_v9_want} destinations, NativeExplorerWide removed")
         else:
             fail("V9 rail still references HAL Explorer / wrong destination count")
         if settings_hosts:
@@ -3725,11 +3731,13 @@ if int(pv) >= 140:
     _cs2 = (root / 'lib/services/cloud_sync_service.dart').read_text()
     _td2 = (root / 'lib/screens/trip_detail.dart').read_text()
     _hw2 = (root / 'lib/screens/wide/history_wide.dart').read_text()
-    # AM1: schema v16 + additive migration + table registered.
-    if 'int get schemaVersion => 16;' in _db2 and \
+    # AM1: schema (16, or 17 from +158 — atlas era) + additive
+    # migration + table registered.
+    _am1_ver = 17 if int(pv) >= 158 else 16
+    if f'int get schemaVersion => {_am1_ver};' in _db2 and \
        '_createTableIfAbsent(m, tripSeries)' in _db2 and \
        "@DataClassName('TripSeriesRow')" in _db2:
-        ok('AM1 trip_series table + v16 additive migration')
+        ok(f'AM1 trip_series table + additive migration (schema v{_am1_ver})')
     else:
         fail('AM1 trip_series schema/migration missing')
     # AM2: pipeline order — generate+push AFTER _syncTrips, BEFORE
@@ -4319,13 +4327,18 @@ if int(pv) >= 151:
     hist = (root / 'lib/screens/history.dart').read_text()
     # AW1: the service exists, observes the stream through the HAL Test
     # path (rawEvents + retain/release bracket) and NEVER imports
-    # connection.dart (AA2) or touches Drift.
+    # connection.dart (AA2). Drift rule is era-aware: prefs-only until
+    # +157; from +158 the service OWNS the atlas freeze funnel and the
+    # database import is REQUIRED (the HAL-service _diagDb precedent) —
+    # AA2 itself is untouched either way.
+    _aw1_drift = ('database.dart' in sps) if int(pv) >= 158 \
+        else ('database.dart' not in sps)
     if "import 'connection.dart'" not in sps and \
        "connection.dart'" not in sps and \
        '.rawEvents.listen' in sps and \
        'retainStream()' in sps and 'releaseStream()' in sps and \
-       'database.dart' not in sps:
-        ok('AW1 service on the HAL-Test path, AA2 + no-Drift hold')
+       _aw1_drift:
+        ok('AW1 service on the HAL-Test path, AA2 + era-correct Drift rule')
     else:
         fail('AW1 service plumbing broken (import/stream bracket)')
     # AW2: tick qualification — all gates present: steady-accel window,
@@ -4388,16 +4401,22 @@ if int(pv) >= 151:
         ok('AW6 crash-safe prefs snapshot (3 keys + 30 s timer)')
     else:
         fail('AW6 persistence keys / 30 s snapshot missing')
-    # AW7: the tab is gated by the platform verdict — hidden entirely
-    # on a phone (honesty: nothing to measure without HAL) and the
-    # strict-freshness power path is used, not the 90 s display hold.
-    if 'canUseHal' in hist and \
-       "S.of('hist.tab_measure')" in hist and \
-       'if (canHal)' in hist and \
-       '_freshPowerKw' in sps and '_hal.halPowerKw' not in sps:
-        ok('AW7 tab HU-gated + strict 6 s power freshness (no 90 s hold)')
+    # AW7: the strict-freshness power path is used, not the 90 s
+    # display hold. Era-aware (+158, навигация B): before +158 the
+    # «Замеры» tab lives HU-gated inside History; from +158 it is a
+    # navigation SECTION and must be GONE from history.dart entirely.
+    _aw7_power = '_freshPowerKw' in sps and '_hal.halPowerKw' not in sps
+    if int(pv) >= 158:
+        _aw7_nav = "S.of('hist.tab_measure')" not in hist and \
+            'SpeedProfileScreen' not in hist
     else:
-        fail('AW7 tab gating / power freshness path wrong')
+        _aw7_nav = 'canUseHal' in hist and \
+            "S.of('hist.tab_measure')" in hist and \
+            'if (canHal)' in hist
+    if _aw7_power and _aw7_nav:
+        ok('AW7 power freshness strict + measure entry matches the era')
+    else:
+        fail('AW7 tab gating / power freshness path wrong for this era')
     # AW8: no-data ≠ zero — a band materialises only past the 60 s
     # threshold and empty bands never render.
     _aw8 = ('const double kBandMinSeconds = 120.0;'
@@ -4425,7 +4444,20 @@ if int(pv) >= 151:
     # вкладки нет», server logs 20.07). The «Замеры» segment must live
     # in the WIDE screen: third enum value, canUseHal-gated segment,
     # SpeedProfileScreen body, recording dot.
-    if int(pv) >= 152:
+    if int(pv) >= 158:
+        # Навигация B: the wide history must have LOST the segment, and
+        # the rail must HOST the screen — the HU entry point moved.
+        hw = (root / 'lib/screens/wide/history_wide.dart').read_text()
+        rail = (root / 'lib/screens/wide/head_unit_scaffold.dart').read_text()
+        if '_Tab { trips, trends }' in hw and \
+           '_Tab.measure' not in hw and \
+           "S.of('hist.tab_measure')" not in hw and \
+           'SpeedProfileScreen(),' in rail and \
+           "S.of('nav.measure')" in rail:
+            ok('AW10 «Замеры» moved to the rail (навигация B), history clean')
+        else:
+            fail('AW10 навигация B incomplete on the wide side')
+    elif int(pv) >= 152:
         hw = (root / 'lib/screens/wide/history_wide.dart').read_text()
         if '_Tab { trips, trends, measure }' in hw and \
            'if (canHal)' in hw and \
@@ -4578,6 +4610,89 @@ if int(pv) >= 151:
             fail('AW16 heartbeat instrumentation incomplete')
     else:
         ok(f"Part AW16 skipped (build +{pv}, heartbeat lands in +157)")
+    # ─────────── Part AX: +158 «Атлас» patch 1 ───────────
+    # Слой снимков + темп-окна + ±2 + навигация B (spec v2, contract
+    # 3a6ca9ed…48faf, SPEC_plus158_atlas_patch1.md).
+    if int(pv) >= 158:
+        dbs = (root / 'lib/data/database.dart').read_text()
+        css = (root / 'lib/services/cloud_sync_service.dart').read_text()
+        mains = (root / 'lib/main.dart').read_text()
+        l10n = (root / 'lib/l10n/strings.dart').read_text()
+        rail2 = (root / 'lib/screens/wide/head_unit_scaffold.dart').read_text()
+        home2 = (root / 'lib/screens/home.dart').read_text()
+        # AX1: the tightened gate — ±2 pinned (dwell physics: effective
+        # accel threshold 4/3 ≈ 1.33 km/h·s; the ONE knob of this era —
+        # kBandDwellS must stay 3.0, the reserve step is NOT taken).
+        if 'const int kBandHalfWidthKmh = 2;' in sps and \
+           'const double kBandDwellS = 3.0;' in sps:
+            ok('AX1 corridor ±2 pinned, dwell 3.0 untouched (one knob)')
+        else:
+            fail('AX1 kBandHalfWidthKmh != 2 or dwell knob also turned')
+        # AX2: schema v17 — both atlas tables behind idempotent guards.
+        if 'int get schemaVersion => 17;' in dbs and \
+           'if (from < 17) {' in dbs and \
+           '_createTableIfAbsent(m, atlasSnapshots);' in dbs and \
+           '_createTableIfAbsent(m, atlasReveals);' in dbs and \
+           'class AtlasSnapshots extends Table' in dbs and \
+           'class AtlasReveals extends Table' in dbs:
+            ok('AX2 schema v17: atlas tables + idempotent migration')
+        else:
+            fail('AX2 schema/migration for atlas tables incomplete')
+        # AX3: pull plumbing — both entity cases in _syncPull AND the
+        # restore loop (2 each), shared apply helpers present.
+        if css.count("case 'atlas_snapshots':") == 2 and \
+           css.count("case 'atlas_reveals':") == 2 and \
+           '_applyPulledAtlasSnapshot' in css and \
+           '_applyPulledAtlasReveal' in css:
+            ok('AX3 atlas pull cases in sync AND restore + apply helpers')
+        else:
+            fail('AX3 atlas pull/restore plumbing incomplete')
+        # AX4: push chain — both entities guarded, correct endpoints.
+        if "guardEntity('atlas_snapshots', _syncAtlasSnapshots)" in css and \
+           "guardEntity('atlas_reveals', _syncAtlasReveals)" in css and \
+           "'/v1/data/ingest/atlas_snapshots'" in css and \
+           "'/v1/data/ingest/atlas_reveals'" in css:
+            ok('AX4 atlas push guarded + ingest endpoints per contract')
+        else:
+            fail('AX4 atlas push chain incomplete')
+        # AX5: навигация B — nav.measure in BOTH l10n maps, Icons.speed
+        # on the rail and the BZ3 bar, SpeedProfileScreen hosted in
+        # both scaffolds, phone scaffold untouched (comes with №3).
+        _ax5_phone_clean = 'nav.measure' not in home2.split(
+            'Tall portrait head-unit layout')[0]
+        if l10n.count("'nav.measure'") == 2 and \
+           "S.of('nav.measure')" in rail2 and \
+           'SpeedProfileScreen(),' in rail2 and \
+           "S.of('nav.measure')" in home2 and \
+           'SpeedProfileScreen(),' in home2 and \
+           _ax5_phone_clean:
+            ok('AX5 навигация B: rail + BZ3, l10n ×2, phone untouched')
+        else:
+            fail('AX5 навигация B wiring incomplete or phone touched early')
+        # AX6: the patch-1 promise — reveal GENERATION is absent: the
+        # write-once apply path exists, but no local producer inserts
+        # into atlasReveals (insertAtlasReveal must not even exist yet).
+        if 'insertAtlasReveal(' not in dbs and \
+           'insertAtlasReveal(' not in sps and \
+           'applyPulledAtlasReveal' in dbs:
+            ok('AX6 reveal generation absent (lands in patch 2), apply-only')
+        else:
+            fail('AX6 a reveal producer leaked into patch 1')
+        # AX7: ONE write funnel for atlas snapshots — the service calls
+        # insertAtlasSnapshot exactly once (inside _freezeMatured), the
+        # sync side never touches it (applyPulledAtlasSnapshot only),
+        # and the R2 durability order holds: inserts THEN _persist.
+        if sps.count('insertAtlasSnapshot(') == 1 and \
+           'insertAtlasSnapshot(' not in css and \
+           '_freezeMatured' in sps and \
+           'await _db.insertAtlasSnapshot(r);' in sps and \
+           'kAtlasTempMaxAgeS' in sps and \
+           'kAtlasHysteresisC' in sps:
+            ok('AX7 single freeze funnel + R2 order + R1 stickiness consts')
+        else:
+            fail('AX7 freeze funnel discipline broken')
+    else:
+        ok(f"Part AX skipped (build +{pv}, атлас lands in +158)")
 else:
     ok(f"Part AW skipped (build +{pv}, speed profile lands in +151)")
 

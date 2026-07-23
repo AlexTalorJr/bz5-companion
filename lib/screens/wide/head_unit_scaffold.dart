@@ -8,6 +8,7 @@ import '../../services/locale_service.dart';
 import '../../widgets/charging_banner.dart';
 import 'driver_view_wide.dart';
 import 'dashboard_wide.dart';
+import '../speed_profile.dart';
 import 'history_wide.dart';
 import 'settings_wide.dart';
 
@@ -71,9 +72,16 @@ class _HeadUnitScaffoldState extends State<HeadUnitScaffold> {
   // settings.dart (_HalExplorerRoute) now manages the detector
   // lifecycle itself. Rail is 4 destinations, the list is const again
   // (v0.1.27 made it instance-level solely for the detector injection).
+  // v0.1.59+158 (навигация вариант B): «Замеры» promoted from a History
+  // tab to its own third section — the time axis «сейчас еду →
+  // состояние → измеряю → прошлое → сервис», identical position on
+  // every form factor (spatial memory transfers between cars and the
+  // phone). The screen moves AS IS (the SPEC.md redesign is patch
+  // №2/№3 scope — documented decision).
   static const List<Widget> _screens = [
     DriverViewWideScreen(),
     DashboardWideScreen(),
+    SpeedProfileScreen(),
     HistoryWideScreen(),
     SettingsWideScreen(),
   ];
@@ -126,6 +134,24 @@ class _HeadUnitScaffoldState extends State<HeadUnitScaffold> {
                   ),
                   selectedIcon: const Icon(Icons.analytics),
                   label: Text(S.of('nav.vehicle')),
+                ),
+                NavigationRailDestination(
+                  // v0.1.59+158: the badge is a SKELETON — per the UI
+                  // contract it exists ONLY at «P + unrevealed reveals»
+                  // (never in motion, инвариант И1). Reveal generation
+                  // lands in patch №2; until then the queue is empty by
+                  // construction (regress AX6), so the dot physically
+                  // never renders. The rec-dot from the old History tab
+                  // is deliberately NOT carried over — recording state
+                  // lives inside the screen (documented decision).
+                  icon: Badge(
+                    isLabelVisible: false, // №2: isParked && unrevealed>0
+                    backgroundColor: Colors.greenAccent,
+                    smallSize: 8,
+                    child: const Icon(Icons.speed_outlined),
+                  ),
+                  selectedIcon: const Icon(Icons.speed),
+                  label: Text(S.of('nav.measure')),
                 ),
                 NavigationRailDestination(
                   icon: const Icon(Icons.timeline_outlined),

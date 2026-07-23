@@ -11,6 +11,7 @@ import 'cells.dart';
 import 'history.dart';
 import 'settings.dart';
 import 'driver_view_tall.dart';
+import 'speed_profile.dart';
 import 'wide/head_unit_scaffold.dart';
 
 /// v0.1.4: HomeScreen now picks layout based on screen width.
@@ -138,9 +139,15 @@ class _TallHomeScreen extends StatefulWidget {
 class _TallHomeScreenState extends State<_TallHomeScreen> {
   int _index = 0;
 
+  // v0.1.59+158 (навигация вариант B): «Замеры» third — identical
+  // position and icon on BZ5 / BZ3 / phone-to-come (spatial memory).
+  // The portrait layout already fits BZ3 (the screen lived in the
+  // phone History tab); IndexedStack keeps the bands alive across tab
+  // switches.
   static const _screens = [
     DriverViewTallScreen(),
     CellsScreen(),
+    SpeedProfileScreen(),
     HistoryScreen(),
     SettingsScreen(),
   ];
@@ -173,6 +180,17 @@ class _TallHomeScreenState extends State<_TallHomeScreen> {
             icon: const Icon(Icons.battery_4_bar_outlined),
             selectedIcon: const Icon(Icons.battery_4_bar),
             label: S.of('nav.cells'),
+          ),
+          NavigationDestination(
+            // v0.1.59+158: skeleton badge — see the BZ5 rail note.
+            icon: Badge(
+              isLabelVisible: false, // №2: isParked && unrevealed>0
+              backgroundColor: Colors.greenAccent,
+              smallSize: 8,
+              child: const Icon(Icons.speed_outlined),
+            ),
+            selectedIcon: const Icon(Icons.speed),
+            label: S.of('nav.measure'),
           ),
           NavigationDestination(
             icon: const Icon(Icons.timeline_outlined),

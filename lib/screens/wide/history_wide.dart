@@ -11,8 +11,6 @@ import '../../l10n/strings.dart';
 import '../../services/connection.dart';
 import '../../services/hal_telemetry_service.dart';
 import '../../services/locale_service.dart';
-import '../../services/speed_profile_service.dart';
-import '../speed_profile.dart';
 import '../trends.dart';
 import '../trip_detail.dart';
 
@@ -34,7 +32,9 @@ class HistoryWideScreen extends StatefulWidget {
   State<HistoryWideScreen> createState() => _HistoryWideScreenState();
 }
 
-enum _Tab { trips, trends, measure }
+// v0.1.59+158 (навигация вариант B): «Замеры» promoted out of History
+// into its own rail section — the enum is back to two panes.
+enum _Tab { trips, trends }
 
 class _HistoryWideScreenState extends State<HistoryWideScreen> {
   _Tab _tab = _Tab.trips;
@@ -44,18 +44,6 @@ class _HistoryWideScreenState extends State<HistoryWideScreen> {
   Widget build(BuildContext context) {
     // v0.1.29+60: re-render on language switch (per-screen subscription).
     context.watch<LocaleService>();
-    // v0.1.53+152: «Замеры» lives HERE — the head unit renders THIS
-    // wide screen, not the phone HistoryScreen (the +151 lesson: the
-    // tab was cut into the wrong entry point; server logs proved the
-    // build was right and the door was on the wrong wall). Same
-    // honesty gate as the phone side: no HAL verdict → no tab.
-    final canHal =
-        context.select<HalTelemetryService, bool>((h) => h.canUseHal);
-    final recording =
-        context.select<SpeedProfileService, bool>((s) => s.active);
-    // Defensive: if the verdict flips away while «Замеры» is open
-    // (probe re-settles), fall back to Trips instead of a dead pane.
-    if (!canHal && _tab == _Tab.measure) _tab = _Tab.trips;
     return Padding(
       padding: const EdgeInsets.all(16),
       child: Column(
@@ -81,11 +69,6 @@ class _HistoryWideScreenState extends State<HistoryWideScreen> {
                       value: _Tab.trends,
                       label: Text(S.of('hist.tab_trends')),
                       icon: const Icon(Icons.show_chart, size: 16)),
-                  if (canHal)
-                    ButtonSegment(
-                        value: _Tab.measure,
-                        label: Text(S.of('hist.tab_measure')),
-                        icon: _MeasureSegIcon(recording: recording)),
                 ],
                 selected: {_tab},
                 onSelectionChanged: (s) =>
@@ -103,42 +86,10 @@ class _HistoryWideScreenState extends State<HistoryWideScreen> {
                       setState(() => _selectedTripId = id),
                 ),
               _Tab.trends => const TrendsScreen(),
-              _Tab.measure => const SpeedProfileScreen(),
             },
           ),
         ],
       ),
-    );
-  }
-}
-
-/// v0.1.53+152: segment icon with the recording dot — same signal as
-/// the phone tab (_MeasureTabIcon in history.dart): a live session is
-/// visible from any History mode.
-class _MeasureSegIcon extends StatelessWidget {
-  final bool recording;
-  const _MeasureSegIcon({required this.recording});
-
-  @override
-  Widget build(BuildContext context) {
-    return Stack(
-      clipBehavior: Clip.none,
-      children: [
-        const Icon(Icons.speed, size: 16),
-        if (recording)
-          Positioned(
-            right: -4,
-            top: -3,
-            child: Container(
-              width: 6,
-              height: 6,
-              decoration: const BoxDecoration(
-                color: Colors.redAccent,
-                shape: BoxShape.circle,
-              ),
-            ),
-          ),
-      ],
     );
   }
 }

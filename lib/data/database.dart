@@ -441,6 +441,87 @@ class TripSeries extends Table {
   DateTimeColumn get updatedAt => dateTime()();
 }
 
+/// v0.1.59+158 «Атлас» patch 1: one frozen band reading — the atom of the
+/// atlas collection (spec v2 + API contract 3a6ca9ed…48faf). Immutable,
+/// append-only: a row is INSERTed once by the freeze funnel in
+/// SpeedProfileService and never updated — sync is conflict-free by
+/// construction. Cloud is the canon (BZ5 cannot update-in-place; every
+/// install wipes the local DB), the device is a cache: rows push through
+/// /v1/data/ingest/atlas_snapshots and come back via the unified
+/// /v2/sync/pull + restore, exactly the trip_series pattern.
+@DataClassName('AtlasSnapshotRow')
+class AtlasSnapshots extends Table {
+  IntColumn get id => integer().autoIncrement()();
+
+  /// UUIDv7 of this row — the idempotency key (server UNIQUE on
+  /// (vehicle_id, client_uuid); pulled duplicates are skipped locally).
+  TextColumn get clientUuid => text()();
+
+  /// Atlas session uid (UUIDv7, rotates on the 30-min idle gap). Feeds
+  /// the CONTRACT-fixed client-side session dedup for coverage stars.
+  TextColumn get sessionUid => text()();
+
+  /// 'hu' | 'phone' (verbatim, the cloud is multi-make).
+  TextColumn get source => text()();
+
+  IntColumn get bandKmh => integer()();
+
+  /// Lower bound of the 5 °C pack-temp window (−20…35, multiple of 5;
+  /// −20 also holds everything colder — «≤ −20»). NULL = «t° неизвестна»
+  /// (reserve for cars without a usable pack-temp source).
+  IntColumn get tempWindowC => integer().nullable()();
+
+  /// Signed consumption — regen-heavy descent cells may be ≤ 0; written
+  /// honestly (server CHECK removed by agreement, 23.07).
+  RealColumn get kwh100 => real()();
+
+  RealColumn get steadySeconds => real()();
+  RealColumn get packTempAvgC => real().nullable()();
+
+  /// First qualified tick of this accumulation round — may PREDATE the
+  /// freezing session (sub-120 s accumulation carries across trips).
+  DateTimeColumn get startedAt => dateTime()();
+  DateTimeColumn get frozenAt => dateTime()();
+
+  TextColumn get appVersion => text().nullable()();
+
+  /// Push watermark: null → needs push; set on 200 from ingest and on
+  /// pull-apply (a pulled row is server-side by definition).
+  DateTimeColumn get syncedAt => dateTime().nullable()();
+
+  DateTimeColumn get updatedAt => dateTime()();
+}
+
+/// v0.1.59+158: reveal-event queue for the parking summary card.
+/// Table + sync land in patch 1 (one migration, one plumbing pass);
+/// EVENT GENERATION is deliberately absent until patch 2 (карточка
+/// итогов) — regress AX6 pins that promise, so an empty queue in the
+/// field is expected, not a bug. The ONLY mutable field is revealedAt
+/// (+revealedBy): write-once, first-write-wins, mirrored on the server
+/// by the COALESCE upsert — the card never shows twice across devices.
+@DataClassName('AtlasRevealRow')
+class AtlasReveals extends Table {
+  IntColumn get id => integer().autoIncrement()();
+  TextColumn get clientUuid => text()();
+  TextColumn get sessionUid => text()();
+
+  /// band_matured | star_up | cell_new (patch-2 vocabulary).
+  TextColumn get type => text()();
+
+  /// Event payload verbatim (band, window, value, star…). NEVER touched
+  /// by the write-once update — the null-preserve-upsert trap.
+  TextColumn get payloadJson => text()();
+
+  DateTimeColumn get createdAt => dateTime()();
+  DateTimeColumn get revealedAt => dateTime().nullable()();
+  TextColumn get revealedBy => text().nullable()();
+
+  /// Push watermark. A LOCAL reveal (patch 2) nulls it again so the row
+  /// re-pushes and the server merges write-once.
+  DateTimeColumn get syncedAt => dateTime().nullable()();
+  DateTimeColumn get updatedAt => dateTime()();
+}
+
 @DriftDatabase(tables: [
   Samples, Trips, Snapshots,
   SweepRuns, SweepResults,
@@ -450,12 +531,14 @@ class TripSeries extends Table {
   SohEstimates,
   SohHistory,
   TripSeries,
+  AtlasSnapshots,
+  AtlasReveals,
 ])
 class AppDatabase extends _$AppDatabase {
   AppDatabase() : super(_openConnection());
 
   @override
-  int get schemaVersion => 16;
+  int get schemaVersion => 17;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -599,6 +682,14 @@ class AppDatabase extends _$AppDatabase {
           // (createTable), idempotent via _createTableIfAbsent.
           if (from < 16) {
             await _createTableIfAbsent(m, tripSeries);
+          }
+          // v16 → v17 (v0.1.59+158): atlas_snapshots + atlas_reveals —
+          // the Атлас data layer (immutable band readings + write-once
+          // reveal queue), both cloud-synced restore-scope entities.
+          // Additive (createTable), idempotent via _createTableIfAbsent.
+          if (from < 17) {
+            await _createTableIfAbsent(m, atlasSnapshots);
+            await _createTableIfAbsent(m, atlasReveals);
           }
           debugPrint('DB migrate: $from → $to complete');
         },
@@ -1978,6 +2069,112 @@ class AppDatabase extends _$AppDatabase {
           ..where((s) => s.clientUuid.equals(uuid))
           ..limit(1))
         .getSingleOrNull();
+  }
+
+  // ── v0.1.59+158: atlas helpers (снимки + reveal-очередь) ──────────
+
+  /// The ONE local write path for atlas snapshots — called only by the
+  /// SpeedProfileService freeze funnel (regress AX7). Pull/restore go
+  /// through [applyPulledAtlasSnapshot] instead.
+  Future<int> insertAtlasSnapshot(AtlasSnapshotsCompanion data) =>
+      into(atlasSnapshots).insert(data);
+
+  Future<AtlasSnapshotRow?> getAtlasSnapshotByClientUuid(String uuid) {
+    return (select(atlasSnapshots)
+          ..where((r) => r.clientUuid.equals(uuid))
+          ..limit(1))
+        .getSingleOrNull();
+  }
+
+  Future<List<AtlasSnapshotRow>> getUnsyncedAtlasSnapshots() {
+    return (select(atlasSnapshots)..where((r) => r.syncedAt.isNull())).get();
+  }
+
+  Future<void> markAtlasSnapshotsSynced(List<int> ids, DateTime at) async {
+    if (ids.isEmpty) return;
+    await (update(atlasSnapshots)..where((r) => r.id.isIn(ids)))
+        .write(AtlasSnapshotsCompanion(syncedAt: Value(at)));
+  }
+
+  Future<int> countAtlasSnapshots() async {
+    final cnt = countAll();
+    final row =
+        await (selectOnly(atlasSnapshots)..addColumns([cnt])).getSingle();
+    return row.read(cnt) ?? 0;
+  }
+
+  /// Pull/restore apply — idempotent by clientUuid. The row is immutable:
+  /// an existing uuid is NEVER updated (server-side canon is identical).
+  /// Arriving rows are server-side by definition → syncedAt set, never
+  /// re-pushed (the trip_series echo rule).
+  Future<bool> applyPulledAtlasSnapshot(AtlasSnapshotsCompanion data) async {
+    final existing =
+        await getAtlasSnapshotByClientUuid(data.clientUuid.value);
+    if (existing != null) return false;
+    await into(atlasSnapshots).insert(data);
+    return true;
+  }
+
+  Future<AtlasRevealRow?> getAtlasRevealByClientUuid(String uuid) {
+    return (select(atlasReveals)
+          ..where((r) => r.clientUuid.equals(uuid))
+          ..limit(1))
+        .getSingleOrNull();
+  }
+
+  Future<List<AtlasRevealRow>> getUnsyncedAtlasReveals() {
+    return (select(atlasReveals)..where((r) => r.syncedAt.isNull())).get();
+  }
+
+  Future<void> markAtlasRevealsSynced(List<int> ids, DateTime at) async {
+    if (ids.isEmpty) return;
+    await (update(atlasReveals)..where((r) => r.id.isIn(ids)))
+        .write(AtlasRevealsCompanion(syncedAt: Value(at)));
+  }
+
+  Future<int> countAtlasReveals() async {
+    final cnt = countAll();
+    final row =
+        await (selectOnly(atlasReveals)..addColumns([cnt])).getSingle();
+    return row.read(cnt) ?? 0;
+  }
+
+  /// Badge source (patch 2 flips generation on; always 0 in +158).
+  Future<int> countUnrevealedAtlasReveals() async {
+    final cnt = countAll();
+    final row = await (selectOnly(atlasReveals)
+          ..where(atlasReveals.revealedAt.isNull())
+          ..addColumns([cnt]))
+        .getSingle();
+    return row.read(cnt) ?? 0;
+  }
+
+  /// Pull/restore apply for reveals — write-once merge, the client-side
+  /// mirror of the server's COALESCE upsert:
+  ///   • absent locally → insert as-is (syncedAt = now, echo rule);
+  ///   • present, local revealedAt == null, incoming != null → write
+  ///     revealedAt/revealedBy ONLY (payload untouched — the
+  ///     null-preserve-upsert trap from the trips epic);
+  ///   • anything else → no-op (first write already won).
+  Future<bool> applyPulledAtlasReveal(AtlasRevealsCompanion data) async {
+    final existing = await getAtlasRevealByClientUuid(data.clientUuid.value);
+    if (existing == null) {
+      await into(atlasReveals).insert(data);
+      return true;
+    }
+    final incomingRevealedAt =
+        data.revealedAt.present ? data.revealedAt.value : null;
+    if (existing.revealedAt == null && incomingRevealedAt != null) {
+      await (update(atlasReveals)..where((r) => r.id.equals(existing.id)))
+          .write(AtlasRevealsCompanion(
+        revealedAt: Value(incomingRevealedAt),
+        revealedBy: data.revealedBy,
+        syncedAt: data.syncedAt,
+        updatedAt: data.updatedAt,
+      ));
+      return true;
+    }
+    return false;
   }
 }
 
