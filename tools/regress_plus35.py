@@ -2367,7 +2367,11 @@ if int(pv) >= 56:
     #     (5 destinations); the PHONE scaffold stays 4 until patch №3 —
     #     so home.dart totals 9. The phone half is pinned separately by
     #     AX5 (nav.measure absent from the phone block).
-    _home_nav_want = 9 if int(pv) >= 158 else (8 if int(pv) >= 108 else 4)
+    #     v0.1.62+161 (Атлас патч 3): the PHONE scaffold gains its own
+    #     «Замеры» destination (третий пункт на всех форм-факторах) →
+    #     both scaffolds are 5, home.dart totals 10. AX5 flips with it.
+    _home_nav_want = 10 if int(pv) >= 161 else (
+        9 if int(pv) >= 158 else (8 if int(pv) >= 108 else 4))
     if home.count("NavigationDestination(") == _home_nav_want and \
        "EcuExplorerScreen()" not in home:
         ok("U1 phone nav 4 tabs"
@@ -4658,17 +4662,28 @@ if int(pv) >= 151:
         # AX5: навигация B — nav.measure in BOTH l10n maps, Icons.speed
         # on the rail and the BZ3 bar, SpeedProfileScreen hosted in
         # both scaffolds, phone scaffold untouched (comes with №3).
-        _ax5_phone_clean = 'nav.measure' not in home2.split(
-            'Tall portrait head-unit layout')[0]
+        # ERA-AWARE (+161): patch 1 promised «phone untouched» — the
+        # phone half of home.dart had to stay free of nav.measure until
+        # patch №3. From +161 the promise FLIPS: «Замеры» is the third
+        # destination on the phone too (навигация B complete), so the
+        # phone block MUST carry it.
+        _phone_block = home2.split('Tall portrait head-unit layout')[0]
+        if int(pv) >= 161:
+            _ax5_phone = "S.of('nav.measure')" in _phone_block and \
+                'AtlasScreen(),' in _phone_block
+            _ax5_word = 'phone joined (третий пункт везде)'
+        else:
+            _ax5_phone = 'nav.measure' not in _phone_block
+            _ax5_word = 'phone untouched'
         if l10n.count("'nav.measure'") == 2 and \
            "S.of('nav.measure')" in rail2 and \
            'SpeedProfileScreen(),' in rail2 and \
            "S.of('nav.measure')" in home2 and \
            'SpeedProfileScreen(),' in home2 and \
-           _ax5_phone_clean:
-            ok('AX5 навигация B: rail + BZ3, l10n ×2, phone untouched')
+           _ax5_phone:
+            ok(f'AX5 навигация B: rail + BZ3, l10n ×2, {_ax5_word}')
         else:
-            fail('AX5 навигация B wiring incomplete or phone touched early')
+            fail('AX5 навигация B wiring incomplete or phone half wrong')
         # AX6 — ERA-AWARE (+160 re-era = AY2): patch 1 promised the
         # generation is ABSENT; patch 2 flips the promise — from +160
         # the generation MUST BE PRESENT (crossing detector in the
@@ -4775,6 +4790,195 @@ if int(pv) >= 151:
                 ok('AY8 ledger JSON: t0/sd/lok/lg + compat defaults')
             else:
                 fail('AY8 ledger JSON fields incomplete')
+            # ───── Part AZ: +161 «Атлас» patch 3 (слой представления) ─────
+            # Сетка + строка ГОДА + детализация + пятая вкладка телефона +
+            # бейдж 14 dp + липкая плашка + парковочный чип + экспортная
+            # картинка. Движок награды и prefs-леджер НЕ трогаются — это
+            # проверяет AZ2.
+            if int(pv) >= 161:
+                _az_files = [
+                    'lib/theme/atlas_tokens.dart',
+                    'lib/data/atlas_projection.dart',
+                    'lib/widgets/atlas_grid.dart',
+                    'lib/widgets/atlas_export.dart',
+                    'lib/screens/atlas.dart',
+                    'lib/screens/atlas_cell_detail.dart',
+                    'lib/screens/wide/atlas_wide.dart',
+                ]
+                _missing = [f for f in _az_files if not (root / f).is_file()]
+                if not _missing:
+                    ok('AZ1 seven atlas files present (lib/theme created)')
+                else:
+                    fail(f'AZ1 missing atlas files: {_missing}')
+
+                proj = (root / 'lib/data/atlas_projection.dart').read_text() \
+                    if (root / 'lib/data/atlas_projection.dart').is_file() else ''
+                grid = (root / 'lib/widgets/atlas_grid.dart').read_text() \
+                    if (root / 'lib/widgets/atlas_grid.dart').is_file() else ''
+                expo = (root / 'lib/widgets/atlas_export.dart').read_text() \
+                    if (root / 'lib/widgets/atlas_export.dart').is_file() else ''
+                toks = (root / 'lib/theme/atlas_tokens.dart').read_text() \
+                    if (root / 'lib/theme/atlas_tokens.dart').is_file() else ''
+                atls = (root / 'lib/screens/atlas.dart').read_text() \
+                    if (root / 'lib/screens/atlas.dart').is_file() else ''
+                atlw = (root / 'lib/screens/wide/atlas_wide.dart').read_text() \
+                    if (root / 'lib/screens/wide/atlas_wide.dart').is_file() else ''
+                spscr = (root / 'lib/screens/speed_profile.dart').read_text()
+                dashw = (root / 'lib/screens/wide/dashboard_wide.dart').read_text()
+                banner = (root / 'lib/widgets/charging_banner.dart').read_text()
+                pubs = (root / 'pubspec.yaml').read_text()
+
+                # AZ2: band ceiling 140 — ONE filter, on the ONE read query,
+                # and the reward engine is NOT touched by this patch (its own
+                # cutoff in _freeze / _generateReveal lands in +162).
+                _engine_clean = 'kAtlasBandMaxKmh' not in sps and \
+                    'band > 140' not in sps
+                if 'const int kAtlasBandMaxKmh = 140;' in proj and \
+                   'isSmallerOrEqualValue(maxBand)' in dbs and \
+                   dbs.count('getAtlasSnapshotsForGrid') == 1 and \
+                   _engine_clean and \
+                   atls.count('maxBand: kAtlasBandMaxKmh') == 1 and \
+                   atlw.count('maxBand: kAtlasBandMaxKmh') == 1 and \
+                   spscr.count('maxBand: kAtlasBandMaxKmh') == 1:
+                    ok('AZ2 ceiling 140 in ONE query, engine untouched')
+                else:
+                    fail('AZ2 band ceiling leaked or engine touched')
+
+                # AZ3: fog of war + frontier = ONE cross ring. Four addGhost
+                # calls (band ±10, window ±5) and not one more — diagonals
+                # would be five or eight.
+                if proj.count('addGhost(') == 5 and \
+                   'c.band - kAtlasBandStepKmh' in proj and \
+                   'c.band + kAtlasBandStepKmh' in proj and \
+                   "c.window! - kAtlasWindowStepC" in proj and \
+                   "c.window! + kAtlasWindowStepC" in proj and \
+                   'if (byKey.containsKey(k) || ghostKeys.contains(k)) return;' \
+                       in proj:
+                    ok('AZ3 frontier = one cross ring, no diagonals')
+                else:
+                    fail('AZ3 ghost ring shape wrong')
+
+                # AZ4: window classes — 4 cold (−20/−15/−10/−5) and 3 hot
+                # (25/30/35): the prose of §6.9, not the 5+2 of mockup [5g].
+                if 'const int kAtlasRareWindowMaxC = -5;' in proj and \
+                   'const int kAtlasHotWindowMinC = 25;' in proj:
+                    ok('AZ4 window classes 4 cold / 3 hot (§6.9 prose)')
+                else:
+                    fail('AZ4 window class boundaries drifted')
+
+                # AZ5: fork — present on the head units (17 / 16 dp), absent
+                # on the phone, and never drawn for a single snapshot
+                # (owner decision 25.07).
+                if 'forkSize: null' in grid and \
+                   'forkSize: 17' in grid and \
+                   'forkSize: 16' in grid and \
+                   'm.forkSize != null && c.hasFork' in grid and \
+                   'snapshots > 1 &&' in proj:
+                    ok('AZ5 fork: HU 17/16, phone none, single snapshot none')
+                else:
+                    fail('AZ5 fork discipline broken')
+
+                # AZ6 — OWNER OVERRIDE of contract 1.1 (25.07): the chevron
+                # rosette is NOT taken and «Атлас» is NOT renamed. So this
+                # gate pins the REVERSAL, not the draft: the mark is
+                # Icons.star with metal tints, the +160 card strings
+                # (including «серебро» / «золото») stay exactly as they
+                # were, and neither «шеврон» nor «Альманах» ever reaches a
+                # user-visible string.
+                _l10n_body = '\n'.join(
+                    ln for ln in l10n.splitlines()
+                    if not ln.lstrip().startswith('//'))
+                _no_draft_words = all(
+                    w not in _l10n_body
+                    for w in ('шеврон', 'Альманах', 'альманах'))
+                if 'Icons.star' in grid and \
+                   'coverage_mark' not in grid and \
+                   'markColor(' in toks and \
+                   'markFifteen' in toks and \
+                   _no_draft_words and \
+                   "'atlas.title': 'Атлас'" in l10n and \
+                   "'measure.card_star_silver': 'серебро'" in l10n and \
+                   "'measure.card_star_gold': 'золото'" in l10n:
+                    ok('AZ6 star + metals kept, «Атлас» kept (owner override)')
+                else:
+                    fail('AZ6 coverage mark / naming drifted from the override')
+
+                # AZ7: badge 14 dp + 2 dp outline in ALL THREE scaffolds, and
+                # the isParked dot is GONE from «Автомобиль» (§5).
+                _dot_gone = 'isLabelVisible: isParked && _index != 1' \
+                    not in rail2
+                if 'width: 14,' in toks and 'width: 2)' in toks and \
+                   home2.count('MeasureBadge(') == 2 and \
+                   rail2.count('MeasureBadge(') == 1 and \
+                   'smallSize: 8' not in home2 and \
+                   'smallSize: 8' not in rail2 and \
+                   _dot_gone and \
+                   '_ParkedChip' in dashw and \
+                   "S.of('atlas.parked_chip')" in dashw:
+                    ok('AZ7 badge 14 dp ×3, «Автомобиль» dot removed, chip')
+                else:
+                    fail('AZ7 badge / dot / chip wiring incomplete')
+
+                # AZ8: sticky plate — conjunct existence (motion-free BY
+                # EXPRESSION), 56 dp, reveal tokens, charging on top, wired
+                # into all three scaffolds with the «Замеры» jump.
+                _plate_order = banner.index('if (banner != null) banner,') < \
+                    banner.index('if (widget.showAtlasPlate)')
+                if 'class AtlasSummaryPlate' in banner and \
+                   'if (!isParked || unrevealed <= 0)' in banner and \
+                   'height: 56,' in banner and \
+                   'AtlasTokens.revealBg' in banner and \
+                   'AtlasTokens.revealBorder' in banner and \
+                   _plate_order and \
+                   home2.count('showAtlasPlate:') == 2 and \
+                   rail2.count('showAtlasPlate:') == 1 and \
+                   home2.count('onPlateTap:') == 2 and \
+                   rail2.count('onPlateTap:') == 1:
+                    ok('AZ8 plate: conjunct, 56 dp, charging on top, ×3 hosts')
+                else:
+                    fail('AZ8 sticky plate wiring incomplete')
+
+                # AZ9: export — 1080×1350, its OWN five-class fill scale (not
+                # the screen tokens), «лучшая ячейка» = Σ steady time (owner
+                # decision), QR + qr_flutter, and the button is phone-only.
+                if 'static const double kWidth = 1080;' in expo and \
+                   'static const double kHeight = 1350;' in expo and \
+                   all(t in toks for t in ('expAhead', 'expOpen', 'expMulti',
+                                           'expBest', 'expRareTint')) and \
+                   'c.steadySeconds > best.steadySeconds' in proj and \
+                   'qr_flutter: ^4.1.0' in pubs and \
+                   'QrImageView(' in expo and \
+                   'showExport: !onHeadUnit' in atls and \
+                   'AtlasExportScreen' not in atlw:
+                    ok('AZ9 export 1080×1350, own scale, Σ-steady best, phone')
+                else:
+                    fail('AZ9 export image contract broken')
+
+                # AZ10: l10n — 34 atlas.* and 16 export.* keys in BOTH maps,
+                # the plate title in both, and the +160 card strings NOT
+                # touched by this patch (they are +162 scope).
+                if l10n.count("'atlas.") == 92 and \
+                   l10n.count("'export.") == 32 and \
+                   l10n.count("'measure.plate_title'") == 2 and \
+                   l10n.count("'measure.card_") == 24:
+                    ok('AZ10 l10n: atlas ×46, export ×16, card_* untouched')
+                else:
+                    fail(f'AZ10 l10n counts: atlas {l10n.count(chr(39) + "atlas.")}'
+                         f' export {l10n.count(chr(39) + "export.")}'
+                         f' card_ {l10n.count(chr(39) + "measure.card_")}')
+
+                # AZ11: the grid reads atlas_snapshots DIRECTLY — never the
+                # prefs ledger (that is what makes a reinstall self-healing,
+                # no rehydration code anywhere).
+                if 'atlas_ledger' not in proj and \
+                   'SharedPreferences' not in proj and \
+                   'SharedPreferences' not in grid and \
+                   'getAtlasSnapshotsForGrid' in proj + atls + atlw + spscr:
+                    ok('AZ11 grid reads snapshots directly, ledger untouched')
+                else:
+                    fail('AZ11 grid leaked into the prefs ledger')
+            else:
+                ok(f"Part AZ skipped (build +{pv}, атлас-UI lands in +161)")
         else:
             ok(f"Part AY skipped (build +{pv}, карточка итогов lands in +160)")
     else:

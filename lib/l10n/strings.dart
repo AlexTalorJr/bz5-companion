@@ -618,6 +618,84 @@ class S {
     'measure.card_loot': 'Band {v}: +{s} s ({a} of {m})',
     'measure.card_loot_flat': '+{s} s of steady time',
     'measure.card_soon': 'Band {v} almost matured',
+    // ── v0.1.62+161 «Атлас» patch 3: grid / year row / cell detail /
+    // sticky plate / export image. The 1.1 draft renamed the feature to
+    // «Альманах» and swapped the star for a chevron — BOTH reverted by
+    // owner decision 25.07: the word stays «Атлас», the coverage mark
+    // stays a star with bronze / silver / gold tints. Metals are shown,
+    // never named, in these strings.
+    'atlas.title': 'Atlas',
+    'atlas.title_hu': 'ATLAS',
+    'atlas.counts': '{n} {cells} · {m} {bands}',
+    'atlas.cell_one': 'cell',
+    'atlas.cell_few': 'cells',
+    'atlas.cell_many': 'cells',
+    'atlas.band_one': 'band',
+    'atlas.band_few': 'bands',
+    'atlas.band_many': 'bands',
+    'atlas.day_one': 'day',
+    'atlas.day_few': 'days',
+    'atlas.day_many': 'days',
+    'atlas.session_one': 'independent session',
+    'atlas.session_few': 'independent sessions',
+    'atlas.session_many': 'independent sessions',
+    'atlas.counts_view': '{n} {cells} · {m} {bands} · view',
+    'atlas.season_ctx':
+        '{month} · pack holds {lo}–{hi}° · cold windows open in winter',
+    'atlas.season_ctx_nr': '{month} · temperature windows open as you drive',
+    'atlas.year_title': 'YEAR',
+    'atlas.year_summary': 'Collected over {n} {days} · {month} started. '
+        'The atlas closes with the year, not with the grid.',
+    'atlas.months': 'jan,feb,mar,apr,may,jun,jul,aug,sep,oct,nov,dec',
+    'atlas.legend_one': '1 session',
+    'atlas.legend_five': '5 sessions',
+    'atlas.legend_fifteen': '15 sessions',
+    'atlas.legend_marks': '— fork stability',
+    'atlas.grid_note': 'Dashed outlines are the frontier: the neighbouring '
+        'window of the same band and the neighbouring band of the same '
+        'window. Empty cells are not drawn — the grid grows as you drive.',
+    'atlas.window_rare': 'rare window · pack {w}°',
+    'atlas.window_hot': 'hot window · pack {w}°',
+    'atlas.window_unknown': 't° unknown',
+    'atlas.view_only': 'view only — details on the phone',
+    'atlas.parked_only': 'The atlas is available when parked',
+    'atlas.parked_only_short': 'Available when parked',
+    'atlas.parked_chip': 'Parked',
+    'atlas.tab_atlas': 'Atlas',
+    'atlas.tab_forecast': 'Forecast',
+    'atlas.tab_arc': 'Pack arc',
+    'atlas.stub':
+        'Frame: this section appears once there is season history to show.',
+    'atlas.empty': 'Empty so far — cells appear after the first matured bands.',
+    'atlas.load_failed': 'Could not read the atlas:',
+    'atlas.cell_title': 'Band {v} · pack {w}',
+    'atlas.cell_sub': 'fork · median · kWh/100',
+    'atlas.cell_sub_single': 'median · kWh/100 · single snapshot',
+    'atlas.cell_sessions': '{n} {sessions}',
+    'atlas.cell_steady': 'Steady time: {s} s · snapshots {n}',
+    'atlas.cell_dist': 'SNAPSHOT DISTRIBUTION',
+    'atlas.cell_snapshots': 'SNAPSHOTS',
+    'measure.plate_title': 'Trip results · {n} new',
+    'export.title': 'Atlas image',
+    'export.share': 'Share',
+    'export.caption': '1080×1350 PNG · the whole matrix',
+    'export.failed': 'Did not work out:',
+    'export.share_subject': 'BZ5 Companion atlas',
+    'export.share_text': 'Speed-band atlas from BZ5 Companion.',
+    'export.month_line': 'atlas · {month} {year}',
+    'export.hero_mature': 'Collected over {n} {days} · best cell {v} at {w} · '
+        '{x} kWh/100',
+    'export.hero_early': 'Started {n} {days} ago · first cell {v} at {w} · '
+        '{x} kWh/100',
+    'export.hero_none': 'Atlas started · {month}. '
+        'The first cells appear after a band matures.',
+    'export.legend_open': 'open',
+    'export.legend_multi': 'several sessions',
+    'export.legend_best': 'best cell',
+    'export.legend_rare': 'rare window',
+    'export.legend_ahead': 'ahead',
+    'export.footer': 'Bands 40–140 km/h · windows ≤ −20…+40° · fixed cell, '
+        'the matrix is always complete.',
     'hist.empty_title': 'No trips yet',
     'hist.empty_hint': 'Connect the adapter and drive — '
         'history will fill in automatically.',
@@ -1585,6 +1663,86 @@ class S {
     'measure.card_loot': 'Полоса {v}: +{s} с ({a} из {m})',
     'measure.card_loot_flat': '+{s} с ровного времени',
     'measure.card_soon': 'Полоса {v} почти дозрела',
+    // ── v0.1.62+161 «Атлас» патч 3: сетка / строка ГОДА / детализация /
+    // липкая плашка / экспортная картинка. Переименование в «Альманах» и
+    // шеврон вместо звезды ОТМЕНЕНЫ решением Alex 25.07 — слово
+    // «Атлас» остаётся, знак покрытия остаётся звездой (бронза /
+    // серебро / золото как оттенки, словами не называются).
+    'atlas.title': 'Атлас',
+    'atlas.title_hu': 'АТЛАС',
+    'atlas.counts': '{n} {cells} · {m} {bands}',
+    // Три формы — первое, что покажет поле, это n = 1.
+    'atlas.cell_one': 'ячейка',
+    'atlas.cell_few': 'ячейки',
+    'atlas.cell_many': 'ячеек',
+    'atlas.band_one': 'полоса',
+    'atlas.band_few': 'полосы',
+    'atlas.band_many': 'полос',
+    'atlas.day_one': 'день',
+    'atlas.day_few': 'дня',
+    'atlas.day_many': 'дней',
+    'atlas.session_one': 'независимая сессия',
+    'atlas.session_few': 'независимые сессии',
+    'atlas.session_many': 'независимых сессий',
+    'atlas.counts_view': '{n} {cells} · {m} {bands} · просмотр',
+    'atlas.season_ctx':
+        '{month} · пак держится {lo}–{hi}° · холодные окна откроются зимой',
+    'atlas.season_ctx_nr':
+        '{month} · температурные окна откроются по мере езды',
+    'atlas.year_title': 'ГОД',
+    'atlas.year_summary': 'Собрано за {n} {days} · {month} начат. '
+        'Атлас закрывается не сеткой, а годом.',
+    'atlas.months': 'янв,фев,мар,апр,май,июн,июл,авг,сен,окт,ноя,дек',
+    'atlas.legend_one': '1 сессия',
+    'atlas.legend_five': '5 сессий',
+    'atlas.legend_fifteen': '15 сессий',
+    'atlas.legend_marks': '— устойчивость вилки',
+    'atlas.grid_note': 'Пунктирные контуры — фронтир: соседнее окно той же '
+        'полосы и соседняя полоса того же окна. Пустые ячейки не '
+        'рисуются — сетка растёт по мере езды.',
+    'atlas.window_rare': 'редкое окно · пак {w}°',
+    'atlas.window_hot': 'жаркое окно · пак {w}°',
+    'atlas.window_unknown': 't° неизвестна',
+    'atlas.view_only': 'просмотр — детали на телефоне',
+    'atlas.parked_only': 'Атлас доступен на стоянке',
+    'atlas.parked_only_short': 'Доступен на стоянке',
+    'atlas.parked_chip': 'Стоянка',
+    'atlas.tab_atlas': 'Атлас',
+    'atlas.tab_forecast': 'Прогноз',
+    'atlas.tab_arc': 'Арка пака',
+    'atlas.stub': 'Каркас: раздел появится, когда наберётся история '
+        'по сезонам.',
+    'atlas.empty': 'Пока пусто — ячейки появятся после первых '
+        'дозревших полос.',
+    'atlas.load_failed': 'Не удалось прочитать атлас:',
+    'atlas.cell_title': 'Полоса {v} · пак {w}',
+    'atlas.cell_sub': 'вилка · медиана · кВт·ч/100',
+    'atlas.cell_sub_single': 'медиана · кВт·ч/100 · один снимок',
+    'atlas.cell_sessions': '{n} {sessions}',
+    'atlas.cell_steady': 'Ровное время: {s} с · снимков {n}',
+    'atlas.cell_dist': 'РАСПРЕДЕЛЕНИЕ СНИМКОВ',
+    'atlas.cell_snapshots': 'СНИМКИ',
+    'measure.plate_title': 'Итоги поездки · {n} новых',
+    'export.title': 'Картинка атласа',
+    'export.share': 'Поделиться',
+    'export.caption': '1080×1350 PNG · вся матрица целиком',
+    'export.failed': 'Не получилось:',
+    'export.share_subject': 'Атлас BZ5 Companion',
+    'export.share_text': 'Атлас скоростных полос из BZ5 Companion.',
+    'export.month_line': 'атлас · {month} {year}',
+    'export.hero_mature': 'Собрано за {n} {days} · лучшая ячейка {v} при {w} · '
+        '{x} кВт·ч/100',
+    'export.hero_early': 'Начато {n} {days} назад · первая ячейка {v} при {w} · '
+        '{x} кВт·ч/100',
+    'export.hero_none': 'Атлас начат · {month}. '
+        'Первые ячейки появятся после дозревших полос.',
+    'export.legend_open': 'открыто',
+    'export.legend_multi': 'несколько сессий',
+    'export.legend_best': 'лучшая ячейка',
+    'export.legend_rare': 'редкое окно',
+    'export.legend_ahead': 'впереди',
+    'export.footer': 'Полосы 40–140 км/ч · окна ≤ −20…+40° · клетка '
+        'фиксированная, матрица всегда целиком.',
     'hist.empty_title': 'Поездок пока нет',
     'hist.empty_hint': 'Подключитесь к адаптеру и поезжайте — '
         'история начнёт заполняться автоматически.',

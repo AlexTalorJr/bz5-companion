@@ -1,7 +1,7 @@
 name: bz5_companion
 description: Toyota BZ5 telemetry & monitoring app
 publish_to: 'none'
-version: 0.1.61+160
+version: 0.1.62+161
 
 environment:
   sdk: '>=3.3.0 <4.0.0'
@@ -23,6 +23,9 @@ dependencies:
   # v0.1.11: data export.
   archive: ^3.6.1           # zip encoding for export bundle
   share_plus: ^10.0.0       # system share sheet (USB / cloud / messaging)
+  # v0.1.62+161: QR code on the atlas export image (§6.12). Pure Dart —
+  # no platform channel, no manifest change, no permission.
+  qr_flutter: ^4.1.0
   # v0.1.14: in-car DID sweep.
   wakelock_plus: ^1.2.8     # keep screen awake during long sweeps (~55 min)
   # v0.1.28: CloudSyncService deps. Imported in lib/services/cloud_sync_service.dart

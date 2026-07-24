@@ -7,6 +7,7 @@ import '../../services/hal_telemetry_service.dart';
 import '../../services/soc_resolver.dart';
 import '../../services/locale_service.dart';
 import '../../services/car_status_service.dart';
+import '../../theme/atlas_tokens.dart';
 import '../status.dart';
 
 /// v0.1.4: Head-unit Dashboard.
@@ -47,11 +48,23 @@ class DashboardWideScreen extends StatelessWidget {
     final blocked = !connected && !halActive;
     // Polling is an OBD2 concept — hide the toggle in halOnly.
     final showPolling = hal.mode != HalSourceMode.halOnly;
+    // v0.1.62+161 (§5): compensation for the green isParked dot removed
+    // from this screen's rail destination. The state itself is useful —
+    // it just belongs in the screen's own header, not as a second
+    // identical mark next to the «Замеры» badge.
+    final gear = hal.useHalForGear
+        ? hal.halGear
+        : svc.readNumeric('791', '0009');
+    final isParked = gear != null && gear.toInt() == 1;
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('BZ5 Companion · Dashboard'),
         actions: [
+          if (isParked) ...[
+            const _ParkedChip(),
+            const SizedBox(width: 12),
+          ],
           if (showPolling) ...[
             IconButton(
               icon: Icon(svc.isPolling ? Icons.pause_circle : Icons.play_circle),
@@ -92,6 +105,40 @@ class DashboardWideScreen extends StatelessWidget {
                 ],
               ),
             ),
+    );
+  }
+}
+
+// ─────────────────────────── Parking chip (+161) ───────────────────────────
+
+/// «P Стоянка» chip in the header of the «Автомобиль» screen — the
+/// replacement for the navigation dot removed in v0.1.62+161 (§5 of the
+/// UI contract). Static, no discrete surprise: the chip simply is or is
+/// not there, exactly like the dot was, but on the surface it describes.
+class _ParkedChip extends StatelessWidget {
+  const _ParkedChip();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: AtlasTokens.card,
+        borderRadius: BorderRadius.circular(999),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Text('P',
+              style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w700,
+                  color: AtlasTokens.gearP)),
+          const SizedBox(width: 8),
+          Text(S.of('atlas.parked_chip'),
+              style: const TextStyle(fontSize: 16, color: AtlasTokens.t60)),
+        ],
+      ),
     );
   }
 }

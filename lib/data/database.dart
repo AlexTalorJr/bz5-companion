@@ -2247,6 +2247,28 @@ class AppDatabase extends _$AppDatabase {
   Future<List<AtlasRevealRow>> getAtlasRevealsByType(String type) {
     return (select(atlasReveals)..where((r) => r.type.equals(type))).get();
   }
+
+  // ── v0.1.62+161: the atlas READ path (grid / detail / export) ──────
+  //
+  /// Every snapshot the atlas surfaces are allowed to see, ordered by
+  /// freeze time. [maxBand] is the collection ceiling (140 km/h, §1 of
+  /// the patch spec): the reward engine still RECORDS faster bands until
+  /// the cutoff lands in the freeze funnel (+162), so the ceiling is
+  /// enforced right here — ONE filter, on the ONE query that feeds the
+  /// matrix, the header counters, the year row and the export. Nothing
+  /// downstream re-filters (and `AtlasGridData` keeps a cheap second
+  /// lock only as belt-and-braces).
+  ///
+  /// The grid reads this table DIRECTLY and never the prefs ledger:
+  /// that is precisely why a reinstall needs no rehydration code — the
+  /// cloud refills atlas_snapshots and the atlas comes back with it.
+  Future<List<AtlasSnapshotRow>> getAtlasSnapshotsForGrid(
+      {required int maxBand}) {
+    return (select(atlasSnapshots)
+          ..where((r) => r.bandKmh.isSmallerOrEqualValue(maxBand))
+          ..orderBy([(r) => OrderingTerm(expression: r.frozenAt)]))
+        .get();
+  }
 }
 
 QueryExecutor _openConnection() {

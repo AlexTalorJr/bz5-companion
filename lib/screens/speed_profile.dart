@@ -10,13 +10,18 @@ import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../data/atlas_projection.dart';
 import '../data/database.dart';
 import '../l10n/strings.dart';
 import '../services/connection.dart';
 import '../services/hal_telemetry_service.dart';
 import '../services/locale_service.dart';
 import '../services/speed_profile_service.dart';
+import '../theme/atlas_tokens.dart';
+import '../widgets/atlas_grid.dart' show atlasCountsLabel;
 import '../widgets/responsive.dart';
+import 'atlas.dart';
+import 'wide/atlas_wide.dart';
 
 class SpeedProfileScreen extends StatefulWidget {
   const SpeedProfileScreen({super.key});
@@ -41,6 +46,12 @@ class _SpeedProfileScreenState extends State<SpeedProfileScreen> {
   bool _cardVisible = false;
   bool _loadingReveals = false;
   List<AtlasRevealRow>? _cardReveals;
+
+  /// v0.1.62+161: gate of the atlas entry card (§7.1 «Альманах активен»
+  /// on the parked screen / «Доступен на стоянке» in motion). Tracked
+  /// separately from _cardVisible: the entry lives on regardless of
+  /// whether there is anything unrevealed.
+  bool _isParked = false;
 
   @override
   void initState() {
@@ -68,6 +79,12 @@ class _SpeedProfileScreenState extends State<SpeedProfileScreen> {
         ? hal.halGear
         : conn.readNumeric('791', '0009');
     final isParked = gear != null && gear.toInt() == 1;
+    // +161: the atlas entry follows the gear alone (no 5 s hold — it is
+    // not a reveal, just a door), so it is latched here, before the
+    // card's own early-outs.
+    if (_isParked != isParked) {
+      setState(() => _isParked = isParked);
+    }
     // speed 0 — the on-change stream's last value; deceleration always
     // emits the terminal 0, so «стоит» is a real datum, not staleness.
     final v = hal.halSpeedKmh;
@@ -136,6 +153,11 @@ class _SpeedProfileScreenState extends State<SpeedProfileScreen> {
             onOk: () => _onOkReveals(svc),
           ),
         ],
+        // +161 (§7.1): the door into the atlas. Additive block — the
+        // reward engine, the reveal card and every measure.* string are
+        // untouched by this patch.
+        const SizedBox(height: 12),
+        _AtlasEntryCard(isParked: _isParked),
         if (s != null) ...[
           const SizedBox(height: 12),
           _BandBarCard(session: s),
@@ -1025,6 +1047,103 @@ class _CompareScreen extends StatelessWidget {
 /// micro-loot (always) → anticipation → «Ок». No celebration
 /// animations — the parked build IS the appearance (инвариант И3:
 /// награда = правда, тон лабораторного прибора).
+/// v0.1.62+161 — entry into the atlas from the «Замеры» screen
+/// (SPEC.md v1.1 §7.1 / §7.4). Head unit only by placement: this screen
+/// is hosted by the BZ5 rail and the BZ3 bar; the phone reaches the atlas
+/// directly from its own fifth destination.
+///
+/// Parked → «{n} ячеек · {m} полос · просмотр», tappable. Moving →
+/// muted, opacity .55, «Доступен на стоянке» (§7.1) — the matrix is not
+/// a driving surface.
+class _AtlasEntryCard extends StatefulWidget {
+  final bool isParked;
+  const _AtlasEntryCard({required this.isParked});
+
+  @override
+  State<_AtlasEntryCard> createState() => _AtlasEntryCardState();
+}
+
+class _AtlasEntryCardState extends State<_AtlasEntryCard> {
+  Future<AtlasGridData>? _future;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  void _load() {
+    final db = context.read<ConnectionService>().db;
+    _future = db
+        .getAtlasSnapshotsForGrid(maxBand: kAtlasBandMaxKmh)
+        .then((rows) => AtlasGridData.fromRows(rows));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bz3 = LayoutBreakpoints.useTallHeadUnit(context);
+    return FutureBuilder<AtlasGridData>(
+      future: _future,
+      builder: (context, snap) {
+        final data = snap.data;
+        final counts = data == null
+            ? '—'
+            : atlasCountsLabel(data.cellCount, data.bandCount, view: true);
+        final enabled = widget.isParked && data != null;
+        final body = Container(
+          decoration: BoxDecoration(
+            color: AtlasTokens.card,
+            borderRadius: BorderRadius.circular(bz3 ? 22 : 24),
+          ),
+          padding: EdgeInsets.symmetric(
+              horizontal: bz3 ? 24 : 32, vertical: bz3 ? 20 : 24),
+          child: Row(
+            children: [
+              Icon(Icons.grid_view,
+                  size: bz3 ? 24 : 28, color: AtlasTokens.info),
+              SizedBox(width: bz3 ? 16 : 20),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(S.of('atlas.title'),
+                        style: TextStyle(
+                            fontSize: bz3 ? 24 : 27,
+                            fontWeight: FontWeight.w500,
+                            color: AtlasTokens.t85)),
+                    const SizedBox(height: 4),
+                    Text(
+                      widget.isParked
+                          ? counts
+                          : S.of('atlas.parked_only_short'),
+                      style: TextStyle(
+                          fontSize: bz3 ? 16 : 20,
+                          color: AtlasTokens.t50),
+                    ),
+                  ],
+                ),
+              ),
+              Icon(Icons.chevron_right,
+                  size: bz3 ? 24 : 28, color: AtlasTokens.t40),
+            ],
+          ),
+        );
+        if (!enabled) return Opacity(opacity: 0.55, child: body);
+        return InkWell(
+          borderRadius: BorderRadius.circular(bz3 ? 22 : 24),
+          onTap: () {
+            Navigator.of(context).push(MaterialPageRoute(
+              builder: (_) =>
+                  bz3 ? const AtlasScreen() : const AtlasWideScreen(),
+            ));
+          },
+          child: body,
+        );
+      },
+    );
+  }
+}
+
 class _RevealCard extends StatelessWidget {
   final SpeedProfileService svc;
   final List<AtlasRevealRow> reveals;

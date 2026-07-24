@@ -6,6 +6,7 @@ import '../../services/connection.dart';
 import '../../services/hal_telemetry_service.dart';
 import '../../services/locale_service.dart';
 import '../../services/speed_profile_service.dart';
+import '../../theme/atlas_tokens.dart';
 import '../../widgets/charging_banner.dart';
 import 'driver_view_wide.dart';
 import 'dashboard_wide.dart';
@@ -131,12 +132,12 @@ class _HeadUnitScaffoldState extends State<HeadUnitScaffold> {
                   label: Text(S.of('nav.driving')),
                 ),
                 NavigationRailDestination(
-                  icon: Badge(
-                    isLabelVisible: isParked && _index != 1,
-                    backgroundColor: Colors.greenAccent,
-                    smallSize: 8,
-                    child: const Icon(Icons.analytics_outlined),
-                  ),
+                  // v0.1.62+161 (§5): the green isParked dot is REMOVED
+                  // from «Автомобиль». Two identical marks side by side
+                  // were the reason the «Замеры» badge did not read in
+                  // the field; parking is now stated by a chip in that
+                  // screen's own header (dashboard_wide).
+                  icon: const Icon(Icons.analytics_outlined),
                   selectedIcon: const Icon(Icons.analytics),
                   label: Text(S.of('nav.vehicle')),
                 ),
@@ -147,11 +148,10 @@ class _HeadUnitScaffoldState extends State<HeadUnitScaffold> {
                   // EXPRESSION (isParked is a conjunct, инвариант И1),
                   // and it dies on «Ок» automatically (counter → 0).
                   // Hidden while the tab itself is open (_index != 2).
-                  icon: Badge(
-                    isLabelVisible:
-                        isParked && unrevealed > 0 && _index != 2,
-                    backgroundColor: Colors.greenAccent,
-                    smallSize: 8,
+                  // v0.1.62+161: 14 dp + 2 dp outline (§5).
+                  icon: MeasureBadge(
+                    visible: isParked && unrevealed > 0 && _index != 2,
+                    surface: Theme.of(context).colorScheme.surface,
                     child: const Icon(Icons.speed_outlined),
                   ),
                   selectedIcon: const Icon(Icons.speed),
@@ -180,6 +180,11 @@ class _HeadUnitScaffoldState extends State<HeadUnitScaffold> {
               // Driver tab (index 0). See charging_banner.dart.
               child: ChargingAwareBody(
                 autoPushWhenVisible: _index == 0,
+                // v0.1.62+161 (§6.11): sticky plate above any tab but
+                // «Замеры» — it works in PAIR with the badge, not
+                // instead of it.
+                showAtlasPlate: _index != 2,
+                onPlateTap: () => setState(() => _index = 2),
                 child: IndexedStack(
                   index: _index,
                   children: _screens,

@@ -31,6 +31,9 @@ import 'package:provider/provider.dart';
 
 import '../l10n/strings.dart';
 import '../services/connection.dart';
+import '../services/hal_telemetry_service.dart';
+import '../services/speed_profile_service.dart';
+import '../theme/atlas_tokens.dart';
 import '../screens/wide/charging_view_wide.dart';
 
 /// Wraps a scaffold body. Shows the charging banner above [child] while
@@ -44,10 +47,23 @@ class ChargingAwareBody extends StatefulWidget {
   /// The banner itself shows on every tab regardless.
   final bool autoPushWhenVisible;
 
+  /// v0.1.62+161 (§6.11): the sticky summary plate lives here, next to
+  /// the charging banner — «над контентом ЛЮБОГО экрана». Set false on
+  /// the tab that already hosts the summary card itself, so the driver
+  /// never sees two prompts for one fact (the same conjunct the nav
+  /// badge uses: `_index != <Замеры>`).
+  final bool showAtlasPlate;
+
+  /// Plate tap → the «Замеры» tab. The scaffold owns the tab index, so
+  /// it hands the jump down instead of the plate guessing a navigator.
+  final VoidCallback? onPlateTap;
+
   const ChargingAwareBody({
     super.key,
     required this.child,
     this.autoPushWhenVisible = false,
+    this.showAtlasPlate = false,
+    this.onPlateTap,
   });
 
   @override
@@ -88,7 +104,7 @@ class _ChargingAwareBodyState extends State<ChargingAwareBody> {
           }
         });
       }
-      return widget.child;
+      return _withPlate(null);
     }
 
     // Charging active → maybe auto-push (once, only from the allowed tab).
@@ -99,9 +115,21 @@ class _ChargingAwareBodyState extends State<ChargingAwareBody> {
       });
     }
 
+    return _withPlate(
+        _ChargingBanner(onTap: () => _openChargingScreen(context)));
+  }
+
+  /// One layout for both states. When neither the banner nor the plate
+  /// has anything to say the tree is the bare child, exactly as before
+  /// +161 — no Column, no Expanded, zero layout delta for every screen
+  /// that never sees either.
+  Widget _withPlate(Widget? banner) {
+    if (banner == null && !widget.showAtlasPlate) return widget.child;
     return Column(
       children: [
-        _ChargingBanner(onTap: () => _openChargingScreen(context)),
+        if (banner != null) banner,
+        // Charging on top when both are up (§6.11).
+        if (widget.showAtlasPlate) AtlasSummaryPlate(onTap: widget.onPlateTap),
         Expanded(child: widget.child),
       ],
     );
@@ -169,6 +197,102 @@ class _ChargingBanner extends StatelessWidget {
                   ),
                 ),
                 const Icon(Icons.chevron_right, color: Colors.amber, size: 20),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// v0.1.62+161 «липкая плашка итогов» (SPEC.md v1.1 §6.11, mockup [5f]).
+///
+/// Why it exists: the 8 dp borderless badge of +160 was physically
+/// invisible in the field. The plate is the loud half of the pair — the
+/// badge stays (14 dp + 2 dp outline since this patch) and both die on
+/// the same «Ок».
+///
+/// Existence conditions, all conjuncts (so «в движении не существует» is
+/// true BY EXPRESSION, not by a hidden branch — инвариант И1):
+///   • gear P (the isParked precedent — HAL when fresh, else UDS 791/0009)
+///   • at least one unrevealed reveal event
+/// The trip line reads from the live ledger; on a phone there is no gear
+/// at all, so the plate is head-unit-only in practice — consistent with
+/// §11 («микро-лут живёт только в локальном состоянии ГУ»).
+class AtlasSummaryPlate extends StatelessWidget {
+  final VoidCallback? onTap;
+  const AtlasSummaryPlate({super.key, this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final hal = context.watch<HalTelemetryService>();
+    final svc = context.watch<ConnectionService>();
+    final gear =
+        hal.useHalForGear ? hal.halGear : svc.readNumeric('791', '0009');
+    final isParked = gear != null && gear.toInt() == 1;
+    final unrevealed =
+        context.select<SpeedProfileService, int>((s) => s.unrevealedCount);
+    if (!isParked || unrevealed <= 0) return const SizedBox.shrink();
+
+    final sp = context.read<SpeedProfileService>();
+    final t = sp.currentPackTempC;
+    final km = sp.atlasSessionDistKm.toStringAsFixed(1);
+    final sub = t == null
+        ? S.of('measure.card_trip_nt').replaceFirst('{km}', km)
+        : S
+            .of('measure.card_trip')
+            .replaceFirst('{km}', km)
+            .replaceFirst('{t}', '${t.round()}');
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+      child: Material(
+        color: AtlasTokens.revealBg,
+        borderRadius: BorderRadius.circular(14),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(14),
+          onTap: onTap,
+          child: Container(
+            height: 56,
+            decoration: BoxDecoration(
+              border: Border.all(color: AtlasTokens.revealBorder),
+              borderRadius: BorderRadius.circular(14),
+            ),
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Row(
+              children: [
+                const Icon(Icons.inventory_2,
+                    size: 20, color: AtlasTokens.success),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        S
+                            .of('measure.plate_title')
+                            .replaceFirst('{n}', '$unrevealed'),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            fontSize: 13.5,
+                            fontWeight: FontWeight.w500,
+                            color: AtlasTokens.t100),
+                      ),
+                      Text(
+                        sub,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            fontSize: 11, color: AtlasTokens.t50),
+                      ),
+                    ],
+                  ),
+                ),
+                const Icon(Icons.chevron_right,
+                    size: 20, color: AtlasTokens.t40),
               ],
             ),
           ),
