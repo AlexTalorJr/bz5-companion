@@ -4669,12 +4669,25 @@ if int(pv) >= 151:
             ok('AX5 навигация B: rail + BZ3, l10n ×2, phone untouched')
         else:
             fail('AX5 навигация B wiring incomplete or phone touched early')
-        # AX6: the patch-1 promise — reveal GENERATION is absent: the
-        # write-once apply path exists, but no local producer inserts
-        # into atlasReveals (insertAtlasReveal must not even exist yet).
-        if 'insertAtlasReveal(' not in dbs and \
-           'insertAtlasReveal(' not in sps and \
-           'applyPulledAtlasReveal' in dbs:
+        # AX6 — ERA-AWARE (+160 re-era = AY2): patch 1 promised the
+        # generation is ABSENT; patch 2 flips the promise — from +160
+        # the generation MUST BE PRESENT (crossing detector in the
+        # atlas tick + the serialized generator + the DAO producer),
+        # and the write-once apply path keeps existing untouched.
+        if int(pv) >= 160:
+            if 'insertAtlasReveal(' in dbs and \
+               '_generateReveal(' in sps and \
+               '_maybeGenerateReveal(' in sps and \
+               'beforeS < kBandMinSeconds && cell.timeS >= kBandMinSeconds' in sps and \
+               'applyPulledAtlasReveal' in dbs:
+                ok('AX6/AY2 (re-era +160) reveal generation PRESENT '
+                   '+ crossing detector + apply path intact')
+            else:
+                fail('AX6/AY2 (re-era +160) reveal generation missing '
+                     'or crossing detector gone')
+        elif 'insertAtlasReveal(' not in dbs and \
+             'insertAtlasReveal(' not in sps and \
+             'applyPulledAtlasReveal' in dbs:
             ok('AX6 reveal generation absent (lands in patch 2), apply-only')
         else:
             fail('AX6 a reveal producer leaked into patch 1')
@@ -4691,6 +4704,79 @@ if int(pv) >= 151:
             ok('AX7 single freeze funnel + R2 order + R1 stickiness consts')
         else:
             fail('AX7 freeze funnel discipline broken')
+        # ─────────── Part AY: +160 «Атлас» patch 2 ───────────
+        # Карточка итогов + звёзды + генерация reveal
+        # (SPEC_plus160_atlas_patch2.md; дизайн-контракт mockups/SPEC.md).
+        if int(pv) >= 160:
+            spscr = (root / 'lib/screens/speed_profile.dart').read_text()
+            # AY1: the ONE producer — insertAtlasReveal has exactly one
+            # call-site, inside the service generator; the sync side
+            # never inserts (pull/restore go through the apply merge).
+            if sps.count('_db.insertAtlasReveal(') == 1 and \
+               'insertAtlasReveal(' not in css and \
+               'Future<int> insertAtlasReveal(' in dbs:
+                ok('AY1 single reveal producer (service), sync clean')
+            else:
+                fail('AY1 reveal producer discipline broken')
+            # AY3: card condition — P + speed 0 held 5 s (constant),
+            # the accepted §2.1 predicate (unrevealed OR unseen gain),
+            # and «Ок» reveals EVERYTHING write-once (by='hu',
+            # syncedAt → null for the re-push).
+            if '_kParkHoldMs = 5000' in spscr and \
+               'gear.toInt() == 1' in spscr and \
+               'sp.unrevealedCount > 0 || sp.atlasHasUnseenGain' in spscr and \
+               'revealAllUnrevealedAtlasReveals' in dbs and \
+               'syncedAt: const Value(null),' in dbs and \
+               "revealedBy: 'hu'" in sps and \
+               'acknowledgeReveals' in sps:
+                ok('AY3 card condition P+0+5s + «Ок» reveals all (write-once)')
+            else:
+                fail('AY3 card condition / «Ок» semantics broken')
+            # AY4: the badge is LIVE in BOTH scaffolds and cannot exist
+            # in motion BY EXPRESSION (isParked is a conjunct).
+            _ay4 = 'isParked && unrevealed > 0 && _index != 2'
+            if _ay4 in rail2 and _ay4 in home2 and \
+               'unrevealedCount' in rail2 and 'unrevealedCount' in home2:
+                ok('AY4 live badge in both scaffolds, motion-free by expr')
+            else:
+                fail('AY4 badge wiring incomplete')
+            # AY5: star thresholds 5/15 pinned; dedup port keeps the
+            # contract rule — STRICT > 0.5·shorter, same-source guard,
+            # zero-length groups never merge.
+            if "count == 5 ? 'silver' : 'gold'" in sps and \
+               'count != 5 && count != 15' in sps and \
+               'ov > 0.5 * shorter' in sps and \
+               'if (shorter <= 0) continue;' in sps and \
+               'same source never merges' in sps:
+                ok('AY5 star 5/15 + dedup strictness/guards pinned')
+            else:
+                fail('AY5 dedup port / star thresholds drifted')
+            # AY6: suppression — band_matured swallows cell_new on the
+            # same crossing (the return right after the insert).
+            if 'подавление: band_matured поглощает cell_new (AY6)' in sps:
+                ok('AY6 cell_new suppressed under band_matured')
+            else:
+                fail('AY6 suppression marker missing')
+            # AY7: l10n — the card strings live in BOTH maps.
+            _ay7 = l10n.count("'measure.card_")
+            if _ay7 == 24:
+                ok('AY7 measure.card_* ×12 keys in both l10n maps')
+            else:
+                fail(f'AY7 measure.card_* count {_ay7} != 24')
+            # AY8: ledger JSON carries the §1.4 fields (t0 per cell,
+            # sessionDistKm / lastOkMs / lastGainMs on the ledger),
+            # with backward-compatible defaults.
+            if "'t0': t0," in sps and \
+               "'sd': sessionDistKm," in sps and \
+               "'lok': lastOkMs," in sps and \
+               "'lg': lastGainMs," in sps and \
+               "(j['t0'] as num?)?.toDouble() ?? 0" in sps and \
+               "(j['sd'] as num?)?.toDouble() ?? 0" in sps:
+                ok('AY8 ledger JSON: t0/sd/lok/lg + compat defaults')
+            else:
+                fail('AY8 ledger JSON fields incomplete')
+        else:
+            ok(f"Part AY skipped (build +{pv}, карточка итогов lands in +160)")
     else:
         ok(f"Part AX skipped (build +{pv}, атлас lands in +158)")
 else:

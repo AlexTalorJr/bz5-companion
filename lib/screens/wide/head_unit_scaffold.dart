@@ -5,6 +5,7 @@ import '../../l10n/strings.dart';
 import '../../services/connection.dart';
 import '../../services/hal_telemetry_service.dart';
 import '../../services/locale_service.dart';
+import '../../services/speed_profile_service.dart';
 import '../../widgets/charging_banner.dart';
 import 'driver_view_wide.dart';
 import 'dashboard_wide.dart';
@@ -102,6 +103,10 @@ class _HeadUnitScaffoldState extends State<HeadUnitScaffold> {
         ? hal.halGear
         : svc.readNumeric('791', '0009');
     final isParked = gear != null && gear.toInt() == 1;
+    // v0.1.61+160: badge source for «Замеры» (§64 контракта) — the
+    // cached counter notifies on generation / «Ок» / init hydration.
+    final unrevealed = context
+        .select<SpeedProfileService, int>((s) => s.unrevealedCount);
 
     return Scaffold(
       body: SafeArea(
@@ -136,16 +141,15 @@ class _HeadUnitScaffoldState extends State<HeadUnitScaffold> {
                   label: Text(S.of('nav.vehicle')),
                 ),
                 NavigationRailDestination(
-                  // v0.1.59+158: the badge is a SKELETON — per the UI
-                  // contract it exists ONLY at «P + unrevealed reveals»
-                  // (never in motion, инвариант И1). Reveal generation
-                  // lands in patch №2; until then the queue is empty by
-                  // construction (regress AX6), so the dot physically
-                  // never renders. The rec-dot from the old History tab
-                  // is deliberately NOT carried over — recording state
-                  // lives inside the screen (documented decision).
+                  // v0.1.61+160: the +158 skeleton is LIVE — per §64 of
+                  // the UI contract the badge exists ONLY at «P +
+                  // невскрытые итоги»: in motion it does not exist BY
+                  // EXPRESSION (isParked is a conjunct, инвариант И1),
+                  // and it dies on «Ок» automatically (counter → 0).
+                  // Hidden while the tab itself is open (_index != 2).
                   icon: Badge(
-                    isLabelVisible: false, // №2: isParked && unrevealed>0
+                    isLabelVisible:
+                        isParked && unrevealed > 0 && _index != 2,
                     backgroundColor: Colors.greenAccent,
                     smallSize: 8,
                     child: const Icon(Icons.speed_outlined),

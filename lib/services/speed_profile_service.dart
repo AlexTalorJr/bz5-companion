@@ -108,6 +108,12 @@ const double kAtlasTempMaxAgeS = 300.0;
 /// evening drives are independent (coverage-star semantics, contract).
 const int kAtlasSessionGapMin = 30;
 
+/// +160 (§2.2 п.5): «Полоса {v} почти дозрела» — the anticipation line
+/// of the summary card names the un-matured cell with the largest
+/// timeS at or past this threshold. Deliberately coarse, no numbers
+/// toward a goal on the card itself (инвариант И2).
+const double kAtlasAnticipationS = 90.0;
+
 /// Integration guard: stream gaps longer than this are not integrated
 /// (dt-гард, same idea as the trip integrators).
 const double kDtGuardS = 2.0;
@@ -366,6 +372,13 @@ class _AtlasCell {
   double tempTimeS;
   int startedAtMs;
 
+  /// +160 (§1.4): timeS at the start of the CURRENT atlas session —
+  /// set to timeS on session rotation and to 0 on cell creation.
+  /// gained = timeS − t0 feeds the micro-loot line of the summary
+  /// card. JSON default 0 keeps old ledgers loading (one slightly
+  /// inflated first card is the accepted migration cost).
+  double t0;
+
   _AtlasCell({
     this.energyKwh = 0,
     this.distKm = 0,
@@ -373,7 +386,11 @@ class _AtlasCell {
     this.tempSum = 0,
     this.tempTimeS = 0,
     required this.startedAtMs,
+    this.t0 = 0,
   });
+
+  /// Steady seconds earned by the current atlas session (micro-loot).
+  double get gainedS => timeS - t0;
 
   double? get tempMeanC => tempTimeS > 1e-6 ? tempSum / tempTimeS : null;
 
@@ -384,6 +401,7 @@ class _AtlasCell {
         'ts': tempSum,
         'tt': tempTimeS,
         'sa': startedAtMs,
+        't0': t0,
       };
 
   static _AtlasCell fromJson(Map<String, dynamic> j) => _AtlasCell(
@@ -394,6 +412,7 @@ class _AtlasCell {
         tempTimeS: (j['tt'] as num?)?.toDouble() ?? 0,
         startedAtMs: (j['sa'] as num?)?.toInt() ??
             DateTime.now().millisecondsSinceEpoch,
+        t0: (j['t0'] as num?)?.toDouble() ?? 0,
       );
 }
 
@@ -410,6 +429,22 @@ class _AtlasLedger {
   int? lastFreshTempMs;
   final Map<String, _AtlasCell> cells;
 
+  /// +160 (§1.4): real km of the CURRENT atlas session — every moving
+  /// tick, BEFORE qualification (vDash·factor·dt). The «7.2 км» line
+  /// of the summary card. Resets on session rotation.
+  double sessionDistKm;
+
+  /// +160 (§2.1): the moment of the last «Ок» — the card's «показывать
+  /// ли микро-лут без событий» anchor. Survives restarts with the
+  /// ledger (a lost lastOkMs would merely re-show an honest card).
+  int? lastOkMs;
+
+  /// +160: the moment of the last QUALIFIED atlas tick. «Σ gained с
+  /// момента lastOkMs > 0» ≡ (gain exists AND lastGainMs > lastOkMs) —
+  /// one timestamp instead of a per-cell second baseline; freezing a
+  /// cell (which removes it) cannot lose the flag.
+  int? lastGainMs;
+
   _AtlasLedger({
     required this.sessionUid,
     required this.sessionStartedAtMs,
@@ -418,6 +453,9 @@ class _AtlasLedger {
     this.lastFreshTempC,
     this.lastFreshTempMs,
     Map<String, _AtlasCell>? cells,
+    this.sessionDistKm = 0,
+    this.lastOkMs,
+    this.lastGainMs,
   }) : cells = cells ?? {};
 
   static _AtlasLedger fresh() {
@@ -436,6 +474,9 @@ class _AtlasLedger {
         'aw': activeWindow,
         'lt': lastFreshTempC,
         'lts': lastFreshTempMs,
+        'sd': sessionDistKm,
+        'lok': lastOkMs,
+        'lg': lastGainMs,
         'cells': cells.map((k, v) => MapEntry(k, v.toJson())),
       };
 
@@ -454,8 +495,87 @@ class _AtlasLedger {
       lastFreshTempC: (j['lt'] as num?)?.toDouble(),
       lastFreshTempMs: (j['lts'] as num?)?.toInt(),
       cells: cells,
+      sessionDistKm: (j['sd'] as num?)?.toDouble() ?? 0,
+      lastOkMs: (j['lok'] as num?)?.toInt(),
+      lastGainMs: (j['lg'] as num?)?.toInt(),
     );
   }
+}
+
+/// +160 (§1.3): lightweight projection of an atlas snapshot for the
+/// session dedup — everything the contract rule reads and nothing else.
+class SnapshotLite {
+  final String sessionUid;
+  final String source;
+  final int startedAtMs;
+  final int frozenAtMs;
+  const SnapshotLite({
+    required this.sessionUid,
+    required this.source,
+    required this.startedAtMs,
+    required this.frozenAtMs,
+  });
+}
+
+/// +160 (§1.3): Dart port of the CONTRACT session-dedup rule — the
+/// behavioural reference is mirror_plus158.py S10a, carried bit-for-bit
+/// into mirror_plus160 as the port cross-check. Rule: group snapshots
+/// by session_uid (interval = [min started, max frozen], source of the
+/// first snapshot — one recording device per uid by construction);
+/// merge two groups iff their sources DIFFER and the interval overlap
+/// is STRICTLY > 50% of the SHORTER interval; transitive closure via
+/// union-find (two HU sessions may end up one logical session through a
+/// phone bridge — intended); same source never merges directly. The
+/// result is the number of independent logical sessions (star levels
+/// 1 / 5 / 15).
+int dedupSessionCount(List<SnapshotLite> snaps) {
+  final keys = <String>[];
+  final aMs = <String, int>{};
+  final bMs = <String, int>{};
+  final src = <String, String>{};
+  for (final s in snaps) {
+    if (!aMs.containsKey(s.sessionUid)) {
+      keys.add(s.sessionUid);
+      aMs[s.sessionUid] = s.startedAtMs;
+      bMs[s.sessionUid] = s.frozenAtMs;
+      src[s.sessionUid] = s.source;
+    } else {
+      if (s.startedAtMs < aMs[s.sessionUid]!) {
+        aMs[s.sessionUid] = s.startedAtMs;
+      }
+      if (s.frozenAtMs > bMs[s.sessionUid]!) {
+        bMs[s.sessionUid] = s.frozenAtMs;
+      }
+    }
+  }
+  final parent = <String, String>{for (final k in keys) k: k};
+  String find(String x) {
+    var cur = x;
+    while (parent[cur] != cur) {
+      parent[cur] = parent[parent[cur]!]!;
+      cur = parent[cur]!;
+    }
+    return cur;
+  }
+
+  for (var i = 0; i < keys.length; i++) {
+    for (var j = i + 1; j < keys.length; j++) {
+      final ki = keys[i], kj = keys[j];
+      if (src[ki] == src[kj]) continue; // same source never merges
+      final lo = aMs[ki]! > aMs[kj]! ? aMs[ki]! : aMs[kj]!;
+      final hi = bMs[ki]! < bMs[kj]! ? bMs[ki]! : bMs[kj]!;
+      final ov = hi - lo;
+      final li = bMs[ki]! - aMs[ki]!;
+      final lj = bMs[kj]! - aMs[kj]!;
+      final shorter = li < lj ? li : lj;
+      if (shorter <= 0) continue; // zero-length group never merges
+      if (ov > 0.5 * shorter) {
+        parent[find(ki)] = find(kj); // STRICTLY > 50% of the shorter
+      }
+    }
+  }
+  final roots = <String>{for (final k in keys) find(k)};
+  return roots.length;
 }
 
 /// An archived, named session (U3). Up to [SpeedProfileService.kArchiveMax]
@@ -536,6 +656,17 @@ class SpeedProfileService extends ChangeNotifier {
   bool _dirtySincePersist = false;
   // Process-lifetime freeze counter — diag visibility only.
   int _atlasFreezeCount = 0;
+
+  // ── +160: reveal generation (§1) + badge counter (§2.3) ──
+  // Existence checks are ASYNC after a maturity crossing; two cells of
+  // one band can cross in quick succession (crossings are rare, but a
+  // convoy of two is physical) — a serialized chain makes every check
+  // see the inserts of the previous one, so band_matured cannot double.
+  Future<void> _revealChain = Future<void>.value();
+  // Cached badge source (§2.3): refreshed after generation, after «Ок»
+  // and in init() from countUnrevealedAtlasReveals.
+  int _unrevealedCount = 0;
+  int get unrevealedCount => _unrevealedCount;
 
   StreamSubscription<HalEvent>? _sub;
   Timer? _persistTimer;
@@ -650,6 +781,14 @@ class SpeedProfileService extends ChangeNotifier {
     // +139/+141 probe discipline); after arming it is a no-op.
     _hal.addListener(_maybeArmAtlas);
     _maybeArmAtlas();
+
+    // +160 (§2.3): hydrate the badge counter — reveals survive in the
+    // DB (and arrive by pull), the cache must not start at a lying 0.
+    try {
+      _unrevealedCount = await _db.countUnrevealedAtlasReveals();
+    } catch (_) {
+      _unrevealedCount = 0;
+    }
 
     notifyListeners();
   }
@@ -803,6 +942,10 @@ class SpeedProfileService extends ChangeNotifier {
         'armed': _atlasArmed,
         'freezes_this_process': _atlasFreezeCount,
         'snapshots_in_db': await _db.countAtlasSnapshots(),
+        // +160 field check (§5): the badge source + reveal totals;
+        // lastOkMs / t0 ride inside the ledger JSON ('lok' / 't0').
+        'unrevealed': _unrevealedCount,
+        'reveals_in_db': await _db.countAtlasReveals(),
         'ledger': _ledger?.toJson(),
       },
     };
@@ -1161,6 +1304,10 @@ class SpeedProfileService extends ChangeNotifier {
         _closeAtlasSession(frozenAtMs: l.lastMoveMs);
       }
       l.lastMoveMs = nowMs;
+      // +160 (§1.4): the trip line of the summary card — every MOVING
+      // tick, before qualification (the card says how far this session
+      // drove, not how much of it qualified).
+      l.sessionDistKm += vDash * kSpeedRealFactor * dtS / 3600.0;
     }
 
     // Window bookkeeping — fresh readings update the stickiness anchor
@@ -1185,6 +1332,14 @@ class SpeedProfileService extends ChangeNotifier {
     final key = _AtlasLedger.cellKey(band, win);
     final cell = l.cells.putIfAbsent(
         key, () => _AtlasCell(startedAtMs: nowMs));
+    // +160 (§1.1): the maturity CROSSING (before < 120 ≤ after) is the
+    // reveal generation point — freezing would be one trip too late
+    // (on the HU it usually runs at the NEXT start, recovery/rotation)
+    // and the card contract says «итоги ЭТОЙ поездки». A matured cell
+    // is guaranteed to freeze eventually, so the prediction is honest
+    // with certainty 1. ≤ 1 crossing per accumulation round by
+    // construction (timeS grows monotonically until the freeze reset).
+    final beforeS = cell.timeS;
     cell.energyKwh += p * dtS / 3600.0;
     cell.distKm += vDash * kSpeedRealFactor * dtS / 3600.0;
     cell.timeS += dtS;
@@ -1192,6 +1347,14 @@ class SpeedProfileService extends ChangeNotifier {
     if (ct != null) {
       cell.tempSum += ct * dtS;
       cell.tempTimeS += dtS;
+    }
+    l.lastGainMs = nowMs; // +160: «Σ gained с момента lastOkMs» anchor
+    if (beforeS < kBandMinSeconds && cell.timeS >= kBandMinSeconds) {
+      // kwh in the payload is the value AT THE CROSSING — realtime
+      // correction continues afterwards; the card renders from the
+      // payload, an honest moment-in-time snapshot (spec §1.1).
+      _maybeGenerateReveal(
+          band, win, cell.energyKwh / cell.distKm * 100.0);
     }
     _dirtySincePersist = true;
   }
@@ -1243,6 +1406,14 @@ class SpeedProfileService extends ChangeNotifier {
     l.sessionUid = uuidV7();
     final nowMs = DateTime.now().millisecondsSinceEpoch;
     l.sessionStartedAtMs = nowMs;
+    // +160 (§1.4): the new session starts with zero gain — surviving
+    // sub-threshold cells re-anchor their micro-loot baseline (timeS
+    // itself carries, spec v2 «накопление переносится»); the trip line
+    // starts from zero km.
+    for (final c in l.cells.values) {
+      c.t0 = c.timeS;
+    }
+    l.sessionDistKm = 0;
     // Refresh the idle anchor too: without this an init-recovery close
     // would be followed by a second (empty) rotation on the first
     // movement tick — harmless but sloppy (a wasted session_uid).
@@ -1321,6 +1492,246 @@ class SpeedProfileService extends ChangeNotifier {
       }
       await _persist();
     }());
+  }
+
+  // ───────────── +160: reveal generation (spec §1.1–§1.2) ─────────────
+
+  /// Queue one crossing into the serialized generation chain. The
+  /// ledger identity (session uid + start) and the wall clock are
+  /// captured SYNCHRONOUSLY at the crossing — the async checks must
+  /// not see a rotated session.
+  void _maybeGenerateReveal(int band, int? win, double kwh100) {
+    final l = _ledger;
+    if (l == null) return;
+    final sessionUid = l.sessionUid;
+    final sessionStartMs = l.sessionStartedAtMs;
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    _revealChain = _revealChain
+        .then((_) => _generateReveal(
+            band, win, kwh100, sessionUid, sessionStartMs, nowMs))
+        .catchError((Object e) {
+      debugPrint('Atlas: reveal generation failed — $e');
+    });
+  }
+
+  /// One crossing → at most ONE event (§1.2): band_matured suppresses
+  /// cell_new (two lines about one fact are noise — the band milestone
+  /// swallows the cell milestone); a first-snapshot cell IS star level
+  /// 1 semantically, so star_up never fires at 1; star_up at 5 / 15
+  /// implies snapshots exist, so it never collides with cell_new.
+  /// Generation is SILENT — a DB row + the badge counter, no UI
+  /// reaction in motion (инвариант И1; the badge itself only exists
+  /// under P).
+  Future<void> _generateReveal(int band, int? win, double kwh100,
+      String sessionUid, int sessionStartMs, int nowMs) async {
+    // band_matured — the FIRST maturity of this band in the atlas's
+    // life: no snapshot of the band anywhere AND no prior band_matured
+    // reveal (a reveal may predate its snapshot while the session is
+    // still open — the second condition covers exactly that gap).
+    final bandKnown = await _db.hasAtlasSnapshotForBand(band);
+    if (!bandKnown && !await _hasReveal('band_matured', band: band)) {
+      await _insertReveal('band_matured',
+          {'band': band, 'kwh100': kwh100, 'window': win}, sessionUid);
+      return; // подавление: band_matured поглощает cell_new (AY6)
+    }
+
+    final cellSnaps = await _db.getAtlasSnapshotsForCell(band, win);
+    if (cellSnaps.isEmpty) {
+      // cell_new — first snapshot of this band × window cell.
+      if (!await _hasReveal('cell_new',
+          band: band, window: win, matchWindow: true)) {
+        await _insertReveal(
+            'cell_new', {'band': band, 'window': win}, sessionUid);
+      }
+      return;
+    }
+
+    // star_up — the cell crosses 5 (silver) or 15 (gold) INDEPENDENT
+    // logical sessions, live-corrected for the current one: if no
+    // existing snapshot carries the current session_uid, the current
+    // session rides in as a virtual [start, now] 'hu' group — the
+    // union-frame equivalent of «+1 если не сливается по правилу
+    // дедупа» (merging keeps the count, independence adds one).
+    final lites = <SnapshotLite>[
+      for (final r in cellSnaps)
+        SnapshotLite(
+          sessionUid: r.sessionUid,
+          source: r.source,
+          startedAtMs: r.startedAt.millisecondsSinceEpoch,
+          frozenAtMs: r.frozenAt.millisecondsSinceEpoch,
+        ),
+    ];
+    final contributed = cellSnaps.any((r) => r.sessionUid == sessionUid);
+    if (!contributed) {
+      lites.add(SnapshotLite(
+        sessionUid: sessionUid,
+        source: 'hu',
+        startedAtMs: sessionStartMs,
+        frozenAtMs: nowMs,
+      ));
+    }
+    final count = dedupSessionCount(lites);
+    if (count != 5 && count != 15) return;
+    final level = count == 5 ? 'silver' : 'gold';
+    // Existence check (§1.1: re-maturity after a freeze-reset is a new
+    // round — the checks decide): a window-switch freeze inside one
+    // session lets the same cell cross twice with the same count; the
+    // level guard keeps the star single for the cell's lifetime.
+    if (await _hasReveal('star_up',
+        band: band, window: win, matchWindow: true, level: level)) {
+      return;
+    }
+    await _insertReveal(
+        'star_up',
+        {'band': band, 'window': win, 'level': level, 'sessions': count},
+        sessionUid);
+  }
+
+  /// Payload-level existence check — the reveal table is small by
+  /// construction, parsing beats a JSON column query.
+  Future<bool> _hasReveal(String type,
+      {required int band,
+      int? window,
+      bool matchWindow = false,
+      String? level}) async {
+    final rows = await _db.getAtlasRevealsByType(type);
+    for (final r in rows) {
+      try {
+        final p = jsonDecode(r.payloadJson) as Map<String, dynamic>;
+        if ((p['band'] as num?)?.toInt() != band) continue;
+        if (matchWindow && (p['window'] as num?)?.toInt() != window) {
+          continue;
+        }
+        if (level != null && p['level'] != level) continue;
+        return true;
+      } catch (_) {
+        // unparseable payload — treat as non-matching, never crash
+      }
+    }
+    return false;
+  }
+
+  /// The single producer call-site of insertAtlasReveal (regress AY1).
+  /// Born with syncedAt = null → the next push cycle delivers it
+  /// (patch-1 plumbing; Друг 2 is expecting the channel to go live).
+  Future<void> _insertReveal(
+      String type, Map<String, dynamic> payload, String sessionUid) async {
+    final now = DateTime.now();
+    await _db.insertAtlasReveal(AtlasRevealsCompanion(
+      clientUuid: Value(uuidV7()),
+      sessionUid: Value(sessionUid),
+      type: Value(type),
+      payloadJson: Value(jsonEncode(payload)),
+      createdAt: Value(now),
+      updatedAt: Value(now),
+    ));
+    _unrevealedCount = await _db.countUnrevealedAtlasReveals();
+    debugPrint('Atlas: reveal $type $payload (unrevealed '
+        '$_unrevealedCount)');
+    notifyListeners();
+  }
+
+  // ───────────── +160: parking summary card API (spec §2) ─────────────
+
+  /// Real km of the current atlas session — the card's trip line.
+  double get atlasSessionDistKm => _ledger?.sessionDistKm ?? 0;
+
+  /// Current pack temperature for the trip line («пак 19°») — the same
+  /// combined freshness priority the recorder itself integrates with.
+  double? get currentPackTempC => _packTempC();
+
+  /// «Σ gained по ячейкам с момента lastOkMs > 0» (§2.1): any
+  /// qualified tick after the last «Ок» keeps the micro-loot card
+  /// meaningful even at zero reveal events (§138 приёмки).
+  bool get atlasHasUnseenGain {
+    final l = _ledger;
+    if (l == null) return false;
+    final lg = l.lastGainMs;
+    if (lg == null) return false;
+    final lok = l.lastOkMs;
+    return lok == null || lg > lok;
+  }
+
+  /// Micro-loot cell (§2.2 п.4): the un-matured cell (timeS < 120)
+  /// with the LARGEST session gain; ties break toward the larger
+  /// timeS. Null → everything matured / empty — the caller renders
+  /// the degenerate «+{s} с ровного времени» line instead.
+  ({int band, double gainedS, double timeS})? atlasLootCell() {
+    final l = _ledger;
+    if (l == null) return null;
+    ({int band, double gainedS, double timeS})? best;
+    l.cells.forEach((key, c) {
+      if (c.timeS >= kBandMinSeconds) return; // matured — not loot
+      final sep = key.indexOf(':');
+      final band = int.tryParse(key.substring(0, sep));
+      if (band == null) return;
+      final b = best;
+      if (b == null ||
+          c.gainedS > b.gainedS ||
+          (c.gainedS == b.gainedS && c.timeS > b.timeS)) {
+        best = (band: band, gainedS: c.gainedS, timeS: c.timeS);
+      }
+    });
+    return best;
+  }
+
+  /// Degenerate micro-loot fallback: total session gain across cells.
+  double get atlasGainedTotalS {
+    final l = _ledger;
+    if (l == null) return 0;
+    var sum = 0.0;
+    for (final c in l.cells.values) {
+      sum += c.gainedS;
+    }
+    return sum;
+  }
+
+  /// Anticipation line (§2.2 п.5): the un-matured cell with
+  /// timeS ≥ kAtlasAnticipationS and the largest timeS, or null.
+  int? atlasAnticipationBand() {
+    final l = _ledger;
+    if (l == null) return null;
+    int? band;
+    var bestT = -1.0;
+    l.cells.forEach((key, c) {
+      if (c.timeS >= kBandMinSeconds || c.timeS < kAtlasAnticipationS) {
+        return;
+      }
+      final sep = key.indexOf(':');
+      final b = int.tryParse(key.substring(0, sep));
+      if (b == null) return;
+      if (c.timeS > bestT) {
+        bestT = c.timeS;
+        band = b;
+      }
+    });
+    return band;
+  }
+
+  /// Card body — everything unrevealed, newest first per type.
+  Future<List<AtlasRevealRow>> unrevealedReveals() =>
+      _db.getUnrevealedAtlasReveals();
+
+  /// «Ок» (§2.1): reveal EVERYTHING pending (revealedBy = 'hu',
+  /// syncedAt → null for the re-push — the server merge is
+  /// write-once), latch lastOkMs, drop the badge counter. Persisted
+  /// immediately: a lost lastOkMs would re-show an honest card, but
+  /// sloppy is sloppy.
+  Future<void> acknowledgeReveals() async {
+    final now = DateTime.now();
+    try {
+      await _db.revealAllUnrevealedAtlasReveals(now, revealedBy: 'hu');
+      _unrevealedCount = await _db.countUnrevealedAtlasReveals();
+    } catch (e) {
+      debugPrint('Atlas: acknowledge failed — $e');
+    }
+    final l = _ledger;
+    if (l != null) {
+      l.lastOkMs = now.millisecondsSinceEpoch;
+      _dirtySincePersist = true;
+    }
+    await _persist();
+    notifyListeners();
   }
 
   /// 0–100 automaton (spec §4). Arms at standstill (dash < 2 held

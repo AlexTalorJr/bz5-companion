@@ -3,13 +3,20 @@
 // block, and the U3 archive with A/B comparison. HU-only by placement
 // (history.dart hides the tab when !canUseHal). SPEC v1.2.
 
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../data/database.dart';
 import '../l10n/strings.dart';
+import '../services/connection.dart';
+import '../services/hal_telemetry_service.dart';
 import '../services/locale_service.dart';
 import '../services/speed_profile_service.dart';
+import '../widgets/responsive.dart';
 
 class SpeedProfileScreen extends StatefulWidget {
   const SpeedProfileScreen({super.key});
@@ -23,6 +30,92 @@ class _SpeedProfileScreenState extends State<SpeedProfileScreen> {
   /// two are ticked the «Сравнить А/Б» button lights up.
   final Set<int> _compareSel = {};
 
+  // ── +160 (§2.1): parking summary card — P + speed 0 held 5 s ──
+  // The hold timer lives in SCREEN state (per spec); any movement or
+  // gear change resets it AND hides the card — the condition is live,
+  // not a latch. Discreteness is allowed: the card only ever appears
+  // under P (стоянка = дискретность разрешена), никаких анимаций.
+  static const int _kParkHoldMs = 5000;
+  Timer? _parkPoll;
+  int? _parkSinceMs;
+  bool _cardVisible = false;
+  bool _loadingReveals = false;
+  List<AtlasRevealRow>? _cardReveals;
+
+  @override
+  void initState() {
+    super.initState();
+    _parkPoll = Timer.periodic(const Duration(seconds: 1), (_) {
+      _pollPark();
+    });
+  }
+
+  @override
+  void dispose() {
+    _parkPoll?.cancel();
+    super.dispose();
+  }
+
+  void _pollPark() {
+    if (!mounted) return;
+    final hal = context.read<HalTelemetryService>();
+    final conn = context.read<ConnectionService>();
+    final sp = context.read<SpeedProfileService>();
+    // P detection — the isParked precedent (the same gear resolution
+    // the «Автомобиль» rail badge uses). No valid gear → no card at
+    // all (дизайн-контракт §78: уходит на телефон, №3).
+    final gear = hal.useHalForGear
+        ? hal.halGear
+        : conn.readNumeric('791', '0009');
+    final isParked = gear != null && gear.toInt() == 1;
+    // speed 0 — the on-change stream's last value; deceleration always
+    // emits the terminal 0, so «стоит» is a real datum, not staleness.
+    final v = hal.halSpeedKmh;
+    final still = v != null && v < 0.5;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (!(isParked && still)) {
+      _parkSinceMs = null;
+      if (_cardVisible) {
+        setState(() {
+          _cardVisible = false;
+          _cardReveals = null;
+        });
+      }
+      return;
+    }
+    _parkSinceMs ??= now;
+    final held = now - _parkSinceMs! >= _kParkHoldMs;
+    // §2.1 (принятое условие, вето Alex одним словом сводит к «только
+    // unrevealedCount > 0»): невскрытые события ИЛИ прирост с
+    // последнего «Ок» — микро-лут заслуживает карточку и без событий.
+    final hasContent = sp.unrevealedCount > 0 || sp.atlasHasUnseenGain;
+    if (held && hasContent && !_cardVisible && !_loadingReveals) {
+      _loadingReveals = true;
+      sp.unrevealedReveals().then((rows) {
+        if (!mounted) return;
+        _loadingReveals = false;
+        setState(() {
+          _cardReveals = rows;
+          _cardVisible = true;
+        });
+      });
+    } else if (_cardVisible && !hasContent) {
+      setState(() {
+        _cardVisible = false;
+        _cardReveals = null;
+      });
+    }
+  }
+
+  Future<void> _onOkReveals(SpeedProfileService sp) async {
+    await sp.acknowledgeReveals();
+    if (!mounted) return;
+    setState(() {
+      _cardVisible = false;
+      _cardReveals = null;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     context.watch<LocaleService>();
@@ -33,6 +126,16 @@ class _SpeedProfileScreenState extends State<SpeedProfileScreen> {
       padding: const EdgeInsets.all(12),
       children: [
         _StatusCard(svc: svc, onStop: () => _onStop(context, svc)),
+        // +160 (§2.2): карточка итогов — сверху колонки полос, НЕ
+        // оверлей. Появление на стоянке — обычный build по условию.
+        if (_cardVisible && _cardReveals != null) ...[
+          const SizedBox(height: 12),
+          _RevealCard(
+            svc: svc,
+            reveals: _cardReveals!,
+            onOk: () => _onOkReveals(svc),
+          ),
+        ],
         if (s != null) ...[
           const SizedBox(height: 12),
           _BandBarCard(session: s),
@@ -910,5 +1013,219 @@ class _CompareScreen extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+// ───────────── +160: карточка итогов («вскрытие», §2.2) ─────────────
+
+/// The parking summary card — verbatim §6.3 of the UI contract
+/// (mockups/SPEC.md): revealBg #141F1A container, revealBorder
+/// rgba(92,232,92,.25), r24, paddings 26×36 (BZ5) / 26×28 (BZ3).
+/// Order = priority: trip line → reveal events 0…N → divider →
+/// micro-loot (always) → anticipation → «Ок». No celebration
+/// animations — the parked build IS the appearance (инвариант И3:
+/// награда = правда, тон лабораторного прибора).
+class _RevealCard extends StatelessWidget {
+  final SpeedProfileService svc;
+  final List<AtlasRevealRow> reveals;
+  final VoidCallback onOk;
+  const _RevealCard({
+    required this.svc,
+    required this.reveals,
+    required this.onOk,
+  });
+
+  // Токены §2 дизайн-контракта.
+  static const Color _bg = Color(0xFF141F1A); // revealBg
+  static const Color _border = Color(0x405CE85C); // rgba(92,232,92,.25)
+  static const Color _success = Color(0xFF5CE85C); // check_circle
+  static const Color _info = Color(0xFF81D4FA); // grid_view (cell_new)
+  static const Color _silver = Color(0xFFB9C4CE);
+  static const Color _gold = Color(0xFFE9C46A);
+  static const Color _progress = Color(0xFF1DE9B6); // кнопка «Ок»
+  static const Color _onProgress = Color(0xFF00251C);
+
+  static int _typeRank(String t) =>
+      t == 'band_matured' ? 0 : (t == 'star_up' ? 1 : 2);
+
+  /// Окно как в атласе: «5–10», «≤ −20» (клампы контракта §105).
+  static String _windowLabel(int w) =>
+      w <= -20 ? '≤ −20' : '$w–${w + 5}';
+
+  /// Запас хода от расхода (§72 контракта): 65.28 ÷ x × 100,
+  /// округление до 5 км.
+  static int _rangeKm(double kwh100) =>
+      ((SpeedProfileService.packCapacityKwh / kwh100 * 100.0) / 5.0)
+          .round() *
+      5;
+
+  String _lineFor(Map<String, dynamic> p, String type) {
+    final band = (p['band'] as num?)?.toInt() ?? 0;
+    switch (type) {
+      case 'band_matured':
+        final x = (p['kwh100'] as num?)?.toDouble() ?? 0;
+        if (x > 0.5) {
+          return S
+              .of('measure.card_matured')
+              .replaceFirst('{v}', '$band')
+              .replaceFirst('{x}', x.toStringAsFixed(1))
+              .replaceFirst('{km}', '${_rangeKm(x)}');
+        }
+        // Regen-heavy first maturity: an «≈ −65280 км» range would be
+        // arithmetic, not truth — the no-range template keeps honesty.
+        return S
+            .of('measure.card_matured_nr')
+            .replaceFirst('{v}', '$band')
+            .replaceFirst('{x}', x.toStringAsFixed(1));
+      case 'star_up':
+        final lvl = p['level'] == 'gold'
+            ? S.of('measure.card_star_gold')
+            : S.of('measure.card_star_silver');
+        return S
+            .of('measure.card_star')
+            .replaceFirst('{v}', '$band')
+            .replaceFirst('{lvl}', lvl)
+            .replaceFirst('{n}', '${(p['sessions'] as num?)?.toInt() ?? 0}');
+      default: // cell_new
+        final w = (p['window'] as num?)?.toInt();
+        if (w == null) {
+          return S.of('measure.card_cell_nt').replaceFirst('{v}', '$band');
+        }
+        return S
+            .of('measure.card_cell')
+            .replaceFirst('{v}', '$band')
+            .replaceFirst('{w}', _windowLabel(w));
+    }
+  }
+
+  Widget _iconFor(Map<String, dynamic> p, String type) {
+    switch (type) {
+      case 'band_matured':
+        return const Icon(Icons.check_circle, size: 28, color: _success);
+      case 'star_up':
+        return Icon(Icons.star,
+            size: 28, color: p['level'] == 'gold' ? _gold : _silver);
+      default:
+        return const Icon(Icons.grid_view, size: 28, color: _info);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Порядок событий (§2.2 п.2): band_matured → star_up → cell_new,
+    // внутри типа — новые сверху (DAO уже отдал createdAt desc).
+    final sorted = [...reveals]..sort((a, b) {
+        final r = _typeRank(a.type).compareTo(_typeRank(b.type));
+        if (r != 0) return r;
+        final c = b.createdAt.compareTo(a.createdAt);
+        if (c != 0) return c;
+        return b.id.compareTo(a.id);
+      });
+
+    final bz3 = LayoutBreakpoints.useTallHeadUnit(context);
+    final loot = svc.atlasLootCell();
+    final soonBand = svc.atlasAnticipationBand();
+    final t = svc.currentPackTempC;
+    final km = svc.atlasSessionDistKm.toStringAsFixed(1);
+    final tripLine = t == null
+        ? S.of('measure.card_trip_nt').replaceFirst('{km}', km)
+        : S
+            .of('measure.card_trip')
+            .replaceFirst('{km}', km)
+            .replaceFirst('{t}', '${t.round()}');
+    final lootLine = loot != null
+        ? S
+            .of('measure.card_loot')
+            .replaceFirst('{v}', '${loot.band}')
+            .replaceFirst('{s}', '${loot.gainedS.round()}')
+            .replaceFirst('{a}', '${loot.timeS.floor()}')
+            .replaceFirst('{m}', '${kBandMinSeconds.floor()}')
+        : S
+            .of('measure.card_loot_flat')
+            .replaceFirst('{s}', '${svc.atlasGainedTotalS.round()}');
+
+    return Container(
+      decoration: BoxDecoration(
+        color: _bg,
+        border: Border.all(color: _border),
+        borderRadius: BorderRadius.circular(24),
+      ),
+      padding: EdgeInsets.symmetric(
+          vertical: 26, horizontal: bz3 ? 28 : 36),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // 1. Строка поездки.
+          Text(tripLine,
+              style: TextStyle(
+                  fontSize: 24, color: Colors.white.withOpacity(0.85))),
+          // 2. Reveal-события 0…N.
+          for (final r in sorted)
+            Padding(
+              padding: const EdgeInsets.only(top: 14),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _iconFor(_payload(r), r.type),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Text(_lineFor(_payload(r), r.type),
+                        style: const TextStyle(
+                            fontSize: 25, color: Colors.white)),
+                  ),
+                ],
+              ),
+            ),
+          // 3. Разделитель.
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 14),
+            child: Divider(
+                height: 1, color: Colors.white.withOpacity(0.08)),
+          ),
+          // 4. Микро-лут (всегда при видимой карточке, §138).
+          Text(lootLine,
+              style: TextStyle(
+                  fontSize: 20, color: Colors.white.withOpacity(0.6))),
+          // 5. Предвкушение (white .4, если есть; грубое, без
+          // чисел-целей — инвариант И2).
+          if (soonBand != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(
+                  S
+                      .of('measure.card_soon')
+                      .replaceFirst('{v}', '$soonBand'),
+                  style: TextStyle(
+                      fontSize: 20,
+                      color: Colors.white.withOpacity(0.4))),
+            ),
+          // 6. Кнопка «Ок» (pill, progress/onProgress, цель ≥48 dp).
+          Padding(
+            padding: const EdgeInsets.only(top: 18),
+            child: FilledButton(
+              style: FilledButton.styleFrom(
+                backgroundColor: _progress,
+                foregroundColor: _onProgress,
+                shape: const StadiumBorder(),
+                padding: EdgeInsets.symmetric(
+                    vertical: 16, horizontal: bz3 ? 48 : 64),
+              ),
+              onPressed: onOk,
+              child: Text(S.of('common.ok'),
+                  style: const TextStyle(
+                      fontSize: 20, fontWeight: FontWeight.w600)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  static Map<String, dynamic> _payload(AtlasRevealRow r) {
+    try {
+      final p = jsonDecode(r.payloadJson);
+      if (p is Map<String, dynamic>) return p;
+    } catch (_) {}
+    return const {};
   }
 }
