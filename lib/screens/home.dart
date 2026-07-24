@@ -3,7 +3,9 @@ import 'package:provider/provider.dart';
 
 import '../l10n/strings.dart';
 import '../services/connection.dart';
+import '../services/hal_telemetry_service.dart';
 import '../services/locale_service.dart';
+import '../services/speed_profile_service.dart';
 import '../widgets/charging_banner.dart';
 import '../widgets/responsive.dart';
 import 'dashboard.dart';
@@ -156,6 +158,16 @@ class _TallHomeScreenState extends State<_TallHomeScreen> {
   Widget build(BuildContext context) {
     final svc = context.watch<ConnectionService>();
     context.watch<LocaleService>();
+    // v0.1.61+160: живой бейдж «Замеров» (§64, AY4) — the same gear
+    // resolution as the BZ5 rail (the isParked precedent; this
+    // scaffold simply had no gear until the badge needed one).
+    final hal = context.watch<HalTelemetryService>();
+    final gear = hal.useHalForGear
+        ? hal.halGear
+        : svc.readNumeric('791', '0009');
+    final isParked = gear != null && gear.toInt() == 1;
+    final unrevealed = context
+        .select<SpeedProfileService, int>((s) => s.unrevealedCount);
     return Scaffold(
       body: ChargingAwareBody(
         // Auto-push charging view only when on the Driver tab (index 0) —
@@ -182,9 +194,11 @@ class _TallHomeScreenState extends State<_TallHomeScreen> {
             label: S.of('nav.cells'),
           ),
           NavigationDestination(
-            // v0.1.59+158: skeleton badge — see the BZ5 rail note.
+            // v0.1.61+160: live badge (§64 контракта) — see the BZ5
+            // rail note; in motion it does not exist by expression.
             icon: Badge(
-              isLabelVisible: false, // №2: isParked && unrevealed>0
+              isLabelVisible:
+                  isParked && unrevealed > 0 && _index != 2,
               backgroundColor: Colors.greenAccent,
               smallSize: 8,
               child: const Icon(Icons.speed_outlined),

@@ -2176,6 +2176,77 @@ class AppDatabase extends _$AppDatabase {
     }
     return false;
   }
+
+  // ── v0.1.61+160: reveal generation + parking summary card ─────────
+
+  /// The ONE local producer of reveal rows (regress AY1/AY2): called
+  /// ONLY by the generator in SpeedProfileService, exactly once, on a
+  /// maturity crossing. Pull/restore keep going through
+  /// [applyPulledAtlasReveal] — the write-once merge path never inserts
+  /// through here. Rows are born with syncedAt = null (absent) so the
+  /// next push cycle picks them up (patch-1 plumbing, no sync changes).
+  Future<int> insertAtlasReveal(AtlasRevealsCompanion data) =>
+      into(atlasReveals).insert(data);
+
+  /// Card body: everything still unrevealed, newest first (the screen
+  /// re-orders by type; within a type this order is final).
+  Future<List<AtlasRevealRow>> getUnrevealedAtlasReveals() {
+    return (select(atlasReveals)
+          ..where((r) => r.revealedAt.isNull())
+          ..orderBy([
+            (r) => OrderingTerm(
+                expression: r.createdAt, mode: OrderingMode.desc),
+            (r) => OrderingTerm(expression: r.id, mode: OrderingMode.desc),
+          ]))
+        .get();
+  }
+
+  /// «Ок» (§2.1): reveal EVERYTHING pending in one write. revealedAt /
+  /// revealedBy are the write-once fields; syncedAt is nulled so the
+  /// row re-pushes and the server merges first-write-wins (COALESCE).
+  /// payloadJson is deliberately untouched (the null-preserve trap).
+  Future<int> revealAllUnrevealedAtlasReveals(DateTime at,
+      {required String revealedBy}) {
+    return (update(atlasReveals)..where((r) => r.revealedAt.isNull()))
+        .write(AtlasRevealsCompanion(
+      revealedAt: Value(at),
+      revealedBy: Value(revealedBy),
+      syncedAt: const Value(null),
+      updatedAt: Value(at),
+    ));
+  }
+
+  /// band_matured existence check: does ANY snapshot of this band exist
+  /// (any window, «t° неизвестна» included)?
+  Future<bool> hasAtlasSnapshotForBand(int band) async {
+    final row = await (select(atlasSnapshots)
+          ..where((r) => r.bandKmh.equals(band))
+          ..limit(1))
+        .getSingleOrNull();
+    return row != null;
+  }
+
+  /// Snapshots of one atlas cell (band × temp window; window == null is
+  /// the «t° неизвестна» reserve) — feeds the star_up session dedup and
+  /// the cell_new existence check.
+  Future<List<AtlasSnapshotRow>> getAtlasSnapshotsForCell(
+      int band, int? window) {
+    final q = select(atlasSnapshots)
+      ..where((r) => r.bandKmh.equals(band));
+    if (window == null) {
+      q.where((r) => r.tempWindowC.isNull());
+    } else {
+      q.where((r) => r.tempWindowC.equals(window));
+    }
+    return q.get();
+  }
+
+  /// Reveal existence checks parse the payload in Dart — the reveal
+  /// table is small by construction (bounded by bands × cells × star
+  /// levels over the atlas lifetime), a JSON column query buys nothing.
+  Future<List<AtlasRevealRow>> getAtlasRevealsByType(String type) {
+    return (select(atlasReveals)..where((r) => r.type.equals(type))).get();
+  }
 }
 
 QueryExecutor _openConnection() {
