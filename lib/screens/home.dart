@@ -6,8 +6,10 @@ import '../services/connection.dart';
 import '../services/hal_telemetry_service.dart';
 import '../services/locale_service.dart';
 import '../services/speed_profile_service.dart';
+import '../theme/atlas_tokens.dart';
 import '../widgets/charging_banner.dart';
 import '../widgets/responsive.dart';
+import 'atlas.dart';
 import 'dashboard.dart';
 import 'cells.dart';
 import 'history.dart';
@@ -63,9 +65,19 @@ class _PhoneHomeScreen extends StatefulWidget {
 class _PhoneHomeScreenState extends State<_PhoneHomeScreen> {
   int _index = 0;
 
+  /// Index of «Замеры» — third on EVERY form factor (навигация вариант B,
+  /// spatial memory transfers between the cars and the phone).
+  static const int _kMeasureIndex = 2;
+
+  // v0.1.62+161: 4 → 5 destinations. «Замеры» is third, `Icons.speed`,
+  // identical position to the BZ5 rail and the BZ3 bar. In THIS patch the
+  // item leads straight into the atlas (read-only viewer of what the head
+  // unit collected); in +162 the viewing screen becomes the root and the
+  // atlas moves one push deeper.
   static const _screens = [
     DashboardScreen(),
     CellsScreen(),
+    AtlasScreen(),
     HistoryScreen(),
     SettingsScreen(),
   ];
@@ -77,10 +89,23 @@ class _PhoneHomeScreenState extends State<_PhoneHomeScreen> {
     // home subtree blocks MaterialApp-level rebuilds, so localized
     // widgets subscribe to LocaleService themselves.
     context.watch<LocaleService>();
+    // v0.1.62+161: badge + plate need the gear. On a phone there is no
+    // HAL and usually no dongle → gear stays null → both are absent by
+    // expression, which is exactly the contract (§11: the summary numbers
+    // live in the head unit's local state).
+    final hal = context.watch<HalTelemetryService>();
+    final gear = hal.useHalForGear
+        ? hal.halGear
+        : svc.readNumeric('791', '0009');
+    final isParked = gear != null && gear.toInt() == 1;
+    final unrevealed =
+        context.select<SpeedProfileService, int>((s) => s.unrevealedCount);
     return Scaffold(
       body: ChargingAwareBody(
         // Auto-push only when the user is on Dashboard (index 0).
         autoPushWhenVisible: _index == 0,
+        showAtlasPlate: _index != _kMeasureIndex,
+        onPlateTap: () => setState(() => _index = _kMeasureIndex),
         child: _screens[_index],
       ),
       bottomNavigationBar: NavigationBar(
@@ -96,6 +121,19 @@ class _PhoneHomeScreenState extends State<_PhoneHomeScreen> {
             icon: const Icon(Icons.battery_4_bar_outlined),
             selectedIcon: const Icon(Icons.battery_4_bar),
             label: S.of('nav.cells'),
+          ),
+          NavigationDestination(
+            // v0.1.62+161: badge 14 dp + 2 dp outline (§5) — the same
+            // expression as both head units, hidden while the tab is open.
+            icon: MeasureBadge(
+              visible: isParked &&
+                  unrevealed > 0 &&
+                  _index != _kMeasureIndex,
+              surface: Theme.of(context).colorScheme.surface,
+              child: const Icon(Icons.speed_outlined),
+            ),
+            selectedIcon: const Icon(Icons.speed),
+            label: S.of('nav.measure'),
           ),
           NavigationDestination(
             icon: const Icon(Icons.timeline_outlined),
@@ -174,6 +212,9 @@ class _TallHomeScreenState extends State<_TallHomeScreen> {
         // the BZ3 equivalent of "sitting on the main screen when the cable
         // goes in".
         autoPushWhenVisible: _index == 0,
+        // v0.1.62+161 (§6.11): sticky plate on every tab but «Замеры».
+        showAtlasPlate: _index != 2,
+        onPlateTap: () => setState(() => _index = 2),
         child: IndexedStack(
           index: _index,
           children: _screens,
@@ -196,11 +237,12 @@ class _TallHomeScreenState extends State<_TallHomeScreen> {
           NavigationDestination(
             // v0.1.61+160: live badge (§64 контракта) — see the BZ5
             // rail note; in motion it does not exist by expression.
-            icon: Badge(
-              isLabelVisible:
-                  isParked && unrevealed > 0 && _index != 2,
-              backgroundColor: Colors.greenAccent,
-              smallSize: 8,
+            // v0.1.62+161: 8 dp borderless → 14 dp with a 2 dp outline
+            // (§5). The field verdict on the old dot was «физически не
+            // виден»; that is also why the sticky plate exists.
+            icon: MeasureBadge(
+              visible: isParked && unrevealed > 0 && _index != 2,
+              surface: Theme.of(context).colorScheme.surface,
               child: const Icon(Icons.speed_outlined),
             ),
             selectedIcon: const Icon(Icons.speed),
