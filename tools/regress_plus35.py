@@ -2348,6 +2348,20 @@ if int(pv) >= 55:
 else:
     ok(f"Part T skipped (build +{pv}, moving/idle fix lands in +55)")
 
+
+def _aw16_fresh_clock(akt: str, pv: int) -> bool:
+    """+157 measured fresh-boot on elapsedRealtime; +162 moved it to
+    uptimeMillis. elapsedRealtime keeps ticking through deep sleep, so a
+    head unit that merely woke up looked like an old boot and a genuine
+    reboot after a long park was misreported — the flag lied in exactly
+    the case the autostart investigation cares about. Both numbers are
+    still printed, so the gate keeps requiring the pair above."""
+    if pv >= 162:
+        return ('val freshBoot = upMs < FRESH_BOOT_MS' in akt and
+                'private const val FRESH_BOOT_MS = 5 * 60 * 1000L' in akt and
+                'elapsedRealtime() < 5 * 60 * 1000L' not in akt)
+    return 'elapsedRealtime() < 5 * 60 * 1000L' in akt
+
 # ──────────── Part U: +56 navigation cleanup + charging UX ────────────
 if int(pv) >= 56:
     home = open("lib/screens/home.dart").read()
@@ -4608,8 +4622,9 @@ if int(pv) >= 151:
            'Process.myPid()' in akt2 and \
            'hbHandler.removeCallbacks(hbTick)' in akt2 and \
            'hbHandler.postDelayed(hbTick, HEARTBEAT_MS)' in akt2 and \
-           'elapsedRealtime() < 5 * 60 * 1000L' in akt2:
-            ok('AW16 heartbeat: born/beat/destroy + up/el pair + fresh-boot')
+           _aw16_fresh_clock(akt2, int(pv)):
+            ok('AW16 heartbeat: born/beat/destroy + up/el pair + fresh-boot'
+               + (' (uptime clock)' if int(pv) >= 162 else ''))
         else:
             fail('AW16 heartbeat instrumentation incomplete')
     else:
@@ -4831,8 +4846,21 @@ if int(pv) >= 151:
                 # AZ2: band ceiling 140 — ONE filter, on the ONE read query,
                 # and the reward engine is NOT touched by this patch (its own
                 # cutoff in _freeze / _generateReveal lands in +162).
-                _engine_clean = 'kAtlasBandMaxKmh' not in sps and \
-                    'band > 140' not in sps
+                # +161: the READ side alone enforces the ceiling and the
+                # engine is deliberately untouched. +162: the engine gets
+                # its own cutoff — one constant, two call sites (the
+                # freeze funnel and the reveal gate), and the number is
+                # still written down in exactly two files.
+                if int(pv) >= 162:
+                    _engine_clean = (
+                        'const int kAtlasBandMaxCollectKmh = 140;' in sps and
+                        sps.count('> kAtlasBandMaxCollectKmh) return') >= 2 and
+                        'if (band > kAtlasBandMaxCollectKmh) {' in sps and
+                        # the VALUE is written once; prose may mention it
+                        sps.count('= 140;') == 1)
+                else:
+                    _engine_clean = ('kAtlasBandMaxKmh' not in sps and
+                                     'band > 140' not in sps)
                 if 'const int kAtlasBandMaxKmh = 140;' in proj and \
                    'isSmallerOrEqualValue(maxBand)' in dbs and \
                    dbs.count('getAtlasSnapshotsForGrid') == 1 and \
@@ -4957,11 +4985,16 @@ if int(pv) >= 151:
                 # AZ10: l10n — 34 atlas.* and 16 export.* keys in BOTH maps,
                 # the plate title in both, and the +160 card strings NOT
                 # touched by this patch (they are +162 scope).
-                if l10n.count("'atlas.") == 92 and \
+                # +162 language pass: +7 atlas keys (full months, км/ч,
+                # reading plurals, two hints), −2 (the motion-gate strings
+                # died with the gate) → 51 keys × 2 maps.
+                _az10_atlas = 102 if int(pv) >= 162 else 92
+                if l10n.count("'atlas.") == _az10_atlas and \
                    l10n.count("'export.") == 32 and \
                    l10n.count("'measure.plate_title'") == 2 and \
                    l10n.count("'measure.card_") == 24:
-                    ok('AZ10 l10n: atlas ×46, export ×16, card_* untouched')
+                    ok(f'AZ10 l10n: atlas ×{_az10_atlas // 2}, export ×16, '
+                       'card_* untouched')
                 else:
                     fail(f'AZ10 l10n counts: atlas {l10n.count(chr(39) + "atlas.")}'
                          f' export {l10n.count(chr(39) + "export.")}'
@@ -4979,6 +5012,131 @@ if int(pv) >= 151:
                     fail('AZ11 grid leaked into the prefs ledger')
             else:
                 ok(f"Part AZ skipped (build +{pv}, атлас-UI lands in +161)")
+            # ───── Part BA: +162 полевые правки + намерение (§3.2) ─────
+            # Полевой вердикт 25.07: блокировка атласа в движении снята,
+            # язык переписан на человеческий, счётчик перестал врать,
+            # дозревшая-но-не-замороженная клетка видна, намерение живёт.
+            if int(pv) >= 162:
+                banner2 = (root / 'lib/widgets/charging_banner.dart').read_text()
+                atls2 = (root / 'lib/screens/atlas.dart').read_text()
+                atlw2 = (root / 'lib/screens/wide/atlas_wide.dart').read_text()
+                spscr2 = (root / 'lib/screens/speed_profile.dart').read_text()
+                grid2 = (root / 'lib/widgets/atlas_grid.dart').read_text()
+                proj2 = (root / 'lib/data/atlas_projection.dart').read_text()
+
+                # BA1: NO motion gate anywhere. Nothing appears in motion
+                # (И1 holds — the plate and the badge keep isParked as a
+                # conjunct); the map simply stopped disappearing.
+                _gate_gone = (
+                    'parked_only' not in l10n and
+                    'parked_only' not in atls2 and
+                    'parked_only' not in atlw2 and
+                    'parked_only' not in spscr2 and
+                    '_ParkedOnlyCard' not in atls2 and
+                    'final enabled = data != null;' in spscr2)
+                _plate_still_gated = (
+                    'if (!isParked || unrevealed <= 0)' in banner2 and
+                    'isParked && unrevealed > 0' in home2 and
+                    'isParked && unrevealed > 0' in rail2)
+                if _gate_gone and _plate_still_gated and \
+                   "S.of('atlas.parked_chip')" in dashw:
+                    ok('BA1 motion gate removed; plate/badge still conjunct')
+                else:
+                    fail('BA1 motion gate or the И1 conjuncts are wrong')
+
+                # BA2: the atlas revision — one counter, three bumps
+                # (freeze / reveal / «Ок») and three cached readers that
+                # re-read on it. This is the fix for the field symptom
+                # «entry card said 1 клетка all day» (IndexedStack keeps
+                # the tab alive, initState never ran again).
+                if 'int get atlasRevision => _atlasRevision;' in sps and \
+                   sps.count('_atlasRevision++') == 3 and \
+                   atls2.count('_loadedRevision') >= 3 and \
+                   atlw2.count('_loadedRevision') >= 3 and \
+                   spscr2.count('_loadedRevision') >= 3:
+                    ok('BA2 atlas revision: 3 bumps, 3 readers re-read')
+                else:
+                    fail('BA2 atlas revision wiring incomplete')
+
+                # BA3: pending cells (matured, awaiting rotation) are a
+                # LIVE-ledger overlay — never part of the projection, so
+                # they cannot leak into a counter, a star or the export.
+                if 'List<AtlasPendingCell> atlasPendingCells()' in sps and \
+                   'class AtlasPending {' in proj2 and \
+                   'AtlasPending' not in \
+                       proj2[proj2.index('class AtlasGridData'):] and \
+                   'final List<AtlasPending> pending;' in grid2 and \
+                   'pending' not in expo and \
+                   "S.of('atlas.pending_note')" in atls2:
+                    ok('BA3 pending overlay lives outside the projection')
+                else:
+                    fail('BA3 pending overlay leaked into the projection')
+
+                # BA4: intention (§3.2) — prefs triple, 14-day fade, the
+                # candidate pinned to the ACTIVE window (the fix for the
+                # unreachable advice), card gated by isParked.
+                if "_kIntentBandKey = 'atlas_intent_band'" in sps and \
+                   'const int kAtlasIntentTtlDays = 14;' in sps and \
+                   'void takeAtlasIntent(' in sps and \
+                   'void clearAtlasIntent()' in sps and \
+                   'AtlasIntent? atlasIntentCandidate()' in sps and \
+                   'if (w != win) return; // ACTIVE window only' in sps and \
+                   'class _IntentCard' in spscr2 and \
+                   'if (!isParked) return const SizedBox.shrink();' in spscr2:
+                    ok('BA4 intention: prefs triple, 14-day fade, active window')
+                else:
+                    fail('BA4 intention wiring incomplete')
+
+                # BA5: selection mode ([5a]) — ghosts become the only
+                # touch targets, cells go quiet, a tap takes and pops.
+                if 'final bool selectGhostMode;' in atls2 and \
+                   'selectGhostMode: true' in spscr2 and \
+                   'if (tap == null || selectMode) return content;' in grid2 and \
+                   'onTap: () => tapGhost(band, window)' in grid2 and \
+                   'sp.takeAtlasIntent(band, window);' in atls2:
+                    ok('BA5 selection mode: ghosts tappable, cells quiet')
+                else:
+                    fail('BA5 selection mode wiring incomplete')
+
+                # BA6: the language pass. The words the field could not
+                # read are gone from every RU VALUE (comments excluded);
+                # «полоса» survives on the Замеры screen by owner
+                # decision, «км/ч» is the atlas register.
+                # Scope: the keys this feature owns. «пак» and «снимок»
+                # legitimately survive elsewhere (the charging screen's
+                # pack power, the cloud restore counters) — this gate is
+                # about the atlas register, not a global word ban.
+                _ru_start = l10n.index("static const Map<String, String> _ru")
+                _ru_own = '\n'.join(
+                    ln for ln in l10n[_ru_start:].splitlines()
+                    if not ln.lstrip().startswith('//')
+                    and re.search(r"'(?:atlas|export|measure)\.", ln))
+                _dead_words = [w for w in
+                               ('пак', 'вилк', 'фронтир', 'снимк', 'Арка',
+                                'независим', 'Альманах')
+                               if w in _ru_own]
+                if not _dead_words and \
+                   "'atlas.kmh': 'км/ч'" in l10n and \
+                   "'atlas.months_full'" in l10n and \
+                   l10n.count("'atlas.months_full'") == 2 and \
+                   "'atlas.tab_arc': 'Здоровье батареи'" in l10n and \
+                   'Полоса {v} дозрела' in l10n:
+                    ok('BA6 language: jargon gone, «полоса» kept in Замеры')
+                else:
+                    fail(f'BA6 language pass incomplete: {_dead_words}')
+
+                # BA7: full month names in PROSE (the field saw «июл»),
+                # short ones only on the year-row axis.
+                if 'atlasMonthNamesFull()' in grid2 and \
+                   'atlasMonthNamesFull()' in atls2 and \
+                   'atlasMonthNamesFull' in expo and \
+                   'months[0]' in grid2 and 'months[11]' in grid2 and \
+                   "atlasMonthNamesFull()[now.month - 1]" in grid2:
+                    ok('BA7 full month names in prose, short on the axis')
+                else:
+                    fail('BA7 month naming still abbreviated in prose')
+            else:
+                ok(f"Part BA skipped (build +{pv}, полевые правки land in +162)")
         else:
             ok(f"Part AY skipped (build +{pv}, карточка итогов lands in +160)")
     else:

@@ -15,8 +15,8 @@ import 'package:provider/provider.dart';
 import '../../data/atlas_projection.dart';
 import '../../l10n/strings.dart';
 import '../../services/connection.dart';
-import '../../services/hal_telemetry_service.dart';
 import '../../services/locale_service.dart';
+import '../../services/speed_profile_service.dart';
 import '../../theme/atlas_tokens.dart';
 import '../../widgets/atlas_grid.dart';
 
@@ -30,10 +30,18 @@ class AtlasWideScreen extends StatefulWidget {
 class _AtlasWideScreenState extends State<AtlasWideScreen> {
   Future<AtlasGridData>? _future;
 
+  /// +162: re-read when the atlas on disk moves (freeze / reveal / «Ок»).
+  int _loadedRevision = -1;
+
   @override
   void initState() {
     super.initState();
+    _reload();
+  }
+
+  void _reload() {
     final db = context.read<ConnectionService>().db;
+    _loadedRevision = context.read<SpeedProfileService>().atlasRevision;
     _future = db
         .getAtlasSnapshotsForGrid(maxBand: kAtlasBandMaxKmh)
         .then((rows) => AtlasGridData.fromRows(rows));
@@ -42,11 +50,15 @@ class _AtlasWideScreenState extends State<AtlasWideScreen> {
   @override
   Widget build(BuildContext context) {
     context.watch<LocaleService>();
-    final hal = context.watch<HalTelemetryService>();
-    final conn = context.watch<ConnectionService>();
-    final gear =
-        hal.useHalForGear ? hal.halGear : conn.readNumeric('791', '0009');
-    final isParked = gear != null && gear.toInt() == 1;
+    // +162 (field verdict 25.07): no motion gate. The map holds nothing
+    // live, so hiding it bought nothing and the blocking panel annoyed.
+    final sp = context.watch<SpeedProfileService>();
+    if (sp.atlasRevision != _loadedRevision) _reload();
+    final pending = [
+      for (final c in sp.atlasPendingCells())
+        AtlasPending(band: c.band, window: c.window, kwh100: c.kwh100),
+    ];
+    final intent = sp.atlasIntent;
 
     return Scaffold(
       backgroundColor: AtlasTokens.bg,
@@ -97,30 +109,29 @@ class _AtlasWideScreenState extends State<AtlasWideScreen> {
                     ],
                   ),
                   const SizedBox(height: 18),
-                  if (!isParked)
-                    Expanded(
-                      child: Center(
-                        child: Text(S.of('atlas.parked_only'),
-                            style: const TextStyle(
-                                fontSize: 24, color: AtlasTokens.t50)),
-                      ),
-                    )
-                  else
-                    Expanded(
-                      child: ListView(
-                        children: [
-                          AtlasGrid(
-                            data: data,
-                            scale: AtlasGridScale.bz5,
-                            // Dead by contract on the head unit.
-                          ),
-                          const SizedBox(height: 20),
-                          const AtlasMarkLegend(fontSize: 18),
-                          const SizedBox(height: 18),
-                          AtlasYearRow(data: data, scaleFactor: 1.7),
+                  Expanded(
+                    child: ListView(
+                      children: [
+                        AtlasGrid(
+                          data: data,
+                          scale: AtlasGridScale.bz5,
+                          pending: pending,
+                          intentKey: intent?.key,
+                          // Cells are dead by contract on the head unit.
+                        ),
+                        if (pending.isNotEmpty) ...[
+                          const SizedBox(height: 14),
+                          Text(S.of('atlas.pending_note'),
+                              style: const TextStyle(
+                                  fontSize: 18, color: AtlasTokens.t45)),
                         ],
-                      ),
+                        const SizedBox(height: 20),
+                        const AtlasMarkLegend(fontSize: 18),
+                        const SizedBox(height: 18),
+                        AtlasYearRow(data: data, scaleFactor: 1.7),
+                      ],
                     ),
+                  ),
                 ],
               ),
             );

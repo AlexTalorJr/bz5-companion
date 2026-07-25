@@ -22,6 +22,7 @@ import '../l10n/strings.dart';
 import '../services/connection.dart';
 import '../services/hal_telemetry_service.dart';
 import '../services/locale_service.dart';
+import '../services/speed_profile_service.dart';
 import '../theme/atlas_tokens.dart';
 import '../widgets/atlas_export.dart';
 import '../widgets/atlas_grid.dart';
@@ -29,7 +30,12 @@ import '../widgets/responsive.dart';
 import 'atlas_cell_detail.dart';
 
 class AtlasScreen extends StatefulWidget {
-  const AtlasScreen({super.key});
+  /// +162 ([5a] / §3.2): «Другая ячейка» opens the atlas in SELECTION
+  /// mode — cells go quiet, frontier ghosts become the touch targets,
+  /// and tapping one takes the intention and pops back.
+  final bool selectGhostMode;
+
+  const AtlasScreen({super.key, this.selectGhostMode = false});
 
   @override
   State<AtlasScreen> createState() => _AtlasScreenState();
@@ -37,7 +43,12 @@ class AtlasScreen extends StatefulWidget {
 
 class _AtlasScreenState extends State<AtlasScreen> {
   Future<AtlasGridData>? _future;
-  int _tab = 0; // 0 = Атлас, 1 = Прогноз, 2 = Арка пака (заготовки [1h])
+  int _tab = 0; // 0 = Атлас, 1 = Прогноз, 2 = Здоровье батареи ([1h])
+
+  /// +162: the atlas revision this future was built from. A freeze or a
+  /// reveal bumps it and the screen re-reads — without this, a grid left
+  /// open on a parked head unit never noticed the session rotating.
+  int _loadedRevision = -1;
 
   @override
   void initState() {
@@ -47,6 +58,7 @@ class _AtlasScreenState extends State<AtlasScreen> {
 
   void _reload() {
     final db = context.read<ConnectionService>().db;
+    _loadedRevision = context.read<SpeedProfileService>().atlasRevision;
     _future = db
         .getAtlasSnapshotsForGrid(maxBand: kAtlasBandMaxKmh)
         .then((rows) => AtlasGridData.fromRows(rows));
@@ -60,18 +72,34 @@ class _AtlasScreenState extends State<AtlasScreen> {
   @override
   Widget build(BuildContext context) {
     context.watch<LocaleService>();
+    // Three form factors, not two: the intention picker is pushed from
+    // the BZ5 «Замеры» screen too, and before this it rendered 52 dp
+    // phone cells on a 2175 dp panel.
+    final wide = LayoutBreakpoints.useHeadUnitLayout(context);
     final bz3 = LayoutBreakpoints.useTallHeadUnit(context);
+    final scale = wide
+        ? AtlasGridScale.bz5
+        : (bz3 ? AtlasGridScale.bz3 : AtlasGridScale.phone);
+    final onHu = wide || bz3;
     final hal = context.watch<HalTelemetryService>();
-    final conn = context.watch<ConnectionService>();
     // «Только телефон» for the share button = «not a head unit». The
     // phone cannot know a gear, so the parking clause of §6.12 has no
     // phone-side meaning; the honest reading of the contract line is
     // «этой кнопки нет на ГУ».
     final onHeadUnit = hal.canUseHal;
-    final gear =
-        hal.useHalForGear ? hal.halGear : conn.readNumeric('791', '0009');
-    final isParked = gear != null && gear.toInt() == 1;
-    final k = bz3 ? 1.35 : 1.0;
+    // +162 (field verdict 25.07): the atlas is NO LONGER hidden while
+    // the car moves. It carries no live information, nobody looks at it
+    // in motion — but a full-screen «доступен на стоянке» panel in place
+    // of the map was actively irritating. Nothing appears in motion
+    // (И1 holds); something simply stops disappearing.
+    final sp = context.watch<SpeedProfileService>();
+    if (sp.atlasRevision != _loadedRevision) _reload();
+    final pending = [
+      for (final c in sp.atlasPendingCells())
+        AtlasPending(band: c.band, window: c.window, kwh100: c.kwh100),
+    ];
+    final intent = sp.atlasIntent;
+    final k = wide ? 1.7 : (bz3 ? 1.35 : 1.0);
 
     return Scaffold(
       backgroundColor: AtlasTokens.bg,
@@ -103,27 +131,44 @@ class _AtlasScreenState extends State<AtlasScreen> {
                   _Header(
                     data: data,
                     scaleFactor: k,
-                    showExport: !onHeadUnit,
+                    // A picker is a picker: no sharing from inside it.
+                    showExport: !onHeadUnit && !widget.selectGhostMode,
                   ),
                   SizedBox(height: 4 * k),
-                  _SeasonLine(data: data, scaleFactor: k),
-                  SizedBox(height: 12 * k),
-                  _TabPills(
-                    index: _tab,
-                    scaleFactor: k,
-                    onChanged: (i) => setState(() => _tab = i),
-                  ),
+                  if (!widget.selectGhostMode) ...[
+                    _SeasonLine(data: data, scaleFactor: k),
+                    SizedBox(height: 12 * k),
+                    _TabPills(
+                      index: _tab,
+                      scaleFactor: k,
+                      onChanged: (i) => setState(() => _tab = i),
+                    ),
+                  ],
                   SizedBox(height: 16 * k),
                   if (_tab != 0)
                     _StubCard(scaleFactor: k)
-                  else if (onHeadUnit && !isParked)
-                    _ParkedOnlyCard(scaleFactor: k)
                   else ...[
+                    if (widget.selectGhostMode) ...[
+                      Text(S.of('atlas.select_hint'),
+                          style: TextStyle(
+                              fontSize: 12 * k,
+                              height: 1.5,
+                              color: AtlasTokens.info)),
+                      SizedBox(height: 10 * k),
+                    ],
                     AtlasGrid(
                       data: data,
-                      scale:
-                          bz3 ? AtlasGridScale.bz3 : AtlasGridScale.phone,
-                      onTapCell: bz3
+                      scale: scale,
+                      pending: pending,
+                      intentKey: intent?.key,
+                      selectMode: widget.selectGhostMode,
+                      onTapGhost: widget.selectGhostMode
+                          ? (band, window) {
+                              sp.takeAtlasIntent(band, window);
+                              Navigator.of(context).maybePop();
+                            }
+                          : null,
+                      onTapCell: onHu
                           ? null
                           : (cell) => Navigator.of(context).push(
                                 MaterialPageRoute(
@@ -132,24 +177,36 @@ class _AtlasScreenState extends State<AtlasScreen> {
                                 ),
                               ),
                     ),
-                    SizedBox(height: 14 * k),
-                    AtlasMarkLegend(fontSize: 11 * k),
-                    SizedBox(height: 10 * k),
-                    Text(
-                      S.of('atlas.grid_note'),
-                      style: TextStyle(
-                          fontSize: 11 * k,
-                          height: 1.55,
-                          color: AtlasTokens.t45),
-                    ),
-                    if (onHeadUnit) ...[
-                      SizedBox(height: 8 * k),
-                      Text(S.of('atlas.view_only'),
+                    if (pending.isNotEmpty) ...[
+                      SizedBox(height: 10 * k),
+                      Text(S.of('atlas.pending_note'),
                           style: TextStyle(
-                              fontSize: 11 * k, color: AtlasTokens.t40)),
+                              fontSize: 11 * k,
+                              height: 1.5,
+                              color: AtlasTokens.t45)),
                     ],
-                    SizedBox(height: 16 * k),
-                    AtlasYearRow(data: data, scaleFactor: k),
+                    // A picker is a picker: the legend, the prose and the
+                    // year row are noise while choosing a goal.
+                    if (!widget.selectGhostMode) ...[
+                      SizedBox(height: 14 * k),
+                      AtlasMarkLegend(fontSize: 11 * k),
+                      SizedBox(height: 10 * k),
+                      Text(
+                        S.of('atlas.grid_note'),
+                        style: TextStyle(
+                            fontSize: 11 * k,
+                            height: 1.55,
+                            color: AtlasTokens.t45),
+                      ),
+                      if (onHeadUnit) ...[
+                        SizedBox(height: 8 * k),
+                        Text(S.of('atlas.view_only'),
+                            style: TextStyle(
+                                fontSize: 11 * k, color: AtlasTokens.t40)),
+                      ],
+                      SizedBox(height: 16 * k),
+                      AtlasYearRow(data: data, scaleFactor: k),
+                    ],
                   ],
                 ],
               );
@@ -228,8 +285,7 @@ class _SeasonLine extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final months = atlasMonthNames();
-    final month = months[DateTime.now().month - 1];
+    final month = atlasMonthNamesFull()[DateTime.now().month - 1];
     final lo = data.seasonLoC;
     final hi = data.seasonHiC;
     final text = (lo == null || hi == null)
@@ -309,34 +365,6 @@ class _StubCard extends StatelessWidget {
       child: Text(S.of('atlas.stub'),
           style: TextStyle(
               fontSize: 12 * k, height: 1.5, color: AtlasTokens.t45)),
-    );
-  }
-}
-
-/// Head unit, car moving: the matrix is not a driving surface.
-class _ParkedOnlyCard extends StatelessWidget {
-  final double scaleFactor;
-  const _ParkedOnlyCard({required this.scaleFactor});
-
-  @override
-  Widget build(BuildContext context) {
-    final k = scaleFactor;
-    return Container(
-      decoration: BoxDecoration(
-        color: AtlasTokens.cardMuted,
-        borderRadius: BorderRadius.circular(16 * k),
-      ),
-      padding: EdgeInsets.symmetric(horizontal: 18 * k, vertical: 22 * k),
-      child: Row(
-        children: [
-          Icon(Icons.grid_view, size: 18 * k, color: AtlasTokens.t22),
-          SizedBox(width: 10 * k),
-          Expanded(
-            child: Text(S.of('atlas.parked_only'),
-                style: TextStyle(fontSize: 13 * k, color: AtlasTokens.t50)),
-          ),
-        ],
-      ),
     );
   }
 }

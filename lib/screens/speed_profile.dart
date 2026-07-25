@@ -153,9 +153,12 @@ class _SpeedProfileScreenState extends State<SpeedProfileScreen> {
             onOk: () => _onOkReveals(svc),
           ),
         ],
-        // +161 (§7.1): the door into the atlas. Additive block — the
-        // reward engine, the reveal card and every measure.* string are
-        // untouched by this patch.
+        // +162 (§6.10, макет [5c]): намерение — отдельная карточка ниже
+        // итогов; переживает «Ок», в движении не существует.
+        _IntentCard(
+            isParked: _isParked,
+            bz3: LayoutBreakpoints.useTallHeadUnit(context)),
+        // +161 (§7.1): the door into the atlas.
         const SizedBox(height: 12),
         _AtlasEntryCard(isParked: _isParked),
         if (s != null) ...[
@@ -1047,6 +1050,187 @@ class _CompareScreen extends StatelessWidget {
 /// micro-loot (always) → anticipation → «Ок». No celebration
 /// animations — the parked build IS the appearance (инвариант И3:
 /// награда = правда, тон лабораторного прибора).
+/// v0.1.63+162 — карточка намерения (SPEC.md v1.1 §6.10, макет [5c]).
+///
+/// Отдельный компонент НИЖЕ итогов, а не внутри них: итоги гаснут по
+/// «Ок», намерение остаётся. В движении не существует — `isParked`
+/// стоит конъюнктом, а не веткой (инвариант И1).
+///
+/// Внутри запрещены секунды, проценты и «осталось N»: цель названа
+/// скоростью и температурой, прогресса к ней не показываем.
+class _IntentCard extends StatelessWidget {
+  final bool isParked;
+  final bool bz3;
+  const _IntentCard({required this.isParked, required this.bz3});
+
+  @override
+  Widget build(BuildContext context) {
+    if (!isParked) return const SizedBox.shrink();
+    final sp = context.watch<SpeedProfileService>();
+    final taken = sp.atlasIntent;
+    final k = bz3 ? 0.88 : 1.0;
+
+    if (taken != null) {
+      // Взятое состояние — приглушённая полоска [5c], без кнопок.
+      return Padding(
+        padding: EdgeInsets.only(top: 12 * k),
+        child: Container(
+          decoration: BoxDecoration(
+            color: AtlasTokens.cardMuted,
+            borderRadius: BorderRadius.circular(16 * k),
+          ),
+          padding: EdgeInsets.symmetric(
+              horizontal: 18 * k, vertical: 14 * k),
+          child: Row(
+            children: [
+              Icon(Icons.flag, size: 18 * k, color: AtlasTokens.t35),
+              SizedBox(width: 12 * k),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      S
+                          .of('measure.intent_taken')
+                          .replaceFirst('{v}', '${taken.band}')
+                          .replaceFirst('{w}', _windowWord(taken.window)),
+                      style: TextStyle(
+                          fontSize: 13 * k, color: AtlasTokens.t85),
+                    ),
+                    Text(S.of('measure.intent_taken_note'),
+                        style: TextStyle(
+                            fontSize: 11 * k, color: AtlasTokens.t40)),
+                  ],
+                ),
+              ),
+              TextButton(
+                onPressed: sp.clearAtlasIntent,
+                child: Text(S.of('measure.intent_drop'),
+                    style: TextStyle(
+                        fontSize: 12 * k, color: AtlasTokens.t50)),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    final cand = sp.atlasIntentCandidate();
+    if (cand == null) return const SizedBox.shrink();
+
+    return Padding(
+      padding: EdgeInsets.only(top: 12 * k),
+      child: Container(
+        decoration: BoxDecoration(
+          color: AtlasTokens.card,
+          borderRadius: BorderRadius.circular(16 * k),
+        ),
+        padding: EdgeInsets.all(18 * k),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.flag, size: 20 * k, color: AtlasTokens.info),
+                SizedBox(width: 10 * k),
+                Text(S.of('measure.intent_title'),
+                    style: TextStyle(
+                        fontSize: 14 * k,
+                        fontWeight: FontWeight.w500,
+                        color: AtlasTokens.t100)),
+              ],
+            ),
+            SizedBox(height: 12 * k),
+            Wrap(
+              spacing: 10 * k,
+              runSpacing: 8 * k,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                _IntentPill(text: '${cand.band} ${S.of('atlas.kmh')}', k: k),
+                Text(S.of('measure.intent_at'),
+                    style: TextStyle(
+                        fontSize: 13 * k, color: AtlasTokens.t50)),
+                _IntentPill(text: _windowWord(cand.window), k: k),
+              ],
+            ),
+            SizedBox(height: 12 * k),
+            Text(S.of('measure.intent_note'),
+                style: TextStyle(
+                    fontSize: 12 * k,
+                    height: 1.5,
+                    color: AtlasTokens.t50)),
+            SizedBox(height: 14 * k),
+            Row(
+              children: [
+                FilledButton(
+                  style: FilledButton.styleFrom(
+                    backgroundColor: AtlasTokens.progress,
+                    foregroundColor: AtlasTokens.onProgress,
+                    shape: const StadiumBorder(),
+                    padding: EdgeInsets.symmetric(
+                        horizontal: 20 * k, vertical: 9 * k),
+                  ),
+                  onPressed: () =>
+                      sp.takeAtlasIntent(cand.band, cand.window),
+                  child: Text(S.of('measure.intent_take'),
+                      style: TextStyle(
+                          fontSize: 13 * k, fontWeight: FontWeight.w500)),
+                ),
+                SizedBox(width: 8 * k),
+                OutlinedButton(
+                  style: OutlinedButton.styleFrom(
+                    side: const BorderSide(color: Color(0x2EFFFFFF)),
+                    foregroundColor: AtlasTokens.t60,
+                    shape: const StadiumBorder(),
+                    padding: EdgeInsets.symmetric(
+                        horizontal: 20 * k, vertical: 9 * k),
+                  ),
+                  onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) =>
+                          const AtlasScreen(selectGhostMode: true),
+                    ),
+                  ),
+                  child: Text(S.of('measure.intent_other'),
+                      style: TextStyle(fontSize: 13 * k)),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  static String _windowWord(int? w) => w == null
+      ? S.of('atlas.window_unknown')
+      : '${atlasWindowLabel(w)}°';
+}
+
+class _IntentPill extends StatelessWidget {
+  final String text;
+  final double k;
+  const _IntentPill({required this.text, required this.k});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: AtlasTokens.cardActive,
+        borderRadius: BorderRadius.circular(999),
+      ),
+      padding: EdgeInsets.symmetric(horizontal: 16 * k, vertical: 8 * k),
+      child: Text(text,
+          style: TextStyle(
+            fontSize: 17 * k,
+            fontWeight: FontWeight.w700,
+            color: AtlasTokens.t100,
+            fontFeatures: const [FontFeature.tabularFigures()],
+          )),
+    );
+  }
+}
+
 /// v0.1.62+161 — entry into the atlas from the «Замеры» screen
 /// (SPEC.md v1.1 §7.1 / §7.4). Head unit only by placement: this screen
 /// is hosted by the BZ5 rail and the BZ3 bar; the phone reaches the atlas
@@ -1066,6 +1250,12 @@ class _AtlasEntryCard extends StatefulWidget {
 class _AtlasEntryCardState extends State<_AtlasEntryCard> {
   Future<AtlasGridData>? _future;
 
+  /// +162 (полевой баг 25.07): вкладки ГУ живут в IndexedStack, поэтому
+  /// initState этой карточки выполняется ОДИН раз за жизнь процесса — и
+  /// счётчик показывал «1 клетка» весь день, хотя в базе уже три.
+  /// Теперь чтение привязано к ревизии атласа.
+  int _loadedRevision = -1;
+
   @override
   void initState() {
     super.initState();
@@ -1074,6 +1264,7 @@ class _AtlasEntryCardState extends State<_AtlasEntryCard> {
 
   void _load() {
     final db = context.read<ConnectionService>().db;
+    _loadedRevision = context.read<SpeedProfileService>().atlasRevision;
     _future = db
         .getAtlasSnapshotsForGrid(maxBand: kAtlasBandMaxKmh)
         .then((rows) => AtlasGridData.fromRows(rows));
@@ -1082,6 +1273,10 @@ class _AtlasEntryCardState extends State<_AtlasEntryCard> {
   @override
   Widget build(BuildContext context) {
     final bz3 = LayoutBreakpoints.useTallHeadUnit(context);
+    if (context.watch<SpeedProfileService>().atlasRevision !=
+        _loadedRevision) {
+      _load();
+    }
     return FutureBuilder<AtlasGridData>(
       future: _future,
       builder: (context, snap) {
@@ -1089,7 +1284,10 @@ class _AtlasEntryCardState extends State<_AtlasEntryCard> {
         final counts = data == null
             ? '—'
             : atlasCountsLabel(data.cellCount, data.bandCount, view: true);
-        final enabled = widget.isParked && data != null;
+        // +162: открыт всегда. Блокировка в движении убрана по полевому
+        // вердикту 25.07 — карта не несёт живой информации, но заглушка
+        // «доступен на стоянке» на весь экран раздражала.
+        final enabled = data != null;
         final body = Container(
           decoration: BoxDecoration(
             color: AtlasTokens.card,
@@ -1113,9 +1311,7 @@ class _AtlasEntryCardState extends State<_AtlasEntryCard> {
                             color: AtlasTokens.t85)),
                     const SizedBox(height: 4),
                     Text(
-                      widget.isParked
-                          ? counts
-                          : S.of('atlas.parked_only_short'),
+                      counts,
                       style: TextStyle(
                           fontSize: bz3 ? 16 : 20,
                           color: AtlasTokens.t50),

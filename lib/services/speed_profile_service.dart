@@ -114,6 +114,18 @@ const int kAtlasSessionGapMin = 30;
 /// toward a goal on the card itself (инвариант И2).
 const double kAtlasAnticipationS = 90.0;
 
+/// +162: the collection ceiling. Bands above this are still MEASURED by
+/// the profiler (the chart keeps its 40–180 range) but they are not part
+/// of the atlas: no snapshot is frozen and no reveal is generated. The
+/// grid, the counters and the export enforce the same number on the read
+/// side (`kAtlasBandMaxKmh` in atlas_projection.dart) — the two are the
+/// only places 140 is written down.
+const int kAtlasBandMaxCollectKmh = 140;
+
+/// +162 (§3.2): an untouched intention is dropped silently after this
+/// many days. Nagging is the one thing the card must never do.
+const int kAtlasIntentTtlDays = 14;
+
 /// Integration guard: stream gaps longer than this are not integrated
 /// (dt-гард, same idea as the trip integrators).
 const double kDtGuardS = 2.0;
@@ -420,6 +432,38 @@ class _AtlasCell {
 /// key on the shared 30 s snapshot cadence (dirty-gated), hydrated and
 /// crash-recovered in init(). Cell keys: '$band:$window' with the
 /// unknown-temp reserve encoded as '$band:u'.
+/// +162 (§3.2): a taken (or candidate) intention — «next drive: this
+/// speed at this pack temperature». No seconds, no percentages inside:
+/// the goal is named by the cell, never by progress toward it.
+class AtlasIntent {
+  final int band;
+  final int? window;
+  final int takenAtMs;
+  const AtlasIntent({
+    required this.band,
+    required this.window,
+    required this.takenAtMs,
+  });
+
+  String get key => '$band:${window ?? 'u'}';
+}
+
+/// +162: a matured cell still waiting for the session to rotate.
+class AtlasPendingCell {
+  final int band;
+  final int? window;
+  final double kwh100;
+  final double steadySeconds;
+  const AtlasPendingCell({
+    required this.band,
+    required this.window,
+    required this.kwh100,
+    required this.steadySeconds,
+  });
+
+  String get key => '$band:${window ?? 'u'}';
+}
+
 class _AtlasLedger {
   String sessionUid;
   int sessionStartedAtMs;
@@ -632,6 +676,11 @@ class SpeedProfileService extends ChangeNotifier {
   static const String _kActiveKey = 'speed_profile_active';
   static const String _kArchiveKey = 'speed_profile_archive';
   static const String _kAtlasLedgerKey = 'atlas_ledger';
+  // +162 (§3.2): intention lives beside the ledger, not inside it — it
+  // must survive a session rotation, which rewrites the ledger.
+  static const String _kIntentBandKey = 'atlas_intent_band';
+  static const String _kIntentWinKey = 'atlas_intent_win';
+  static const String _kIntentMsKey = 'atlas_intent_ms';
   static const int kArchiveMax = 24;
 
   /// BZ5 pack capacity for the U1 "≈ N km per charge" line. A private
@@ -667,6 +716,20 @@ class SpeedProfileService extends ChangeNotifier {
   // and in init() from countUnrevealedAtlasReveals.
   int _unrevealedCount = 0;
   int get unrevealedCount => _unrevealedCount;
+
+  /// +162: monotonic «the atlas on disk changed» counter — bumped after
+  /// a freeze, after a reveal is generated and after «Ок». Screens that
+  /// cache a DB read (the grid, the entry card) watch it and re-read.
+  /// The field-reported symptom it fixes: the entry card kept saying
+  /// «1 клетка» all day because the tab lives in an IndexedStack and its
+  /// initState never ran again.
+  int _atlasRevision = 0;
+  int get atlasRevision => _atlasRevision;
+
+  /// +162 (§3.2): the taken intention — band, window, moment.
+  int? _intentBand;
+  int? _intentWindow;
+  int? _intentTakenMs;
 
   StreamSubscription<HalEvent>? _sub;
   Timer? _persistTimer;
@@ -711,6 +774,22 @@ class SpeedProfileService extends ChangeNotifier {
   Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
     _active = prefs.getBool(_kActiveKey) ?? false;
+    // +162: intention first — a stale one is dropped before any screen
+    // can render it.
+    _intentBand = prefs.getInt(_kIntentBandKey);
+    _intentWindow = prefs.getInt(_kIntentWinKey);
+    _intentTakenMs = prefs.getInt(_kIntentMsKey);
+    if (_intentBand != null && _intentTakenMs != null) {
+      final ageDays = (DateTime.now().millisecondsSinceEpoch -
+              _intentTakenMs!) /
+          86400000.0;
+      if (ageDays > kAtlasIntentTtlDays) {
+        _intentBand = null;
+        _intentWindow = null;
+        _intentTakenMs = null;
+        unawaited(_persistIntent());
+      }
+    }
     final rawSession = prefs.getString(_kSessionKey);
     if (rawSession != null) {
       try {
@@ -1452,6 +1531,16 @@ class SpeedProfileService extends ChangeNotifier {
       final winStr = key.substring(sep + 1);
       final int? win = winStr == 'u' ? null : int.tryParse(winStr);
       if (band == null) return;
+      // +162: the collection ceiling. Above 140 the cell is dropped from
+      // the ledger WITHOUT a snapshot — it is measured, it is simply not
+      // part of the atlas. Dropping (rather than skipping) keeps the
+      // ledger from carrying a cell that can never leave it.
+      if (band > kAtlasBandMaxCollectKmh) {
+        frozenKeys.add(key);
+        debugPrint('Atlas: drop band=$band (above the $kAtlasBandMaxCollectKmh '
+            'collection ceiling)');
+        return;
+      }
       if (!all && win != windowFilter) return;
       if (cell.distKm <= 1e-6) return; // impossible by construction
       rows.add(AtlasSnapshotsCompanion(
@@ -1474,9 +1563,28 @@ class SpeedProfileService extends ChangeNotifier {
           'kwh=${(cell.energyKwh / cell.distKm * 100.0).toStringAsFixed(1)} '
           's=${cell.timeS.round()} session=${l.sessionUid.substring(0, 8)}…');
     });
-    if (rows.isEmpty) return;
+    if (rows.isEmpty) {
+      // Ceiling drops still have to leave the ledger.
+      if (frozenKeys.isNotEmpty) {
+        for (final k in frozenKeys) {
+          l.cells.remove(k);
+        }
+        _dirtySincePersist = true;
+        unawaited(_persist());
+      }
+      return;
+    }
     for (final k in frozenKeys) {
       l.cells.remove(k);
+      // +162 (§3.2): the intention is fulfilled the moment its cell
+      // actually freezes — silently, with no congratulation card. The
+      // reward for the intention is the new cell in the atlas.
+      if (_intentBand != null && k == _intentKey()) {
+        _intentBand = null;
+        _intentWindow = null;
+        _intentTakenMs = null;
+        unawaited(_persistIntent());
+      }
     }
     _atlasFreezeCount += rows.length;
     _dirtySincePersist = true;
@@ -1491,6 +1599,9 @@ class SpeedProfileService extends ChangeNotifier {
         debugPrint('Atlas: freeze insert failed — $e');
       }
       await _persist();
+      // +162: tell every cached DB reader that the atlas moved.
+      _atlasRevision++;
+      notifyListeners();
     }());
   }
 
@@ -1503,6 +1614,9 @@ class SpeedProfileService extends ChangeNotifier {
   void _maybeGenerateReveal(int band, int? win, double kwh100) {
     final l = _ledger;
     if (l == null) return;
+    // +162: the collection ceiling — above 140 there are no events at
+    // all (the second and last place the number is enforced).
+    if (band > kAtlasBandMaxCollectKmh) return;
     final sessionUid = l.sessionUid;
     final sessionStartMs = l.sessionStartedAtMs;
     final nowMs = DateTime.now().millisecondsSinceEpoch;
@@ -1625,6 +1739,7 @@ class SpeedProfileService extends ChangeNotifier {
       createdAt: Value(now),
       updatedAt: Value(now),
     ));
+    _atlasRevision++; // +162: a new reveal is a change of the atlas
     _unrevealedCount = await _db.countUnrevealedAtlasReveals();
     debugPrint('Atlas: reveal $type $payload (unrevealed '
         '$_unrevealedCount)');
@@ -1686,6 +1801,131 @@ class SpeedProfileService extends ChangeNotifier {
     return sum;
   }
 
+  // ───────────── +162: intention (§3.2) and pending cells ─────────────
+
+  String _intentKey() => '$_intentBand:${_intentWindow ?? 'u'}';
+
+  Future<void> _persistIntent() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final b = _intentBand;
+      if (b == null) {
+        await prefs.remove(_kIntentBandKey);
+        await prefs.remove(_kIntentWinKey);
+        await prefs.remove(_kIntentMsKey);
+        return;
+      }
+      await prefs.setInt(_kIntentBandKey, b);
+      final w = _intentWindow;
+      if (w == null) {
+        await prefs.remove(_kIntentWinKey);
+      } else {
+        await prefs.setInt(_kIntentWinKey, w);
+      }
+      await prefs.setInt(_kIntentMsKey,
+          _intentTakenMs ?? DateTime.now().millisecondsSinceEpoch);
+    } catch (e) {
+      debugPrint('Atlas: intent persist failed — $e');
+    }
+  }
+
+  /// The taken intention, or null. An intention older than
+  /// [kAtlasIntentTtlDays] reports as absent and clears itself — an
+  /// untouched goal must fade, never nag.
+  AtlasIntent? get atlasIntent {
+    final b = _intentBand;
+    final t = _intentTakenMs;
+    if (b == null || t == null) return null;
+    final ageDays = (DateTime.now().millisecondsSinceEpoch - t) / 86400000.0;
+    if (ageDays > kAtlasIntentTtlDays) {
+      _intentBand = null;
+      _intentWindow = null;
+      _intentTakenMs = null;
+      unawaited(_persistIntent());
+      return null;
+    }
+    return AtlasIntent(band: b, window: _intentWindow, takenAtMs: t);
+  }
+
+  /// Take (or replace) the intention. Replacing is silent: an intention
+  /// is a note to self, not a contract.
+  void takeAtlasIntent(int band, int? window) {
+    if (band > kAtlasBandMaxCollectKmh) return;
+    _intentBand = band;
+    _intentWindow = window;
+    _intentTakenMs = DateTime.now().millisecondsSinceEpoch;
+    unawaited(_persistIntent());
+    notifyListeners();
+  }
+
+  void clearAtlasIntent() {
+    if (_intentBand == null) return;
+    _intentBand = null;
+    _intentWindow = null;
+    _intentTakenMs = null;
+    unawaited(_persistIntent());
+    notifyListeners();
+  }
+
+  /// Default candidate for the intention card: the un-matured cell with
+  /// the most steady time **inside the ACTIVE temperature window**.
+  ///
+  /// The +160 anticipation helper walked every window and returned a
+  /// bare band, which is how the field got advice for a cell that could
+  /// not be reached in today's weather (§3.2). Pinning the window fixes
+  /// the advice at its source.
+  AtlasIntent? atlasIntentCandidate() {
+    final l = _ledger;
+    if (l == null) return null;
+    final win = l.activeWindow;
+    int? band;
+    var bestT = -1.0;
+    l.cells.forEach((key, c) {
+      if (c.timeS >= kBandMinSeconds) return;
+      final sep = key.indexOf(':');
+      final b = int.tryParse(key.substring(0, sep));
+      if (b == null || b > kAtlasBandMaxCollectKmh) return;
+      final winStr = key.substring(sep + 1);
+      final int? w = winStr == 'u' ? null : int.tryParse(winStr);
+      if (w != win) return; // ACTIVE window only — reachable today
+      if (c.timeS > bestT) {
+        bestT = c.timeS;
+        band = b;
+      }
+    });
+    final bb = band;
+    if (bb == null) return null;
+    return AtlasIntent(band: bb, window: win, takenAtMs: 0);
+  }
+
+  /// Cells that have matured but whose snapshot is not frozen yet — the
+  /// freeze happens on session rotation, so between «полоса дозрела» and
+  /// the new cell in the grid there is a real gap the field ran into
+  /// (25.07: band 40 matured, the grid still showed three cells). The
+  /// grid paints these as «дозрела, ждёт конца поездки». They are NOT
+  /// cells: no counter, no star, no export fill.
+  List<AtlasPendingCell> atlasPendingCells() {
+    final l = _ledger;
+    if (l == null) return const [];
+    final out = <AtlasPendingCell>[];
+    l.cells.forEach((key, c) {
+      if (c.timeS < kBandMinSeconds) return;
+      if (c.distKm <= 1e-6) return;
+      final sep = key.indexOf(':');
+      final b = int.tryParse(key.substring(0, sep));
+      if (b == null || b > kAtlasBandMaxCollectKmh) return;
+      final winStr = key.substring(sep + 1);
+      final int? w = winStr == 'u' ? null : int.tryParse(winStr);
+      out.add(AtlasPendingCell(
+        band: b,
+        window: w,
+        kwh100: c.energyKwh / c.distKm * 100.0,
+        steadySeconds: c.timeS,
+      ));
+    });
+    return out;
+  }
+
   /// Anticipation line (§2.2 п.5): the un-matured cell with
   /// timeS ≥ kAtlasAnticipationS and the largest timeS, or null.
   int? atlasAnticipationBand() {
@@ -1721,6 +1961,7 @@ class SpeedProfileService extends ChangeNotifier {
     final now = DateTime.now();
     try {
       await _db.revealAllUnrevealedAtlasReveals(now, revealedBy: 'hu');
+      _atlasRevision++; // +162
       _unrevealedCount = await _db.countUnrevealedAtlasReveals();
     } catch (e) {
       debugPrint('Atlas: acknowledge failed — $e');
