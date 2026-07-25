@@ -103,6 +103,24 @@ class AtlasCellStat {
   String get key => atlasCellKey(band, window);
 }
 
+/// +162: a cell that has matured but whose snapshot is not frozen yet
+/// (the freeze happens on session rotation). Lives OUTSIDE
+/// [AtlasGridData] on purpose: it comes from the live ledger, not from
+/// the database, so the projection stays a pure function of
+/// atlas_snapshots and the reinstall story is unchanged.
+class AtlasPending {
+  final int band;
+  final int? window;
+  final double kwh100;
+  const AtlasPending({
+    required this.band,
+    required this.window,
+    required this.kwh100,
+  });
+
+  String get key => atlasCellKey(band, window);
+}
+
 /// A frontier ghost — one dashed outline, never a cell.
 class AtlasGhost {
   final int band;

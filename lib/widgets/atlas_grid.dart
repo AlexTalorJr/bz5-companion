@@ -119,15 +119,30 @@ class AtlasGrid extends StatelessWidget {
   final AtlasGridScale scale;
 
   /// Cell tap → detail screen. Null on the head unit: «Тап по ячейке на
-  /// ГУ ничего не открывает» (§7.2). Ghosts are never interactive in
-  /// this patch (intent lives in +162 and is HU-only).
+  /// ГУ ничего не открывает» (§7.2).
   final ValueChanged<AtlasCellStat>? onTapCell;
+
+  /// +162: matured cells still waiting for the session to rotate. Drawn
+  /// as «дозрела, ждёт конца поездки» — never counted as cells.
+  final List<AtlasPending> pending;
+
+  /// +162 (§3.2): the taken intention, marked with a flag.
+  final String? intentKey;
+
+  /// +162: selection mode ([5a] «тапабельны только фронтир-призраки»).
+  /// Cells go quiet, ghosts become the only touch targets.
+  final bool selectMode;
+  final void Function(int band, int? window)? onTapGhost;
 
   const AtlasGrid({
     super.key,
     required this.data,
     required this.scale,
     this.onTapCell,
+    this.pending = const [],
+    this.intentKey,
+    this.selectMode = false,
+    this.onTapGhost,
   });
 
   @override
@@ -148,6 +163,26 @@ class AtlasGrid extends StatelessWidget {
     final liveBands = {for (final c in data.cells) c.band};
     final liveWindows = {for (final c in data.cells) c.window};
 
+    // +162: a pending cell may sit outside the ghost ring, so the axes
+    // are widened for it here rather than inside the projection (which
+    // must stay a pure function of the database).
+    final pendingByKey = {for (final p in pending) p.key: p};
+    final bands = <int>{...data.bands, for (final p in pending) p.band}
+        .toList()
+      ..sort();
+    final hasNullWindow = data.windows.contains(null) ||
+        pending.any((p) => p.window == null);
+    final windows = <int?>[
+      ...(<int>{
+        for (final w in data.windows)
+          if (w != null) w,
+        for (final p in pending)
+          if (p.window != null) p.window!,
+      }.toList()
+        ..sort()),
+      if (hasNullWindow) null,
+    ];
+
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -158,7 +193,7 @@ class AtlasGrid extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               SizedBox(height: m.headerH),
-              for (final b in data.bands) ...[
+              for (final b in bands) ...[
                 SizedBox(height: m.gap),
                 SizedBox(
                   height: m.cellH,
@@ -190,15 +225,20 @@ class AtlasGrid extends StatelessWidget {
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                for (final w in data.windows)
+                for (final w in windows)
                   Padding(
                     padding: EdgeInsets.only(right: m.gap),
                     child: _WindowColumn(
                       data: data,
+                      bands: bands,
                       window: w,
                       metrics: m,
                       live: liveWindows.contains(w),
                       onTapCell: onTapCell,
+                      pendingByKey: pendingByKey,
+                      intentKey: intentKey,
+                      selectMode: selectMode,
+                      onTapGhost: onTapGhost,
                     ),
                   ),
               ],
@@ -212,17 +252,27 @@ class AtlasGrid extends StatelessWidget {
 
 class _WindowColumn extends StatelessWidget {
   final AtlasGridData data;
+  final List<int> bands;
   final int? window;
   final _AtlasMetrics metrics;
   final bool live;
   final ValueChanged<AtlasCellStat>? onTapCell;
+  final Map<String, AtlasPending> pendingByKey;
+  final String? intentKey;
+  final bool selectMode;
+  final void Function(int band, int? window)? onTapGhost;
 
   const _WindowColumn({
     required this.data,
+    required this.bands,
     required this.window,
     required this.metrics,
     required this.live,
     required this.onTapCell,
+    required this.pendingByKey,
+    required this.intentKey,
+    required this.selectMode,
+    required this.onTapGhost,
   });
 
   @override
@@ -282,14 +332,20 @@ class _WindowColumn extends StatelessWidget {
               ),
             ),
           ),
-          for (final b in data.bands) ...[
+          for (final b in bands) ...[
             SizedBox(height: m.gap),
             _CellSlot(
               cell: data.byKey[atlasCellKey(b, window)],
               ghost: data.ghostKeys.contains(atlasCellKey(b, window)),
               isNew: data.newKeys.contains(atlasCellKey(b, window)),
+              pending: pendingByKey[atlasCellKey(b, window)],
+              intent: intentKey != null && intentKey == atlasCellKey(b, window),
               metrics: m,
               onTapCell: onTapCell,
+              selectMode: selectMode,
+              onTapGhost: onTapGhost,
+              band: b,
+              window: window,
             ),
           ],
         ],
@@ -302,15 +358,27 @@ class _CellSlot extends StatelessWidget {
   final AtlasCellStat? cell;
   final bool ghost;
   final bool isNew;
+  final AtlasPending? pending;
+  final bool intent;
   final _AtlasMetrics metrics;
   final ValueChanged<AtlasCellStat>? onTapCell;
+  final bool selectMode;
+  final void Function(int band, int? window)? onTapGhost;
+  final int band;
+  final int? window;
 
   const _CellSlot({
     required this.cell,
     required this.ghost,
     required this.isNew,
+    required this.pending,
+    required this.intent,
     required this.metrics,
     required this.onTapCell,
+    required this.selectMode,
+    required this.onTapGhost,
+    required this.band,
+    required this.window,
   });
 
   @override
@@ -318,15 +386,56 @@ class _CellSlot extends StatelessWidget {
     final m = metrics;
     final c = cell;
     if (c == null) {
+      final pend = pending;
+      if (pend != null) {
+        // +162: matured, waiting for the session to end. Dashed outline
+        // (it is not a cell yet) over a muted fill (it is no longer
+        // empty), the live value in white .5, no star — the star counts
+        // sessions and this one has not been counted.
+        return SizedBox(
+          width: m.cellW,
+          height: m.cellH,
+          child: CustomPaint(
+            painter: _GhostPainter(radius: m.radius, fill: AtlasTokens.cardMuted),
+            child: Center(
+              child: Text(
+                pend.kwh100.toStringAsFixed(1),
+                style: TextStyle(
+                  fontSize: m.medianSize * 0.72,
+                  fontWeight: FontWeight.w500,
+                  color: AtlasTokens.t50,
+                  fontFeatures: const [FontFeature.tabularFigures()],
+                ),
+              ),
+            ),
+          ),
+        );
+      }
       // Ghost — dashed outline, EMPTY inside: no numbers, no progress,
-      // no «?» (§7.2). Not a cell in any counter, not interactive.
+      // no «?» (§7.2). Not a cell in any counter.
       if (!ghost) return SizedBox(width: m.cellW, height: m.cellH);
-      return SizedBox(
+      final ghostBox = SizedBox(
         width: m.cellW,
         height: m.cellH,
         child: CustomPaint(
-          painter: _GhostPainter(radius: m.radius),
+          painter: _GhostPainter(
+            radius: m.radius,
+            fill: selectMode ? AtlasTokens.cardMuted : null,
+            stroke: intent ? AtlasTokens.info : null,
+          ),
+          child: intent
+              ? Center(
+                  child: Icon(Icons.flag,
+                      size: m.starSize, color: AtlasTokens.info))
+              : null,
         ),
+      );
+      final tapGhost = onTapGhost;
+      if (!selectMode || tapGhost == null) return ghostBox;
+      return InkWell(
+        borderRadius: BorderRadius.circular(m.radius),
+        onTap: () => tapGhost(band, window),
+        child: ghostBox,
       );
     }
 
@@ -371,7 +480,7 @@ class _CellSlot extends StatelessWidget {
     );
 
     final tap = onTapCell;
-    if (tap == null) return content;
+    if (tap == null || selectMode) return content;
     return InkWell(
       borderRadius: BorderRadius.circular(m.radius),
       onTap: () => tap(c),
@@ -386,15 +495,32 @@ class _CellSlot extends StatelessWidget {
 /// the head unit's low-DPI panel.
 class _GhostPainter extends CustomPainter {
   final double radius;
-  const _GhostPainter({required this.radius});
+
+  /// +162: optional fill — a pending cell is no longer empty, and in
+  /// selection mode a tappable ghost has to look tappable.
+  final Color? fill;
+
+  /// +162: optional stroke override — the intended cell outlines in
+  /// `info` so the flag is not the only cue.
+  final Color? stroke;
+
+  const _GhostPainter({required this.radius, this.fill, this.stroke});
 
   static const double _dash = 4;
   static const double _gap = 3;
 
   @override
   void paint(Canvas canvas, Size size) {
+    final f = fill;
+    if (f != null) {
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(
+            Offset.zero & size, Radius.circular(radius)),
+        Paint()..color = f,
+      );
+    }
     final paint = Paint()
-      ..color = AtlasTokens.ghostFrontier
+      ..color = stroke ?? AtlasTokens.ghostFrontier
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1;
     final rrect = RRect.fromRectAndRadius(
@@ -414,8 +540,24 @@ class _GhostPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_GhostPainter oldDelegate) =>
-      oldDelegate.radius != radius;
+      oldDelegate.radius != radius ||
+      oldDelegate.fill != fill ||
+      oldDelegate.stroke != stroke;
 }
+
+/// Twelve FULL month names — for prose («идёт июль», «атлас · июль
+/// 2026»). +162: the year row's own axis keeps the short forms, but
+/// everywhere a month is spoken in a sentence the abbreviation read as a
+/// bug («июл начат»).
+List<String> atlasMonthNamesFull() {
+  final parts = S.of('atlas.months_full').split(',');
+  if (parts.length == 12) return parts;
+  return atlasMonthNames();
+}
+
+/// «замер / замера / замеров».
+String atlasSnapsWord(int n) => atlasPlural(n, S.of('atlas.snap_one'),
+    S.of('atlas.snap_few'), S.of('atlas.snap_many'));
 
 /// Twelve short month names from ONE l10n key (both maps). A 12-element
 /// list of keys would be twelve chances to desync the two maps.
@@ -529,7 +671,7 @@ class AtlasYearRow extends StatelessWidget {
         .of('atlas.year_summary')
         .replaceFirst('{n}', '$days')
         .replaceFirst('{days}', atlasDaysWord(days))
-        .replaceFirst('{month}', months[now.month - 1]);
+        .replaceFirst('{month}', atlasMonthNamesFull()[now.month - 1]);
 
     return Container(
       decoration: BoxDecoration(

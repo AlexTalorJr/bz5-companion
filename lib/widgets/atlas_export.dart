@@ -36,7 +36,7 @@ import 'package:share_plus/share_plus.dart';
 import '../data/atlas_projection.dart';
 import '../l10n/strings.dart';
 import '../theme/atlas_tokens.dart';
-import 'atlas_grid.dart' show atlasDaysWord, atlasMonthNames;
+import 'atlas_grid.dart' show atlasDaysWord, atlasMonthNamesFull;
 
 /// Install page the QR points at (§6.12 п.6).
 const String kAtlasShareUrl =
@@ -174,7 +174,7 @@ class AtlasExportArtwork extends StatelessWidget {
   }
 
   String _hero() {
-    final months = atlasMonthNames();
+    final months = atlasMonthNamesFull();
     final best = data.best;
     final first = data.firstCell;
     final days = data.daysCollected();
@@ -206,7 +206,7 @@ class AtlasExportArtwork extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final months = atlasMonthNames();
+    final months = atlasMonthNamesFull();
     final now = DateTime.now();
     final bands = atlasAllBands();
     final windows = atlasAllWindows();

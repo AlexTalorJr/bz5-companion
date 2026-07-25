@@ -595,8 +595,8 @@ class S {
     'measure.compare': 'Compare A/B',
     'measure.compare_title': 'Comparison',
     'measure.band': 'Band',
-    'measure.cold_pack': 'cold pack',
-    'measure.temp_passport': 'Pack temp min/avg/max',
+    'measure.cold_pack': 'cold battery',
+    'measure.temp_passport': 'Battery temperature: min / avg / max',
     'measure.sleep_note':
         'A sleeping head unit measures nothing — sessions only accumulate '
             'while the screen unit is awake.',
@@ -606,17 +606,18 @@ class S {
     'measure.dump_ok': 'Dump written:',
     'measure.dump_fail': 'Dump failed — storage unavailable',
     // +160: parking summary card (§132 of the UI contract).
-    'measure.card_trip': '{km} km · pack {t}°',
+    'measure.card_trip': '{km} km · battery {t}°',
     'measure.card_trip_nt': '{km} km',
     'measure.card_matured': 'Band {v} matured: {x} kWh/100 → ≈ {km} km',
     'measure.card_matured_nr': 'Band {v} matured: {x} kWh/100',
-    'measure.card_cell': 'Atlas: new cell {v} at {w}°',
-    'measure.card_cell_nt': 'Atlas: new cell {v}, t° unknown',
-    'measure.card_star': 'Band {v}: {lvl} — now {n} sessions',
+    'measure.card_cell': 'Atlas: new cell — {v} km/h at {w}°',
+    'measure.card_cell_nt': 'Atlas: new cell — {v} km/h, temperature unknown',
+    'measure.card_star': 'Band {v}: {lvl} — {n} drives now',
     'measure.card_star_silver': 'silver',
     'measure.card_star_gold': 'gold',
-    'measure.card_loot': 'Band {v}: +{s} s ({a} of {m})',
-    'measure.card_loot_flat': '+{s} s of steady time',
+    'measure.card_loot': 'Band {v}: +{s} s of steady driving · {a} of {m} s '
+        'collected',
+    'measure.card_loot_flat': '+{s} s of steady driving',
     'measure.card_soon': 'Band {v} almost matured',
     // ── v0.1.62+161 «Атлас» patch 3: grid / year row / cell detail /
     // sticky plate / export image. The 1.1 draft renamed the feature to
@@ -625,77 +626,97 @@ class S {
     // stays a star with bronze / silver / gold tints. Metals are shown,
     // never named, in these strings.
     'atlas.title': 'Atlas',
+    'atlas.months_full': 'January,February,March,April,May,June,July,'
+        'August,September,October,November,December',
+    'atlas.kmh': 'km/h',
+    'atlas.snap_one': 'reading',
+    'atlas.snap_few': 'readings',
+    'atlas.snap_many': 'readings',
+    'atlas.select_hint': 'Pick a dashed cell — that is the goal for the '
+        'next drive.',
+    'atlas.pending_note': 'A dashed cell with a number has already earned '
+        'its 2 minutes — it becomes a full cell when the drive ends.',
+    'measure.intent_title': 'On the next drive',
+    'measure.intent_at': 'at battery',
+    'measure.intent_note': 'Steady time in this cell continues from the '
+        'last drive. No seconds and no percentages here — the goal is '
+        'named by speed and temperature.',
+    'measure.intent_take': 'Take it',
+    'measure.intent_other': 'Another cell',
+    'measure.intent_taken': 'Goal taken: {v} km/h at {w}',
+    'measure.intent_taken_note': 'no reminders — the card waits at a stop',
+    'measure.intent_drop': 'Drop',
     'atlas.title_hu': 'ATLAS',
     'atlas.counts': '{n} {cells} · {m} {bands}',
     'atlas.cell_one': 'cell',
     'atlas.cell_few': 'cells',
     'atlas.cell_many': 'cells',
-    'atlas.band_one': 'band',
-    'atlas.band_few': 'bands',
-    'atlas.band_many': 'bands',
+    'atlas.band_one': 'speed',
+    'atlas.band_few': 'speeds',
+    'atlas.band_many': 'speeds',
     'atlas.day_one': 'day',
     'atlas.day_few': 'days',
     'atlas.day_many': 'days',
-    'atlas.session_one': 'independent session',
-    'atlas.session_few': 'independent sessions',
-    'atlas.session_many': 'independent sessions',
+    'atlas.session_one': 'drive',
+    'atlas.session_few': 'drives',
+    'atlas.session_many': 'drives',
     'atlas.counts_view': '{n} {cells} · {m} {bands} · view',
     'atlas.season_ctx':
-        '{month} · pack holds {lo}–{hi}° · cold windows open in winter',
-    'atlas.season_ctx_nr': '{month} · temperature windows open as you drive',
+        '{month} · battery {lo}–{hi}° · cold columns open '
+        'in winter',
+    'atlas.season_ctx_nr': '{month} · temperature columns open as you drive',
     'atlas.year_title': 'YEAR',
-    'atlas.year_summary': 'Collected over {n} {days} · {month} started. '
-        'The atlas closes with the year, not with the grid.',
+    'atlas.year_summary': 'Collected over {n} {days} · {month} is running. '
+        'The full picture takes a year.',
     'atlas.months': 'jan,feb,mar,apr,may,jun,jul,aug,sep,oct,nov,dec',
-    'atlas.legend_one': '1 session',
-    'atlas.legend_five': '5 sessions',
-    'atlas.legend_fifteen': '15 sessions',
-    'atlas.legend_marks': '— fork stability',
-    'atlas.grid_note': 'Dashed outlines are the frontier: the neighbouring '
-        'window of the same band and the neighbouring band of the same '
-        'window. Empty cells are not drawn — the grid grows as you drive.',
-    'atlas.window_rare': 'rare window · pack {w}°',
-    'atlas.window_hot': 'hot window · pack {w}°',
-    'atlas.window_unknown': 't° unknown',
+    'atlas.legend_one': '1 drive',
+    'atlas.legend_five': '5 drives',
+    'atlas.legend_fifteen': '15 drives',
+    'atlas.legend_marks': 'the more drives, the more exact the number',
+    'atlas.grid_note': 'Dashed — neighbouring cells: those can open next. '
+        'Blank space — you have not driven there yet.',
+    'atlas.window_rare': 'rare weather · battery {w}°',
+    'atlas.window_hot': 'hot weather · battery {w}°',
+    'atlas.window_unknown': 'no temperature',
     'atlas.view_only': 'view only — details on the phone',
-    'atlas.parked_only': 'The atlas is available when parked',
-    'atlas.parked_only_short': 'Available when parked',
     'atlas.parked_chip': 'Parked',
     'atlas.tab_atlas': 'Atlas',
     'atlas.tab_forecast': 'Forecast',
-    'atlas.tab_arc': 'Pack arc',
+    'atlas.tab_arc': 'Battery health',
     'atlas.stub':
-        'Frame: this section appears once there is season history to show.',
-    'atlas.empty': 'Empty so far — cells appear after the first matured bands.',
+        'This section appears once there is history across '
+        'seasons.',
+    'atlas.empty': 'Empty so far. The first cell appears after 2 minutes of '
+        'steady driving at one speed.',
     'atlas.load_failed': 'Could not read the atlas:',
-    'atlas.cell_title': 'Band {v} · pack {w}',
-    'atlas.cell_sub': 'fork · median · kWh/100',
-    'atlas.cell_sub_single': 'median · kWh/100 · single snapshot',
+    'atlas.cell_title': '{v} km/h · battery {w}',
+    'atlas.cell_sub': 'from · average · to, kWh per 100 km',
+    'atlas.cell_sub_single': 'kWh per 100 km · a single reading',
     'atlas.cell_sessions': '{n} {sessions}',
-    'atlas.cell_steady': 'Steady time: {s} s · snapshots {n}',
-    'atlas.cell_dist': 'SNAPSHOT DISTRIBUTION',
-    'atlas.cell_snapshots': 'SNAPSHOTS',
+    'atlas.cell_steady': 'Steady driving {s} s · {n} {snaps}',
+    'atlas.cell_dist': 'HOW THE READINGS SPREAD',
+    'atlas.cell_snapshots': 'READINGS',
     'measure.plate_title': 'Trip results · {n} new',
     'export.title': 'Atlas image',
     'export.share': 'Share',
-    'export.caption': '1080×1350 PNG · the whole matrix',
+    'export.caption': '1080×1350 image · the whole map',
     'export.failed': 'Did not work out:',
     'export.share_subject': 'BZ5 Companion atlas',
-    'export.share_text': 'Speed-band atlas from BZ5 Companion.',
+    'export.share_text': 'Speed consumption map from BZ5 Companion.',
     'export.month_line': 'atlas · {month} {year}',
-    'export.hero_mature': 'Collected over {n} {days} · best cell {v} at {w} · '
-        '{x} kWh/100',
-    'export.hero_early': 'Started {n} {days} ago · first cell {v} at {w} · '
-        '{x} kWh/100',
-    'export.hero_none': 'Atlas started · {month}. '
-        'The first cells appear after a band matures.',
-    'export.legend_open': 'open',
-    'export.legend_multi': 'several sessions',
-    'export.legend_best': 'best cell',
-    'export.legend_rare': 'rare window',
-    'export.legend_ahead': 'ahead',
-    'export.footer': 'Bands 40–140 km/h · windows ≤ −20…+40° · fixed cell, '
-        'the matrix is always complete.',
+    'export.hero_mature': 'Collected over {n} {days} · longest at {v} km/h '
+        'at {w} · {x} kWh per 100 km',
+    'export.hero_early': 'Started {n} {days} ago · first cell {v} km/h at '
+        '{w} · {x} kWh per 100 km',
+    'export.hero_none': 'Atlas started · {month}. The first cells appear after '
+        '2 minutes of steady driving at one speed.',
+    'export.legend_open': 'a reading',
+    'export.legend_multi': 'several drives',
+    'export.legend_best': 'the most time',
+    'export.legend_rare': 'rare weather',
+    'export.legend_ahead': 'not driven yet',
+    'export.footer': 'Speeds 40–140 km/h · battery temperature −20 to +40° · '
+        'the whole map.',
     'hist.empty_title': 'No trips yet',
     'hist.empty_hint': 'Connect the adapter and drive — '
         'history will fill in automatically.',
@@ -1640,8 +1661,8 @@ class S {
     'measure.compare': 'Сравнить А/Б',
     'measure.compare_title': 'Сравнение',
     'measure.band': 'Полоса',
-    'measure.cold_pack': 'холодный пак',
-    'measure.temp_passport': 'Температура пака min/сред/max',
+    'measure.cold_pack': 'холодная батарея',
+    'measure.temp_passport': 'Температура батареи: мин / сред / макс',
     'measure.sleep_note':
         'Спящее ГУ не меряет — сессия копится только при живом экране '
             'головного устройства.',
@@ -1651,17 +1672,19 @@ class S {
     'measure.dump_ok': 'Дамп записан:',
     'measure.dump_fail': 'Дамп не записан — хранилище недоступно',
     // +160: карточка итогов на стоянке (строки §132 контракта).
-    'measure.card_trip': '{km} км · пак {t}°',
+    'measure.card_trip': '{km} км · батарея {t}°',
     'measure.card_trip_nt': '{km} км',
     'measure.card_matured': 'Полоса {v} дозрела: {x} кВт·ч/100 → ≈ {km} км',
     'measure.card_matured_nr': 'Полоса {v} дозрела: {x} кВт·ч/100',
-    'measure.card_cell': 'Атлас: новая ячейка {v} при {w}°',
-    'measure.card_cell_nt': 'Атлас: новая ячейка {v}, t° неизвестна',
-    'measure.card_star': 'Полоса {v}: {lvl} — теперь {n} сессий',
+    'measure.card_cell': 'Атлас: новая клетка — {v} км/ч при {w}°',
+    'measure.card_cell_nt': 'Атлас: новая клетка — {v} км/ч, температура '
+        'неизвестна',
+    'measure.card_star': 'Полоса {v}: {lvl} — уже {n} поездок',
     'measure.card_star_silver': 'серебро',
     'measure.card_star_gold': 'золото',
-    'measure.card_loot': 'Полоса {v}: +{s} с ({a} из {m})',
-    'measure.card_loot_flat': '+{s} с ровного времени',
+    'measure.card_loot': 'Полоса {v}: +{s} с ровной езды · накоплено {a} '
+        'из {m} с',
+    'measure.card_loot_flat': '+{s} с ровной езды',
     'measure.card_soon': 'Полоса {v} почти дозрела',
     // ── v0.1.62+161 «Атлас» патч 3: сетка / строка ГОДА / детализация /
     // липкая плашка / экспортная картинка. Переименование в «Альманах» и
@@ -1669,80 +1692,100 @@ class S {
     // «Атлас» остаётся, знак покрытия остаётся звездой (бронза /
     // серебро / золото как оттенки, словами не называются).
     'atlas.title': 'Атлас',
+    'atlas.months_full': 'январь,февраль,март,апрель,май,июнь,июль,'
+        'август,сентябрь,октябрь,ноябрь,декабрь',
+    'atlas.kmh': 'км/ч',
+    'atlas.snap_one': 'замер',
+    'atlas.snap_few': 'замера',
+    'atlas.snap_many': 'замеров',
+    'atlas.select_hint': 'Выберите клетку с пунктиром — это цель на '
+        'следующую поездку.',
+    'atlas.pending_note': 'Клетка с пунктиром и числом уже набрала свои '
+        '2 минуты — полноценной она станет, когда поездка закончится.',
+    'measure.intent_title': 'В следующей поездке',
+    'measure.intent_at': 'при батарее',
+    'measure.intent_note': 'Ровное время в этой клетке продолжится с '
+        'прошлой поездки. Секунд и процентов здесь нет — цель названа '
+        'скоростью и температурой.',
+    'measure.intent_take': 'Взять',
+    'measure.intent_other': 'Другая клетка',
+    'measure.intent_taken': 'Намерение взято: {v} км/ч при {w}',
+    'measure.intent_taken_note': 'напоминания не будет — карточка ждёт '
+        'на стоянке',
+    'measure.intent_drop': 'Снять',
     'atlas.title_hu': 'АТЛАС',
     'atlas.counts': '{n} {cells} · {m} {bands}',
     // Три формы — первое, что покажет поле, это n = 1.
-    'atlas.cell_one': 'ячейка',
-    'atlas.cell_few': 'ячейки',
-    'atlas.cell_many': 'ячеек',
-    'atlas.band_one': 'полоса',
-    'atlas.band_few': 'полосы',
-    'atlas.band_many': 'полос',
+    'atlas.cell_one': 'клетка',
+    'atlas.cell_few': 'клетки',
+    'atlas.cell_many': 'клеток',
+    'atlas.band_one': 'скорость',
+    'atlas.band_few': 'скорости',
+    'atlas.band_many': 'скоростей',
     'atlas.day_one': 'день',
     'atlas.day_few': 'дня',
     'atlas.day_many': 'дней',
-    'atlas.session_one': 'независимая сессия',
-    'atlas.session_few': 'независимые сессии',
-    'atlas.session_many': 'независимых сессий',
+    'atlas.session_one': 'поездка',
+    'atlas.session_few': 'поездки',
+    'atlas.session_many': 'поездок',
     'atlas.counts_view': '{n} {cells} · {m} {bands} · просмотр',
     'atlas.season_ctx':
-        '{month} · пак держится {lo}–{hi}° · холодные окна откроются зимой',
+        '{month} · батарея {lo}–{hi}° · холодные столбцы '
+        'откроются зимой',
     'atlas.season_ctx_nr':
-        '{month} · температурные окна откроются по мере езды',
+        '{month} · столбцы по температуре откроются '
+        'по мере езды',
     'atlas.year_title': 'ГОД',
-    'atlas.year_summary': 'Собрано за {n} {days} · {month} начат. '
-        'Атлас закрывается не сеткой, а годом.',
+    'atlas.year_summary': 'Собрано за {n} {days} · идёт {month}. '
+        'Полная картина набирается за год.',
     'atlas.months': 'янв,фев,мар,апр,май,июн,июл,авг,сен,окт,ноя,дек',
-    'atlas.legend_one': '1 сессия',
-    'atlas.legend_five': '5 сессий',
-    'atlas.legend_fifteen': '15 сессий',
-    'atlas.legend_marks': '— устойчивость вилки',
-    'atlas.grid_note': 'Пунктирные контуры — фронтир: соседнее окно той же '
-        'полосы и соседняя полоса того же окна. Пустые ячейки не '
-        'рисуются — сетка растёт по мере езды.',
-    'atlas.window_rare': 'редкое окно · пак {w}°',
-    'atlas.window_hot': 'жаркое окно · пак {w}°',
-    'atlas.window_unknown': 't° неизвестна',
-    'atlas.view_only': 'просмотр — детали на телефоне',
-    'atlas.parked_only': 'Атлас доступен на стоянке',
-    'atlas.parked_only_short': 'Доступен на стоянке',
+    'atlas.legend_one': '1 поездка',
+    'atlas.legend_five': '5 поездок',
+    'atlas.legend_fifteen': '15 поездок',
+    'atlas.legend_marks': 'чем больше поездок, тем точнее число',
+    'atlas.grid_note': 'Пунктиром — соседние клетки: их можно открыть '
+        'следующими. Пустое место — туда ещё не ездили.',
+    'atlas.window_rare': 'редкая погода · батарея {w}°',
+    'atlas.window_hot': 'жаркая погода · батарея {w}°',
+    'atlas.window_unknown': 'без температуры',
+    'atlas.view_only': 'просмотр — подробности на телефоне',
     'atlas.parked_chip': 'Стоянка',
     'atlas.tab_atlas': 'Атлас',
     'atlas.tab_forecast': 'Прогноз',
-    'atlas.tab_arc': 'Арка пака',
-    'atlas.stub': 'Каркас: раздел появится, когда наберётся история '
-        'по сезонам.',
-    'atlas.empty': 'Пока пусто — ячейки появятся после первых '
-        'дозревших полос.',
+    'atlas.tab_arc': 'Здоровье батареи',
+    'atlas.stub': 'Раздел появится, когда наберётся история за разные '
+        'сезоны.',
+    'atlas.empty': 'Пока пусто. Первая клетка появится после 2 минут ровной '
+        'езды на одной скорости.',
     'atlas.load_failed': 'Не удалось прочитать атлас:',
-    'atlas.cell_title': 'Полоса {v} · пак {w}',
-    'atlas.cell_sub': 'вилка · медиана · кВт·ч/100',
-    'atlas.cell_sub_single': 'медиана · кВт·ч/100 · один снимок',
+    'atlas.cell_title': '{v} км/ч · батарея {w}',
+    'atlas.cell_sub': 'от · среднее · до, кВт·ч на 100 км',
+    'atlas.cell_sub_single': 'кВт·ч на 100 км · один замер',
     'atlas.cell_sessions': '{n} {sessions}',
-    'atlas.cell_steady': 'Ровное время: {s} с · снимков {n}',
-    'atlas.cell_dist': 'РАСПРЕДЕЛЕНИЕ СНИМКОВ',
-    'atlas.cell_snapshots': 'СНИМКИ',
+    'atlas.cell_steady': 'Ровная езда {s} с · {n} {snaps}',
+    'atlas.cell_dist': 'КАК РАСПРЕДЕЛИЛИСЬ ЗАМЕРЫ',
+    'atlas.cell_snapshots': 'ЗАМЕРЫ',
     'measure.plate_title': 'Итоги поездки · {n} новых',
     'export.title': 'Картинка атласа',
     'export.share': 'Поделиться',
-    'export.caption': '1080×1350 PNG · вся матрица целиком',
+    'export.caption': 'Картинка 1080×1350 · вся карта целиком',
     'export.failed': 'Не получилось:',
     'export.share_subject': 'Атлас BZ5 Companion',
-    'export.share_text': 'Атлас скоростных полос из BZ5 Companion.',
+    'export.share_text': 'Карта расхода по скоростям из BZ5 Companion.',
     'export.month_line': 'атлас · {month} {year}',
-    'export.hero_mature': 'Собрано за {n} {days} · лучшая ячейка {v} при {w} · '
-        '{x} кВт·ч/100',
-    'export.hero_early': 'Начато {n} {days} назад · первая ячейка {v} при {w} · '
-        '{x} кВт·ч/100',
-    'export.hero_none': 'Атлас начат · {month}. '
-        'Первые ячейки появятся после дозревших полос.',
-    'export.legend_open': 'открыто',
-    'export.legend_multi': 'несколько сессий',
-    'export.legend_best': 'лучшая ячейка',
-    'export.legend_rare': 'редкое окно',
-    'export.legend_ahead': 'впереди',
-    'export.footer': 'Полосы 40–140 км/ч · окна ≤ −20…+40° · клетка '
-        'фиксированная, матрица всегда целиком.',
+    'export.hero_mature': 'Собрано за {n} {days} · дольше всего — {v} км/ч '
+        'при {w} · {x} кВт·ч на 100 км',
+    'export.hero_early': 'Начато {n} {days} назад · первая клетка — {v} км/ч '
+        'при {w} · {x} кВт·ч на 100 км',
+    'export.hero_none': 'Атлас начат · {month}. Первые клетки появятся после '
+        '2 минут ровной езды на одной скорости.',
+    'export.legend_open': 'был замер',
+    'export.legend_multi': 'несколько поездок',
+    'export.legend_best': 'больше всего времени',
+    'export.legend_rare': 'редкая погода',
+    'export.legend_ahead': 'ещё не ездили',
+    'export.footer': 'Скорости 40–140 км/ч · температура батареи от −20 '
+        'до +40° · вся карта целиком.',
     'hist.empty_title': 'Поездок пока нет',
     'hist.empty_hint': 'Подключитесь к адаптеру и поезжайте — '
         'история начнёт заполняться автоматически.',

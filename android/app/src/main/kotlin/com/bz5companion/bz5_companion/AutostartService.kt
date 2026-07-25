@@ -71,6 +71,10 @@ class AutostartService : Service() {
          *  fine enough to time a kill to the ignition-off it matches. */
         private const val HEARTBEAT_MS = 5 * 60 * 1000L
 
+        /** v0.1.63+162: fresh-boot window, measured on uptimeMillis
+         *  (which stops in deep sleep) rather than elapsedRealtime. */
+        private const val FRESH_BOOT_MS = 5 * 60 * 1000L
+
         /** One tag per PROCESS — a companion-object val initialises
          *  once per class load, i.e. once per process. Lines sharing a
          *  tag came from one living process; a new tag is a full
@@ -101,11 +105,22 @@ class AutostartService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        // fresh-boot flag (Друг 3): elapsedRealtime under ~5 min means
-        // the OS itself just started — separates reboots from ordinary
-        // ignition cycles without any PID bookkeeping.
-        val freshBoot = SystemClock.elapsedRealtime() < 5 * 60 * 1000L
-        marker("born: ${ident()} fresh-boot=$freshBoot")
+        // fresh-boot flag. v0.1.63+162 FIX: the original test used
+        // elapsedRealtime, which keeps ticking through deep sleep. A head
+        // unit that has been parked overnight and merely woke up reported
+        // hours of elapsed time and the flag said «not a fresh boot»
+        // even when the OS had genuinely just started; the inverse case
+        // (a real reboot after a long sleep) is the one that made the log
+        // lie. uptimeMillis stops in deep sleep, so a small uptime really
+        // does mean the kernel started recently. Both numbers are written
+        // out so an old log can still be read against a new one.
+        val upMs = SystemClock.uptimeMillis()
+        val elMs = SystemClock.elapsedRealtime()
+        val freshBoot = upMs < FRESH_BOOT_MS
+        marker(
+            "born: ${ident()} fresh-boot=$freshBoot" +
+                " (up=${upMs / 1000}s el=${elMs / 1000}s)"
+        )
         hbHandler.postDelayed(hbTick, HEARTBEAT_MS)
     }
 

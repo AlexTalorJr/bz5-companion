@@ -16,7 +16,8 @@ import '../l10n/strings.dart';
 import '../services/connection.dart';
 import '../services/locale_service.dart';
 import '../theme/atlas_tokens.dart';
-import '../widgets/atlas_grid.dart' show atlasSessionsWord;
+import '../widgets/atlas_grid.dart'
+    show atlasSessionsWord, atlasSnapsWord;
 
 class AtlasCellDetailScreen extends StatefulWidget {
   final AtlasCellStat cell;
@@ -204,7 +205,8 @@ class _SummaryCard extends StatelessWidget {
             S
                 .of('atlas.cell_steady')
                 .replaceFirst('{s}', '${c.steadySeconds.round()}')
-                .replaceFirst('{n}', '${c.snapshots}'),
+                .replaceFirst('{n}', '${c.snapshots}')
+                .replaceFirst('{snaps}', atlasSnapsWord(c.snapshots)),
             style: const TextStyle(fontSize: 11, color: AtlasTokens.t45),
           ),
         ],
