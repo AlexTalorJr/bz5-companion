@@ -97,11 +97,11 @@ class _SummaryCard extends StatelessWidget {
     final c = cell;
     final rare = atlasWindowIsRare(c.window);
     final hot = atlasWindowIsHot(c.window);
-    // Range bar geometry: the fork occupies the whole track, the median
+    // Range bar geometry: the fork occupies the whole track, the mean
     // marker sits proportionally inside it. A degenerate fork (one
     // snapshot) draws the marker in the middle of a full track.
     final span = c.hi - c.lo;
-    final pos = span.abs() < 1e-9 ? 0.5 : (c.median - c.lo) / span;
+    final pos = span.abs() < 1e-9 ? 0.5 : (c.mean - c.lo) / span;
 
     return Container(
       decoration: BoxDecoration(
@@ -123,7 +123,7 @@ class _SummaryCard extends StatelessWidget {
                         color: AtlasTokens.t45,
                         fontFeatures: [FontFeature.tabularFigures()])),
               if (c.hasFork) const SizedBox(width: 10),
-              Text(c.median.toStringAsFixed(1),
+              Text(c.mean.toStringAsFixed(1),
                   style: const TextStyle(
                       fontSize: 44,
                       fontWeight: FontWeight.w700,
@@ -157,7 +157,7 @@ class _SummaryCard extends StatelessWidget {
             style: const TextStyle(fontSize: 11, color: AtlasTokens.t45),
           ),
           const SizedBox(height: 12),
-          // Range track + median marker.
+          // Range track + mean marker.
           LayoutBuilder(
             builder: (context, box) {
               final w = box.maxWidth;

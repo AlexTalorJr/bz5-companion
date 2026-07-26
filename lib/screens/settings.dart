@@ -15,6 +15,7 @@ import '../services/cost_settings.dart';
 import '../services/account_auth_service.dart';
 import '../services/cloud_sync_service.dart';
 import '../services/bridge_diag_service.dart';
+import '../services/speed_profile_service.dart';
 import 'about.dart';
 import 'data_management.dart';
 import 'diagnostics.dart';
@@ -758,6 +759,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
             ),
           ),
+        // +163 (BB7, решение владельца 26.07 п.9): the «Замеры» diag
+        // dump moved here from the measure screen — behind the same
+        // 15-tap unlock the rest of the research tools live behind.
+        // The service call is untouched (session + ledger JSON into
+        // bz5_companion_diag.md, the Native Explorer diary workflow).
+        ListTile(
+          leading: const Icon(Icons.save_alt, color: Colors.grey),
+          title: Text(S.of('settings.adv.dump')),
+          subtitle: Text(S.of('settings.adv.dump_sub')),
+          onTap: () async {
+            final res =
+                await context.read<SpeedProfileService>().dumpDiag();
+            if (!context.mounted) return;
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Text(res == null
+                  ? S.of('settings.adv.dump_fail')
+                  : '${S.of('settings.adv.dump_ok')} ${res.path}'),
+            ));
+          },
+        ),
         ListTile(
           leading: const Icon(Icons.memory, color: Colors.grey),
           title: const Text('ECU Explorer'),

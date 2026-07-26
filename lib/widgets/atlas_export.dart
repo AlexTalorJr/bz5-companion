@@ -185,7 +185,7 @@ class AtlasExportArtwork extends StatelessWidget {
           .replaceFirst('{days}', atlasDaysWord(days))
           .replaceFirst('{v}', '${best.band}')
           .replaceFirst('{w}', _windowWord(best.window))
-          .replaceFirst('{x}', best.median.toStringAsFixed(1));
+          .replaceFirst('{x}', best.mean.toStringAsFixed(1));
     }
     if (first != null) {
       return S
@@ -194,7 +194,7 @@ class AtlasExportArtwork extends StatelessWidget {
           .replaceFirst('{days}', atlasDaysWord(days))
           .replaceFirst('{v}', '${first.band}')
           .replaceFirst('{w}', _windowWord(first.window))
-          .replaceFirst('{x}', first.median.toStringAsFixed(1));
+          .replaceFirst('{x}', first.mean.toStringAsFixed(1));
     }
     // Empty atlas — honest, still shareable («карта впереди»).
     return S.of('export.hero_none').replaceFirst(

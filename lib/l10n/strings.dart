@@ -51,7 +51,10 @@ class S {
 
     // Navigation — phone bottom bar
     'nav.dashboard': 'Dashboard',
-    'nav.cells': 'Cells',
+    // +163 (решение 26.07 п.15): §5 vs §9.1 conflict resolved — the nav
+    // item is «Батарея» on BZ3 and the phone (the key name never
+    // renames, canon §8).
+    'nav.cells': 'Battery',
     'nav.history': 'History',
     'nav.settings': 'Settings',
     // Navigation — head-unit rail
@@ -564,9 +567,6 @@ class S {
     'hist.tab_measure': 'Measure',
 
     // v0.1.52+151 «Замеры» — speed profile + 0–100
-    'measure.start': 'Start',
-    'measure.stop': 'Stop',
-    'measure.reset': 'Reset',
     'measure.status_idle': 'No session',
     'measure.status_running': 'recording',
     'measure.status_stopped': 'stopped — can be saved',
@@ -584,16 +584,6 @@ class S {
     'measure.z100_none':
         'No completed 0–100 runs yet — only runs reaching a real 100 count',
     'measure.z100_sec': 's',
-    'measure.archive_title': 'Session archive',
-    'measure.archive_empty':
-        'No saved sessions — stop one and save it to compare later',
-    'measure.save_q': 'Save session?',
-    'measure.save_name': 'Name',
-    'measure.save_note': 'Note (tyres, climate…)',
-    'measure.delete_q': 'Delete session?',
-    'measure.evict_q': 'Archive is full (24) — evict the oldest?',
-    'measure.compare': 'Compare A/B',
-    'measure.compare_title': 'Comparison',
     'measure.band': 'Band',
     'measure.cold_pack': 'cold battery',
     'measure.temp_passport': 'Battery temperature: min / avg / max',
@@ -602,9 +592,38 @@ class S {
             'while the screen unit is awake.',
     'measure.maturing': 'Bands maturing',
     'measure.of': 'of',
-    'measure.dump': 'Diag dump',
-    'measure.dump_ok': 'Dump written:',
-    'measure.dump_fail': 'Dump failed — storage unavailable',
+    // +163 «Замеры по контракту, заход A»: статус-чип §6.2, карточки
+    // полос §6.1, пустые состояния 2d/3d, 0–100 §6.6, намерение п.6.
+    'measure.chip_rec': 'Recording · {v} km/h',
+    'measure.chip_rec_nv': 'Recording',
+    'measure.chip_rec_tail': 'steady time counting',
+    'measure.chip_parked': 'Parked · steady time not counting',
+    'measure.stage_maturing': 'maturing',
+    'measure.stage_matured': 'matured · this drive\u2019s measurement',
+    'measure.of_120': '{s} s of {m}',
+    'measure.range_est': '≈ {km} km',
+    'measure.in_atlas': 'in atlas {x} · {n} {trips}',
+    'measure.trip_one': 'drive',
+    'measure.trip_few': 'drives',
+    'measure.trip_many': 'drives',
+    'measure.empty_title': 'Drive as usual — the bands will build themselves',
+    'measure.empty_ghost': 'this is what a band looks like once steady '
+        'time builds up',
+    'measure.z100_ready': 'Ready — starts when you pull away',
+    'measure.z100_last': 'last',
+    'measure.intent_hold': 'Hold {v} km/h for {t} more',
+    'measure.intent_new': 'opens a new atlas cell',
+    'measure.intent_refine': 'refines the measurement already collected',
+    'measure.intent_ctx': 'battery is {t}° right now — the right window',
+    'measure.t_half': 'half a minute',
+    'measure.t_one': 'a minute',
+    'measure.t_onehalf': 'a minute and a half',
+    'measure.t_two': 'two minutes',
+    'settings.adv.dump': 'Measure diag dump',
+    'settings.adv.dump_sub': 'Session + ledger JSON into '
+        'bz5_companion_diag.md',
+    'settings.adv.dump_ok': 'Dump written:',
+    'settings.adv.dump_fail': 'Dump failed — storage unavailable',
     // +160: parking summary card (§132 of the UI contract).
     'measure.card_trip': '{km} km · battery {t}°',
     'measure.card_trip_nt': '{km} km',
@@ -1122,7 +1141,7 @@ class S {
 
     // Navigation — phone bottom bar
     'nav.dashboard': 'Дашборд',
-    'nav.cells': 'Ячейки',
+    'nav.cells': 'Батарея',
     'nav.history': 'История',
     'nav.settings': 'Настройки',
     // Navigation — head-unit rail
@@ -1629,9 +1648,6 @@ class S {
     'hist.tab_measure': 'Замеры',
 
     // v0.1.52+151 «Замеры» — скоростной профиль + 0–100
-    'measure.start': 'Старт',
-    'measure.stop': 'Стоп',
-    'measure.reset': 'Сброс',
     'measure.status_idle': 'Сессии нет',
     'measure.status_running': 'идёт',
     'measure.status_stopped': 'остановлена — можно сохранить',
@@ -1650,16 +1666,6 @@ class S {
         'Доведённых до сотни разгонов пока нет — считаются только '
             'реальные 100',
     'measure.z100_sec': 'с',
-    'measure.archive_title': 'Архив сессий',
-    'measure.archive_empty':
-        'Сохранённых сессий нет — остановите и сохраните, чтобы сравнивать',
-    'measure.save_q': 'Сохранить сессию?',
-    'measure.save_name': 'Название',
-    'measure.save_note': 'Заметка (шины, климат…)',
-    'measure.delete_q': 'Удалить сессию?',
-    'measure.evict_q': 'Архив полон (24) — вытеснить старейшую?',
-    'measure.compare': 'Сравнить А/Б',
-    'measure.compare_title': 'Сравнение',
     'measure.band': 'Полоса',
     'measure.cold_pack': 'холодная батарея',
     'measure.temp_passport': 'Температура батареи: мин / сред / макс',
@@ -1668,9 +1674,38 @@ class S {
             'головного устройства.',
     'measure.maturing': 'Полосы зреют',
     'measure.of': 'из',
-    'measure.dump': 'Диаг-дамп',
-    'measure.dump_ok': 'Дамп записан:',
-    'measure.dump_fail': 'Дамп не записан — хранилище недоступно',
+    // +163 «Замеры по контракту, заход A»: статус-чип §6.2, карточки
+    // полос §6.1, пустые состояния 2d/3d, 0–100 §6.6, намерение п.6.
+    'measure.chip_rec': 'Запись · {v} км/ч',
+    'measure.chip_rec_nv': 'Запись',
+    'measure.chip_rec_tail': 'ровное время идёт',
+    'measure.chip_parked': 'Стоянка · ровное время не идёт',
+    'measure.stage_maturing': 'зреет',
+    'measure.stage_matured': 'дозрела · замер этой поездки',
+    'measure.of_120': '{s} с из {m}',
+    'measure.range_est': '≈ {km} км',
+    'measure.in_atlas': 'в атласе {x} · {n} {trips}',
+    'measure.trip_one': 'поездка',
+    'measure.trip_few': 'поездки',
+    'measure.trip_many': 'поездок',
+    'measure.empty_title': 'Езди как обычно — полосы соберутся сами',
+    'measure.empty_ghost': 'так выглядит полоса, когда наберётся '
+        'ровное время',
+    'measure.z100_ready': 'Готов — старт по началу движения',
+    'measure.z100_last': 'последний',
+    'measure.intent_hold': 'Подержи {v} км/ч ещё {t}',
+    'measure.intent_new': 'откроет новую клетку в атласе',
+    'measure.intent_refine': 'уточнит уже собранный замер',
+    'measure.intent_ctx': 'сейчас батарея {t}° — то самое окно',
+    'measure.t_half': 'полминуты',
+    'measure.t_one': 'минуту',
+    'measure.t_onehalf': 'полторы минуты',
+    'measure.t_two': 'две минуты',
+    'settings.adv.dump': 'Диаг-дамп замеров',
+    'settings.adv.dump_sub': 'JSON сессии и леджера в '
+        'bz5_companion_diag.md',
+    'settings.adv.dump_ok': 'Дамп записан:',
+    'settings.adv.dump_fail': 'Дамп не записан — хранилище недоступно',
     // +160: карточка итогов на стоянке (строки §132 контракта).
     'measure.card_trip': '{km} км · батарея {t}°',
     'measure.card_trip_nt': '{km} км',

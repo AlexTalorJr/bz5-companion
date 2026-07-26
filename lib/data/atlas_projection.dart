@@ -60,9 +60,13 @@ class AtlasCellStat {
   final int band;
   final int? window;
 
-  /// Median of the cell's snapshot values (even count → mean of the two
-  /// middles). This is the number the cell shows.
-  final double median;
+  /// The number the cell shows — the steady_seconds-WEIGHTED mean of
+  /// the cell's snapshot values (решение владельца 26.07 п.10: «атлас =
+  /// усреднённый расход за всё время в этих условиях; чем дольше
+  /// ездишь, тем точнее число» — a 2-minute stint must not outvote a
+  /// 40-minute one). Computed in exactly ONE place (fromRows below);
+  /// the data was already in the DB, no migration.
+  final double mean;
 
   /// Fork = min…max over the cell's snapshots. With a single snapshot
   /// lo == hi and the fork is NOT rendered anywhere (owner decision,
@@ -78,8 +82,8 @@ class AtlasCellStat {
   /// Σ steady seconds over the cell's snapshots. Owner's definition of
   /// «лучшая ячейка» (25.07): where the car actually spent the most
   /// steady time at this speed and this temperature — immune to the
-  /// signed-consumption trap that a min-median rule would have hit
-  /// (a regen-heavy descent can legitimately hold kwh100 ≤ 0).
+  /// signed-consumption trap that a min-of-the-mean rule would have
+  /// hit (a regen-heavy descent can legitimately hold kwh100 ≤ 0).
   final double steadySeconds;
 
   final DateTime firstFrozenAt;
@@ -88,7 +92,7 @@ class AtlasCellStat {
   const AtlasCellStat({
     required this.band,
     required this.window,
-    required this.median,
+    required this.mean,
     required this.lo,
     required this.hi,
     required this.snapshots,
@@ -237,14 +241,20 @@ class AtlasGridData {
     final cells = <AtlasCellStat>[];
     grouped.forEach((key, list) {
       final vals = [for (final r in list) r.kwh100]..sort();
-      final mid = vals.length ~/ 2;
-      final median = vals.length.isOdd
-          ? vals[mid]
-          : (vals[mid - 1] + vals[mid]) / 2.0;
+      // +163: the ONE place the cell's headline number is computed —
+      // the steady_seconds-weighted mean (weights are the very seconds
+      // that qualified the value; a zero-weight row cannot exist by
+      // the freeze funnel's own threshold, the plain-average branch is
+      // pure defence).
       var steady = 0.0;
+      var weighted = 0.0;
       for (final r in list) {
         steady += r.steadySeconds;
+        weighted += r.kwh100 * r.steadySeconds;
       }
+      final mean = steady > 1e-9
+          ? weighted / steady
+          : vals.reduce((a, b) => a + b) / vals.length;
       final lites = [
         for (final r in list)
           SnapshotLite(
@@ -263,7 +273,7 @@ class AtlasGridData {
       cells.add(AtlasCellStat(
         band: list.first.bandKmh,
         window: list.first.tempWindowC,
-        median: median,
+        mean: mean,
         lo: vals.first,
         hi: vals.last,
         snapshots: list.length,

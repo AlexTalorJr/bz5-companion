@@ -47,6 +47,11 @@ class AtlasTokens {
   static const Color success = Color(0xFF5CE85C);
   static const Color gearP = Color(0xFF4FC3F7);
 
+  /// +163: the recording dot of the «Замеры» status chip (§6.2). The
+  /// one token the mockup extract found missing — declared here, never
+  /// as an inline literal (design gate).
+  static const Color rec = Color(0xFFFF5252);
+
   // ── coverage mark (star levels 1 / 5 / 15) ──
   static const Color markOne = Color(0xFFC0895E);
   static const Color markFive = Color(0xFFB9C4CE);
