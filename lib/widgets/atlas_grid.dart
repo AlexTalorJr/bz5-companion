@@ -29,7 +29,7 @@ class _AtlasMetrics {
   final double cellW;
   final double cellH;
   final double radius;
-  final double medianSize;
+  final double meanSize;
 
   /// Fork font size, or null where the fork is not rendered at all —
   /// the phone (§11: «вилка только в детализации»).
@@ -45,7 +45,7 @@ class _AtlasMetrics {
     required this.cellW,
     required this.cellH,
     required this.radius,
-    required this.medianSize,
+    required this.meanSize,
     required this.forkSize,
     required this.starSize,
     required this.gap,
@@ -59,7 +59,7 @@ class _AtlasMetrics {
     cellW: 52,
     cellH: 44,
     radius: 8,
-    medianSize: 14,
+    meanSize: 14,
     forkSize: null,
     starSize: 14,
     gap: 5,
@@ -73,7 +73,7 @@ class _AtlasMetrics {
     cellW: 104,
     cellH: 78,
     radius: 14,
-    medianSize: 30,
+    meanSize: 30,
     forkSize: 17,
     starSize: 22,
     gap: 8,
@@ -87,7 +87,7 @@ class _AtlasMetrics {
     cellW: 86,
     cellH: 68,
     radius: 14,
-    medianSize: 28,
+    meanSize: 28,
     forkSize: 16,
     starSize: 20,
     gap: 6,
@@ -401,7 +401,7 @@ class _CellSlot extends StatelessWidget {
               child: Text(
                 pend.kwh100.toStringAsFixed(1),
                 style: TextStyle(
-                  fontSize: m.medianSize * 0.72,
+                  fontSize: m.meanSize * 0.72,
                   fontWeight: FontWeight.w500,
                   color: AtlasTokens.t50,
                   fontFeatures: const [FontFeature.tabularFigures()],
@@ -453,9 +453,9 @@ class _CellSlot extends StatelessWidget {
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           Text(
-            c.median.toStringAsFixed(1),
+            c.mean.toStringAsFixed(1),
             style: TextStyle(
-              fontSize: m.medianSize,
+              fontSize: m.meanSize,
               fontWeight: FontWeight.w700,
               color: AtlasTokens.t100,
               fontFeatures: const [FontFeature.tabularFigures()],

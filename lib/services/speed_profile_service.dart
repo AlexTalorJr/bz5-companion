@@ -144,13 +144,6 @@ const double kDtGuardS = 2.0;
 /// freezes the whole tick, so an ignition-off never grows phantom km.
 const double kVirtualTickS = 1.0;
 
-/// A session forgotten for this long without any movement stops
-/// itself: an idle-but-active session would hold the native stream
-/// retained and grind a prefs snapshot every 30 s forever. The session
-/// body is NOT discarded — it stays in place as «остановлена — можно
-/// сохранить», only the recording ends.
-const int kAutoStopIdleDays = 7;
-
 /// Accumulators of one speed band. Additive by design (spec Q1): every
 /// qualified stretch of the session sums into the same three numbers.
 class SpeedBandAgg {
@@ -673,6 +666,10 @@ class SpeedProfileService extends ChangeNotifier {
   final String _appVersion;
 
   static const String _kSessionKey = 'speed_profile_session';
+  // +163: reserved, neither read nor written — the stored value awaits
+  // a possible manual-mode return (spec §2.2 p.1); regress AW6 pins the
+  // literal.
+  // ignore: unused_field
   static const String _kActiveKey = 'speed_profile_active';
   static const String _kArchiveKey = 'speed_profile_archive';
   static const String _kAtlasLedgerKey = 'atlas_ledger';
@@ -699,6 +696,14 @@ class SpeedProfileService extends ChangeNotifier {
   // ── +158 atlas recorder (always-on on the head unit) ──
   _AtlasLedger? _ledger;
   bool _atlasArmed = false;
+
+  /// +163: the window the CARD SET is anchored to. Latched from the
+  /// ledger's activeWindow on standstill ticks and in init(); a
+  /// mid-drive window switch changes what the ledger writes to, but
+  /// the visible set of band cards stays put until the next standstill
+  /// (И1 — nothing appears or disappears in motion).
+  int? _displayWindow;
+  int? get atlasDisplayWindow => _displayWindow;
   // Prefs write-amplification guard (review R6): the 30 s timer
   // persists only after qualified ticks / freezes / rotations — a
   // parked-but-awake head unit stops grinding prefs forever.
@@ -773,7 +778,13 @@ class SpeedProfileService extends ChangeNotifier {
 
   Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
-    _active = prefs.getBool(_kActiveKey) ?? false;
+    // +163 (§2.2): recording is always on — Старт/Стоп/Сброс are gone.
+    // _kActiveKey is deliberately NOT read (the stored value stays
+    // untouched in prefs for a possible manual-mode return); the flag
+    // is simply true for the life of the process. The session body is
+    // guaranteed below, so the old «flag without a body» self-heal and
+    // the _active && s == null early-outs are structurally impossible.
+    _active = true;
     // +162: intention first — a stale one is dropped before any screen
     // can render it.
     _intentBand = prefs.getInt(_kIntentBandKey);
@@ -826,32 +837,32 @@ class SpeedProfileService extends ChangeNotifier {
         _ledger = null;
       }
       final l = _ledger;
+      // +163: the SAME predicate as the tick-side rotation — gap AND a
+      // non-empty session. An empty session (nothing driven since the
+      // last rotation) has nothing to freeze and must not churn a new
+      // session_uid on every boot.
       if (l != null &&
-          DateTime.now().millisecondsSinceEpoch - l.lastMoveMs >
-              kAtlasSessionGapMin * 60000) {
+          _atlasRotationDue(
+              l, DateTime.now().millisecondsSinceEpoch)) {
         debugPrint('Atlas: recovery — stale session '
             '${l.sessionUid.substring(0, 8)}…, closing at lastMove');
         _closeAtlasSession(frozenAtMs: l.lastMoveMs);
       }
     }
 
-    if (_active && _session != null) {
-      // A week-idle session must not resurrect the retained stream on
-      // boot — same rule as the running timer below (p.7).
-      if (_idleTooLong(_session!)) {
-        _active = false;
-        await _persist();
-      } else {
-        // Crash / HU sleep / reinstall-free restart: the session
-        // silently continues (spec §5). At most a 30-second tail was
-        // lost.
-        await _attach();
-      }
-    } else if (_active) {
-      // Flag without a body — self-heal.
-      _active = false;
-      await _persist();
-    }
+    // +163: the session body always exists — it silently continues
+    // across restarts (spec §5, at most a 30 s tail lost) and is born
+    // fresh on the first run. The stream is NOT attached here: on the
+    // head unit _maybeArmAtlas below attaches (and keeps) it; on a
+    // phone nothing attaches at all — an always-true flag must not
+    // resurrect the retained stream and the 1 Hz/30 s timers on a
+    // device where the recorder can never arm (разбор §2).
+    _session ??= SpeedProfileSession.fresh();
+
+    // +163: the card set is re-anchored on standstill only — hydrate
+    // the display window from the persisted ledger (the car is parked
+    // at process birth in every real scenario).
+    _displayWindow = _ledger?.activeWindow;
 
     // ── +158: arm the always-on atlas recorder (review R5) ──
     // The platform probe settles ASYNCHRONOUSLY inside hal.init(), which
@@ -886,47 +897,10 @@ class SpeedProfileService extends ChangeNotifier {
     unawaited(_attach());
   }
 
-  /// Старт — always a fresh session (a stopped-but-unsaved one is
-  /// replaced; the save dialog already had its chance on Стоп).
-  Future<void> start() async {
-    if (_active) return;
-    _session = SpeedProfileSession.fresh();
-    _resetTickState();
-    _active = true;
-    await _attach();
-    await _persist();
-    notifyListeners();
-  }
-
-  /// Стоп — keep the finished session in place so the UI can offer
-  /// "save to archive". Returns it for convenience.
-  ///
-  /// +158: the stream detaches ONLY when the atlas recorder is not
-  /// armed — on the head unit the subscription/pump/persist machinery
-  /// now lives as long as the process (the always-on ledger), a manual
-  /// Стоп merely flips the session overlay off. On a phone (never
-  /// armed) the old full-detach behaviour is preserved verbatim.
-  Future<SpeedProfileSession?> stop() async {
-    if (!_active) return _session;
-    _active = false;
-    if (!_atlasArmed) await _detach();
-    await _persist();
-    notifyListeners();
-    return _session;
-  }
-
-  /// Сброс — while recording: restart the accumulators in place (the
-  /// stream stays up); while stopped: drop the unsaved session.
-  Future<void> reset() async {
-    if (_active) {
-      _session = SpeedProfileSession.fresh();
-      _resetTickState();
-    } else {
-      _session = null;
-    }
-    await _persist();
-    notifyListeners();
-  }
+  // +163 (§2.2): start()/stop()/reset() are GONE from the public API —
+  // recording runs for the life of the process, no screen calls them.
+  // A manual mode may someday return behind a setting; the prefs key
+  // (_kActiveKey) is kept untouched for exactly that day.
 
   /// Suggested archive name: «19.07 · 82 км[ · 28°]» (U3/U4 — the
   /// dt-weighted mean pack temp rides in the auto-name when known).
@@ -1060,7 +1034,6 @@ class SpeedProfileService extends ChangeNotifier {
       await _hal.retainStream();
     }
     _persistTimer ??= Timer.periodic(const Duration(seconds: 30), (_) {
-      _maybeAutoStop();
       // +158 (R6): persist only after qualified ticks / freezes /
       // rotations since the last write — the always-on recorder must
       // not grind prefs forever on a parked-but-awake head unit.
@@ -1075,55 +1048,16 @@ class SpeedProfileService extends ChangeNotifier {
         const Duration(seconds: 1), (_) => _onVirtualTick());
   }
 
-  bool _idleTooLong(SpeedProfileSession s) =>
-      DateTime.now().millisecondsSinceEpoch - s.lastMoveMs >
-      kAutoStopIdleDays * 86400000;
-
-  /// p.7 of the +151 review: an active session with no movement for
-  /// [kAutoStopIdleDays] stops itself — releases the retained stream
-  /// and the 30 s prefs grind. The accumulated body survives as a
-  /// normal stopped session («остановлена — можно сохранить»).
-  void _maybeAutoStop() {
-    final s = _session;
-    if (!_active || s == null) return;
-    if (!_idleTooLong(s)) return;
-    _active = false;
-    _detach();
-    _persist();
-    notifyListeners();
-  }
-
-  Future<void> _detach() async {
-    await _sub?.cancel();
-    _sub = null;
-    _persistTimer?.cancel();
-    _persistTimer = null;
-    _virtualTimer?.cancel();
-    _virtualTimer = null;
-    if (_retained) {
-      _retained = false;
-      await _hal.releaseStream();
-    }
-    _resetTickState();
-  }
-
-  void _resetTickState() {
-    _lastTickMs = null;
-    _lastSpeedDash = null;
-    _dwellBand = null;
-    _dwellSinceMs = null;
-    _zPhase = _ZPhase.idle;
-    _zBelowSinceMs = null;
-    _zT0Ms = null;
-    _zPeakDash = 0;
-    _zPrevMs = null;
-    _zPrevDash = null;
-  }
+  // +163: the 7-day idle auto-stop is retired with manual control. On
+  // the head unit the process dies at ignition-off long before a week;
+  // on a phone nothing ever attaches — a week-idle awake recorder is
+  // not a physical state anymore.
 
   Future<void> _persist() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setBool(_kActiveKey, _active);
+      // +163: _kActiveKey is neither read nor written — the stored
+      // value is preserved verbatim for a possible manual-mode return.
       final s = _session;
       if (s == null) {
         await prefs.remove(_kSessionKey);
@@ -1180,8 +1114,11 @@ class SpeedProfileService extends ChangeNotifier {
     // (overlay, exactly the old behaviour) and the always-on atlas
     // ledger. Either one keeps the tick alive.
     if (!_active && !_atlasArmed) return;
+    // +163: the `_active && s == null` early-out is REMOVED — with the
+    // always-on flag it would have silenced the whole tick (including
+    // _atlasTick) on any session-less state. init() guarantees a body,
+    // and the ledger must never depend on the overlay anyway.
     final s = _session;
-    if (_active && s == null) return;
     if (e.name != 'speed') return;
     final vDash = e.value?.toDouble();
     if (vDash == null) return;
@@ -1215,7 +1152,8 @@ class SpeedProfileService extends ChangeNotifier {
   /// integration baseline cleanly on the first real event.
   void _onVirtualTick() {
     if (!_active && !_atlasArmed) return;
-    if (_active && _session == null) return;
+    // +163: the `_active && _session == null` trap is removed — see
+    // _onEvent.
     final vDash = _lastSpeedDash;
     if (vDash == null) return; // no speed seen yet on this attach
     if (_freshPowerKw() == null) return; // stream dead — freeze
@@ -1374,14 +1312,38 @@ class SpeedProfileService extends ChangeNotifier {
     final l = _ledger;
     if (l == null) return;
 
-    // Session rotation (Q5): movement resuming after the idle gap
-    // closes the previous session FIRST — its matured cells freeze
-    // retroactively at the last movement, then the tick lands in the
-    // fresh session.
-    if (vDash >= 2.0) {
-      if (nowMs - l.lastMoveMs > kAtlasSessionGapMin * 60000) {
+    // Session rotation — +163 redesign (решение владельца 26.07 п.2):
+    // the session is closed ON THE STANDSTILL, not on the first moving
+    // tick. The old moving-tick trigger violated И1 — matured cards
+    // vanished from the screen mid-drive. The freeze is retroactive at
+    // lastMoveMs either way, so the snapshot is bit-for-bit the same;
+    // only the delivery moment moved to where discreteness is allowed.
+    // One shared predicate (_atlasRotationDue: gap AND non-empty
+    // session) guards all three call sites — the parked tick here, the
+    // moving insurance below, and the init() recovery.
+    if (vDash < 2.0) {
+      // Parked (the pump ticks at standstill while the stream lives).
+      if (_atlasRotationDue(l, nowMs)) {
         _closeAtlasSession(frozenAtMs: l.lastMoveMs);
       }
+      // +163: the card set re-anchors on standstill only — the display
+      // window follows the active one while the car stands, and holds
+      // through a mid-drive window switch (И1: the set never mutates
+      // in motion).
+      if (_displayWindow != l.activeWindow) {
+        _displayWindow = l.activeWindow;
+        notifyListeners();
+      }
+    } else {
+      // Insurance: the process was dead through the whole standstill
+      // (the normal HU life cycle) and the first tick is already a
+      // moving one — the stale session still must not swallow a fresh
+      // drive. Same predicate, same retroactive freeze.
+      if (_atlasRotationDue(l, nowMs)) {
+        _closeAtlasSession(frozenAtMs: l.lastMoveMs);
+      }
+    }
+    if (vDash >= 2.0) {
       l.lastMoveMs = nowMs;
       // +160 (§1.4): the trip line of the summary card — every MOVING
       // tick, before qualification (the card says how far this session
@@ -1452,14 +1414,29 @@ class SpeedProfileService extends ChangeNotifier {
   /// Active-window switch on a FRESH reading only (staleness never
   /// switches — R1), with the 1 °C hysteresis: the reading must have
   /// penetrated at least kAtlasHysteresisC past the boundary shared
-  /// with the travel direction. A switch freezes the matured cells of
-  /// the OLD window — the «пак пересёк границу» rule of spec v2.
+  /// with the travel direction.
+  ///
+  /// +163 (решение владельца 26.07): the switch no longer FREEZES the
+  /// old window's cells — freezing happens only on session rotation
+  /// (standstill / insurance / recovery). On the HU the mid-drive
+  /// freeze almost never ran live anyway (the process dies at
+  /// ignition-off; field: freezes_this_process was 0 with snapshots in
+  /// the DB) — this legalises reality and closes the И1 hole where a
+  /// warm-up window crossing yanked a matured card off the screen in
+  /// motion. Bonus: a pack that crosses back into the old window in
+  /// the same drive keeps accumulating into the same cell instead of
+  /// freezing a premature snapshot. Delivery is delayed, never lost —
+  /// the same principle as the +158 trigger semantics.
   void _maybeSwitchWindow(double t, int nowMs) {
     final l = _ledger!;
     final cand = atlasWindowOfTemp(t);
     final act = l.activeWindow;
     if (act == null) {
-      l.activeWindow = cand; // first reading — no hysteresis, no freeze
+      l.activeWindow = cand; // first reading — no hysteresis
+      // First window ever: the card set was empty, so latching the
+      // display anchor here is an appearance of a set, not a mutation
+      // of one — the maturing-card birth the canon already allows.
+      _displayWindow ??= cand;
       return;
     }
     if (cand == act) return;
@@ -1467,10 +1444,19 @@ class SpeedProfileService extends ChangeNotifier {
         ? t - cand // entered from below: past cand's lower bound
         : (cand + kAtlasWindowStepC) - t; // from above: below its upper
     if (depth < kAtlasHysteresisC) return;
-    _freezeMatured(windowFilter: act, frozenAtMs: nowMs);
     l.activeWindow = cand;
     debugPrint('Atlas: window $act → $cand (t=${t.toStringAsFixed(1)}°)');
   }
+
+  /// +163: the ONE rotation predicate (решение владельца 26.07 п.2) —
+  /// the 30-min gap AND a non-empty session. «Non-empty» is measured by
+  /// sessionDistKm: carried sub-threshold cells alone must not rotate a
+  /// parked-but-awake head unit into a fresh session_uid every half
+  /// hour (the rotation itself resets sessionDistKm to 0, so one parked
+  /// stretch rotates at most once).
+  bool _atlasRotationDue(_AtlasLedger l, int nowMs) =>
+      nowMs - l.lastMoveMs > kAtlasSessionGapMin * 60000 &&
+      l.sessionDistKm > 0;
 
   /// Close the atlas session: freeze matured cells of ALL windows
   /// (unknown included) at [frozenAtMs] — retroactive on recovery /
@@ -1480,7 +1466,7 @@ class SpeedProfileService extends ChangeNotifier {
   void _closeAtlasSession({required int frozenAtMs}) {
     final l = _ledger;
     if (l == null) return;
-    _freezeMatured(all: true, frozenAtMs: frozenAtMs);
+    _freezeMatured(frozenAtMs: frozenAtMs);
     final old = l.sessionUid;
     l.sessionUid = uuidV7();
     final nowMs = DateTime.now().millisecondsSinceEpoch;
@@ -1502,23 +1488,25 @@ class SpeedProfileService extends ChangeNotifier {
         '${l.sessionUid.substring(0, 8)}…');
   }
 
-  /// The ONE write funnel for atlas snapshots (regress AX7). Cells of
-  /// the filtered window (or all, on session close) with
+  /// The ONE write funnel for atlas snapshots (regress AX7). Cells with
   /// timeS ≥ kBandMinSeconds freeze into atlas_snapshots and reset in
   /// memory; sub-threshold cells are neither frozen nor reset.
+  /// +163: called ONLY from _closeAtlasSession (rotation / recovery) —
+  /// the window-switch freeze is retired, so the window filter went
+  /// with it and every freeze covers all windows.
   ///
   /// Durability order (review R2, Alex-approved): Drift INSERTs first,
   /// then _persist() writes the reset ledger — a kill in between leaves
   /// a duplicate snapshot at worst, which the contract dedup collapses
-  /// (same session_uid → same logical session; identical value cannot
-  /// move a median). The reverse order would LOSE the snapshot.
+  /// (same session_uid → same logical session; an identical value with
+  /// identical weight cannot move the weighted mean). The reverse
+  /// order would LOSE the snapshot.
   ///
   /// NOTE (review R4, by design — do not "fix"): the on-screen session
   /// band may read «дозрела» (120 s flat) while no single cell reached
   /// 120 s in its own window (warm-up spread the time over 2–3
   /// windows) — no snapshot for that drive; it matures on later trips.
-  void _freezeMatured(
-      {int? windowFilter, bool all = false, required int frozenAtMs}) {
+  void _freezeMatured({required int frozenAtMs}) {
     final l = _ledger;
     if (l == null) return;
     final rows = <AtlasSnapshotsCompanion>[];
@@ -1541,7 +1529,6 @@ class SpeedProfileService extends ChangeNotifier {
             'collection ceiling)');
         return;
       }
-      if (!all && win != windowFilter) return;
       if (cell.distKm <= 1e-6) return; // impossible by construction
       rows.add(AtlasSnapshotsCompanion(
         clientUuid: Value(uuidV7()),
@@ -1897,6 +1884,62 @@ class SpeedProfileService extends ChangeNotifier {
     if (bb == null) return null;
     return AtlasIntent(band: bb, window: win, takenAtMs: 0);
   }
+
+  // ───────────── +163: band-card read API (леджер как источник) ─────────────
+
+  /// One live band of the «Замеры» screen — the per-band projection of
+  /// the ledger. [timeS]/[kwh100] come from the band's DEEPEST live
+  /// cell (max timeS across windows): after a mid-drive window switch
+  /// the bar freezes at the old cell's mark until the new window's
+  /// cell catches up, then keeps crawling — monotonic, never backwards,
+  /// И1 holds without the display layer knowing about windows at all.
+  ({int band, double timeS, double? kwh100}) _liveBandOf(
+      int band, Iterable<MapEntry<String, _AtlasCell>> entries) {
+    _AtlasCell? best;
+    for (final e in entries) {
+      final c = e.value;
+      if (best == null || c.timeS > best.timeS) best = c;
+    }
+    final b = best!;
+    return (
+      band: band,
+      timeS: b.timeS,
+      kwh100: b.distKm > 1e-6 ? b.energyKwh / b.distKm * 100.0 : null,
+    );
+  }
+
+  /// All bands with a live ledger cell (any window) — «те, что копятся
+  /// сейчас» of the card set. Sorted ascending by band; the screen does
+  /// its own stage split and ordering.
+  List<({int band, double timeS, double? kwh100})> atlasLiveBands() {
+    final l = _ledger;
+    if (l == null) return const [];
+    final byBand = <int, List<MapEntry<String, _AtlasCell>>>{};
+    l.cells.forEach((key, c) {
+      final sep = key.indexOf(':');
+      final b = int.tryParse(key.substring(0, sep));
+      if (b == null) return;
+      byBand.putIfAbsent(b, () => []).add(MapEntry(key, c));
+    });
+    final bands = byBand.keys.toList()..sort();
+    return [for (final b in bands) _liveBandOf(b, byBand[b]!)];
+  }
+
+  /// Live kwh100 of ONE cell (band × window) — решение владельца 26.07
+  /// п.11: the summary card reads the cell LIVE at display time, not
+  /// the number frozen into the reveal payload. Null when the cell has
+  /// already left the ledger (rotation happened) — the caller falls
+  /// back to the payload then.
+  double? atlasLiveCellKwh100(int band, int? window) {
+    final c = _ledger?.cells[_AtlasLedger.cellKey(band, window)];
+    if (c == null || c.distKm <= 1e-6) return null;
+    return c.energyKwh / c.distKm * 100.0;
+  }
+
+  /// Live steady seconds of ONE cell — feeds the intention phrasing
+  /// («подержи {v} км/ч ещё {t}», решение 26.07 п.6).
+  double atlasCellTimeS(int band, int? window) =>
+      _ledger?.cells[_AtlasLedger.cellKey(band, window)]?.timeS ?? 0;
 
   /// Cells that have matured but whose snapshot is not frozen yet — the
   /// freeze happens on session rotation, so between «полоса дозрела» and

@@ -4439,7 +4439,17 @@ if int(pv) >= 151:
     # threshold and empty bands never render.
     _aw8 = ('const double kBandMinSeconds = 120.0;'
             if int(pv) >= 154 else 'const double kBandMinSeconds = 60.0;')
-    if _aw8 in sps and \
+    # +163 re-era: the screen renders the LEDGER — the session
+    # projection (visibleBands) must be GONE from the screen; the
+    # threshold constant and its cell-side use are permanent.
+    if int(pv) >= 163:
+        if _aw8 in sps and \
+           'timeS >= kBandMinSeconds' in sps and \
+           'visibleBands' not in spu:
+            ok('AW8 (re-era +163) threshold kept; session projection off-screen')
+        else:
+            fail('AW8 (re-era +163) threshold wrong or visibleBands leaked back')
+    elif _aw8 in sps and \
        'timeS >= kBandMinSeconds' in sps and \
        'visibleBands' in spu:
         ok('AW8 band threshold matches the era, no zero rows')
@@ -4449,7 +4459,20 @@ if int(pv) >= 151:
     # releases the retained stream (constant + idle clock + check wired
     # into BOTH the 30 s timer and init-resume); and the A/B picker is
     # cleared on EVERY archive mutation (delete AND save/evict).
-    if 'const int kAutoStopIdleDays = 7;' in sps and \
+    # +163 re-era: manual control is retired — the auto-stop machinery
+    # and the archive A/B picker must be ABSENT (recording is always
+    # on; the archive UI left the screen). lastMoveMs stays: it is the
+    # atlas rotation anchor now.
+    if int(pv) >= 163:
+        if 'kAutoStopIdleDays' not in sps and \
+           '_maybeAutoStop' not in sps and \
+           '_idleTooLong' not in sps and \
+           'lastMoveMs' in sps and \
+           '_compareSel' not in spu:
+            ok('AW9 (re-era +163) auto-stop & A/B picker retired with manual control')
+        else:
+            fail('AW9 (re-era +163) auto-stop / picker remnants survived')
+    elif 'const int kAutoStopIdleDays = 7;' in sps and \
        'lastMoveMs' in sps and \
        '_maybeAutoStop' in sps and \
        '_idleTooLong(_session!)' in sps and \
@@ -4491,7 +4514,25 @@ if int(pv) >= 151:
     # counters) + the PERMANENT maturing-band progress UX: sub-60 s
     # bands render dimmed with «N из 60 с» so the first hour of use
     # never looks dead.
-    if int(pv) >= 153:
+    if int(pv) >= 163:
+        # +163 re-era: the SERVICE side of the diag machinery is
+        # permanent (counters, dumpDiag, the diary file); the SCREEN
+        # side left — the dump moved to Настройки → Расширенное (BB7),
+        # the maturing card became the band card, the tick row died.
+        if 'class TickDiag' in sps and \
+           'd.total++' in sps and 'd.qualified++' in sps and \
+           "'diag': diag.toJson()" in sps and \
+           'maturingBands' in sps and \
+           'dumpDiag' in sps and \
+           'DiagDumpFile.instance.append' in sps and \
+           '_MaturingCard' not in spu and \
+           '_TickDiagRow' not in spu and \
+           "S.of('measure.of')" not in spu and \
+           "S.of('measure.dump')" not in spu:
+            ok('AW11 (re-era +163) diag service intact; screen diag retired')
+        else:
+            fail('AW11 (re-era +163) diag split broken')
+    elif int(pv) >= 153:
         if 'class TickDiag' in sps and \
            'd.total++' in sps and 'd.qualified++' in sps and \
            "'diag': diag.toJson()" in sps and \
@@ -4530,7 +4571,18 @@ if int(pv) >= 151:
     # band 40, consumption FALLING with speed — inverted EV physics).
     # Regen/coast inside the corridor must subtract; negPower is
     # informational only; the UI must survive a negative band.
-    if int(pv) >= 155:
+    if int(pv) >= 163:
+        # +163 re-era: the regen guard moved with the range line into
+        # band_card.dart; the chart guard stays in the screen.
+        bcs_aw = (root / 'lib/widgets/band_card.dart').read_text()
+        if 'd.negPower++; // informational' in sps and \
+           'if (p <= 0) return;' not in sps and \
+           'cons > 0.5' in bcs_aw and \
+           'minY: minV < 0' in spu:
+            ok('AW13 (re-era +163) signed energy; guards in band_card + chart')
+        else:
+            fail('AW13 (re-era +163) signed-energy guards broken')
+    elif int(pv) >= 155:
         if 'd.negPower++; // informational' in sps and \
            'if (p <= 0) return;' not in sps and \
            'cons > 0.5' in spu and \
@@ -5135,6 +5187,192 @@ if int(pv) >= 151:
                     ok('BA7 full month names in prose, short on the axis')
                 else:
                     fail('BA7 month naming still abbreviated in prose')
+
+                # ───── Part BB: +163 «Замеры по контракту, заход A» ─────
+                # Экран «Замеры» пересобран по канону 1.2 §7.1/§7.4:
+                # леджер как источник карточек, кнопки/архив/дамп ушли,
+                # ротация на стоянке, взвешенная средняя, displayWindow.
+                if int(pv) >= 163:
+                    bcs = (root / 'lib/widgets/band_card.dart').read_text()
+                    sett2 = (root / 'lib/screens/settings.dart').read_text()
+
+                    # BB1: teardown — no manual controls, no archive, no
+                    # in-screen dump; the band chart SURVIVES (канон §0.1:
+                    # отмена отмены — график остаётся навсегда).
+                    if "S.of('measure.start')" not in spscr2 and \
+                       "S.of('measure.stop')" not in spscr2 and \
+                       "S.of('measure.reset')" not in spscr2 and \
+                       "S.of('measure.dump')" not in spscr2 and \
+                       '_buildArchive' not in spscr2 and \
+                       '_ArchivedDetailScreen' not in spscr2 and \
+                       '_CompareScreen' not in spscr2 and \
+                       'package:fl_chart/fl_chart.dart' in spscr2 and \
+                       "S.of('measure.chart_title')" in spscr2:
+                        ok('BB1 teardown complete; band chart survives')
+                    else:
+                        fail('BB1 teardown incomplete or the chart died')
+
+                    # BB2: always-on — the flag is constant-true after
+                    # init, the prefs key is neither read nor written but
+                    # its literal stays declared (a reserved slot).
+                    if '_active = true;' in sps and \
+                       'prefs.getBool(_kActiveKey)' not in sps and \
+                       'prefs.setBool(_kActiveKey' not in sps and \
+                       "= 'speed_profile_active';" in sps and \
+                       'Future<void> start()' not in sps and \
+                       'Future<SpeedProfileSession?> stop()' not in sps and \
+                       'Future<void> reset()' not in sps:
+                        ok('BB2 always-on recording; prefs slot reserved untouched')
+                    else:
+                        fail('BB2 manual-control remnants or prefs key touched')
+
+                    # BB3: the band card widget — three stages in ONE
+                    # card, the maturing→matured crossfade ≤ 300 мс, and
+                    # the tile set is decided by the screen (no silent
+                    # placeholder rows).
+                    if 'class BandCard' in bcs and \
+                       'class BandCardModel' in bcs and \
+                       'AnimatedCrossFade' in bcs and \
+                       'Duration(milliseconds: 280)' in bcs and \
+                       "S.of('measure.stage_maturing')" in bcs and \
+                       "S.of('measure.stage_matured')" in bcs:
+                        ok('BB3 band card: three stages, ≤300 ms crossfade')
+                    else:
+                        fail('BB3 band card missing a stage or the crossfade')
+
+                    # BB4: range from consumption is computed in exactly
+                    # ONE place (band_card.atlasRangeKm) — the reveal card
+                    # calls it, no local copy survives anywhere.
+                    if 'int atlasRangeKm(double kwh100)' in bcs and \
+                       bcs.count('packCapacityKwh') == 1 and \
+                       'atlasRangeKm(' in spscr2 and \
+                       '_rangeKm' not in spscr2 and \
+                       'packCapacityKwh / kwh100' not in spscr2:
+                        ok('BB4 range helper: one funnel in band_card')
+                    else:
+                        fail('BB4 range computed in more than one place')
+
+                    # BB5: the status chip — two slots, both states named,
+                    # the P glyph in gearP, the rec dot from the token.
+                    if 'class _StatusChip' in spscr2 and \
+                       "S.of('measure.chip_rec')" in spscr2 and \
+                       "S.of('measure.chip_parked')" in spscr2 and \
+                       'AtlasTokens.rec' in spscr2 and \
+                       'AtlasTokens.gearP' in spscr2 and \
+                       'static const Color rec = Color(0xFFFF5252);' in toks:
+                        ok('BB5 status chip: rec/parked slots + rec token')
+                    else:
+                        fail('BB5 status chip wiring incomplete')
+
+                    # BB6: empty state 2d/3d — headline + ghost card at
+                    # opacity .4 with its caption; no tutorial buttons.
+                    if 'class BandEmptyState' in bcs and \
+                       "S.of('measure.empty_title')" in bcs and \
+                       "S.of('measure.empty_ghost')" in bcs and \
+                       'Opacity(opacity: 0.4' in bcs:
+                        ok('BB6 empty state: ghost band card at .4')
+                    else:
+                        fail('BB6 empty state incomplete')
+
+                    # BB7: the diag dump lives in Настройки → Расширенное
+                    # now — service call intact, screen free of it (the
+                    # screen half is pinned by BB1/AW11).
+                    if "S.of('settings.adv.dump')" in sett2 and \
+                       'dumpDiag()' in sett2 and \
+                       "S.of('settings.adv.dump_ok')" in sett2 and \
+                       "S.of('settings.adv.dump_fail')" in sett2:
+                        ok('BB7 diag dump relocated to Advanced settings')
+                    else:
+                        fail('BB7 diag dump tile missing in settings')
+
+                    # BB8: l10n — the +163 keys exist in BOTH maps, the
+                    # manual-era keys are GONE from both, and the reveal
+                    # card family is intact (24 card_* entries).
+                    _bb8_new = ['measure.chip_rec', 'measure.chip_parked',
+                                'measure.stage_maturing',
+                                'measure.stage_matured', 'measure.of_120',
+                                'measure.range_est', 'measure.in_atlas',
+                                'measure.empty_title', 'measure.empty_ghost',
+                                'measure.z100_ready', 'measure.z100_last',
+                                'measure.intent_hold', 'measure.intent_new',
+                                'measure.intent_refine',
+                                'settings.adv.dump']
+                    _bb8_dead = ['measure.start', 'measure.stop',
+                                 'measure.reset', 'measure.dump',
+                                 'measure.archive_title', 'measure.save_q',
+                                 'measure.compare', 'measure.evict_q']
+                    if all(l10n.count("'" + k + "'") == 2
+                           for k in _bb8_new) and \
+                       all("'" + k + "'" not in l10n
+                           for k in _bb8_dead) and \
+                       l10n.count("'measure.card_") == 24:
+                        ok('BB8 l10n: +163 keys ×2, manual-era keys gone')
+                    else:
+                        fail('BB8 l10n keys wrong')
+
+                    # BB9: cards read the LEDGER — the service exposes the
+                    # live-band projection, the screen builds models from
+                    # it plus the grid, and the atlas line rides on the
+                    # card (решение 26.07 п.1/п.3).
+                    if 'atlasLiveBands()' in sps and \
+                       'atlasLiveCellKwh100(' in sps and \
+                       'atlasLiveBands()' in spscr2 and \
+                       "'measure.in_atlas'" in bcs and \
+                       'svc.session.bands' not in spscr2:
+                        ok('BB9 cards render the ledger + atlas line')
+                    else:
+                        fail('BB9 cards still read the session overlay')
+
+                    # BB10: the cell number is the steady_seconds-weighted
+                    # mean, computed once in the projection; the word
+                    # median left every atlas file (решение 26.07 п.10).
+                    _bb10_files = [proj2, atls2, atlw2, grid2, expo,
+                                   (root /
+                                    'lib/screens/atlas_cell_detail.dart'
+                                    ).read_text()]
+                    if proj2.count('r.kwh100 * r.steadySeconds') == 1 and \
+                       'final double mean;' in proj2 and \
+                       all('median' not in f.lower()
+                           for f in _bb10_files):
+                        ok('BB10 weighted mean in one place; median retired')
+                    else:
+                        fail('BB10 mean/median discipline broken')
+
+                    # BB11: rotation fires on the STANDSTILL under ONE
+                    # predicate (gap AND non-empty session) shared with
+                    # the moving insurance and the recovery path.
+                    if 'bool _atlasRotationDue(' in sps and \
+                       'l.sessionDistKm > 0;' in sps and \
+                       sps.count('_atlasRotationDue(') == 4 and \
+                       sps.count('_closeAtlasSession(frozenAtMs: l.lastMoveMs)') == 3:
+                        ok('BB11 parked rotation: one predicate, three sites')
+                    else:
+                        fail('BB11 rotation predicate/sites wrong')
+
+                    # BB12: the nav item is «Батарея» (решение 26.07
+                    # п.15) — the key name itself never renames (§8).
+                    if "'nav.cells': 'Батарея'," in l10n and \
+                       "'nav.cells': 'Battery'," in l10n and \
+                       "'nav.cells': 'Ячейки'," not in l10n:
+                        ok('BB12 nav item renamed to Батарея/Battery')
+                    else:
+                        fail('BB12 nav.cells still Ячейки')
+
+                    # BB13: freezing happens ONLY on rotation/recovery
+                    # (the window-switch freeze is retired), and the card
+                    # set is anchored to a display window latched on
+                    # standstill ticks (решение 26.07 — И1 structurally).
+                    if '_freezeMatured(frozenAtMs:' in sps and \
+                       sps.count('_freezeMatured(') >= 2 and \
+                       'windowFilter' not in sps and \
+                       'int? _displayWindow;' in sps and \
+                       'int? get atlasDisplayWindow => _displayWindow;' in sps and \
+                       'atlasDisplayWindow' in spscr2:
+                        ok('BB13 freeze on rotation only; display window latched')
+                    else:
+                        fail('BB13 freeze/display-window discipline broken')
+                else:
+                    ok(f"Part BB skipped (build +{pv}, заход A lands in +163)")
             else:
                 ok(f"Part BA skipped (build +{pv}, полевые правки land in +162)")
         else:
