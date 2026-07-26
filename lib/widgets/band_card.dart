@@ -243,7 +243,7 @@ class BandEmptyState extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final ghost = Container(
-      width: bz3 ? double.infinity : 780,
+      width: double.infinity,
       decoration: BoxDecoration(
         color: AtlasTokens.cardMuted,
         borderRadius: BorderRadius.circular(bz3 ? 22 : 24),
@@ -277,32 +277,36 @@ class BandEmptyState extends StatelessWidget {
               color: const Color(0x801DE9B6),
             ),
           ),
-          SizedBox(height: bz3 ? 10 : 12),
-          Text(S.of('measure.empty_ghost'),
-              style: TextStyle(
-                  fontSize: bz3 ? 16 : 19, color: AtlasTokens.t50)),
         ],
       ),
     );
+    // +164 [2d/3d]: the caption moved OUT of the ghost. Inside it read
+    // as part of the fake card; outside it is what it actually is — a
+    // sentence about the picture above.
     return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        Text(S.of('measure.empty_title'),
+            style: TextStyle(
+                fontSize: bz3 ? 26 : 32,
+                height: 1.35,
+                fontWeight: FontWeight.w500,
+                // white .75 — the 2d/3d mockup value; deliberately a
+                // local literal, .75 is not a rung of the §2 ladder.
+                color: const Color(0xBFFFFFFF))),
+        SizedBox(height: bz3 ? 14 : 18),
+        Text(S.of('measure.empty_body'),
+            style: TextStyle(
+                fontSize: bz3 ? 17 : 21,
+                height: 1.45,
+                color: AtlasTokens.t60)),
         SizedBox(height: bz3 ? 24 : 32),
-        Icon(Icons.speed, size: bz3 ? 64 : 80, color: AtlasTokens.t22),
-        SizedBox(height: bz3 ? 32 : 40),
-        Padding(
-          padding:
-              EdgeInsets.symmetric(horizontal: bz3 ? 40 : 0),
-          child: Text(S.of('measure.empty_title'),
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                  fontSize: bz3 ? 26 : 32,
-                  height: 1.4,
-                  // white .75 — the 2d/3d mockup value; deliberately a
-                  // local literal, .75 is not a rung of the §2 ladder.
-                  color: const Color(0xBFFFFFFF))),
-        ),
-        SizedBox(height: bz3 ? 32 : 40),
-        Center(child: Opacity(opacity: 0.4, child: ghost)),
+        // BB6: the ghost stays at exactly .4.
+        Opacity(opacity: 0.4, child: ghost),
+        SizedBox(height: bz3 ? 12 : 14),
+        Text(S.of('measure.empty_ghost'),
+            style: TextStyle(
+                fontSize: bz3 ? 16 : 19, color: AtlasTokens.t50)),
       ],
     );
   }

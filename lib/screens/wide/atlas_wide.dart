@@ -41,10 +41,14 @@ class _AtlasWideScreenState extends State<AtlasWideScreen> {
 
   void _reload() {
     final db = context.read<ConnectionService>().db;
-    _loadedRevision = context.read<SpeedProfileService>().atlasRevision;
+    final sp = context.read<SpeedProfileService>();
+    _loadedRevision = sp.atlasRevision;
     _future = db
         .getAtlasSnapshotsForGrid(maxBand: kAtlasBandMaxKmh)
-        .then((rows) => AtlasGridData.fromRows(rows));
+        .then((rows) => AtlasGridData.fromRows(rows,
+            // +164 (BC7b): rows of the RUNNING session are provisional
+            // chunks — §6.13 paints them, the grid must not count them.
+            activeSessionUid: sp.atlasSessionUid));
   }
 
   @override

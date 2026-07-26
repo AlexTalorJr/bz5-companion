@@ -26,16 +26,18 @@ import 'package:provider/provider.dart';
 import '../data/atlas_projection.dart';
 import '../data/database.dart';
 import '../l10n/strings.dart';
+import '../services/cloud_sync_service.dart';
 import '../services/connection.dart';
 import '../services/hal_telemetry_service.dart';
 import '../services/locale_service.dart';
 import '../services/speed_profile_service.dart';
 import '../theme/atlas_tokens.dart';
 import '../widgets/atlas_grid.dart'
-    show atlasCountsLabel, atlasMonthNames;
+    show AtlasGhostCell, atlasCountsLabel, atlasMonthNames;
 import '../widgets/band_card.dart';
 import '../widgets/responsive.dart';
 import 'atlas.dart';
+import 'settings.dart' show CloudServicesScreen;
 import 'wide/atlas_wide.dart';
 
 class SpeedProfileScreen extends StatefulWidget {
@@ -81,10 +83,14 @@ class _SpeedProfileScreenState extends State<SpeedProfileScreen> {
 
   void _load() {
     final db = context.read<ConnectionService>().db;
-    _loadedRevision = context.read<SpeedProfileService>().atlasRevision;
+    final sp = context.read<SpeedProfileService>();
+    _loadedRevision = sp.atlasRevision;
     _gridFuture = db
         .getAtlasSnapshotsForGrid(maxBand: kAtlasBandMaxKmh)
-        .then((rows) => AtlasGridData.fromRows(rows));
+        .then((rows) => AtlasGridData.fromRows(rows,
+            // +164 (BC7b): rows of the RUNNING session are provisional
+            // chunks — §6.13 paints them, the grid must not count them.
+            activeSessionUid: sp.atlasSessionUid));
   }
 
   @override
@@ -231,77 +237,163 @@ class _SpeedProfileScreenState extends State<SpeedProfileScreen> {
       builder: (context, snap) {
         final data = snap.data;
         final models = _bandModels(svc, data);
-        final maturedWithNumber = [
-          for (final m in models)
-            if (m.matured && m.kwh100 != null) m
+        // +164 [2d/3d]: the first-entry screen. Criterion is the FIRST
+        // CARD OF ANY STAGE, not the first matured one — a live cell is
+        // born after kBandDwellS seconds in a band, long before 120 s,
+        // and the literal reading of the spec would have hidden a card
+        // the empty state had just promised. This is also what +163
+        // already did (`models.isEmpty`); the wording changed, the
+        // criterion did not.
+        final firstEntry = models.isEmpty;
+
+        // ── left column / portrait ribbon: the measurement itself ──
+        final measurement = <Widget>[
+          // +160 (§2.2): карточка итогов — сверху колонки полос, НЕ
+          // оверлей. Появление на стоянке — обычный build по условию.
+          if (_cardVisible && _cardReveals != null) ...[
+            _RevealCard(
+              svc: svc,
+              reveals: _cardReveals!,
+              onOk: () => _onOkReveals(svc),
+            ),
+            SizedBox(height: bz3 ? 16 : 20),
+          ],
+          // +162 (§6.10, макет [5c]) → +163 (решение 26.07 п.6):
+          // намерение сформулировано через управляемое; переживает
+          // «Ок», в движении не существует.
+          _IntentCard(isParked: _isParked, bz3: bz3, grid: data),
+          if (firstEntry)
+            BandEmptyState(bz3: bz3)
+          else
+            for (final m in models) ...[
+              // Keyed by band: when the order does change (stage flip /
+              // standstill), Flutter moves the element instead of
+              // rebuilding it — the crossfade state survives.
+              BandCard(key: ValueKey('band_${m.band}'), model: m, bz3: bz3),
+              SizedBox(height: bz3 ? 16 : 20),
+            ],
         ];
-        return ListView(
-          padding: bz3
-              ? const EdgeInsets.fromLTRB(24, 20, 24, 20)
-              : const EdgeInsets.fromLTRB(44, 28, 44, 24),
-          children: [
-            _ScreenHeader(isParked: _isParked, bz3: bz3),
-            // +160 (§2.2): карточка итогов — сверху колонки полос, НЕ
-            // оверлей. Появление на стоянке — обычный build по условию.
-            if (_cardVisible && _cardReveals != null) ...[
-              SizedBox(height: bz3 ? 16 : 24),
-              _RevealCard(
-                svc: svc,
-                reveals: _cardReveals!,
-                onOk: () => _onOkReveals(svc),
+
+        // The three cards that are NOT the measurement itself. They are
+        // ordered differently per form factor, so build them once and
+        // let each branch arrange them.
+        final atlasEntry =
+            _AtlasEntryCard(data: data, bz3: bz3, firstEntry: firstEntry);
+        final syncCard = _SyncCard(bz3: bz3);
+        final zeroTo100 =
+            _ZeroTo100Card(session: svc.session, bz3: bz3,
+                firstEntry: firstEntry);
+
+        // ── BZ5 right column: atlas → sync → 0–100 ──
+        // Owner's decision 26.07, and the SAME order in every state —
+        // the mockup's flipped first-entry column is cancelled, so
+        // nothing re-orders under the user and no standstill latch is
+        // needed for the composition.
+        final aside = <Widget>[
+          // +161 (§7.1): the door into the atlas — открыт всегда.
+          atlasEntry,
+          const SizedBox(height: 20),
+          if (_isParked) ...[
+            syncCard,
+            const SizedBox(height: 20),
+          ],
+          zeroTo100,
+        ];
+
+        // ── BZ3 ribbon tail: 0–100 → atlas → sync ──
+        // «Атлас сверху» is a statement about the BZ5 RIGHT COLUMN
+        // (owner, 26.07) and is deliberately not applied here. Canon
+        // §7.4 keeps 0–100 with the band cards — in a single portrait
+        // ribbon it is part of the measurement, not a side door — and
+        // the sync card sits after the atlas entry.
+        final ribbonTail = <Widget>[
+          zeroTo100,
+          const SizedBox(height: 16),
+          atlasEntry,
+          const SizedBox(height: 16),
+          if (_isParked) ...[
+            syncCard,
+            const SizedBox(height: 16),
+          ],
+        ];
+
+        // Honest platform limitation, spelled out (spec §5): a sleeping
+        // head unit measures nothing — same physics as the AC night.
+        final sleepNote = Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4),
+          child: Text(
+            S.of('measure.sleep_note'),
+            style:
+                TextStyle(fontSize: 12, color: Colors.white.withOpacity(0.4)),
+          ),
+        );
+
+        // The chart lives at the BOTTOM of the left column on BZ5 (gap
+        // 20) and as the LAST card of the ribbon on BZ3 (gap 16).
+        final chart = _BandBarCard(data: data, bz3: bz3);
+
+        if (bz3) {
+          // BZ3 gets no columns — one portrait ribbon, canon §7.4.
+          return ListView(
+            padding: const EdgeInsets.fromLTRB(24, 20, 24, 20),
+            children: [
+              _ScreenHeader(isParked: _isParked, bz3: true),
+              const SizedBox(height: 16),
+              ...measurement,
+              ...ribbonTail,
+              chart,
+              const SizedBox(height: 12),
+              sleepNote,
+              const SizedBox(height: 24),
+            ],
+          );
+        }
+
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(44, 28, 44, 24),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _ScreenHeader(isParked: _isParked, bz3: false),
+              const SizedBox(height: 24),
+              Expanded(
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Left column is FLEXIBLE. The mockup calls it
+                    // «flex 1.5», but a lone Flexible in a Row has no
+                    // one to weigh against — the number would be a dead
+                    // literal. Expanded is the honest expression of
+                    // «everything the fixed column leaves».
+                    Expanded(
+                      child: ListView(
+                        padding: EdgeInsets.zero,
+                        children: [
+                          ...measurement,
+                          const SizedBox(height: 20),
+                          chart,
+                          const SizedBox(height: 24),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 24),
+                    SizedBox(
+                      width: 560,
+                      child: ListView(
+                        padding: EdgeInsets.zero,
+                        children: [
+                          ...aside,
+                          const SizedBox(height: 16),
+                          sleepNote,
+                          const SizedBox(height: 24),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ],
-            // +162 (§6.10, макет [5c]) → +163 (решение 26.07 п.6):
-            // намерение сформулировано через управляемое; переживает
-            // «Ок», в движении не существует.
-            _IntentCard(isParked: _isParked, bz3: bz3, grid: data),
-            SizedBox(height: bz3 ? 16 : 24),
-            // ── карточки полос §6.1 / пустое состояние 2d·3d ──
-            if (models.isEmpty)
-              BandEmptyState(bz3: bz3)
-            else
-              for (final m in models) ...[
-                // Keyed by band: when the order does change (stage
-                // flip / standstill), Flutter moves the element instead
-                // of rebuilding it — the crossfade state survives.
-                BandCard(
-                    key: ValueKey('band_${m.band}'),
-                    model: m,
-                    bz3: bz3),
-                SizedBox(height: bz3 ? 16 : 20),
-              ],
-            // ── график по полосам — остаётся навсегда (канон §0.1) ──
-            if (maturedWithNumber.isNotEmpty) ...[
-              SizedBox(height: bz3 ? 0 : 4),
-              _BandBarCard(
-                bars: [
-                  for (final m in maturedWithNumber
-                    ..sort((a, b) => a.band.compareTo(b.band)))
-                    (band: m.band, kwh100: m.kwh100!)
-                ],
-                bz3: bz3,
-              ),
-              SizedBox(height: bz3 ? 16 : 24),
-            ] else
-              SizedBox(height: bz3 ? 16 : 24),
-            _ZeroTo100Card(session: svc.session, bz3: bz3),
-            SizedBox(height: bz3 ? 16 : 24),
-            // +161 (§7.1): the door into the atlas — открыт всегда.
-            _AtlasEntryCard(data: data, bz3: bz3),
-            SizedBox(height: bz3 ? 12 : 16),
-            // Honest platform limitation, spelled out (spec §5): a
-            // sleeping head unit measures nothing — same physics as the
-            // AC night.
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 4),
-              child: Text(
-                S.of('measure.sleep_note'),
-                style: TextStyle(
-                    fontSize: 12, color: Colors.white.withOpacity(0.4)),
-              ),
-            ),
-            const SizedBox(height: 24),
-          ],
+          ),
         );
       },
     );
@@ -418,108 +510,211 @@ class _StatusChip extends StatelessWidget {
 /// _BarCard on the BZ5 head unit hold: NO BarTouchData whatsoever
 /// (the +45 fl_chart 0.68 release-mode white card), text fallback
 /// below 3 bands (rectangles without a shape to read are not a chart).
+/// Consumption per speed band — the second projection of the atlas
+/// (canon §0.1: «карточки про сессию, график про кривую»).
+///
+/// +164 [6d/6f/6g] — this is a REBUILD, not a move:
+///   * source is the ATLAS GRID, not the live session. The subtitle
+///     says «все поездки» and §7.1 asks for the shape of the whole
+///     curve, which a single drive cannot draw;
+///   * all eleven bands 40…140 are always present. A band with no
+///     steady time is a grey stub, so the curve keeps its shape from
+///     the very first cell and the <3-band text fallback is gone;
+///   * the most economical EARNED band is highlighted — under a
+///     `> 0.5` guard, because a regen-heavy descent can legitimately
+///     hold kwh100 at or below zero and would otherwise win «самая
+///     экономичная» forever. Same trap the canon already caught in the
+///     «лучшая клетка» rule for the export.
+///
+/// Outer width is deliberately NOT pinned. The mockup's 1539 dp were
+/// measured from the full 2175 dp panel, but `head_unit_scaffold`
+/// spends 80 dp on the NavigationRail plus a 1 dp divider, so the real
+/// content area is 2094 and the left column lands near 1422. The card
+/// fills whatever the flexible left column gives it; only the internal
+/// geometry is literal.
 class _BandBarCard extends StatelessWidget {
-  final List<({int band, double kwh100})> bars;
+  final AtlasGridData? data;
   final bool bz3;
-  const _BandBarCard({required this.bars, required this.bz3});
+  const _BandBarCard({required this.data, required this.bz3});
+
+  /// Steady-weighted mean per band across ALL temperature windows —
+  /// the same weighting `AtlasCellStat.mean` uses inside one cell, so
+  /// the curve and the grid never disagree.
+  Map<int, double> _byBand() {
+    final num = <int, double>{};
+    final den = <int, double>{};
+    for (final c in data?.cells ?? const <AtlasCellStat>[]) {
+      final w = c.steadySeconds;
+      if (w <= 0) continue;
+      num[c.band] = (num[c.band] ?? 0) + c.mean * w;
+      den[c.band] = (den[c.band] ?? 0) + w;
+    }
+    return {
+      for (final b in num.keys)
+        if ((den[b] ?? 0) > 0) b: num[b]! / den[b]!,
+    };
+  }
 
   @override
   Widget build(BuildContext context) {
+    final earned = _byBand();
+    final bands = <int>[
+      for (var b = kAtlasBandMinKmh;
+          b <= kAtlasBandMaxKmh;
+          b += kAtlasBandStepKmh)
+        b
+    ];
+
+    // Highlight guard: minimum among cells above 0.5 kWh/100km only.
+    int? bestBand;
+    var best = double.infinity;
+    earned.forEach((b, v) {
+      if (v > 0.5 && v < best) {
+        best = v;
+        bestBand = b;
+      }
+    });
+
+    final vals = earned.values.toList();
+    final maxV = vals.isEmpty
+        ? 1.0
+        : vals.reduce((a, b) => a > b ? a : b);
+    final minV = vals.isEmpty ? 0.0 : vals.reduce((a, b) => a < b ? a : b);
+    final top = maxV * 1.15 + 0.1;
+    final bottom = minV < 0 ? minV * 1.15 - 0.1 : 0.0;
+
     return Container(
       decoration: BoxDecoration(
         color: AtlasTokens.card,
         borderRadius: BorderRadius.circular(bz3 ? 22 : 24),
       ),
       padding: bz3
-          ? const EdgeInsets.symmetric(vertical: 22, horizontal: 28)
-          : const EdgeInsets.symmetric(vertical: 26, horizontal: 32),
+          ? const EdgeInsets.symmetric(vertical: 26, horizontal: 28)
+          : const EdgeInsets.symmetric(vertical: 26, horizontal: 36),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(S.of('measure.chart_title'),
               style: TextStyle(
-                  fontSize: bz3 ? 20 : 25,
+                  fontSize: bz3 ? 22 : 26,
                   fontWeight: FontWeight.w500,
                   color: AtlasTokens.t85)),
-          SizedBox(height: bz3 ? 12 : 14),
-          if (bars.length < 3)
-            _textFallback()
-          else
-            SizedBox(height: 160, child: _chart()),
+          SizedBox(height: bz3 ? 4 : 6),
+          Text(S.of('measure.chart_sub'),
+              style: TextStyle(
+                  fontSize: bz3 ? 16 : 20, color: AtlasTokens.t40)),
+          SizedBox(height: bz3 ? 18 : 22),
+          SizedBox(
+            height: bz3 ? 180 : 260,
+            child: _chart(bands, earned, bestBand, top, bottom),
+          ),
+          SizedBox(height: bz3 ? 18 : 22),
+          Text(
+              // BZ3 drops the second sentence: at 668 dp it pushed the
+              // card into an extra line for no new information.
+              S.of(bz3 ? 'measure.chart_note_short' : 'measure.chart_note'),
+              style: TextStyle(
+                  fontSize: bz3 ? 16 : 20,
+                  height: 1.35,
+                  color: AtlasTokens.t40)),
         ],
       ),
     );
   }
 
-  Widget _textFallback() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        for (final b in bars)
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 2),
-            child: Text(
-              '${b.band} → ${b.kwh100.toStringAsFixed(1)} ${S.of('measure.kwh100')}',
-              style: TextStyle(
-                  fontSize: bz3 ? 16 : 20, color: AtlasTokens.t60),
-            ),
-          ),
-      ],
-    );
-  }
-
-  Widget _chart() {
-    double maxV = 0;
-    double minV = 0;
-    for (final b in bars) {
-      if (b.kwh100 > maxV) maxV = b.kwh100;
-      if (b.kwh100 < minV) minV = b.kwh100;
-    }
-    // Index-based x (the Trends _BarCard pattern) — band values as x
-    // would make fl_chart title interpolated ticks between the bars.
-    // Signed energy (+155): the axis survives a negative band.
+  Widget _chart(List<int> bands, Map<int, double> earned, int? bestBand,
+      double top, double bottom) {
+    // Three Y labels computed from the data range — never literals, or
+    // a winter atlas would draw off the top of the card.
+    final ticks = <double>[
+      bottom,
+      bottom + (top - bottom) / 2,
+      top,
+    ];
     return BarChart(
       BarChartData(
-        maxY: maxV * 1.15 + 0.1,
-        minY: minV < 0 ? minV * 1.15 - 0.1 : 0,
+        maxY: top,
+        minY: bottom,
+        // The +45 head-unit survival rule: touch stays off.
         barTouchData: BarTouchData(enabled: false),
         gridData: const FlGridData(show: false),
-        borderData: FlBorderData(show: false),
+        borderData: FlBorderData(
+          show: true,
+          border: Border(
+            left: BorderSide(
+                color: AtlasTokens.line, width: bz3 ? 1.5 : 2),
+            bottom: BorderSide(
+                color: AtlasTokens.line, width: bz3 ? 1.5 : 2),
+          ),
+        ),
         titlesData: FlTitlesData(
-          leftTitles:
-              const AxisTitles(sideTitles: SideTitles(showTitles: false)),
           rightTitles:
               const AxisTitles(sideTitles: SideTitles(showTitles: false)),
           topTitles:
               const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+          leftTitles: AxisTitles(
+            sideTitles: SideTitles(
+              showTitles: true,
+              reservedSize: bz3 ? 34 : 46,
+              interval: (top - bottom) / 2,
+              getTitlesWidget: (v, meta) {
+                final shown =
+                    ticks.any((t) => (t - v).abs() < (top - bottom) / 200);
+                if (!shown) return const SizedBox.shrink();
+                return Padding(
+                  padding: EdgeInsets.only(right: bz3 ? 12 : 16),
+                  child: Text(v.toStringAsFixed(0),
+                      style: TextStyle(
+                          fontSize: bz3 ? 14 : 18,
+                          color: AtlasTokens.t35,
+                          fontFeatures: const [
+                            FontFeature.tabularFigures()
+                          ])),
+                );
+              },
+            ),
+          ),
           bottomTitles: AxisTitles(
             sideTitles: SideTitles(
               showTitles: true,
-              reservedSize: 26,
+              reservedSize: bz3 ? 24 : 30,
               interval: 1,
               getTitlesWidget: (v, meta) {
                 final i = v.toInt();
-                if (v != i.toDouble() || i < 0 || i >= bars.length) {
+                if (v != i.toDouble() || i < 0 || i >= bands.length) {
                   return const SizedBox.shrink();
                 }
                 return Padding(
                   padding: const EdgeInsets.only(top: 4),
-                  child: Text('${bars[i].band}',
-                      style: const TextStyle(fontSize: 11)),
+                  child: Text('${bands[i]}',
+                      style: TextStyle(
+                          fontSize: bz3 ? 14 : 18,
+                          color: AtlasTokens.t35,
+                          fontFeatures: const [
+                            FontFeature.tabularFigures()
+                          ])),
                 );
               },
             ),
           ),
         ),
+        // Index-based x (the Trends _BarCard pattern) — band values as x
+        // would make fl_chart interpolate ticks between the bars.
         barGroups: [
-          for (var i = 0; i < bars.length; i++)
+          for (var i = 0; i < bands.length; i++)
             BarChartGroupData(x: i, barRods: [
               BarChartRodData(
-                toY: bars[i].kwh100,
-                width: 14,
-                color: AtlasTokens.progress,
+                // A band with nothing collected still draws — a stub at
+                // the axis, so the curve keeps its shape.
+                toY: earned[bands[i]] ?? top * 0.06,
+                width: bz3 ? 10 : 14,
+                color: earned[bands[i]] == null
+                    ? AtlasTokens.chartBarIdle
+                    : (bands[i] == bestBand
+                        ? AtlasTokens.progress
+                        : AtlasTokens.chartBarEarned),
                 borderRadius:
-                    const BorderRadius.vertical(top: Radius.circular(3)),
+                    const BorderRadius.vertical(top: Radius.circular(4)),
               ),
             ]),
         ],
@@ -537,7 +732,13 @@ class _BandBarCard extends StatelessWidget {
 class _ZeroTo100Card extends StatelessWidget {
   final SpeedProfileSession? session;
   final bool bz3;
-  const _ZeroTo100Card({required this.session, required this.bz3});
+
+  /// +164 [2d/3d]: on the first-entry screen this card is the ONLY
+  /// action on the whole screen, so it explains itself in full instead
+  /// of the one-word readiness line.
+  final bool firstEntry;
+  const _ZeroTo100Card(
+      {required this.session, required this.bz3, this.firstEntry = false});
 
   /// «11 июл» — the 2a mockup form. Locale-aware short months from the
   /// ONE l10n key the atlas year row already uses (a private RU-only
@@ -561,7 +762,20 @@ class _ZeroTo100Card extends StatelessWidget {
               color: bz3 ? const Color(0xB3FFFFFF) : AtlasTokens.t85)),
     ];
     final Widget content;
-    if (runs.isEmpty) {
+    if (runs.isEmpty && firstEntry) {
+      content = Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(children: titleRow),
+          SizedBox(height: bz3 ? 10 : 14),
+          Text(S.of('measure.empty_z100'),
+              style: TextStyle(
+                  fontSize: bz3 ? 16 : 20,
+                  height: 1.4,
+                  color: AtlasTokens.t50)),
+        ],
+      );
+    } else if (runs.isEmpty) {
       // Collapsed: one line — title + readiness, nothing else.
       content = Row(
         children: [
@@ -822,7 +1036,12 @@ class _IntentCard extends StatelessWidget {
 class _AtlasEntryCard extends StatelessWidget {
   final AtlasGridData? data;
   final bool bz3;
-  const _AtlasEntryCard({required this.data, required this.bz3});
+
+  /// +164 [2d/3d]: «куда копится» — четыре пустые клетки и одна фраза
+  /// вместо счётчика, которого ещё не существует.
+  final bool firstEntry;
+  const _AtlasEntryCard(
+      {required this.data, required this.bz3, this.firstEntry = false});
 
   @override
   Widget build(BuildContext context) {
@@ -841,24 +1060,58 @@ class _AtlasEntryCard extends StatelessWidget {
       padding: bz3
           ? const EdgeInsets.symmetric(horizontal: 24, vertical: 20)
           : const EdgeInsets.symmetric(vertical: 26, horizontal: 32),
-      child: Row(
-        children: [
-          Icon(Icons.grid_view,
-              size: bz3 ? 24 : 30, color: AtlasTokens.info),
-          SizedBox(width: bz3 ? 12 : 16),
-          Expanded(
-            child: Text(
-              '${S.of('atlas.title')} · $counts',
-              style: TextStyle(
-                  fontSize: bz3 ? 18 : 24, color: AtlasTokens.t85),
-              overflow: TextOverflow.ellipsis,
+      child: firstEntry
+          ? Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(Icons.grid_view,
+                        size: bz3 ? 24 : 30, color: AtlasTokens.info),
+                    SizedBox(width: bz3 ? 12 : 16),
+                    Text(S.of('atlas.title'),
+                        style: TextStyle(
+                            fontSize: bz3 ? 20 : 24,
+                            fontWeight: FontWeight.w500,
+                            color: AtlasTokens.t85)),
+                  ],
+                ),
+                SizedBox(height: bz3 ? 14 : 18),
+                Row(
+                  children: [
+                    for (var i = 0; i < 4; i++) ...[
+                      if (i > 0) SizedBox(width: bz3 ? 8 : 10),
+                      AtlasGhostCell(
+                          size: bz3 ? 38 : 44, radius: bz3 ? 12 : 14),
+                    ],
+                  ],
+                ),
+                SizedBox(height: bz3 ? 14 : 18),
+                Text(S.of('measure.empty_atlas'),
+                    style: TextStyle(
+                        fontSize: bz3 ? 16 : 20,
+                        height: 1.4,
+                        color: AtlasTokens.t50)),
+              ],
+            )
+          : Row(
+              children: [
+                Icon(Icons.grid_view,
+                    size: bz3 ? 24 : 30, color: AtlasTokens.info),
+                SizedBox(width: bz3 ? 12 : 16),
+                Expanded(
+                  child: Text(
+                    '${S.of('atlas.title')} · $counts',
+                    style: TextStyle(
+                        fontSize: bz3 ? 18 : 24, color: AtlasTokens.t85),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                SizedBox(width: bz3 ? 12 : 16),
+                Icon(Icons.chevron_right,
+                    size: bz3 ? 24 : 28, color: AtlasTokens.t40),
+              ],
             ),
-          ),
-          SizedBox(width: bz3 ? 12 : 16),
-          Icon(Icons.chevron_right,
-              size: bz3 ? 24 : 28, color: AtlasTokens.t40),
-        ],
-      ),
     );
     if (!enabled) return Opacity(opacity: 0.55, child: body);
     return InkWell(
@@ -870,6 +1123,81 @@ class _AtlasEntryCard extends StatelessWidget {
         ));
       },
       child: body,
+    );
+  }
+}
+
+// ─────────────────── sync card §6.8 [2b / 3b] (+164) ───────────────────
+
+/// «Синхронизация с телефоном» — the parked-only door into the cloud
+/// settings. Geometry is the right column's shared card shape on BZ5
+/// and block 3b on BZ3.
+///
+/// Clickable: `CloudServicesScreen` is already a public route pushed the
+/// same way from `settings.dart`. Safe on the head unit because the card
+/// only exists at standstill — nothing can pull the driver off the
+/// screen mid-drive.
+/// §6.8 — «Синхронизация с телефоном».
+///
+/// UX-ревизия +164: the subtitle states «Облако подключено» as a fact,
+/// so the card may only exist when that is true. Rendering it on a
+/// fresh install — the exact state a head unit is in right after the
+/// reinstall this patch exists to survive — would have the screen
+/// assert a connection the app does not have. Canon §6.8 honesty rule:
+/// «карточка существует только когда данные реально текут». Not
+/// registered or switched off → SizedBox.shrink(), no placeholder, no
+/// greyed-out variant: there is nothing to offer and nothing to fix
+/// from this screen.
+class _SyncCard extends StatelessWidget {
+  final bool bz3;
+  const _SyncCard({required this.bz3});
+
+  @override
+  Widget build(BuildContext context) {
+    final cloud = context.watch<CloudSyncService>();
+    if (!cloud.isRegistered || !cloud.enabled) return const SizedBox.shrink();
+    final radius = bz3 ? 22.0 : 24.0;
+    return InkWell(
+      borderRadius: BorderRadius.circular(radius),
+      onTap: () => Navigator.of(context).push(
+        MaterialPageRoute(builder: (_) => const CloudServicesScreen()),
+      ),
+      child: Container(
+        decoration: BoxDecoration(
+          color: AtlasTokens.card,
+          borderRadius: BorderRadius.circular(radius),
+        ),
+        padding: bz3
+            ? const EdgeInsets.symmetric(vertical: 22, horizontal: 28)
+            : const EdgeInsets.symmetric(vertical: 26, horizontal: 32),
+        child: Row(
+          children: [
+            Icon(Icons.cloud_done,
+                size: bz3 ? 28 : 30, color: AtlasTokens.info),
+            SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(S.of('measure.sync_title'),
+                      style: TextStyle(
+                          fontSize: bz3 ? 20 : 24,
+                          fontWeight: FontWeight.w500,
+                          color: AtlasTokens.t85)),
+                  SizedBox(height: bz3 ? 4 : 6),
+                  Text(S.of('measure.sync_sub'),
+                      style: TextStyle(
+                          fontSize: bz3 ? 16 : 20, color: AtlasTokens.t40),
+                      overflow: TextOverflow.ellipsis),
+                ],
+              ),
+            ),
+            SizedBox(width: 16),
+            Icon(Icons.chevron_right,
+                size: bz3 ? 26 : 28, color: AtlasTokens.t40),
+          ],
+        ),
+      ),
     );
   }
 }

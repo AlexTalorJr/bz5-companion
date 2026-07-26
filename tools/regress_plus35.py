@@ -3457,7 +3457,24 @@ if int(pv) >= 121:
         fail("AF1 v2 pull integration or legacy fallback missing")
     # AF2: idempotent apply by client_uuid (D8) — uuid lookups exist and the
     # apply is two-pass (trips buffered before snapshots).
-    if "getTripByClientUuid" in _db2 and "getSnapshotByClientUuid" in _db2 \
+    if int(pv) >= 164:
+        # +164 (B1): the apply moved INSIDE the page loop. The invariant
+        # is unchanged — trips are applied before snapshots so an
+        # in-page snapshot resolves its trip locally — but the passes
+        # are now per page, so the marker comments are lowercase and
+        # sit between «split this page» and the cursor persist.
+        _p1 = _cs.find("apply pass 1: trips")
+        _p2 = _cs.find("apply pass 2: snapshots")
+        _split = _cs.find("── split this page ──")
+        if "getTripByClientUuid" in _db2 and "getSnapshotByClientUuid" in _db2 \
+           and -1 < _split < _p1 < _p2 \
+           and "only now move the cursor" in _cs \
+           and _cs.find("only now move the cursor") > _p2:
+            ok("AF2 (re-era +164) per-page apply, trips before snapshots, "
+               "cursor after")
+        else:
+            fail("AF2 per-page apply ordering or cursor placement wrong")
+    elif "getTripByClientUuid" in _db2 and "getSnapshotByClientUuid" in _db2 \
        and _cs.find("Apply pass 1: trips") < _cs.find("Apply pass 2: snapshots"):
         ok("AF2 uuid-idempotent two-pass apply (trips before snapshots)")
     else:
@@ -4571,7 +4588,24 @@ if int(pv) >= 151:
     # band 40, consumption FALLING with speed — inverted EV physics).
     # Regen/coast inside the corridor must subtract; negPower is
     # informational only; the UI must survive a negative band.
-    if int(pv) >= 163:
+    if int(pv) >= 164:
+        # +164 (D): the chart was rebuilt onto the atlas grid, so the
+        # `minY: minV < 0` literal moved into a named `bottom`. The
+        # invariant is what matters and it is stronger now: the axis
+        # still drops below zero for a regen-negative band, AND the
+        # highlight has its own > 0.5 guard so a descent cannot take
+        # the «most economical» slot.
+        bcs_aw = (root / 'lib/widgets/band_card.dart').read_text()
+        if 'd.negPower++; // informational' in sps and \
+           'if (p <= 0) return;' not in sps and \
+           'cons > 0.5' in bcs_aw and \
+           'minV < 0 ? minV * 1.15 - 0.1 : 0.0' in spu and \
+           'minY: bottom' in spu and \
+           'if (v > 0.5 && v < best)' in spu:
+            ok('AW13 (re-era +164) signed energy; axis + highlight guards')
+        else:
+            fail('AW13 (re-era +164) signed-energy guards broken')
+    elif int(pv) >= 163:
         # +163 re-era: the regen guard moved with the range line into
         # band_card.dart; the chart guard stays in the screen.
         bcs_aw = (root / 'lib/widgets/band_card.dart').read_text()
@@ -4777,7 +4811,28 @@ if int(pv) >= 151:
         # insertAtlasSnapshot exactly once (inside _freezeMatured), the
         # sync side never touches it (applyPulledAtlasSnapshot only),
         # and the R2 durability order holds: inserts THEN _persist.
-        if sps.count('insertAtlasSnapshot(') == 1 and \
+        if int(pv) >= 164:
+            # +164 (A): TWO funnels now, and that is the whole point
+            # of the patch — _freezeChunk at the 120 s crossing (the
+            # normal path) and _freezeMatured at rotation (migration of
+            # pre-164 ledgers + safety net). What must NOT change: both
+            # live in this service, the sync side still never writes a
+            # snapshot, and the R2 durability order (insert THEN
+            # persist) holds in both.
+            if sps.count('insertAtlasSnapshot(') == 2 and \
+               'insertAtlasSnapshot(' not in css and \
+               '_freezeMatured' in sps and '_freezeChunk' in sps and \
+               'await _db.insertAtlasSnapshot(r);' in sps and \
+               'await _db.insertAtlasSnapshot(row);' in sps and \
+               sps.find('await _db.insertAtlasSnapshot(row);') < \
+               sps.find('await _persist();\n      _atlasRevision++;') and \
+               'kAtlasTempMaxAgeS' in sps and \
+               'kAtlasHysteresisC' in sps:
+                ok('AX7 (re-era +164) two funnels, both in-service, '
+                   'R2 order held')
+            else:
+                fail('AX7 (re-era +164) freeze funnel discipline broken')
+        elif sps.count('insertAtlasSnapshot(') == 1 and \
            'insertAtlasSnapshot(' not in css and \
            '_freezeMatured' in sps and \
            'await _db.insertAtlasSnapshot(r);' in sps and \
@@ -5101,12 +5156,16 @@ if int(pv) >= 151:
                 # re-read on it. This is the fix for the field symptom
                 # «entry card said 1 клетка all day» (IndexedStack keeps
                 # the tab alive, initState never ran again).
+                # +164: a fourth bump — the 120 s chunk also changes
+                # what the grid would read, so cached readers must
+                # re-read after it too.
+                _bumps = 4 if int(pv) >= 164 else 3
                 if 'int get atlasRevision => _atlasRevision;' in sps and \
-                   sps.count('_atlasRevision++') == 3 and \
+                   sps.count('_atlasRevision++') == _bumps and \
                    atls2.count('_loadedRevision') >= 3 and \
                    atlw2.count('_loadedRevision') >= 3 and \
                    spscr2.count('_loadedRevision') >= 3:
-                    ok('BA2 atlas revision: 3 bumps, 3 readers re-read')
+                    ok(f'BA2 atlas revision: {_bumps} bumps, 3 readers re-read')
                 else:
                     fail('BA2 atlas revision wiring incomplete')
 
@@ -5362,12 +5421,41 @@ if int(pv) >= 151:
                     # (the window-switch freeze is retired), and the card
                     # set is anchored to a display window latched on
                     # standstill ticks (решение 26.07 — И1 structurally).
-                    if '_freezeMatured(frozenAtMs:' in sps and \
+                    _bb13_cross = ('beforeS < kBandMinSeconds && '
+                                   'cell.timeS >= kBandMinSeconds')
+                    _bb13_common = ('windowFilter' not in sps and
+                                    'int? _displayWindow;' in sps and
+                                    'int? get atlasDisplayWindow => '
+                                    '_displayWindow;' in sps and
+                                    'atlasDisplayWindow' in spscr2)
+                    if int(pv) >= 164:
+                        # +164 (A) INVERTS the first half of this gate on
+                        # purpose: freezing is no longer rotation-only.
+                        # The old assertion never actually tested «only»
+                        # — it counted _freezeMatured call sites — so the
+                        # replacement states the real +164 invariant:
+                        #   * the chunk funnel is invoked from exactly
+                        #     ONE place, the maturity crossing;
+                        #   * the accumulator reset lives ONLY inside
+                        #     that funnel (nothing else zeroes a cell);
+                        #   * rotation clears the frozen accumulator so
+                        #     chunks belong to the session that made them.
+                        # The display-window half is unchanged.
+                        if '_freezeChunk(key, cell, band, win, nowMs);' in sps \
+                           and sps.count('_freezeChunk(') == 2 \
+                           and sps.count('cell.energyKwh = 0;') == 1 \
+                           and 'c.frozenTimeS = 0;' in sps \
+                           and _bb13_cross in sps \
+                           and _bb13_common:
+                            ok('BB13 (re-era +164) chunk freeze at the '
+                               'crossing only; reset in one place; '
+                               'display window latched')
+                        else:
+                            fail('BB13 (re-era +164) chunk/reset/rotation '
+                                 'discipline broken')
+                    elif '_freezeMatured(frozenAtMs:' in sps and \
                        sps.count('_freezeMatured(') >= 2 and \
-                       'windowFilter' not in sps and \
-                       'int? _displayWindow;' in sps and \
-                       'int? get atlasDisplayWindow => _displayWindow;' in sps and \
-                       'atlasDisplayWindow' in spscr2:
+                       _bb13_common:
                         ok('BB13 freeze on rotation only; display window latched')
                     else:
                         fail('BB13 freeze/display-window discipline broken')
@@ -5381,6 +5469,216 @@ if int(pv) >= 151:
         ok(f"Part AX skipped (build +{pv}, атлас lands in +158)")
 else:
     ok(f"Part AW skipped (build +{pv}, speed profile lands in +151)")
+
+# ═════════════ Part BC: v0.1.65+164 «Сохранность и две колонки» ═════════════
+#
+# Blocks B (restore), A (120 s chunk + provisional rows), C (two columns),
+# D (band chart rebuilt on the atlas grid), E (first-entry screen).
+if int(pv) >= 164:
+    bc_sps = (root / 'lib/services/speed_profile_service.dart').read_text()
+    bc_spu = (root / 'lib/screens/speed_profile.dart').read_text()
+    # BC6a checks for the ABSENCE of the mockup's outer-width numbers.
+    # They legitimately appear in the comments that explain why they are
+    # not used, so the absence test must look at code lines only.
+    bc_spu_code = '\n'.join(
+        ln for ln in bc_spu.split('\n')
+        if not ln.lstrip().startswith(('//', '///', '*', '/*')))
+    bc_css = (root / 'lib/services/cloud_sync_service.dart').read_text()
+    bc_l10n = (root / 'lib/l10n/strings.dart').read_text()
+    bc_proj = (root / 'lib/data/atlas_projection.dart').read_text()
+    bc_bcard = (root / 'lib/widgets/band_card.dart').read_text()
+    bc_grid = (root / 'lib/widgets/atlas_grid.dart').read_text()
+    bc_tok = (root / 'lib/theme/atlas_tokens.dart').read_text()
+    bc_atl = (root / 'lib/screens/atlas.dart').read_text()
+    bc_atlw = (root / 'lib/screens/wide/atlas_wide.dart').read_text()
+
+    # BC1: the two-column row. Expanded + SizedBox(560), gaps 24/20, and
+    # ONLY under !bz3. `flex: 1.5` is deliberately NOT pinned — a lone
+    # Flexible in a Row has nothing to weigh against, so the literal
+    # would be dead weight the gate would then protect forever.
+    if 'width: 560,' in bc_spu and \
+       'const SizedBox(width: 24),' in bc_spu and \
+       'flex: 1.5' not in bc_spu and \
+       bc_spu.find('if (bz3) {') < bc_spu.find('width: 560,'):
+        ok('BC1 two-column row: Expanded + 560, gap 24, BZ5 only')
+    else:
+        fail('BC1 two-column row geometry wrong')
+
+    # BC2: right column — atlas → sync → 0–100, one order in EVERY
+    # state, sync parked-only, and no re-ordering machinery at all.
+    _aside = bc_spu.split('final aside = <Widget>[')[1].split('];')[0]
+    _i_atlas = _aside.find('atlasEntry')
+    _i_sync = _aside.find('syncCard')
+    _i_z100 = _aside.find('zeroTo100')
+    # No state-dependent ordering anywhere in the column: the only
+    # condition allowed inside it is the parked gate on the sync card.
+    _no_flip = ('firstEntry' not in _aside and
+                _aside.count('if (') == 1 and
+                'if (_isParked) ...[' in _aside)
+    if -1 < _i_atlas < _i_sync < _i_z100 and _no_flip and \
+       bc_spu.count('final aside = <Widget>[') == 1 and \
+       bc_spu.count('...aside,') == 1:
+        ok('BC2 right column: atlas → sync → 0–100, one order, sync parked')
+    else:
+        fail('BC2 right column order or parked condition wrong')
+
+    # BC3: the sync card exists on both form factors, is clickable into
+    # the existing cloud route, and its two keys are in BOTH l10n maps.
+    # UX-ревизия +164: подпись утверждает «Облако подключено», значит
+    # карточка не имеет права существовать, когда это неправда —
+    # ровно состояние ГУ сразу после переустановки.
+    _sync = bc_spu.split('class _SyncCard')[1].split('\nclass ')[0]
+    if 'class _SyncCard' in bc_spu and \
+       'CloudServicesScreen()' in bc_spu and \
+       bc_l10n.count("'measure.sync_title':") == 2 and \
+       bc_l10n.count("'measure.sync_sub':") == 2 and \
+       'Icons.cloud_done' in bc_spu and \
+       '!cloud.isRegistered || !cloud.enabled' in _sync and \
+       'SizedBox.shrink()' in _sync:
+        ok('BC3 sync card on both form factors, clickable, keys ×2')
+    else:
+        fail('BC3 sync card wiring or l10n wrong')
+
+    # BC4: BZ3 gets NO columns, and «атлас сверху» is not applied to it —
+    # the portrait ribbon keeps 0–100 with the band cards, then atlas,
+    # then sync, then the chart, then the note (canon §7.4).
+    _bz3 = bc_spu.split('if (bz3) {')[1].split('return Padding(')[0]
+    # The ribbon must use its OWN tail, not the BZ5 right column: on BZ3
+    # 0–100 travels with the band cards (canon §7.4), so `aside` — which
+    # is atlas-first by the owner's 26.07 decision — must not leak here.
+    _tail = bc_spu.split('final ribbonTail = <Widget>[')[1].split('];')[0]
+    _order_ok = (_tail.find('zeroTo100') <
+                 _tail.find('atlasEntry') <
+                 _tail.find('syncCard'))
+    if 'width: 560' not in _bz3 and '...aside,' not in _bz3 and \
+       '...ribbonTail,' in _bz3 and _order_ok and \
+       _bz3.find('...measurement,') < _bz3.find('...ribbonTail,') < \
+       _bz3.find('chart,') < _bz3.find('sleepNote,'):
+        ok('BC4 BZ3 has no columns; portrait order per canon §7.4')
+    else:
+        fail('BC4 BZ3 ribbon order wrong or columns leaked in')
+
+    # BC5: the chart reads the ATLAS GRID, never live cells; eleven
+    # bands always; no text fallback; touch off.
+    if 'class _BandBarCard' in bc_spu and \
+       'final AtlasGridData? data;' in bc_spu and \
+       'data?.cells ?? const <AtlasCellStat>[]' in bc_spu and \
+       'b <= kAtlasBandMaxKmh;' in bc_spu and \
+       '_textFallback' not in bc_spu and \
+       'barTouchData: BarTouchData(enabled: false)' in bc_spu and \
+       'bars.length < 3' not in bc_spu:
+        ok('BC5 chart on the atlas grid, 11 bands, no fallback, touch off')
+    else:
+        fail('BC5 chart source / band coverage / fallback wrong')
+
+    # BC6: three bar states, declared as tokens, highlight under > 0.5.
+    if 'chartBarIdle' in bc_tok and 'chartBarEarned' in bc_tok and \
+       'AtlasTokens.chartBarIdle' in bc_spu and \
+       'AtlasTokens.chartBarEarned' in bc_spu and \
+       'AtlasTokens.progress' in bc_spu and \
+       'if (v > 0.5 && v < best)' in bc_spu and \
+       'Color(0x1AFFFFFF)' not in bc_spu:
+        ok('BC6 three bar colours as tokens; highlight guarded at > 0.5')
+    else:
+        fail('BC6 bar colours or highlight guard wrong')
+
+    # BC6a: internal chart literals per form factor, and the OUTER width
+    # explicitly absent — 1539/668 were measured off the full panel and
+    # ignore the 80 dp NavigationRail (real content area is 2094).
+    if 'vertical: 26, horizontal: 36' in bc_spu and \
+       'bz3 ? 180 : 260' in bc_spu and \
+       'bz3 ? 10 : 14' in bc_spu and \
+       'bz3 ? 14 : 18' in bc_spu and \
+       'vertical: 26, horizontal: 28' in bc_spu and \
+       'measure.chart_note_short' in bc_spu and \
+       '1539' not in bc_spu_code and '668' not in bc_spu_code:
+        ok('BC6a chart literals per form factor; outer width not pinned')
+    else:
+        fail('BC6a chart literals wrong or an outer-width literal leaked in')
+
+    # BC6b: first entry — three explanation blocks, four ghost cells at
+    # 44/38, and NO state-dependent re-ordering of the right column.
+    if 'measure.empty_title' in bc_l10n and \
+       bc_l10n.count("'measure.empty_body':") == 2 and \
+       bc_l10n.count("'measure.empty_z100':") == 2 and \
+       bc_l10n.count("'measure.empty_atlas':") == 2 and \
+       'for (var i = 0; i < 4; i++)' in bc_spu and \
+       'size: bz3 ? 38 : 44, radius: bz3 ? 12 : 14' in bc_spu and \
+       'class AtlasGhostCell' in bc_grid and \
+       'Opacity(opacity: 0.4, child: ghost)' in bc_bcard and \
+       'final firstEntry = models.isEmpty;' in bc_spu:
+        ok('BC6b first-entry composition; ghosts 44/38; no column flip')
+    else:
+        fail('BC6b first-entry composition wrong')
+
+    # BC7: the snapshot is written AT the 120 s crossing, from inside
+    # _atlasTick — i.e. outside _closeAtlasSession.
+    _tick = bc_sps.split('void _atlasTick(')[1].split('void _freezeChunk(')[0]
+    if '_freezeChunk(key, cell, band, win, nowMs);' in _tick and \
+       'insertAtlasSnapshot(row)' in bc_sps and \
+       '_freezeChunk(' not in bc_sps.split('void _closeAtlasSession(')[1] \
+           .split('void _freezeMatured(')[0]:
+        ok('BC7 chunk written at the crossing, outside _closeAtlasSession')
+    else:
+        fail('BC7 chunk write point wrong')
+
+    # BC7a: reset accompanies the write, the remainder carries, and the
+    # row stays IMMUTABLE — nothing in the atlas path clears synced_at.
+    _atlas_writes = bc_css.split('_syncAtlasSnapshots')[1][:1200]
+    if 'cell.frozenEnergyKwh += cell.energyKwh;' in bc_sps and \
+       'cell.startedAtMs = nowMs;' in bc_sps and \
+       'c.frozenTimeS = 0;' in bc_sps and \
+       'syncedAt: const Value(null)' not in _atlas_writes and \
+       'NEVER updates (immutable)' in bc_css:
+        ok('BC7a chunk resets, remainder carries, row stays immutable')
+    else:
+        fail('BC7a reset/carry/immutability broken')
+
+    # BC7b: provisional rows — the projection takes activeSessionUid and
+    # skips the running session; all three call sites pass it.
+    if 'String? activeSessionUid' in bc_proj and \
+       'r.sessionUid == activeSessionUid' in bc_proj and \
+       'String? get atlasSessionUid' in bc_sps and \
+       bc_spu.count('activeSessionUid: sp.atlasSessionUid') == 1 and \
+       bc_atl.count('activeSessionUid: sp.atlasSessionUid') == 1 and \
+       bc_atlw.count('activeSessionUid: sp.atlasSessionUid') == 1:
+        ok('BC7b provisional rows excluded from the grid; 3 call sites wired')
+    else:
+        fail('BC7b provisional-row plumbing incomplete')
+
+    # BC8: ClientException — the root cause of the 24–26.07 restore
+    # failures — is retried in BOTH transports, same backoff ladder.
+    if bc_css.count('on http.ClientException catch (e)') == 2 and \
+       bc_css.count('_retryBackoff[attempt - 1]') >= 4:
+        ok('BC8 ClientException retried in _getJson and _postIngest')
+    else:
+        fail('BC8 ClientException still unhandled somewhere')
+
+    # BC9: restore applies per page, moves the cursor only after the
+    # page has landed, and asks for 200 rows, not 500.
+    if '_kRestorePullLimit = 200' in bc_css and \
+       "'limit': '$_kRestorePullLimit'" in bc_css and \
+       'only now move the cursor' in bc_css and \
+       bc_css.find('apply pass 5') < 0 and \
+       bc_css.find('── apply passes 4/5: atlas snapshots + reveals ──') < \
+       bc_css.find('only now move the cursor'):
+        ok('BC9 restore applies per page; cursor after; limit 200')
+    else:
+        fail('BC9 per-page apply / cursor / limit wrong')
+
+    # BC10: the outcome is a number and it SURVIVES the process — the
+    # AppDiagLog ring does not (it is per-launch), which is why the
+    # 26.07 export had no restore line at all.
+    if '_kLastRestoreSummary' in bc_css and \
+       'String? get lastRestoreSummary' in bc_css and \
+       'atlasInserted' in bc_css and 'pagesApplied' in bc_css and \
+       'bool get isEmpty' in bc_css and \
+       "debugPrint('CloudSync: restore done — $_lastRestoreSummary')" in bc_css:
+        ok('BC10 restore outcome counted, persisted and logged')
+    else:
+        fail('BC10 restore outcome reporting incomplete')
+else:
+    ok(f"Part BC skipped (build +{pv}, сохранность lands in +164)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)

@@ -489,6 +489,21 @@ class _CellSlot extends StatelessWidget {
   }
 }
 
+/// +164 [2d/3d]: one empty frontier cell, drawn by the SAME painter the
+/// grid uses. Public so the first-entry screen can show «куда копится»
+/// without a second dash implementation drifting away from this one.
+class AtlasGhostCell extends StatelessWidget {
+  final double size;
+  final double radius;
+  const AtlasGhostCell({super.key, required this.size, required this.radius});
+
+  @override
+  Widget build(BuildContext context) => CustomPaint(
+        size: Size.square(size),
+        painter: _GhostPainter(radius: radius),
+      );
+}
+
 /// 1 dp dashed rounded rect, `ghostFrontier`. Flutter has no dashed
 /// border, so the outline is walked with PathMetrics — 4 dp dash, 3 dp
 /// gap reads as a dotted frontier at 8 dp radius without shimmering on

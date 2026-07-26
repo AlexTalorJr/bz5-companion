@@ -203,8 +203,28 @@ class AtlasGridData {
 
   /// The projection itself. [rows] must already be band-filtered by the
   /// DAO; the assertion-free re-filter here is a cheap second lock.
+  /// [activeSessionUid] — uid of the atlas session that is running RIGHT
+  /// NOW (`SpeedProfileService.atlasSessionUid`), or null when nothing
+  /// is armed.
+  ///
+  /// +164 (A, BC7b): every row carrying that uid is **provisional**. It
+  /// is a 120 s chunk written mid-drive purely so the measurement stops
+  /// living in prefs — canon §6.13 still says such a cell «клеткой не
+  /// является: не входит ни в счётчики шапки, ни в строку ГОДА, ни в
+  /// экспорт». So provisional rows are skipped here entirely: no cell,
+  /// no star, no month, no fog-of-war axis. The screen keeps painting
+  /// them from `atlasPendingCells()` exactly as before.
+  ///
+  /// The moment the session rotates, `activeSessionUid` changes and the
+  /// same rows become real cells — with no write, no migration and no
+  /// second source of truth.
+  ///
+  /// Passing null (the phone, or any caller with no live ledger) means
+  /// «nothing is provisional», which is the honest reading there: the
+  /// phone is not in this drive, and a chunk that already reached the
+  /// cloud is a finished measurement from its point of view.
   factory AtlasGridData.fromRows(List<AtlasSnapshotRow> rows,
-      {DateTime? now}) {
+      {DateTime? now, String? activeSessionUid}) {
     final n = now ?? DateTime.now();
     final grouped = <String, List<AtlasSnapshotRow>>{};
     DateTime? firstEver;
@@ -216,6 +236,9 @@ class AtlasGridData {
     for (final r in rows) {
       if (r.bandKmh < kAtlasBandMinKmh || r.bandKmh > kAtlasBandMaxKmh) {
         continue;
+      }
+      if (activeSessionUid != null && r.sessionUid == activeSessionUid) {
+        continue; // provisional — canon §6.13, painted from the ledger
       }
       grouped.putIfAbsent(atlasCellKey(r.bandKmh, r.tempWindowC), () => [])
           .add(r);
