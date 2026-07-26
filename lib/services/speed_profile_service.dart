@@ -384,6 +384,23 @@ class _AtlasCell {
   /// inflated first card is the accepted migration cost).
   double t0;
 
+  // ── +164 (A): chunks already frozen for THIS cell in THIS session ──
+  //
+  // The accumulator resets every kBandMinSeconds now (a snapshot row is
+  // written at that instant, §3.3 of the plan), so `energyKwh/distKm/
+  // timeS` no longer describe the whole session. These three carry the
+  // frozen part, purely so the §6.13 pending cell can still show «the
+  // session so far» — its number is the steady-weighted mean over the
+  // frozen chunks PLUS the live remainder, which is exactly the number
+  // the single rotation-time snapshot used to produce.
+  //
+  // Persisted (fe/fd/ft) so a process death mid-session does not make
+  // the pending cell jump back to the current partial chunk. Cleared on
+  // rotation, together with the cell's session identity.
+  double frozenEnergyKwh;
+  double frozenDistKm;
+  double frozenTimeS;
+
   _AtlasCell({
     this.energyKwh = 0,
     this.distKm = 0,
@@ -392,10 +409,21 @@ class _AtlasCell {
     this.tempTimeS = 0,
     required this.startedAtMs,
     this.t0 = 0,
+    this.frozenEnergyKwh = 0,
+    this.frozenDistKm = 0,
+    this.frozenTimeS = 0,
   });
 
   /// Steady seconds earned by the current atlas session (micro-loot).
-  double get gainedS => timeS - t0;
+  /// +164: frozen chunks count — they were earned this session too.
+  double get gainedS => (frozenTimeS + timeS) - t0;
+
+  /// +164: session totals = frozen chunks ⊕ live remainder. These are
+  /// what §6.13 renders and what the summary card reads.
+  double get sessionEnergyKwh => frozenEnergyKwh + energyKwh;
+  double get sessionDistKm => frozenDistKm + distKm;
+  double get sessionTimeS => frozenTimeS + timeS;
+  bool get hasFrozenChunk => frozenTimeS > 1e-9;
 
   double? get tempMeanC => tempTimeS > 1e-6 ? tempSum / tempTimeS : null;
 
@@ -407,6 +435,11 @@ class _AtlasCell {
         'tt': tempTimeS,
         'sa': startedAtMs,
         't0': t0,
+        // +164: omitted while zero — keeps existing ledgers byte-identical
+        // in the common case and the diag dump readable.
+        if (frozenTimeS > 1e-9) 'fe': frozenEnergyKwh,
+        if (frozenTimeS > 1e-9) 'fd': frozenDistKm,
+        if (frozenTimeS > 1e-9) 'ft': frozenTimeS,
       };
 
   static _AtlasCell fromJson(Map<String, dynamic> j) => _AtlasCell(
@@ -418,6 +451,9 @@ class _AtlasCell {
         startedAtMs: (j['sa'] as num?)?.toInt() ??
             DateTime.now().millisecondsSinceEpoch,
         t0: (j['t0'] as num?)?.toDouble() ?? 0,
+        frozenEnergyKwh: (j['fe'] as num?)?.toDouble() ?? 0,
+        frozenDistKm: (j['fd'] as num?)?.toDouble() ?? 0,
+        frozenTimeS: (j['ft'] as num?)?.toDouble() ?? 0,
       );
 }
 
@@ -1396,8 +1432,109 @@ class SpeedProfileService extends ChangeNotifier {
       // payload, an honest moment-in-time snapshot (spec §1.1).
       _maybeGenerateReveal(
           band, win, cell.energyKwh / cell.distKm * 100.0);
+      // +164 (A, BC7): the same crossing is now the WRITE point. The
+      // measurement stops living in prefs the instant it is complete.
+      _freezeChunk(key, cell, band, win, nowMs);
     }
     _dirtySincePersist = true;
+  }
+
+  /// +164 (A) — the 120-second chunk.
+  ///
+  /// WHY. Until +163 a cell was written to `atlas_snapshots` only when
+  /// the session rotated (30-min gap) or on recovery at the next cold
+  /// start. On the head unit the process dies with the ignition, so in
+  /// practice the write happened at the NEXT launch: field 26.07 shows
+  /// three matured cells sitting in prefs from 14:59 until 15:57 with
+  /// `snapshots_in_db: 0`. Anything that wiped the app in that window —
+  /// and the owner's workflow wipes it on every patch, because DiLink
+  /// refuses in-place updates — took the measurement with it.
+  ///
+  /// WHY THIS SHAPE and not «keep one row and update it»: the row is
+  /// immutable by contract at three levels (docstring of the table,
+  /// `applyPulledAtlasSnapshot` never updating, no `updated_at` on the
+  /// wire, server `ON CONFLICT … DO NOTHING`). Друг 2 confirmed the
+  /// mutable variant would also re-stamp `server_seq` on every 30 s
+  /// persist and churn the phone. So: one immutable row per completed
+  /// 120 s, accumulator reset, remainder carried — exactly the carry
+  /// rule sub-threshold cells already follow.
+  ///
+  /// The arithmetic of the atlas does not move: `AtlasCellStat.mean` is
+  /// steady-weighted, so three 120 s chunks average to precisely what
+  /// one 360 s row would have given, and `dedupSessionCount` groups by
+  /// `session_uid`, so the star still counts ONE session.
+  ///
+  /// Durability order is the +163 rule, unchanged: Drift INSERT first,
+  /// ledger persist second. A kill in between costs a duplicate row at
+  /// worst — identical value, identical weight, cannot move the mean.
+  void _freezeChunk(
+      String key, _AtlasCell cell, int band, int? win, int nowMs) {
+    final l = _ledger;
+    if (l == null) return;
+    // Collection ceiling (canon §8): above it there is no snapshot, no
+    // event, and the cell leaves the ledger. +163 enforced this at
+    // rotation; the crossing is simply the earlier, truer moment.
+    if (band > kAtlasBandMaxCollectKmh) {
+      l.cells.remove(key);
+      _dirtySincePersist = true;
+      debugPrint('Atlas: drop band=$band (above the '
+          '$kAtlasBandMaxCollectKmh collection ceiling)');
+      return;
+    }
+    if (cell.distKm <= 1e-6) return; // impossible by construction
+    final kwh100 = cell.energyKwh / cell.distKm * 100.0;
+    final row = AtlasSnapshotsCompanion(
+      clientUuid: Value(uuidV7()),
+      sessionUid: Value(l.sessionUid),
+      source: const Value('hu'),
+      bandKmh: Value(band),
+      tempWindowC: Value(win),
+      kwh100: Value(kwh100),
+      steadySeconds: Value(cell.timeS),
+      packTempAvgC: Value(cell.tempMeanC),
+      startedAt: Value(DateTime.fromMillisecondsSinceEpoch(cell.startedAtMs)),
+      frozenAt: Value(DateTime.fromMillisecondsSinceEpoch(nowMs)),
+      appVersion: Value(_appVersion),
+      updatedAt: Value(DateTime.now()),
+    );
+
+    // Roll the completed chunk into the session accumulator, then reset
+    // the live one. §6.13 keeps showing frozen ⊕ live, so the pending
+    // number does not jump backwards at the reset.
+    cell.frozenEnergyKwh += cell.energyKwh;
+    cell.frozenDistKm += cell.distKm;
+    cell.frozenTimeS += cell.timeS;
+    cell.energyKwh = 0;
+    cell.distKm = 0;
+    cell.timeS = 0;
+    cell.tempSum = 0;
+    cell.tempTimeS = 0;
+    cell.startedAtMs = nowMs;
+
+    // +162 (§3.2): the intention is fulfilled the moment its cell
+    // actually freezes — silently, no congratulation card.
+    if (_intentBand != null && key == _intentKey()) {
+      _intentBand = null;
+      _intentWindow = null;
+      _intentTakenMs = null;
+      unawaited(_persistIntent());
+    }
+
+    _atlasFreezeCount++;
+    _dirtySincePersist = true;
+    debugPrint('Atlas: chunk band=$band win=${win ?? 'u'} '
+        'kwh=${kwh100.toStringAsFixed(1)} s=${row.steadySeconds.value.round()} '
+        'session=${l.sessionUid.substring(0, 8)}…');
+    unawaited(() async {
+      try {
+        await _db.insertAtlasSnapshot(row);
+      } catch (e) {
+        debugPrint('Atlas: chunk insert failed — $e');
+      }
+      await _persist();
+      _atlasRevision++;
+      notifyListeners();
+    }());
   }
 
   /// The window a tick belongs to: the window of the last FRESH reading
@@ -1475,7 +1612,16 @@ class SpeedProfileService extends ChangeNotifier {
     // sub-threshold cells re-anchor their micro-loot baseline (timeS
     // itself carries, spec v2 «накопление переносится»); the trip line
     // starts from zero km.
+    // +164: the frozen-chunk accumulator belongs to the session that
+    // just ended — clear it BEFORE re-anchoring, so t0 lands on the
+    // carried remainder and the next session's micro-loot starts at 0.
+    // Its rows stay in the DB and stop being provisional the moment
+    // sessionUid changes, which is what makes them real cells with no
+    // write at all (§3.2 of the plan).
     for (final c in l.cells.values) {
+      c.frozenEnergyKwh = 0;
+      c.frozenDistKm = 0;
+      c.frozenTimeS = 0;
       c.t0 = c.timeS;
     }
     l.sessionDistKm = 0;
@@ -1488,9 +1634,23 @@ class SpeedProfileService extends ChangeNotifier {
         '${l.sessionUid.substring(0, 8)}…');
   }
 
-  /// The ONE write funnel for atlas snapshots (regress AX7). Cells with
-  /// timeS ≥ kBandMinSeconds freeze into atlas_snapshots and reset in
-  /// memory; sub-threshold cells are neither frozen nor reset.
+  /// Second write funnel for atlas snapshots (regress AX7 — the funnel
+  /// set is now exactly {_freezeChunk, _freezeMatured}, both in this
+  /// class, both calling `insertAtlasSnapshot`).
+  ///
+  /// +164: with the 120 s chunk in place this is no longer the normal
+  /// path — a cell cannot normally reach rotation still matured,
+  /// because [_freezeChunk] wrote and reset it at the crossing. It
+  /// stays for two cases that are real:
+  ///   1. MIGRATION. A ledger persisted by +163 or earlier can hold
+  ///      cells well past 120 s (field 26.07: three of them, 122–134 s).
+  ///      The first rotation or recovery after the update must still
+  ///      write those, or the update itself would eat them.
+  ///   2. SAFETY NET. Any future path that grows a cell without going
+  ///      through _atlasTick's crossing check.
+  /// Sub-threshold cells are still neither frozen nor reset — they
+  /// carry, and now so does the frozen-chunk accumulator's remainder.
+  ///
   /// +163: called ONLY from _closeAtlasSession (rotation / recovery) —
   /// the window-switch freeze is retired, so the window filter went
   /// with it and every freeze covers all windows.
@@ -1893,18 +2053,29 @@ class SpeedProfileService extends ChangeNotifier {
   /// the bar freezes at the old cell's mark until the new window's
   /// cell catches up, then keeps crawling — monotonic, never backwards,
   /// И1 holds without the display layer knowing about windows at all.
+  ///
+  /// +164 (A): reads SESSION totals (frozen chunks ⊕ live remainder),
+  /// not the raw live cell. Without this the 120 s chunk reset would
+  /// yank a «дозрела» card back to «зреет · 0 с из 120» mid-drive —
+  /// the exact И1 violation +163 closed for window switches. The
+  /// numbers are unchanged from the owner's point of view: `sessionTimeS`
+  /// grows monotonically across chunk boundaries, and the kwh figure is
+  /// the steady-weighted mean of the whole session, which is what a
+  /// single un-chunked cell used to hold.
   ({int band, double timeS, double? kwh100}) _liveBandOf(
       int band, Iterable<MapEntry<String, _AtlasCell>> entries) {
     _AtlasCell? best;
     for (final e in entries) {
       final c = e.value;
-      if (best == null || c.timeS > best.timeS) best = c;
+      if (best == null || c.sessionTimeS > best.sessionTimeS) best = c;
     }
     final b = best!;
     return (
       band: band,
-      timeS: b.timeS,
-      kwh100: b.distKm > 1e-6 ? b.energyKwh / b.distKm * 100.0 : null,
+      timeS: b.sessionTimeS,
+      kwh100: b.sessionDistKm > 1e-6
+          ? b.sessionEnergyKwh / b.sessionDistKm * 100.0
+          : null,
     );
   }
 
@@ -1930,16 +2101,19 @@ class SpeedProfileService extends ChangeNotifier {
   /// the number frozen into the reveal payload. Null when the cell has
   /// already left the ledger (rotation happened) — the caller falls
   /// back to the payload then.
+  /// +164: session totals, so the summary card keeps reading the same
+  /// number after a 120 s chunk reset instead of the partial remainder.
   double? atlasLiveCellKwh100(int band, int? window) {
     final c = _ledger?.cells[_AtlasLedger.cellKey(band, window)];
-    if (c == null || c.distKm <= 1e-6) return null;
-    return c.energyKwh / c.distKm * 100.0;
+    if (c == null || c.sessionDistKm <= 1e-6) return null;
+    return c.sessionEnergyKwh / c.sessionDistKm * 100.0;
   }
 
   /// Live steady seconds of ONE cell — feeds the intention phrasing
   /// («подержи {v} км/ч ещё {t}», решение 26.07 п.6).
+  /// +164: session totals — «ещё N секунд» must not grow back.
   double atlasCellTimeS(int band, int? window) =>
-      _ledger?.cells[_AtlasLedger.cellKey(band, window)]?.timeS ?? 0;
+      _ledger?.cells[_AtlasLedger.cellKey(band, window)]?.sessionTimeS ?? 0;
 
   /// Cells that have matured but whose snapshot is not frozen yet — the
   /// freeze happens on session rotation, so between «полоса дозрела» and
@@ -1950,10 +2124,22 @@ class SpeedProfileService extends ChangeNotifier {
   List<AtlasPendingCell> atlasPendingCells() {
     final l = _ledger;
     if (l == null) return const [];
+    // +164 (A, §6.13): a cell qualifies as pending once it has ANY
+    // completed chunk this session (`hasFrozenChunk`) or is still
+    // carrying a pre-+164 over-threshold remainder. The displayed
+    // number is the session total — frozen chunks ⊕ live remainder —
+    // so it keeps climbing smoothly across the 120 s reset instead of
+    // dropping back to the current partial chunk.
+    //
+    // The chunk row is already in `atlas_snapshots`, but the grid does
+    // NOT count it: `AtlasGridData.fromRows` treats every row of the
+    // ACTIVE session as provisional and keeps it out of the cells, the
+    // header counters, the YEAR row and the export — canon §6.13 to the
+    // letter, now backed by a durable row instead of prefs alone.
     final out = <AtlasPendingCell>[];
     l.cells.forEach((key, c) {
-      if (c.timeS < kBandMinSeconds) return;
-      if (c.distKm <= 1e-6) return;
+      if (!c.hasFrozenChunk && c.timeS < kBandMinSeconds) return;
+      if (c.sessionDistKm <= 1e-6) return;
       final sep = key.indexOf(':');
       final b = int.tryParse(key.substring(0, sep));
       if (b == null || b > kAtlasBandMaxCollectKmh) return;
@@ -1962,12 +2148,18 @@ class SpeedProfileService extends ChangeNotifier {
       out.add(AtlasPendingCell(
         band: b,
         window: w,
-        kwh100: c.energyKwh / c.distKm * 100.0,
-        steadySeconds: c.timeS,
+        kwh100: c.sessionEnergyKwh / c.sessionDistKm * 100.0,
+        steadySeconds: c.sessionTimeS,
       ));
     });
     return out;
   }
+
+  /// +164 (A, BC7b): uid of the ACTIVE atlas session, or null before
+  /// the ledger is armed. The grid projection needs it to tell a
+  /// provisional chunk row (this session, canon §6.13, not a cell yet)
+  /// from a real one. Same shape as [atlasDisplayWindow].
+  String? get atlasSessionUid => _ledger?.sessionUid;
 
   /// Anticipation line (§2.2 п.5): the un-matured cell with
   /// timeS ≥ kAtlasAnticipationS and the largest timeS, or null.
@@ -1977,14 +2169,16 @@ class SpeedProfileService extends ChangeNotifier {
     int? band;
     var bestT = -1.0;
     l.cells.forEach((key, c) {
-      if (c.timeS >= kBandMinSeconds || c.timeS < kAtlasAnticipationS) {
-        return;
-      }
+      // +164: session totals — a cell that already produced a chunk is
+      // not «almost there», it is past the line, and the anticipation
+      // line must not point at it.
+      final t = c.sessionTimeS;
+      if (t >= kBandMinSeconds || t < kAtlasAnticipationS) return;
       final sep = key.indexOf(':');
       final b = int.tryParse(key.substring(0, sep));
       if (b == null) return;
-      if (c.timeS > bestT) {
-        bestT = c.timeS;
+      if (t > bestT) {
+        bestT = t;
         band = b;
       }
     });

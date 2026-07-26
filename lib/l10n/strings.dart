@@ -606,9 +606,26 @@ class S {
     'measure.trip_one': 'drive',
     'measure.trip_few': 'drives',
     'measure.trip_many': 'drives',
-    'measure.empty_title': 'Drive as usual — the bands will build themselves',
+    // +164 [2d/3d]: the empty screen answers three questions in order
+    // and none other. `empty_title`/`empty_ghost` keep their keys — the
+    // wording is replaced, the identifiers are not (canon §8).
+    'measure.empty_title': 'Consumption counts itself while you drive',
+    'measure.empty_body': 'Two minutes of steady speed and a band appears: '
+        'how much the car uses at exactly that speed. Nothing to press.',
     'measure.empty_ghost': 'this is what a band looks like once steady '
         'time builds up',
+    'measure.empty_z100': 'Ready — starts when you pull away. Accelerate '
+        'without stopping and the time records itself.',
+    'measure.empty_atlas': 'Bands from a drive land here: speed × battery '
+        'temperature. The first cell appears after your first drive.',
+    // +164 [6d/6f/6g]: the band chart.
+    'measure.chart_sub': 'kWh per 100 km · all drives',
+    'measure.chart_note': 'Grey bars are bands with no steady time yet. '
+        'The highlight is the most economical of the ones that have it.',
+    'measure.chart_note_short': 'Grey bars are bands with no steady time yet.',
+    // +164 [3b] §6.8: the sync card.
+    'measure.sync_title': 'Sync with phone',
+    'measure.sync_sub': 'Cloud connected · Settings → Cloud services',
     'measure.z100_ready': 'Ready — starts when you pull away',
     'measure.z100_last': 'last',
     'measure.intent_hold': 'Hold {v} km/h for {t} more',
@@ -1688,9 +1705,28 @@ class S {
     'measure.trip_one': 'поездка',
     'measure.trip_few': 'поездки',
     'measure.trip_many': 'поездок',
-    'measure.empty_title': 'Езди как обычно — полосы соберутся сами',
+    // +164 [2d/3d]: пустой экран отвечает на три вопроса по порядку и
+    // больше ни на какие. Ключи empty_title/empty_ghost сохранены —
+    // меняется формулировка, не идентификатор (канон §8).
+    'measure.empty_title': 'Расход считается сам, пока вы едете',
+    'measure.empty_body': 'Две минуты ровной скорости — и появляется полоса: '
+        'сколько машина ест именно на этой скорости. Нажимать ничего '
+        'не нужно.',
     'measure.empty_ghost': 'так выглядит полоса, когда наберётся '
         'ровное время',
+    'measure.empty_z100': 'Готов — старт по началу движения. Разгонитесь '
+        'без остановок, и время запишется само.',
+    'measure.empty_atlas': 'Полосы за поездку ложатся сюда: скорость × '
+        'температура батареи. Первая клетка появится после первой поездки.',
+    // +164 [6d/6f/6g]: график по полосам.
+    'measure.chart_sub': 'кВт·ч на 100 км · все поездки',
+    'measure.chart_note': 'Серые столбцы — полосы без набранного времени. '
+        'Подсветка — самая экономичная из набранных.',
+    'measure.chart_note_short': 'Серые столбцы — полосы без набранного '
+        'времени.',
+    // +164 [3b] §6.8: карточка синхронизации.
+    'measure.sync_title': 'Синхронизация с телефоном',
+    'measure.sync_sub': 'Облако подключено · Настройки → Облачные сервисы',
     'measure.z100_ready': 'Готов — старт по началу движения',
     'measure.z100_last': 'последний',
     'measure.intent_hold': 'Подержи {v} км/ч ещё {t}',

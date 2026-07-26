@@ -234,6 +234,10 @@ enum CloudRestoreStatus {
 
 /// v0.1.29+18: counters for the in-flight or last completed restore.
 /// `*Inserted` = `*Fetched` − duplicates already present locally.
+/// v0.1.65+164 (B4): series/atlas/reveal counters joined the set — the
+/// whole point of the restore for the owner is the atlas coming back,
+/// and «done» with no numbers was indistinguishable from «done, zero
+/// rows» in the field (26.07).
 class CloudRestoreProgress {
   /// 'trips' / 'snapshots' / 'done' / null
   final String? phase;
@@ -241,13 +245,34 @@ class CloudRestoreProgress {
   final int tripsInserted;
   final int snapshotsFetched;
   final int snapshotsInserted;
+  final int seriesInserted;
+  final int atlasInserted;
+  final int revealsInserted;
+
+  /// Pages fetched AND applied so far (B1). A restore that dies mid-way
+  /// now keeps everything up to this count instead of discarding all.
+  final int pagesApplied;
+
   const CloudRestoreProgress({
     this.phase,
     this.tripsFetched = 0,
     this.tripsInserted = 0,
     this.snapshotsFetched = 0,
     this.snapshotsInserted = 0,
+    this.seriesInserted = 0,
+    this.atlasInserted = 0,
+    this.revealsInserted = 0,
+    this.pagesApplied = 0,
   });
+
+  /// True when the restore genuinely brought nothing back. Drives the
+  /// «nothing to restore» wording instead of a silent success.
+  bool get isEmpty =>
+      tripsInserted == 0 &&
+      snapshotsInserted == 0 &&
+      seriesInserted == 0 &&
+      atlasInserted == 0 &&
+      revealsInserted == 0;
 }
 
 // ─── Service ───────────────────────────────────────────────────────
@@ -362,6 +387,15 @@ class CloudSyncService extends ChangeNotifier {
   // Settings can show "last restore N min ago" across launches.
   static const _kLastRestoreAt = 'cloud_sync_last_restore_at';
   static const _kLastRestoreError = 'cloud_sync_last_restore_error';
+  /// v0.1.65+164 (B5): compact one-line outcome of the last completed
+  /// restore. Survives the process; the AppDiagLog ring does not.
+  static const _kLastRestoreSummary = 'cloud_sync_last_restore_summary';
+
+  /// v0.1.65+164 (B3): page size for the RESTORE pull only. _syncPull
+  /// keeps 500 — its pages are incremental and small. The restore is
+  /// the one caller that walks the whole history, and a 500-row body
+  /// is what the head unit's Wi-Fi could not hold open (26.07).
+  static const int _kRestorePullLimit = 200;
 
   // secure storage key for client_token only
   static const _kTokenKey = 'cloud_sync_client_token';
@@ -415,6 +449,7 @@ class CloudSyncService extends ChangeNotifier {
   // v0.1.29+126: restore barrier — syncOnce is refused while true.
   bool _restoreInProgress = false;
   DateTime? _lastRestoreAt;
+  String? _lastRestoreSummary;
 
   CloudSyncStatus _status = CloudSyncStatus.disconnected;
   CloudSyncStats _stats = const CloudSyncStats();
@@ -455,6 +490,8 @@ class CloudSyncService extends ChangeNotifier {
   CloudRestoreProgress get restoreProgress => _restoreProgress;
   String? get restoreError => _restoreError;
   DateTime? get lastRestoreAt => _lastRestoreAt;
+  /// v0.1.65+164 (B5/B6): persisted outcome of the last restore.
+  String? get lastRestoreSummary => _lastRestoreSummary;
   bool get isRestoring =>
       _restoreStatus == CloudRestoreStatus.preflight ||
       _restoreStatus == CloudRestoreStatus.fetching;
@@ -545,6 +582,7 @@ class CloudSyncService extends ChangeNotifier {
       _lastRestoreAt = DateTime.fromMillisecondsSinceEpoch(lastRestoreTs);
     }
     _restoreError = prefs.getString(_kLastRestoreError);
+    _lastRestoreSummary = prefs.getString(_kLastRestoreSummary);
 
     // v0.1.37+136 (F3): sync-down state. Errors in the map JSON are
     // swallowed to an empty map — worst case a few snapshots relink via
@@ -2653,46 +2691,114 @@ class CloudSyncService extends ChangeNotifier {
     return found;
   }
 
+  /// v0.1.65+164 (B1/B2/B3): restore via `/v2/sync/pull`, **applied page
+  /// by page**.
+  ///
+  /// The +121 shape buffered every page of every entity into five lists
+  /// and applied them in five passes AFTER the fetch loop finished. That
+  /// made the whole restore atomic in the worst possible way: any fault
+  /// between «fetched» and «applied» threw away everything. On 24–26.07
+  /// it did exactly that three times running — a mid-body socket abort
+  /// on page `since=16908` (see the ClientException note in _getJson)
+  /// propagated out of this method and startRestore's catch-all
+  /// discarded ~2500 buffered rows. The server had delivered them; the
+  /// client dropped them.
+  ///
+  /// New shape — deliberately the SAME shape as [_syncPull], which has
+  /// always applied per page and never lost a restore:
+  ///   * page fetched → split into entity buckets → five passes on THAT
+  ///     page → pull cursor persisted → next page;
+  ///   * a fault costs one page, not the run;
+  ///   * the persisted cursor means the next attempt resumes instead of
+  ///     restarting at `since=0` and dying at the same fragile spot.
+  ///
+  /// `limit` is 200 here, not the 500 [_syncPull] uses: the restore is
+  /// the one caller that pulls the whole history at once, and a 500-row
+  /// body is precisely what the head unit's Wi-Fi could not hold open.
+  ///
+  /// Returns counters, or null → caller runs the legacy v1 loops. Null
+  /// is only ever returned when NOTHING has been applied yet: once a
+  /// page has landed, falling back to v1 would re-walk the same history
+  /// through a path that cannot restore atlas or series at all.
   Future<(int, int, int, int)?> _tryRestoreViaSyncPullV2(
       Map<int, int> tripIdMap) async {
-    final tripRows = <Map<String, dynamic>>[];
-    final snapRows = <Map<String, dynamic>>[];
-    final seriesRows = <Map<String, dynamic>>[];
-    final atlasRows = <Map<String, dynamic>>[]; // v0.1.59+158
-    final revealRows = <Map<String, dynamic>>[]; // v0.1.59+158
     var since = 0;
-    // v0.1.37+136 (F3, §4): the restore doubles as the full sync-down
-    // initialization — track the final next_since so a successful run
-    // seeds cloud_pull_cursor (persisted at the successful return).
-    var pullCursorSeed = 0;
+    var pages = 0;
+
+    var tripsFetched = 0, ti = 0;
+    var snapsFetched = 0, si = 0;
+    var seriesFetched = 0, sri = 0;
+    var atlasFetched = 0, ai = 0;
+    var revealsFetched = 0, ari = 0;
+
+    // v0.1.29+123: per-reason skip counters, itemized in the diag line.
+    var tSkipUuid = 0, tSkipLegacy = 0, tSkipBad = 0;
+    var sSkipUuid = 0, sSkipLegacy = 0, sSkipBad = 0;
+
+    final prefs = await SharedPreferences.getInstance();
+
+    CloudRestoreProgress snap(String phase) => CloudRestoreProgress(
+          phase: phase,
+          tripsFetched: tripsFetched,
+          tripsInserted: ti,
+          snapshotsFetched: snapsFetched,
+          snapshotsInserted: si,
+          seriesInserted: sri,
+          atlasInserted: ai,
+          revealsInserted: ari,
+          pagesApplied: pages,
+        );
+
     while (true) {
       if (_restoreCancelRequested) {
         _restoreStatus = CloudRestoreStatus.cancelled;
+        _restoreProgress = snap('cancelled');
         notifyListeners();
-        return (tripRows.length, 0, snapRows.length, 0);
+        return (tripsFetched, ti, snapsFetched, si);
       }
+
       Map<String, dynamic> resp;
       try {
         resp = await _getJson('/v2/sync/pull',
             query: {
               if (_vehicleId != null) 'vehicle': _vehicleId!,
               'since': '$since',
-              'limit': '500',
+              'limit': '$_kRestorePullLimit',
             },
             v2Probe: true);
       } on _EndpointNotDeployedException {
+        if (pages > 0) {
+          // Mid-run: rows are already in Drift. Do NOT hand the caller a
+          // null — that would replay everything through the legacy v1
+          // path, which knows nothing about atlas or trip_series.
+          debugPrint('CloudSync: /v2/sync/pull went away after $pages '
+              'page(s) — keeping what landed, no v1 fallback');
+          break;
+        }
         debugPrint('CloudSync: /v2/sync/pull unusable '
             '(400/404/405${_vehicleId == null ? ', vehicle_id unknown' : ''})'
             ' — falling back to legacy v1 restore');
         return null;
       }
+
+      // ── split this page ──
       final items = (resp['items'] as List?) ?? const [];
+      final tripRows = <Map<String, dynamic>>[];
+      final snapRows = <Map<String, dynamic>>[];
+      final seriesRows = <Map<String, dynamic>>[];
+      final atlasRows = <Map<String, dynamic>>[];
+      final revealRows = <Map<String, dynamic>>[];
       for (final raw in items) {
         if (raw is! Map<String, dynamic>) continue;
+        if (raw['deleted_at'] != null) {
+          debugPrint('CloudSync: restore -- tombstone skipped '
+              '(${raw['entity']}/${raw['client_uuid']})');
+          continue;
+        }
         final data = raw['data'];
         if (data is! Map<String, dynamic>) continue;
-        // The envelope's client_uuid is authoritative; copy it into the row
-        // payload so the existing companion builders (+117) adopt it.
+        // The envelope's client_uuid is authoritative; copy it into the
+        // row payload so the existing companion builders (+117) adopt it.
         final uuid = raw['client_uuid'];
         if (uuid is String && data['client_uuid'] is! String) {
           data['client_uuid'] = uuid;
@@ -2702,191 +2808,153 @@ class CloudSyncService extends ChangeNotifier {
             tripRows.add(data);
           case 'snapshots':
             snapRows.add(data);
-          // v0.1.41+140: restore-scope entity #3 (SPEC §4).
           case 'trip_series':
             seriesRows.add(data);
-          // v0.1.59+158: atlas — the whole point of облако-канон (BZ5
-          // reinstalls wipe the local DB; the atlas is a lifetime
-          // collection and MUST come back whole).
           case 'atlas_snapshots':
             atlasRows.add(data);
           case 'atlas_reveals':
             revealRows.add(data);
         }
       }
-      _restoreProgress = CloudRestoreProgress(
-        phase: 'trips',
-        tripsFetched: tripRows.length,
-        snapshotsFetched: snapRows.length,
-      );
-      notifyListeners();
+      tripsFetched += tripRows.length;
+      snapsFetched += snapRows.length;
+      seriesFetched += seriesRows.length;
+      atlasFetched += atlasRows.length;
+      revealsFetched += revealRows.length;
+
+      // ── apply pass 1: trips ──
+      // Trips before snapshots WITHIN the page, so a snapshot whose trip
+      // arrived alongside it resolves locally; a snapshot whose trip sat
+      // in an earlier page resolves through the persistent _pullTripMap.
+      for (final data in tripRows) {
+        final clientTripId = data['client_trip_id'];
+        final uuid = data['client_uuid'];
+        Trip? existing;
+        if (uuid is String) {
+          existing = await _db.getTripByClientUuid(uuid);
+        }
+        if (existing == null && uuid is! String) {
+          // Null-uuid row (a device that never completed mapping): fall
+          // back to the legacy identity — (started_at, distance_km),
+          // same contract as the v1 restore loop.
+          final startedAtStr = data['started_at'];
+          if (startedAtStr is! String) {
+            tSkipBad++;
+            continue;
+          }
+          final startedAt = DateTime.parse(startedAtStr).toLocal();
+          final distanceKm = (data['distance_km'] as num?)?.toDouble();
+          final query = _db.select(_db.trips)..limit(1);
+          query.where((t) => t.startedAt.equals(startedAt));
+          if (distanceKm != null) {
+            query.where((t) => t.distanceKm.equals(distanceKm));
+          } else {
+            query.where((t) => t.distanceKm.isNull());
+          }
+          existing = await query.getSingleOrNull();
+        }
+        final dev = data['device_id'];
+        if (existing != null) {
+          if (uuid is String) {
+            tSkipUuid++;
+          } else {
+            tSkipLegacy++;
+          }
+          if (clientTripId is int) tripIdMap[clientTripId] = existing.id;
+          if (dev is String && clientTripId is int) {
+            _pullTripMap['$dev:$clientTripId'] = existing.id;
+          }
+          continue;
+        }
+        final newLocalId =
+            await _db.into(_db.trips).insert(_tripCompanionFromJson(data));
+        if (clientTripId is int) tripIdMap[clientTripId] = newLocalId;
+        if (dev is String && clientTripId is int) {
+          _pullTripMap['$dev:$clientTripId'] = newLocalId;
+        }
+        ti++;
+      }
+
+      // ── apply pass 2: snapshots ──
+      for (final data in snapRows) {
+        final uuid = data['client_uuid'];
+        if (uuid is String) {
+          final existing = await _db.getSnapshotByClientUuid(uuid);
+          if (existing != null) {
+            sSkipUuid++;
+            continue;
+          }
+        } else {
+          final capturedAtStr = data['captured_at'];
+          if (capturedAtStr is! String) {
+            sSkipBad++;
+            continue;
+          }
+          final capturedAt = DateTime.parse(capturedAtStr).toLocal();
+          final existing = await (_db.select(_db.snapshots)
+                ..where((s) => s.capturedAt.equals(capturedAt))
+                ..limit(1))
+              .getSingleOrNull();
+          if (existing != null) {
+            sSkipLegacy++;
+            continue;
+          }
+        }
+        final rawTripId = data['client_trip_id'];
+        // In-page/earlier-page map first, then the device-keyed
+        // persistent map (covers the re-pair seam).
+        final mappedTripId = (rawTripId is int ? tripIdMap[rawTripId] : null) ??
+            _resolvePullTripId(data);
+        await _db
+            .into(_db.snapshots)
+            .insert(_snapshotCompanionFromJson(data, tripId: mappedTripId));
+        si++;
+      }
+
+      // ── apply pass 3: trip_series ──
+      for (final data in seriesRows) {
+        if (await _applyPulledTripSeries(data)) sri++;
+      }
+      if (seriesRows.isNotEmpty) await _db.relinkOrphanTripSeries();
+
+      // ── apply passes 4/5: atlas snapshots + reveals ──
+      for (final data in atlasRows) {
+        if (await _applyPulledAtlasSnapshot(data)) ai++;
+      }
+      for (final data in revealRows) {
+        if (await _applyPulledAtlasReveal(data)) ari++;
+      }
+
+      pages++;
+
+      // ── B2: the page is IN Drift; only now move the cursor ──
       final next = resp['next_since'];
-      if (next is int && next > pullCursorSeed) pullCursorSeed = next;
-      // Progress guard: a non-advancing cursor must terminate the loop, not
-      // spin it — has_more with a stale next_since would otherwise re-pull
-      // the same page forever.
+      if (next is int && next > _pullCursor) {
+        _pullCursor = next;
+        await prefs.setInt(_kPullCursor, _pullCursor);
+      }
+      await prefs.setString(_kPullTripMap, jsonEncode(_pullTripMap));
+
+      _restoreProgress = snap(pages == 1 ? 'trips' : 'snapshots');
+      notifyListeners();
+
+      // Progress guard: a non-advancing cursor must terminate the loop,
+      // not spin it — has_more with a stale next_since would otherwise
+      // re-pull the same page forever.
       if (resp['has_more'] != true || next is! int || next <= since) break;
       since = next;
     }
 
-    // ── Apply pass 1: trips ──
-    var ti = 0;
-    // v0.1.29+123: per-reason skip counters. The 2026-07-05 restore
-    // reported "snapshots 2485/1315 new" with zero visibility into WHY
-    // 1170 rows were skipped — the diag line now itemizes it.
-    var tSkipUuid = 0, tSkipLegacy = 0, tSkipBad = 0;
-    for (final data in tripRows) {
-      if (_restoreCancelRequested) {
-        _restoreStatus = CloudRestoreStatus.cancelled;
-        notifyListeners();
-        return (tripRows.length, ti, snapRows.length, 0);
-      }
-      final clientTripId = data['client_trip_id'];
-      final uuid = data['client_uuid'];
-      Trip? existing;
-      if (uuid is String) {
-        existing = await _db.getTripByClientUuid(uuid);
-      }
-      if (existing == null && uuid is! String) {
-        // Null-uuid row (a device that never completed mapping): fall back
-        // to the legacy identity — (started_at, distance_km), same contract
-        // as the v1 restore loop.
-        final startedAtStr = data['started_at'];
-        if (startedAtStr is! String) {
-          tSkipBad++;
-          continue;
-        }
-        final startedAt = DateTime.parse(startedAtStr).toLocal();
-        final distanceKm = (data['distance_km'] as num?)?.toDouble();
-        final query = _db.select(_db.trips)..limit(1);
-        query.where((t) => t.startedAt.equals(startedAt));
-        if (distanceKm != null) {
-          query.where((t) => t.distanceKm.equals(distanceKm));
-        } else {
-          query.where((t) => t.distanceKm.isNull());
-        }
-        existing = await query.getSingleOrNull();
-      }
-      if (existing != null) {
-        if (uuid is String) {
-          tSkipUuid++;
-        } else {
-          tSkipLegacy++;
-        }
-        if (clientTripId is int) tripIdMap[clientTripId] = existing.id;
-        final dev = data['device_id'];
-        if (dev is String && clientTripId is int) {
-          _pullTripMap['$dev:$clientTripId'] = existing.id;
-        }
-        continue;
-      }
-      final newLocalId =
-          await _db.into(_db.trips).insert(_tripCompanionFromJson(data));
-      if (clientTripId is int) tripIdMap[clientTripId] = newLocalId;
-      final dev = data['device_id'];
-      if (dev is String && clientTripId is int) {
-        _pullTripMap['$dev:$clientTripId'] = newLocalId;
-      }
-      ti++;
-    }
-    _restoreProgress = CloudRestoreProgress(
-      phase: 'snapshots',
-      tripsFetched: tripRows.length,
-      tripsInserted: ti,
-      snapshotsFetched: snapRows.length,
-    );
-    notifyListeners();
-
-    // ── Apply pass 2: snapshots ──
-    var si = 0;
-    // v0.1.29+123: see pass-1 counters.
-    var sSkipUuid = 0, sSkipLegacy = 0, sSkipBad = 0;
-    for (final data in snapRows) {
-      if (_restoreCancelRequested) {
-        _restoreStatus = CloudRestoreStatus.cancelled;
-        notifyListeners();
-        return (tripRows.length, ti, snapRows.length, si);
-      }
-      final uuid = data['client_uuid'];
-      if (uuid is String) {
-        final existing = await _db.getSnapshotByClientUuid(uuid);
-        if (existing != null) {
-          sSkipUuid++;
-          continue;
-        }
-      } else {
-        final capturedAtStr = data['captured_at'];
-        if (capturedAtStr is! String) {
-          sSkipBad++;
-          continue;
-        }
-        final capturedAt = DateTime.parse(capturedAtStr).toLocal();
-        final existing = await (_db.select(_db.snapshots)
-              ..where((s) => s.capturedAt.equals(capturedAt))
-              ..limit(1))
-            .getSingleOrNull();
-        if (existing != null) {
-          sSkipLegacy++;
-          continue;
-        }
-      }
-      final rawTripId = data['client_trip_id'];
-      final mappedTripId = rawTripId is int ? tripIdMap[rawTripId] : null;
-      await _db
-          .into(_db.snapshots)
-          .insert(_snapshotCompanionFromJson(data, tripId: mappedTripId));
-      si++;
-    }
-    // ── Apply pass 3: trip_series (v0.1.41+140) ──
-    // Shared helper with _syncPull: linkage is via trip_client_uuid, so
-    // the restore's tripIdMap is not needed here at all.
-    var sri = 0;
-    for (final data in seriesRows) {
-      if (_restoreCancelRequested) {
-        _restoreStatus = CloudRestoreStatus.cancelled;
-        notifyListeners();
-        return (tripRows.length, ti, snapRows.length, si);
-      }
-      if (await _applyPulledTripSeries(data)) sri++;
-    }
-    if (seriesRows.isNotEmpty) await _db.relinkOrphanTripSeries();
-    // ── Apply passes 4/5: atlas snapshots + reveals (v0.1.59+158) ──
-    // Same shared helpers as _syncPull; no id maps, no linkage.
-    var ai = 0, ari = 0;
-    for (final data in atlasRows) {
-      if (_restoreCancelRequested) {
-        _restoreStatus = CloudRestoreStatus.cancelled;
-        notifyListeners();
-        return (tripRows.length, ti, snapRows.length, si);
-      }
-      if (await _applyPulledAtlasSnapshot(data)) ai++;
-    }
-    for (final data in revealRows) {
-      if (_restoreCancelRequested) {
-        _restoreStatus = CloudRestoreStatus.cancelled;
-        notifyListeners();
-        return (tripRows.length, ti, snapRows.length, si);
-      }
-      if (await _applyPulledAtlasReveal(data)) ari++;
-    }
-    debugPrint('CloudSync: restore via /v2/sync/pull — trips '
-        '${tripRows.length}/$ti new '
+    debugPrint('CloudSync: restore via /v2/sync/pull — $pages page(s), '
+        'trips $tripsFetched/$ti new '
         '(skip uuid=$tSkipUuid legacy=$tSkipLegacy bad=$tSkipBad), '
-        'snapshots ${snapRows.length}/$si new '
+        'snapshots $snapsFetched/$si new '
         '(skip uuid=$sSkipUuid legacy=$sSkipLegacy bad=$sSkipBad), '
-        'series ${seriesRows.length}/$sri applied, '
-        'atlas ${atlasRows.length}/$ai + ${revealRows.length}/$ari applied');
-    // v0.1.37+136 (F3, §4): a completed restore IS the sync-down
-    // initialization — seed the pull cursor with the final next_since
-    // and persist the device-keyed trip map collected in pass 1. The
-    // legacy v1 fallback (null return above) deliberately does NOT
-    // touch the cursor: it stays 0 and the first _syncPull completes
-    // the initialization idempotently.
-    _pullCursor = pullCursorSeed;
-    final pullPrefs = await SharedPreferences.getInstance();
-    await pullPrefs.setInt(_kPullCursor, _pullCursor);
-    await pullPrefs.setString(_kPullTripMap, jsonEncode(_pullTripMap));
-    return (tripRows.length, ti, snapRows.length, si);
+        'series $seriesFetched/$sri applied, '
+        'atlas $atlasFetched/$ai + $revealsFetched/$ari applied');
+
+    _restoreProgress = snap('done');
+    return (tripsFetched, ti, snapsFetched, si);
   }
 
   Future<void> startRestore({required String oldClientToken}) async {
@@ -3155,18 +3223,60 @@ class CloudSyncService extends ChangeNotifier {
           jsonEncode(_pushedTripIds.toList()));
 
       _restoreStatus = CloudRestoreStatus.done;
-      _restoreProgress = CloudRestoreProgress(
-        phase: 'done',
-        tripsFetched: tripsFetched,
-        tripsInserted: tripsInserted,
-        snapshotsFetched: snapshotsFetched,
-        snapshotsInserted: snapshotsInserted,
-      );
+      // v0.1.65+164 (B4): the v2 path already filled _restoreProgress
+      // with the full counter set (series/atlas/reveals/pages) page by
+      // page. Rebuilding it from four locals here would silently drop
+      // exactly the numbers the owner cares about — the atlas. Only the
+      // legacy v1 path, which has no such counters, needs the rebuild.
+      if (v2 == null) {
+        _restoreProgress = CloudRestoreProgress(
+          phase: 'done',
+          tripsFetched: tripsFetched,
+          tripsInserted: tripsInserted,
+          snapshotsFetched: snapshotsFetched,
+          snapshotsInserted: snapshotsInserted,
+        );
+      } else {
+        _restoreProgress = CloudRestoreProgress(
+          phase: 'done',
+          tripsFetched: _restoreProgress.tripsFetched,
+          tripsInserted: _restoreProgress.tripsInserted,
+          snapshotsFetched: _restoreProgress.snapshotsFetched,
+          snapshotsInserted: _restoreProgress.snapshotsInserted,
+          seriesInserted: _restoreProgress.seriesInserted,
+          atlasInserted: _restoreProgress.atlasInserted,
+          revealsInserted: _restoreProgress.revealsInserted,
+          pagesApplied: _restoreProgress.pagesApplied,
+        );
+      }
       _lastRestoreAt = DateTime.now();
       await prefs.setInt(
           _kLastRestoreAt, _lastRestoreAt!.millisecondsSinceEpoch);
       await prefs.remove(_kLastRestoreError);
       _restoreError = null;
+
+      // v0.1.65+164 (B5): PERSIST the outcome, don't just log it.
+      //
+      // The plan said «провести строку результата через AppDiagLog» —
+      // checked, and the premise was wrong: AppDiagLog.install()
+      // (main.dart:27) swaps the global debugPrint, so every
+      // debugPrint in this file is ALREADY in the ring. The real gap
+      // is that the ring is per-process: a restore that ran on a
+      // previous launch leaves nothing behind, which is exactly why
+      // the 26.07 export had no restore line. Error and timestamp
+      // already survive (_kLastRestoreError / _kLastRestoreAt); the
+      // success counters did not. Now they do, and the diag dump
+      // reads them (B6).
+      final p = _restoreProgress;
+      _lastRestoreSummary = p.isEmpty
+          ? 'nothing restored (${p.pagesApplied} page(s), '
+              'fetched ${p.tripsFetched}t/${p.snapshotsFetched}s)'
+          : 'pages=${p.pagesApplied} trips=${p.tripsInserted}/'
+              '${p.tripsFetched} snaps=${p.snapshotsInserted}/'
+              '${p.snapshotsFetched} series=${p.seriesInserted} '
+              'atlas=${p.atlasInserted} reveals=${p.revealsInserted}';
+      await prefs.setString(_kLastRestoreSummary, _lastRestoreSummary!);
+      debugPrint('CloudSync: restore done — $_lastRestoreSummary');
 
       // v0.1.29+18: head-unit reinstall path — Restore was the
       // entry point from a disconnected state (no prior Setup),
@@ -3262,6 +3372,26 @@ class CloudSyncService extends ChangeNotifier {
       } on SocketException {
         final delay = _retryBackoff[attempt - 1];
         if (delay == null) rethrow;
+        await Future<void>.delayed(delay);
+        continue;
+      } on http.ClientException catch (e) {
+        // v0.1.65+164 (B0): THE root cause of the 24–26.07 restore
+        // failures. `package:http` wraps a socket torn down WHILE THE
+        // RESPONSE BODY IS BEING READ into ClientException, not
+        // SocketException — and ClientException was caught nowhere in
+        // lib/. On the head unit's flaky Wi-Fi a 500-row /v2/sync/pull
+        // page reliably produced
+        //   ClientException: Software caused connection abort,
+        //   uri=…/v2/sync/pull?since=16908&limit=500
+        // which propagated straight through _tryRestoreViaSyncPullV2
+        // (no try around its page loop) into startRestore's catch-all,
+        // discarding every buffered row. Same backoff ladder as
+        // SocketException: this is a transient transport fault, not a
+        // protocol error.
+        final delay = _retryBackoff[attempt - 1];
+        if (delay == null) rethrow;
+        debugPrint('CloudSync: transport abort on $path attempt '
+            '$attempt (${e.message}) — retrying in ${delay.inSeconds}s');
         await Future<void>.delayed(delay);
         continue;
       }
@@ -3499,6 +3629,17 @@ class CloudSyncService extends ChangeNotifier {
         debugPrint(
             'CloudSync: network error on $path attempt $attempt: ${e.message}, '
             'sleeping ${delay.inSeconds}s');
+        await Future<void>.delayed(delay);
+        continue;
+      } on http.ClientException catch (e) {
+        // v0.1.65+164 (B0): the push half of the same hole — see the
+        // long note in _getJson. Small bodies made this rare on the
+        // push path, but the hole is identical: a mid-flight socket
+        // abort surfaces as ClientException and was retried nowhere.
+        final delay = _retryBackoff[attempt - 1];
+        if (delay == null) rethrow;
+        debugPrint('CloudSync: transport abort on $path attempt '
+            '$attempt (${e.message}) — retrying in ${delay.inSeconds}s');
         await Future<void>.delayed(delay);
         continue;
       }
@@ -3915,7 +4056,7 @@ class CloudSyncService extends ChangeNotifier {
   /// Read app version from the static value baked into the build.
   /// We don't have package_info_plus as a dep — pubspec-version is
   /// hardcoded here. Update when bumping. Off-by-one tolerated.
-  Future<String> _readAppVersion() async => '0.1.64+163';
+  Future<String> _readAppVersion() async => '0.1.65+164';
 }
 
 // ─── Internal exceptions ────────────────────────────────────────────

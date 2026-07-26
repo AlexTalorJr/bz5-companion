@@ -70,6 +70,16 @@ class AtlasTokens {
   // ── new-cell outline (§6.5) ──
   static const Color newCellOutline = Color(0x661DE9B6);
 
+  // ── band chart bars (+164, blocks [6d/6f/6g]) ──
+  // Three states, and only three: a band with no steady time at all, a
+  // band that has some, and the most economical of the latter. Declared
+  // here rather than inline for the same reason `rec` was (design gate).
+  /// rgba(255,255,255,.10) — полоса без набранного ровного времени.
+  static const Color chartBarIdle = Color(0x1AFFFFFF);
+
+  /// rgba(29,233,182,.35) — полоса с набранным временем.
+  static const Color chartBarEarned = Color(0x591DE9B6);
+
   // ── text ladder (§2) ──
   static const Color t100 = Color(0xFFFFFFFF);
   static const Color t85 = Color(0xD9FFFFFF);
