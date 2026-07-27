@@ -537,6 +537,11 @@ class AtlasReveals extends Table {
 class AppDatabase extends _$AppDatabase {
   AppDatabase() : super(_openConnection());
 
+  /// +166 (D1): база на переданном исполнителе — для тестов
+  /// (`NativeDatabase.memory()`). Приложение продолжает ходить через
+  /// обычный конструктор и файловую базу.
+  AppDatabase.forTesting(QueryExecutor e) : super(e);
+
   @override
   int get schemaVersion => 17;
 

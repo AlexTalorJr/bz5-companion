@@ -81,7 +81,32 @@ SocSource _socSourceFromString(String? s) =>
 String _socSourceToString(SocSource s) =>
     s == SocSource.precise ? 'precise' : 'display';
 
-class HalTelemetryService extends ChangeNotifier {
+/// v0.1.67+166 (D1) — ШОВ ДЛЯ ТЕСТОВ.
+///
+/// Ровно те девять членов [HalTelemetryService], которые трогает
+/// `SpeedProfileService`, и ничего сверх. Движок «Замеров» — чистый
+/// конечный автомат над потоком событий, и единственное, что мешало
+/// его тестировать, — прибитый к платформенному каналу синглтон
+/// `HalTelemetryChannel.instance` внутри реализации.
+///
+/// Интерфейс поведения не меняет: [HalTelemetryService] реализует его
+/// теми же членами, что и раньше. AA2 не задет — `connection.dart`
+/// здесь по-прежнему не упоминается ни разу.
+///
+/// Наследует [Listenable] ради addListener/removeListener: движок
+/// подписывается на сервис как на ChangeNotifier.
+abstract class HalTelemetrySource implements Listenable {
+  Stream<HalEvent> get rawEvents;
+  Future<void> retainStream();
+  Future<void> releaseStream();
+  bool get canUseHal;
+  bool get platformProbed;
+  bool halFresh(String name);
+  double? halValue(String name);
+}
+
+class HalTelemetryService extends ChangeNotifier
+    implements HalTelemetrySource {
   final _hal = HalTelemetryChannel.instance;
   StreamSubscription<HalEvent>? _sub;
 

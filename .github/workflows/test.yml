@@ -1,0 +1,70 @@
+# v0.1.67+166 (D2) — исполняемые тесты движка «Замеров».
+#
+# ПОЧЕМУ ОТДЕЛЬНЫЙ WORKFLOW, А НЕ ВОЗВРАТ lint.yml.
+#
+# lint.yml отключён с +12 из-за шума: `flutter analyze` выдаёт сотни
+# info/warning, доставшихся от кода, написанного до его появления, и в
+# этом шуме реальный сигнал не виден. Возвращать его вместе с тестами
+# значило бы утопить тесты в том же шуме. `flutter test` шумом не
+# страдает: тест либо прошёл, либо нет.
+#
+# Этот workflow НЕЗАВИСИМ от build.yml. Красный тест не мешает сборке
+# APK и не блокирует выдачу — это сознательный выбор на время, пока
+# покрытие маленькое. Когда тестов станет достаточно, чтобы им верить,
+# сборку можно поставить в зависимость от них.
+#
+# Drift в тестах поднимается через NativeDatabase.memory(), которому
+# нужен системный sqlite3. На ubuntu-latest он есть; шаг с явной
+# установкой оставлен на случай, если образ раннера изменится.
+
+name: Tests
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ensure sqlite3 is present
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-0
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          # Как в build.yml: temurin вместо zulu (Azul CDN 520).
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.27.4'
+          channel: 'stable'
+          cache: true
+
+      # Репозиторий не хранит платформенные каталоги — они создаются
+      # на лету, тот же приём, что в build.yml.
+      - name: Create Android project files
+        run: |
+          flutter create --platforms=android \
+            --org com.bz5companion \
+            --project-name bz5_companion .
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      # database.g.dart в .gitignore — Drift генерируется на CI.
+      - name: Generate Drift code
+        run: dart run build_runner build --delete-conflicting-outputs
+
+      - name: Run tests
+        run: flutter test --reporter expanded
