@@ -6078,14 +6078,40 @@ if int(pv) >= 166:
         # попался BD5).
         _w = '\n'.join(_l for _l in _be_wf.read_text().split('\n')
                        if not _l.lstrip().startswith('#'))
-        if 'flutter test' in _w and 'build_runner build' in _w and \
-           'HalTelemetrySource' in _t and 'AppDatabase.forTesting' in _t and \
-           _t.count('test(') >= 5:
-            ok('BE8 executable engine tests exist and CI runs them')
+        _be8 = ('flutter test' in _w and 'build_runner build' in _w and
+                'HalTelemetrySource' in _t and
+                'AppDatabase.forTesting' in _t and
+                _t.count('test(') >= 5)
+        # +167: тесты обязаны быть ОСТРЫМИ. Первая редакция проверяла
+        # atlasLiveBands().timeS, а тот отдаёт сессионную сумму
+        # frozen ⊕ live (+164) — по ней потеря накопления неотличима
+        # от нормальной работы, и тест на A1 не мог упасть в принципе.
+        # Пиннятся два дискриминатора, которые вакуумными быть не могут:
+        # второй чанк (возможен только после сброса аккумулятора) и
+        # отказ с ВОССТАНОВЛЕНИЕМ базы через снимаемый триггер.
+        if int(pv) >= 167:
+            _be8 = (_be8 and
+                    'countAtlasSnapshots()) >= 2' in _t and
+                    'DROP TRIGGER fail_atlas' in _t and
+                    'atlasFreezeRetryPending' in _t and
+                    'atlasInsertFailuresTotal' in _t and
+                    'atlasLiveBands().firstWhere' not in _t)
+        if _be8:
+            ok('BE8 executable engine tests exist, are sharp, and CI runs them')
         else:
             fail('BE8 test file or workflow incomplete')
     else:
         fail('BE8 test file or test.yml missing')
+
+    # BE10 (+167): наблюдаемость отказа записи наружу. Без неё тест на
+    # A1 опирался на геттер сессионных сумм и был вакуумным.
+    if int(pv) >= 167:
+        if 'int get atlasInsertFailuresTotal => _atlasInsertFailedTotal;' \
+                in be_sps and \
+           'int get atlasFreezeRetryPending => _freezeRetry.length;' in be_sps:
+            ok('BE10 write-failure state is observable from outside')
+        else:
+            fail('BE10 insert-failure getters missing')
 
     # BE9: комментарий, утверждавший «график сохраняет 40–180». Он был
     # неправдой с тех пор, как график переехал на сетку атласа, и успел

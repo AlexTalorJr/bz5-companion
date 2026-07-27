@@ -167,33 +167,70 @@ void main() {
     expect(bands, isNot(contains(160)));
   });
 
-  test('A1: чанк пишется на 120 с, остаток переносится', () async {
+  test('A1: аккумулятор сбрасывается — второй чанк вообще возможен',
+      () async {
     await boot();
     await _drive(hal, clock, 60.0, 130);
-    final wrote = await _waitFor(() async =>
-        (await db.countAtlasSnapshots()) >= 1);
-    expect(wrote, isTrue, reason: 'снимок не лёг в базу за отведённое время');
-    expect(await db.countAtlasSnapshots(), 1);
-    // Аккумулятор обнулён не в ноль, а на величину записанного: то,
-    // что натекло после перехода, остаётся в клетке.
-    final live = svc.atlasLiveBands().firstWhere((b) => b.band == 60);
-    expect(live.timeS, lessThan(kBandMinSeconds));
-    expect(live.timeS, greaterThan(0.0));
+    expect(await _waitFor(() async => (await db.countAtlasSnapshots()) >= 1),
+        isTrue,
+        reason: 'первый снимок не лёг в базу');
+    final first = await db.select(db.atlasSnapshots).get();
+    expect(first, hasLength(1));
+    expect(first.single.steadySeconds, closeTo(kBandMinSeconds, 1.5));
+
+    // ГЛАВНОЕ. Второй чанк возможен ТОЛЬКО если аккумулятор сбросился:
+    // переход требует beforeS < 120, а cell.timeS без сброса остаётся
+    // выше порога навсегда и условие не выполнится больше никогда.
+    //
+    // Прежняя редакция этого теста проверяла atlasLiveBands().timeS и
+    // была неправа: тот геттер отдаёт СЕССИОННУЮ сумму frozen ⊕ live
+    // (решение +164 — число на карточке не должно прыгать назад), то
+    // есть 120 + остаток, и «меньше 120» там не могло быть никогда.
+    await _drive(hal, clock, 60.0, 120);
+    expect(await _waitFor(() async => (await db.countAtlasSnapshots()) >= 2),
+        isTrue,
+        reason: 'второго чанка нет — значит аккумулятор не сбросился');
+    expect(await db.countAtlasSnapshots(), 2);
   });
 
-  test('A1: отказ вставки НЕ съедает накопление', () async {
+  test('A1: отказ вставки не теряет замер — повтор дописывает его',
+      () async {
     await boot();
-    // Закрытая база — самый честный способ получить исключение внутри
-    // insertAtlasSnapshot, не подсовывая мок.
-    await _drive(hal, clock, 60.0, 110);
-    await db.close();
-    await _drive(hal, clock, 60.0, 20);
-    // Дать неудачной вставке отработать.
-    await Future<void>.delayed(const Duration(milliseconds: 100));
-    final live = svc.atlasLiveBands().firstWhere((b) => b.band == 60);
-    // До +166 здесь было бы ~0: клетка обнулялась ДО вставки, а
-    // _persist() следом закреплял обнулённое состояние в prefs.
-    expect(live.timeS, greaterThanOrEqualTo(kBandMinSeconds),
-        reason: 'накопление должно пережить отказ вставки');
+    // Триггер, отбивающий любую вставку. В отличие от закрытия базы,
+    // его можно снять — а без восстановления тест не смог бы показать
+    // главное: что замер уцелел, а не просто «что-то осталось».
+    // Имя таблицы берём у Drift, а не пишем руками: оно выводится
+    // из имени класса, и опечатка здесь дала бы падение теста,
+    // неотличимое от настоящего дефекта.
+    final t = db.atlasSnapshots.actualTableName;
+    await db.customStatement('CREATE TRIGGER fail_atlas '
+        'BEFORE INSERT ON $t '
+        "BEGIN SELECT RAISE(ABORT, 'forced'); END;");
+
+    await _drive(hal, clock, 60.0, 130);
+    expect(await _waitFor(() async => svc.atlasFreezeRetryPending >= 1),
+        isTrue,
+        reason: 'клетка не встала в очередь повтора');
+    expect(await db.countAtlasSnapshots(), 0);
+    expect(svc.atlasInsertFailuresTotal, greaterThanOrEqualTo(1));
+
+    // База ожила — следующий квалифицированный тик обязан дописать.
+    await db.customStatement('DROP TRIGGER fail_atlas;');
+    // Десять тиков, а не один: последняя неудачная вставка ещё
+    // может быть в полёте, и первый тик уйдёт в _freezeInFlight.
+    await _drive(hal, clock, 60.0, 10);
+    expect(await _waitFor(() async => (await db.countAtlasSnapshots()) >= 1),
+        isTrue,
+        reason: 'повтор не дописал замер после восстановления базы');
+
+    final rows = await db.select(db.atlasSnapshots).get();
+    expect(rows, hasLength(1));
+    // Замер уцелел ЦЕЛИКОМ: 120 с порога плюс всё, что натекло за
+    // время отказов. До +166 здесь было бы либо пусто, либо строка,
+    // потерявшая накопление между сбросом и неудачной вставкой.
+    expect(rows.single.steadySeconds, greaterThanOrEqualTo(kBandMinSeconds));
+    expect(await _waitFor(() async => svc.atlasFreezeRetryPending == 0),
+        isTrue,
+        reason: 'очередь повтора не опустела после успешной записи');
   });
 }
