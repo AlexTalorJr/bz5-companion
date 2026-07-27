@@ -4660,10 +4660,18 @@ if int(pv) >= 151:
         mact = (root / ('android/app/src/main/kotlin/com/bz5companion/'
                         'bz5_companion/MainActivity.kt')).read_text()
         akt = auto_kt.read_text() if auto_kt.exists() else ''
+        # +169: ветка воскрешения перестала быть `if (intent == null)` —
+        # решение вынесено в `val resurrected = intent == null`, потому
+        # что тот же признак теперь выбирает и текст нотификации. Смысл
+        # инварианта не меняется: null-intent распознаётся и НЕ уходит в
+        # стоп-ветку. Меняется только место, где он распознан.
+        _aw14_null = ('val resurrected = intent == null' in akt
+                      if int(pv) >= 169
+                      else 'if (intent == null)' in akt)
         if 'return START_STICKY' in akt and \
            'return START_NOT_STICKY' in akt and \
            'intent?.action == ACTION_STOP' in akt and \
-           'if (intent == null)' in akt and \
+           _aw14_null and \
            'bz5_companion_autostart_log.txt' in akt and \
            'android:name=".AutostartService"' in mani and \
            'android:exported="false"' in mani and \
@@ -6135,6 +6143,86 @@ if int(pv) >= 166:
         fail('BE9 the stale chart-range comment survives')
 else:
     ok(f"Part BE skipped (build +{pv}, честность записи lands in +166)")
+
+# ══════════════════ Part BF — v0.1.70+169 «Автостарт, шаг 1» ═════════
+#
+# Полевой хартбит recon (Друг 3, 27.07) доказал, что STICKY на этой
+# прошивке работает: три перерождения за вечер, монотонный uptime через
+# все три, ни одного destroy, у всех null-intent. Его же второй ответ
+# назвал вероятную причину нашего провала — recon HEADLESS, а этот
+# сервис при воскрешении звал startActivity из фона, где Android 12 его
+# режет молча (foreground-статус сервиса права на BAL не даёт).
+#
+# Патч снимает ТОЛЬКО фоновый запуск активити — одно изменение, чтобы
+# ответ был двоичным. Гейты держат именно эту границу.
+if int(pv) >= 169:
+    _bf_p = (root / 'android/app/src/main/kotlin/com/bz5companion/'
+                    'bz5_companion/AutostartService.kt')
+    bf_raw = _bf_p.read_text()
+
+    # Комментарии вычищаются ПЕРЕД проверкой. В +165 (BD5), +166 (BE8) и
+    # +167 подряд гейты ловились на чтении собственных пояснений; здесь
+    # докстринг разбирает startActivity по имени десяток раз, и проверка
+    # по сырому тексту не значила бы ничего.
+    import re as _bf_re
+    _bf = _bf_re.sub(r'/\*.*?\*/', '', bf_raw, flags=_bf_re.S)
+    _bf = '\n'.join(_l for _l in _bf.split('\n')
+                    if not _l.lstrip().startswith('//'))
+
+    # BF1: фонового запуска активити нет НИ В ОДНОЙ ветке. PendingIntent
+    # разрешён и является единственным законным путём в UI: он пассивен,
+    # пока пользователь не нажал, и BAL его не касается.
+    _bf1 = ('tryLaunchActivity' not in _bf and
+            'startActivity(' not in _bf and
+            'PendingIntent.getActivity(' in _bf)
+    if _bf1:
+        ok('BF1 no background activity launch; the only route into the '
+           'UI is a user tap on the notification')
+    else:
+        fail('BF1 a background startActivity survives in AutostartService')
+
+    # BF2: воскрешение отмечается как headless и несёт сырые flags —
+    # ненулевое значение отличило бы повтор доставки от sticky.
+    _bf2 = ('"resurrected: headless flags=$flags · ${ident()}"' in _bf and
+            'attempted-no-throw' not in _bf and
+            'val resurrected = intent == null' in _bf)
+    if _bf2:
+        ok('BF2 resurrection marker is headless and records raw flags')
+    else:
+        fail('BF2 resurrection marker still claims a launch attempt')
+
+    # BF3: политика перезапуска не тронута — это контрольная переменная
+    # опыта, и сдвинуть её означало бы испортить сам замер.
+    _bf3 = (_bf.count('return START_STICKY') == 1 and
+            'return START_NOT_STICKY' in _bf and
+            'startForeground(NOTIF_ID, buildNotification(resurrected))' in _bf)
+    if _bf3:
+        ok('BF3 START_STICKY / ACTION_STOP policy unchanged (control '
+           'variable of the experiment)')
+    else:
+        fail('BF3 restart policy moved — the experiment is contaminated')
+
+    # BF4: результат опыта виден на экране машины, а не только в файле
+    # в Downloads.
+    _bf4 = ('buildNotification(resurrected: Boolean = false)' in _bf and
+            'if (resurrected) {' in _bf and
+            'FLAG_IMMUTABLE' in _bf and
+            'Build.VERSION_CODES.M' in _bf and
+            '.setContentIntent(open)' in _bf)
+    if _bf4:
+        ok('BF4 notification states the resurrection and is tappable '
+           '(FLAG_IMMUTABLE guarded for API < 23)')
+    else:
+        fail('BF4 notification does not report the resurrection or is inert')
+
+    # BF5: маркер дописывается с +155 и пережил полтора десятка сборок.
+    # Без версии в строке сравнение «до/после» неразличимо.
+    if 'build=${appVersion()}' in _bf and 'getPackageInfo(' in _bf:
+        ok('BF5 the marker records which build wrote each line')
+    else:
+        fail('BF5 marker lines are not attributable to a build')
+else:
+    ok(f"Part BF skipped (build +{pv}, autostart step 1 lands in +169)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)

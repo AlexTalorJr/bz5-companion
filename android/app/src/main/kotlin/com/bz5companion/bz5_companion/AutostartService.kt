@@ -3,6 +3,7 @@ package com.bz5companion.bz5_companion
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -46,7 +47,53 @@ import kotlin.random.Random
  * reborn by the system, does anything survive suspend. No self-healing
  * in this patch — pure observation.
  *
- * Known open question (marker log answers it from the field): Android
+ * v0.1.70+169 — ШАГ 1: ФОНОВЫЙ ЗАПУСК АКТИВИТИ СНЯТ.
+ *
+ * Друг 3 закрыл механизм 27.07 полевым хартбитом recon: три
+ * перерождения за вечер, монотонный uptimeMillis через все три (ОС не
+ * перезагружалась), ни одного destroy, у всех трёх null-intent. То
+ * есть STICKY на этой прошивке РАБОТАЕТ, и отзыв 22.07 был ошибочным.
+ * Заодно снимается и версия про standby bucket из абзаца выше.
+ *
+ * Одна поправка к его разбору, в его же пользу: «нет onDestroy →
+ * force-stop» неверно. Настоящий force-stop переводит приложение в
+ * stopped state, и sticky после него не работает ВООБЩЕ — трёх
+ * перерождений recon просто не случилось бы. onDestroy не вызывается
+ * и при обычном сносе процесса по памяти, а вот там sticky и
+ * применяется. Читается это так: оба приложения убивает LMK, recon
+ * система воскрешает, companion — нет.
+ *
+ * Второй его ответ (27.07, вечер) назвал вероятную причину: recon
+ * LiveMonitorService HEADLESS — startActivity не зовёт ни разу, живёт
+ * без UI. А этот сервис при воскрешении звал startActivity из фона,
+ * что на Android 12 режется политикой Background-Activity-Launch:
+ * foreground-статус сервиса сам по себе права на BAL не даёт.
+ * Блокировка НЕ бросает исключение — система молча гасит запуск. И
+ * всё это время маркер писал `launch=attempted-no-throw`, что мы
+ * читали как «вероятно, поднялось». Инструмент +157 сообщал ровно
+ * то, что мог; ошибка была в чтении.
+ *
+ * ЧЕГО ЭТОТ ПАТЧ НЕ ДЕЛАЕТ, СОЗНАТЕЛЬНО. Друг 3 предлагает два
+ * условия сразу: убрать startActivity И сделать сервис тяжёлым,
+ * реально собирающим. Второе для companion — не правка, а проект:
+ * recon самодостаточен потому, что его хранилище на стороне Kotlin, а
+ * здесь хранилище — Drift на стороне Dart, и сервис в него писать не
+ * может. Сделав оба изменения разом, мы не узнали бы, какое
+ * подействовало. Поэтому здесь ТОЛЬКО первое, и оно даёт двоичный
+ * ответ за один день езды:
+ *   • появился `resurrected:` без предшествующего `armed:` → стопором
+ *     был BAL, вес сервиса ни при чём, headless-сервис выживает;
+ *   • не появился → дело в весе или в чём-то третьем, и тогда шаг 2
+ *     даёт сервису собственную подписку HAL.
+ * Терять нечего: за весь лог до сих пор ноль воскрешений.
+ *
+ * Версия «Android 12 наказывает за фоновый BAL, переставая
+ * sticky-воскрешать процесс» в план НЕ заложена: механизма такого
+ * рода не известно, BAL режется поштучно. На решение это не влияет —
+ * startActivity убирается потому, что он не работает, а не потому,
+ * что за него наказывают.
+ *
+ * Устаревшая формулировка вопроса, ради истории — Android
  * 12 Background-Activity-Launch policy may silently block startActivity
  * from a background service on stock builds; HU launchers are often
  * laxer. Every attempt is appended to the marker file in Downloads —
@@ -117,9 +164,13 @@ class AutostartService : Service() {
         val upMs = SystemClock.uptimeMillis()
         val elMs = SystemClock.elapsedRealtime()
         val freshBoot = upMs < FRESH_BOOT_MS
+        // +169: версия сборки в маркер. Файл дописывается с +155 и
+        // уже пережил полтора десятка сборок; без этого поля нельзя
+        // сказать, какая строка чьей версией написана, а вся ценность
+        // опыта — в сравнении «до/после».
         marker(
             "born: ${ident()} fresh-boot=$freshBoot" +
-                " (up=${upMs / 1000}s el=${elMs / 1000}s)"
+                " (up=${upMs / 1000}s el=${elMs / 1000}s) build=${appVersion()}"
         )
         hbHandler.postDelayed(hbTick, HEARTBEAT_MS)
     }
@@ -142,37 +193,39 @@ class AutostartService : Service() {
             return START_NOT_STICKY
         }
 
-        startForeground(NOTIF_ID, buildNotification())
+        // v0.1.70+169: null intent = system-driven STICKY relaunch.
+        val resurrected = intent == null
+        startForeground(NOTIF_ID, buildNotification(resurrected))
 
-        if (intent == null) {
-            // Resurrected by the system after a kill/sleep — the whole
-            // point of the net. Bring the app up.
-            val ok = tryLaunchActivity()
-            marker("resurrected: launch=${if (ok) "attempted-no-throw" else "threw"} · ${ident()}")
+        if (resurrected) {
+            // HEADLESS. Никакого startActivity: из фона он всё равно
+            // не проходит, а маркер «attempted-no-throw» вводил в
+            // заблуждение. `flags` пишем сырыми — в них живут
+            // START_FLAG_REDELIVERY (1) и START_FLAG_RETRY (2), и
+            // ненулевое значение отличило бы повтор доставки от
+            // обычного sticky-перезапуска.
+            marker("resurrected: headless flags=$flags · ${ident()}")
         } else {
-            marker("armed: ${intent.action ?: "no-action"} · ${ident()}")
+            marker("armed: ${intent?.action ?: "no-action"} · ${ident()}")
         }
         return START_STICKY
     }
 
-    private fun tryLaunchActivity(): Boolean {
-        return try {
-            val li = Intent(this, MainActivity::class.java).apply {
-                addFlags(
-                    Intent.FLAG_ACTIVITY_NEW_TASK or
-                        Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
-                )
-            }
-            startActivity(li)
-            true
-        } catch (t: Throwable) {
-            Log.w(TAG, "activity launch failed", t)
-            marker("launch exception: ${t.javaClass.simpleName}: ${t.message}")
-            false
-        }
-    }
-
-    private fun buildNotification(): Notification {
+    /**
+     * v0.1.70+169. Две правки.
+     *
+     * 1. Текст зависит от того, как сервис поднялся. Воскрешение
+     *    теперь видно НА ЭКРАНЕ машины, а не только в маркере в
+     *    Downloads — читать файл, чтобы узнать результат опыта,
+     *    больше не обязательно.
+     * 2. Появился contentIntent. Раньше нотификация не открывала
+     *    ничего: тап по ней не делал ровно ничего. Пока сбор не
+     *    умеет идти headless, ЕДИНСТВЕННЫЙ законный путь поднять UI —
+     *    это тап пользователя; BAL его разрешает, в отличие от
+     *    startActivity из фона. На опыт это не влияет: PendingIntent
+     *    пассивен, пока по нему не нажали.
+     */
+    private fun buildNotification(resurrected: Boolean = false): Notification {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             if (nm.getNotificationChannel(CHANNEL_ID) == null) {
@@ -191,12 +244,42 @@ class AutostartService : Service() {
             @Suppress("DEPRECATION")
             Notification.Builder(this)
         }
+        // FLAG_IMMUTABLE обязателен с Android 12 и существует с API 23.
+        var piFlags = PendingIntent.FLAG_UPDATE_CURRENT
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            piFlags = piFlags or PendingIntent.FLAG_IMMUTABLE
+        }
+        val open = PendingIntent.getActivity(
+            this,
+            0,
+            Intent(this, MainActivity::class.java).apply {
+                addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
+                )
+            },
+            piFlags
+        )
         return builder
             .setSmallIcon(applicationInfo.icon)
             .setContentTitle("BZ5 Companion")
-            .setContentText("автостарт взведён")
+            .setContentText(
+                if (resurrected) {
+                    "восстановлен системой — нажмите, чтобы записывать"
+                } else {
+                    "автостарт взведён"
+                }
+            )
+            .setContentIntent(open)
             .setOngoing(true)
             .build()
+    }
+
+    /** versionName приложения; «?» если PackageManager отказал. */
+    private fun appVersion(): String = try {
+        packageManager.getPackageInfo(packageName, 0).versionName ?: "?"
+    } catch (t: Throwable) {
+        "?"
     }
 
     /** Append-only field marker — the recon p112/p113 diagnostic pattern. */
