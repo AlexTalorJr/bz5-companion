@@ -2314,6 +2314,18 @@ class SpeedProfileService extends ChangeNotifier {
   double atlasCellTimeS(int band, int? window) =>
       _ledger?.cells[_AtlasLedger.cellKey(band, window)]?.sessionTimeS ?? 0;
 
+  /// +167: состояние записи чанков наружу. Заведено, потому что тест
+  /// на A1 без него был вакуумным: `atlasLiveBands().timeS` возвращает
+  /// СЕССИОННУЮ сумму (frozen ⊕ live, решение +164, чтобы число на
+  /// карточке не прыгало назад после сброса), и по ней потеря
+  /// накопления неотличима от нормальной работы — в обоих случаях
+  /// выходит одно и то же.
+  ///
+  /// Пара полезна и приложению: она делает молчаливый отказ записи
+  /// наблюдаемым, а сегодня узнать о нём можно только из диаг-дампа.
+  int get atlasInsertFailuresTotal => _atlasInsertFailedTotal;
+  int get atlasFreezeRetryPending => _freezeRetry.length;
+
   /// Cells that have matured but whose snapshot is not frozen yet — the
   /// freeze happens on session rotation, so between «полоса дозрела» and
   /// the new cell in the grid there is a real gap the field ran into
