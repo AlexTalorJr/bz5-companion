@@ -53,9 +53,14 @@ import 'hal_telemetry_service.dart';
 /// corridor — the physics does the filtering, the estimator retires.
 const double kBandDwellS = 3.0;
 
-/// Cluster-to-real speed correction (dash reads ~2% high; Alex's
-/// measurement, spec §2). Bands detect on dash speed, distance and the
-/// 0–100 finish line use real speed (finish at dash × factor ≥ 100).
+/// Cluster-to-real speed correction. Bands detect on dash speed;
+/// distance and the 0–100 finish line use real speed (finish at
+/// dash × factor ≥ 100).
+///
+/// ОТКУДА ЧИСЛО (+166, уточнение владельца): замер по GPS на BZ5 —
+/// **реальные 100 км/ч соответствуют 102 км/ч по спидометру**. Отсюда
+/// 100/102 ≈ 0.980. Прежняя формулировка «~2% high» называла величину,
+/// но не метод, и воспроизвести замер по ней было нельзя.
 const double kSpeedRealFactor = 0.98;
 
 /// Band shape: round tens, ±2 km/h dash window, 40…180 range. A band
@@ -115,11 +120,27 @@ const int kAtlasSessionGapMin = 30;
 const double kAtlasAnticipationS = 90.0;
 
 /// +162: the collection ceiling. Bands above this are still MEASURED by
-/// the profiler (the chart keeps its 40–180 range) but they are not part
-/// of the atlas: no snapshot is frozen and no reveal is generated. The
-/// grid, the counters and the export enforce the same number on the read
-/// side (`kAtlasBandMaxKmh` in atlas_projection.dart) — the two are the
-/// only places 140 is written down.
+/// the dwell corridor and the session aggregates but are NOT part of the
+/// atlas: no cell, no snapshot, no reveal. The read side enforces the
+/// same number (`kAtlasBandMaxKmh` in atlas_projection.dart).
+///
+/// v0.1.67+166 — ДВЕ ПОПРАВКИ К ЭТОМУ АБЗАЦУ.
+///
+/// 1. Прежняя редакция утверждала, что «график сохраняет диапазон
+///    40–180». Это неправда с тех пор, как график переехал на сетку
+///    атласа: `_BandBarCard` строит полосы от `kAtlasBandMinKmh` до
+///    `kAtlasBandMaxKmh` (то есть до 140) и берёт значения из клеток
+///    сетки, а не из сессионных агрегатов. Гейт BC5 пиннит 11 полос.
+///    Комментарий пережил правку кода и успел ввести в заблуждение
+///    архитектурное ревью — поэтому переписан, а не подправлен.
+///
+/// 2. Потолок УТВЕРЖДЁН КАК ПОСТОЯННЫЙ (владелец, 27.07). Ранее
+///    обсуждалась разблокировка 150–180 по закрытии всей сетки; от неё
+///    отказались, потому что условие недостижимо: сетка — 11 полос ×
+///    12 температурных окон = 132 клетки, а нижние окна на верхних
+///    полосах не сходятся физически (пакет греется под нагрузкой
+///    быстрее, чем набираются 120 с). Ворота, которые не открываются,
+///    хуже честного потолка.
 const int kAtlasBandMaxCollectKmh = 140;
 
 /// +162 (§3.2): an untouched intention is dropped silently after this
@@ -197,6 +218,11 @@ class TickDiag {
   int virtualTicks; // integrated ticks that came from the 1 Hz pump
   int gapDrops; // ticks rejected by the dt-guard (gap > kDtGuardS)
   double maxGapS; // longest observed inter-tick gap
+  // +166 (B1): почему разгон не записался. До этого патча отменённая
+  // попытка не оставляла следа нигде — ни на экране, ни в дампе, — и
+  // вопрос «сколько разгонов съедено» был неотвечаем в принципе.
+  int z100AbortDip; // отменён просадкой (vDash < peak − 2 км/ч)
+  int z100AbortTimeout; // отменён по 30 с от старта
 
   TickDiag({
     this.total = 0,
@@ -208,6 +234,8 @@ class TickDiag {
     this.virtualTicks = 0,
     this.gapDrops = 0,
     this.maxGapS = 0,
+    this.z100AbortDip = 0,
+    this.z100AbortTimeout = 0,
   });
 
   Map<String, dynamic> toJson() => {
@@ -220,6 +248,8 @@ class TickDiag {
         'vt': virtualTicks,
         'gd': gapDrops,
         'gm': maxGapS,
+        'zad': z100AbortDip,
+        'zat': z100AbortTimeout,
       };
 
   static TickDiag fromJson(Map<String, dynamic> j) => TickDiag(
@@ -232,6 +262,8 @@ class TickDiag {
         virtualTicks: (j['vt'] as num?)?.toInt() ?? 0,
         gapDrops: (j['gd'] as num?)?.toInt() ?? 0,
         maxGapS: (j['gm'] as num?)?.toDouble() ?? 0,
+        z100AbortDip: (j['zad'] as num?)?.toInt() ?? 0,
+        z100AbortTimeout: (j['zat'] as num?)?.toInt() ?? 0,
       );
 }
 
@@ -553,11 +585,24 @@ class _AtlasLedger {
         'cells': cells.map((k, v) => MapEntry(k, v.toJson())),
       };
 
-  static _AtlasLedger fromJson(Map<String, dynamic> j) {
+  /// +166 (A2): [droppedAboveCeiling] считает клетки, отброшенные при
+  /// восстановлении. Апгрейд с ≤+165 может принести в prefs живую
+  /// клетку выше потолка — она там законно лежала, потому что старый
+  /// код создавал такие клетки. Пустить её обратно в леджер значило бы
+  /// вернуть карточку-призрак на один прогон.
+  static _AtlasLedger fromJson(Map<String, dynamic> j,
+      {void Function()? droppedAboveCeiling}) {
     final rawCells = (j['cells'] as Map<String, dynamic>? ?? {});
     final cells = <String, _AtlasCell>{};
     rawCells.forEach((k, v) {
-      if (v is Map<String, dynamic>) cells[k] = _AtlasCell.fromJson(v);
+      if (v is! Map<String, dynamic>) return;
+      final sep = k.indexOf(':');
+      final b = sep < 0 ? null : int.tryParse(k.substring(0, sep));
+      if (b != null && b > kAtlasBandMaxCollectKmh) {
+        droppedAboveCeiling?.call();
+        return;
+      }
+      cells[k] = _AtlasCell.fromJson(v);
     });
     final now = DateTime.now().millisecondsSinceEpoch;
     return _AtlasLedger(
@@ -693,11 +738,35 @@ class SpeedProfileService extends ChangeNotifier {
   /// provenance (kAppVersion handed down by main.dart — a service must
   /// not import a screen).
   SpeedProfileService(this._hal,
-      {required AppDatabase db, required String appVersion})
+      {required AppDatabase db,
+      required String appVersion,
+      int Function()? nowMs})
       : _db = db,
-        _appVersion = appVersion;
+        _appVersion = appVersion,
+        _nowMs = nowMs ?? _wallClockMs;
 
-  final HalTelemetryService _hal;
+  static int _wallClockMs() => DateTime.now().millisecondsSinceEpoch;
+
+  /// +166 (D1), ТРЕТИЙ ШОВ — ЧАСЫ ТИКОВОГО КОНВЕЙЕРА.
+  ///
+  /// Подменяются ровно в двух точках входа — _onEvent и
+  /// _onVirtualTick, — потому что дальше время уже течёт параметром:
+  /// _integrate, _atlasTick, _stepZeroTo100 и _freezeChunk принимают
+  /// nowMs снаружи. Двух подмен хватает, чтобы весь конвейер стал
+  /// управляемым, а тест на 120 секунд накопления шёл миллисекунды
+  /// вместо двух минут.
+  ///
+  /// Остальные 19 обращений к DateTime.now() в этом файле НЕ тронуты
+  /// сознательно: они живут в путях событий, намерения, архива и
+  /// дампа, к тиковому конвейеру отношения не имеют, и переписывать
+  /// их значило бы менять код, который патч не чинит.
+  final int Function() _nowMs;
+
+  /// +166 (D1): интерфейс, не конкретный сервис. В приложении сюда
+  /// приезжает тот же HalTelemetryService — он реализует
+  /// HalTelemetrySource, — а в тестах подделка без платформенного
+  /// канала.
+  final HalTelemetrySource _hal;
   final AppDatabase _db;
   final String _appVersion;
 
@@ -709,6 +778,8 @@ class SpeedProfileService extends ChangeNotifier {
   static const String _kActiveKey = 'speed_profile_active';
   static const String _kArchiveKey = 'speed_profile_archive';
   static const String _kAtlasLedgerKey = 'atlas_ledger';
+  // +166 (A1): накопительные отказы вставки чанка.
+  static const String _kAtlasInsertFailKey = 'atlas_insert_fail_total';
   // +162 (§3.2): intention lives beside the ledger, not inside it — it
   // must survive a session rotation, which rewrites the ledger.
   static const String _kIntentBandKey = 'atlas_intent_band';
@@ -746,6 +817,22 @@ class SpeedProfileService extends ChangeNotifier {
   bool _dirtySincePersist = false;
   // Process-lifetime freeze counter — diag visibility only.
   int _atlasFreezeCount = 0;
+  // +166 (A1/A2/B1) — всегда-включённые счётчики, соседи
+  // _atlasFreezeCount: они описывают леджер, который живёт без
+  // мануальной сессии, поэтому им не место в TickDiag.
+  int _atlasInsertFailed = 0;
+  int _atlasAboveCeilingAtCreate = 0;
+  int _atlasAboveCeilingAtRestore = 0;
+  /// Накопительный счётчик отказов вставки, ПЕРЕЖИВАЮЩИЙ процесс.
+  /// Остальные счётчики процессные, как _atlasFreezeCount, и этого
+  /// хватает: дамп снимается в том же процессе. Но потерянный замер —
+  /// единственное, о чём узнаёшь потом, а на ГУ процесс умирает вместе
+  /// с зажиганием. Поэтому этот один персистится.
+  int _atlasInsertFailedTotal = 0;
+  /// Ключи клеток, чья вставка в полёте, и ключи, чью вставку надо
+  /// повторить на следующем квалифицированном тике.
+  final Set<String> _freezeInFlight = <String>{};
+  final Set<String> _freezeRetry = <String>{};
 
   // ── +160: reveal generation (§1) + badge counter (§2.3) ──
   // Existence checks are ASYNC after a maturity crossing; two cells of
@@ -864,11 +951,20 @@ class SpeedProfileService extends ChangeNotifier {
     // persisted ledger went idle past the gap, close that session
     // retroactively: matured cells freeze with frozen_at = the last
     // movement, session_uid rotates. Sub-threshold cells carry.
+    _atlasInsertFailedTotal = prefs.getInt(_kAtlasInsertFailKey) ?? 0;
     final rawLedger = prefs.getString(_kAtlasLedgerKey);
     if (rawLedger != null) {
       try {
         _ledger = _AtlasLedger.fromJson(
-            jsonDecode(rawLedger) as Map<String, dynamic>);
+            jsonDecode(rawLedger) as Map<String, dynamic>,
+            droppedAboveCeiling: () => _atlasAboveCeilingAtRestore++);
+        if (_atlasAboveCeilingAtRestore > 0) {
+          // Апгрейд с ≤+165: старый код создавал клетки выше потолка.
+          _dirtySincePersist = true;
+          debugPrint('Atlas: restore dropped '
+              '$_atlasAboveCeilingAtRestore legacy cell(s) above the '
+              '$kAtlasBandMaxCollectKmh ceiling');
+        }
       } catch (_) {
         _ledger = null;
       }
@@ -1030,6 +1126,15 @@ class SpeedProfileService extends ChangeNotifier {
       'atlas': {
         'armed': _atlasArmed,
         'freezes_this_process': _atlasFreezeCount,
+        // +166 (B1): без этих четырёх чисел ни отказ вставки, ни
+        // отброшенная потолком клетка не оставляли следа нигде, кроме
+        // debugPrint, которого в поле никто не читает.
+        'insert_failed_this_process': _atlasInsertFailed,
+        'insert_failed_total': _atlasInsertFailedTotal,
+        'above_ceiling_at_create': _atlasAboveCeilingAtCreate,
+        'above_ceiling_at_restore': _atlasAboveCeilingAtRestore,
+        'freeze_retry_pending': _freezeRetry.length,
+        'kAtlasBandMaxCollectKmh': kAtlasBandMaxCollectKmh,
         'snapshots_in_db': await _db.countAtlasSnapshots(),
         // +160 field check (§5): the badge source + reveal totals;
         // lastOkMs / t0 ride inside the ledger JSON ('lok' / 't0').
@@ -1088,6 +1193,20 @@ class SpeedProfileService extends ChangeNotifier {
   // the head unit the process dies at ignition-off long before a week;
   // on a phone nothing ever attaches — a week-idle awake recorder is
   // not a physical state anymore.
+
+  /// +166 (A1): накопительный счётчик отказов вставки чанка. Пишется
+  /// сразу, отдельно от 30-секундного _persist: если база отказывает,
+  /// нет причин верить, что до следующего периодического сохранения
+  /// процесс доживёт.
+  Future<void> _bumpInsertFailureTotal() async {
+    _atlasInsertFailedTotal++;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt(_kAtlasInsertFailKey, _atlasInsertFailedTotal);
+    } catch (_) {
+      // Отказ prefs поверх отказа базы — считаем в памяти и живём.
+    }
+  }
 
   Future<void> _persist() async {
     try {
@@ -1163,7 +1282,7 @@ class SpeedProfileService extends ChangeNotifier {
     // unspecified (boot vs epoch); receipt time is uniform and the
     // stream is fast enough that transport jitter is noise at the
     // 3 s dwell and 2 s dt guards.
-    final now = DateTime.now().millisecondsSinceEpoch;
+    final now = _nowMs();
 
     _lastSpeedDash = vDash; // feed the +156 carry-forward pump
     _integrate(vDash, now, virtual: false);
@@ -1193,7 +1312,7 @@ class SpeedProfileService extends ChangeNotifier {
     final vDash = _lastSpeedDash;
     if (vDash == null) return; // no speed seen yet on this attach
     if (_freshPowerKw() == null) return; // stream dead — freeze
-    final now = DateTime.now().millisecondsSinceEpoch;
+    final now = _nowMs();
     _integrate(vDash, now, virtual: true);
     _maybeNotify(now);
   }
@@ -1405,6 +1524,21 @@ class SpeedProfileService extends ChangeNotifier {
     final p = _freshPowerKw();
     if (p == null) return;
 
+    // +166 (A2), ПОТОЛОК СБОРА ПРИМЕНЯЕТСЯ ЗДЕСЬ, У ИСТОЧНИКА.
+    //
+    // До +166 клетка выше потолка спокойно рождалась, копилась и
+    // возвращалась из atlasLiveBands() — то есть на экране появлялась
+    // полноценная карточка «Полоса 160 · зреет», её полоска доходила
+    // до 120 с, и в этот момент _freezeChunk впервые замечал потолок,
+    // удалял клетку и молча выходил. Водитель на трассе видел, как
+    // замер заполняется до конца и исчезает, не дав ничего.
+    //
+    // Потолок — не порог отбраковки на записи, а граница сетки. Место
+    // ему там, где клетка возникает.
+    if (band > kAtlasBandMaxCollectKmh) {
+      _atlasAboveCeilingAtCreate++;
+      return;
+    }
     final win = _tickWindow(nowMs);
     final key = _AtlasLedger.cellKey(band, win);
     final cell = l.cells.putIfAbsent(
@@ -1426,14 +1560,31 @@ class SpeedProfileService extends ChangeNotifier {
       cell.tempTimeS += dtS;
     }
     l.lastGainMs = nowMs; // +160: «Σ gained с момента lastOkMs» anchor
-    if (beforeS < kBandMinSeconds && cell.timeS >= kBandMinSeconds) {
+    final crossed =
+        beforeS < kBandMinSeconds && cell.timeS >= kBandMinSeconds;
+    // +166 (A1): повтор после отказа вставки. Переход через порог
+    // случается РОВНО ОДИН РАЗ за круг накопления — если бы повтор
+    // висел на нём, единственный отказ означал бы, что клетка уже
+    // никогда не запишется: на следующем тике beforeS тоже ≥ 120, и
+    // условие перехода больше не выполнится никогда.
+    // Порядок важен: remove — побочный эффект. Сначала порог, иначе
+    // ключ снимался бы с очереди повтора и в ситуации, когда повтор
+    // не запускается.
+    final retry =
+        cell.timeS >= kBandMinSeconds && _freezeRetry.remove(key);
+    if (crossed) {
       // kwh in the payload is the value AT THE CROSSING — realtime
       // correction continues afterwards; the card renders from the
       // payload, an honest moment-in-time snapshot (spec §1.1).
+      // Событие живёт только на настоящем переходе: повтор — это
+      // вторая попытка записать ТУ ЖЕ клетку, и вторая карточка
+      // «новая клетка» была бы враньём.
       _maybeGenerateReveal(
           band, win, cell.energyKwh / cell.distKm * 100.0);
-      // +164 (A, BC7): the same crossing is now the WRITE point. The
-      // measurement stops living in prefs the instant it is complete.
+    }
+    if (crossed || retry) {
+      // +164 (A, BC7): the crossing is the WRITE point. The measurement
+      // stops living in prefs the instant it is complete.
       _freezeChunk(key, cell, band, win, nowMs);
     }
     _dirtySincePersist = true;
@@ -1464,16 +1615,40 @@ class SpeedProfileService extends ChangeNotifier {
   /// one 360 s row would have given, and `dedupSessionCount` groups by
   /// `session_uid`, so the star still counts ONE session.
   ///
-  /// Durability order is the +163 rule, unchanged: Drift INSERT first,
-  /// ledger persist second. A kill in between costs a duplicate row at
-  /// worst — identical value, identical weight, cannot move the mean.
+  /// Durability order is the +163 rule: Drift INSERT first, ledger
+  /// persist second. A kill in between costs a duplicate row at worst —
+  /// identical value, identical weight, cannot move the mean.
+  ///
+  /// v0.1.67+166 (A1) — ЧТО БЫЛО СЛОМАНО.
+  ///
+  /// Рассуждение выше про «kill in between» верно и осталось верным, но
+  /// оно описывает УБИЙСТВО ПРОЦЕССА, а не ОТКАЗ ВСТАВКИ. Между ними
+  /// была пропасть, и код падал в неё: аккумулятор клетки обнулялся
+  /// СИНХРОННО, ещё до вставки, вставка уходила в unawaited с
+  /// `catch (e) { debugPrint(…) }`, а следом _persist() закреплял
+  /// обнулённое состояние в prefs. Диск полон, база заперта, миграция
+  /// не прошла — и 120 секунд замера исчезали навсегда. При этом на
+  /// экране всё выглядело правильно: карточка рисует frozen ⊕ live, а
+  /// frozen уже включал этот чанк. Ровно тот класс тихой подмены, ради
+  /// которого делался +164, только на записи, а не на восстановлении.
+  ///
+  /// ТЕПЕРЬ. Клетка не трогается, пока вставка не подтвердилась. При
+  /// отказе накопление остаётся на месте и попадёт в следующую
+  /// попытку — ключ уходит в [_freezeRetry], и _atlasTick повторит.
+  ///
+  /// ПОЧЕМУ ВЫЧИТАНИЕ, А НЕ ОБНУЛЕНИЕ. Сброс стал асинхронным, а тики
+  /// идут 1 Гц и во время await продолжают лить в ту же клетку.
+  /// `cell.timeS = 0` выбросил бы всё, что натекло за время вставки.
+  /// Вычитаем ровно те величины, которые ушли в строку.
   void _freezeChunk(
       String key, _AtlasCell cell, int band, int? win, int nowMs) {
     final l = _ledger;
     if (l == null) return;
-    // Collection ceiling (canon §8): above it there is no snapshot, no
-    // event, and the cell leaves the ledger. +163 enforced this at
-    // rotation; the crossing is simply the earlier, truer moment.
+    // Collection ceiling (canon §8). Since +166 the ceiling is applied
+    // where the cell is BORN (_atlasTick) and where a legacy ledger is
+    // restored (_AtlasLedger.fromJson), so this branch is unreachable.
+    // Kept as a net: it is free, and it is the last line of defence if
+    // a third creation path ever appears.
     if (band > kAtlasBandMaxCollectKmh) {
       l.cells.remove(key);
       _dirtySincePersist = true;
@@ -1482,6 +1657,9 @@ class SpeedProfileService extends ChangeNotifier {
       return;
     }
     if (cell.distKm <= 1e-6) return; // impossible by construction
+    // Одна клетка — одна вставка в полёте. Без этого повтор и обычный
+    // переход могли бы записать один и тот же чанк дважды.
+    if (_freezeInFlight.contains(key)) return;
     final kwh100 = cell.energyKwh / cell.distKm * 100.0;
     final row = AtlasSnapshotsCompanion(
       clientUuid: Value(uuidV7()),
@@ -1498,39 +1676,60 @@ class SpeedProfileService extends ChangeNotifier {
       updatedAt: Value(DateTime.now()),
     );
 
-    // Roll the completed chunk into the session accumulator, then reset
-    // the live one. §6.13 keeps showing frozen ⊕ live, so the pending
-    // number does not jump backwards at the reset.
-    cell.frozenEnergyKwh += cell.energyKwh;
-    cell.frozenDistKm += cell.distKm;
-    cell.frozenTimeS += cell.timeS;
-    cell.energyKwh = 0;
-    cell.distKm = 0;
-    cell.timeS = 0;
-    cell.tempSum = 0;
-    cell.tempTimeS = 0;
-    cell.startedAtMs = nowMs;
+    // Величины, ушедшие в строку. Снимаются ДО await и вычитаются
+    // после — тики, натёкшие за время вставки, остаются в клетке.
+    final tookEnergyKwh = cell.energyKwh;
+    final tookDistKm = cell.distKm;
+    final tookTimeS = cell.timeS;
+    // Температурные суммы — по тому же правилу. Обнуление выбросило
+    // бы тики, натёкшие за время вставки, и средняя температура
+    // следующего чанка поехала бы.
+    final tookTempSum = cell.tempSum;
+    final tookTempTimeS = cell.tempTimeS;
 
-    // +162 (§3.2): the intention is fulfilled the moment its cell
-    // actually freezes — silently, no congratulation card.
-    if (_intentBand != null && key == _intentKey()) {
-      _intentBand = null;
-      _intentWindow = null;
-      _intentTakenMs = null;
-      unawaited(_persistIntent());
-    }
-
-    _atlasFreezeCount++;
-    _dirtySincePersist = true;
+    _freezeInFlight.add(key);
     debugPrint('Atlas: chunk band=$band win=${win ?? 'u'} '
         'kwh=${kwh100.toStringAsFixed(1)} s=${row.steadySeconds.value.round()} '
         'session=${l.sessionUid.substring(0, 8)}…');
     unawaited(() async {
+      var inserted = false;
       try {
         await _db.insertAtlasSnapshot(row);
+        inserted = true;
       } catch (e) {
-        debugPrint('Atlas: chunk insert failed — $e');
+        _atlasInsertFailed++;
+        await _bumpInsertFailureTotal();
+        _freezeRetry.add(key);
+        debugPrint('Atlas: chunk insert FAILED, накопление сохранено '
+            'для повтора — $e');
       }
+      if (inserted) {
+        // Roll the completed chunk into the session accumulator, then
+        // take it out of the live one. §6.13 keeps showing frozen ⊕
+        // live, so the pending number does not jump backwards.
+        cell.frozenEnergyKwh += tookEnergyKwh;
+        cell.frozenDistKm += tookDistKm;
+        cell.frozenTimeS += tookTimeS;
+        cell.energyKwh -= tookEnergyKwh;
+        cell.distKm -= tookDistKm;
+        cell.timeS -= tookTimeS;
+        cell.tempSum -= tookTempSum;
+        cell.tempTimeS -= tookTempTimeS;
+        cell.startedAtMs = nowMs;
+
+        // +162 (§3.2): the intention is fulfilled the moment its cell
+        // actually freezes — silently, no congratulation card. +166:
+        // «actually» теперь означает «строка легла в базу».
+        if (_intentBand != null && key == _intentKey()) {
+          _intentBand = null;
+          _intentWindow = null;
+          _intentTakenMs = null;
+          unawaited(_persistIntent());
+        }
+        _atlasFreezeCount++;
+      }
+      _freezeInFlight.remove(key);
+      _dirtySincePersist = true;
       await _persist();
       _atlasRevision++;
       notifyListeners();
@@ -2233,6 +2432,17 @@ class SpeedProfileService extends ChangeNotifier {
 
       case _ZPhase.armed:
         if (vDash > 2.0) {
+          // +166 (C3), НАЗВАТЬ ВЕЩИ СВОИМИ ИМЕНАМИ: нулевая точка
+          // здесь — 2 км/ч по панели, не ноль. Значит метрика по факту
+          // «2 → реальные 100», и показанное время систематически
+          // короче настоящего 0–100 на пару десятых.
+          //
+          // Иначе не сделать: скорость на панели целочисленная и
+          // приходит ПО ИЗМЕНЕНИЮ, момент отрыва от нуля приложению
+          // просто не сообщают. Экстраполировать ниже 2 км/ч значило
+          // бы придумывать данные. Это договорённость, а не дефект, —
+          // но она должна быть названа, иначе следующее окно будет
+          // искать расхождение с журнальными замерами.
           double t0 = nowMs.toDouble();
           final pm = _zPrevMs;
           final pv = _zPrevDash;
@@ -2271,7 +2481,14 @@ class SpeedProfileService extends ChangeNotifier {
           _zBelowSinceMs = null;
         } else if (vDash < _zPeakDash - 2.0 || nowMs - t0 > 30000) {
           // Lifted off / traffic — the attempt is void, re-arm on the
-          // next standstill.
+          // next standstill. +166 (B1): which of the two ended it is
+          // now counted, отдельно — «съело трафиком» и «машина не
+          // укладывается в 30 с» требуют разных выводов.
+          if (vDash < _zPeakDash - 2.0) {
+            s.diag.z100AbortDip++;
+          } else {
+            s.diag.z100AbortTimeout++;
+          }
           _zPhase = _ZPhase.idle;
           _zBelowSinceMs = null;
         }

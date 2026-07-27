@@ -5463,9 +5463,22 @@ if int(pv) >= 151:
                         #   * rotation clears the frozen accumulator so
                         #     chunks belong to the session that made them.
                         # The display-window half is unchanged.
+                        # +166 (A1) уточняет ВТОРУЮ половину: сброс
+                        # больше не обнуление. Он стал вычитанием ровно
+                        # тех величин, что ушли в строку, потому что
+                        # сброс переехал за await вставки, а тики 1 Гц
+                        # продолжают лить в ту же клетку — `= 0`
+                        # выбросил бы всё, что натекло за время записи.
+                        # Инвариант «сброс живёт в одном месте» не
+                        # меняется, меняется его форма.
+                        _bb13_reset = (
+                            sps.count('cell.energyKwh -= tookEnergyKwh;') == 1
+                            and 'cell.energyKwh = 0;' not in sps
+                            if int(pv) >= 166
+                            else sps.count('cell.energyKwh = 0;') == 1)
                         if '_freezeChunk(key, cell, band, win, nowMs);' in sps \
                            and sps.count('_freezeChunk(') == 2 \
-                           and sps.count('cell.energyKwh = 0;') == 1 \
+                           and _bb13_reset \
                            and 'c.frozenTimeS = 0;' in sps \
                            and _bb13_cross in sps \
                            and _bb13_common:
@@ -5695,7 +5708,13 @@ if int(pv) >= 164:
     # BC7a: reset accompanies the write, the remainder carries, and the
     # row stays IMMUTABLE — nothing in the atlas path clears synced_at.
     _atlas_writes = bc_css.split('_syncAtlasSnapshots')[1][:1200]
-    if 'cell.frozenEnergyKwh += cell.energyKwh;' in bc_sps and \
+    # +166 (A1): перенос берёт снятую ДО await величину, а не текущее
+    # содержимое клетки. Смысл прежний — завершённый чанк уезжает в
+    # frozen, остаток остаётся живым, — изменился только источник числа.
+    _bc7a_roll = ('cell.frozenEnergyKwh += tookEnergyKwh;'
+                  if int(pv) >= 166
+                  else 'cell.frozenEnergyKwh += cell.energyKwh;')
+    if _bc7a_roll in bc_sps and \
        'cell.startedAtMs = nowMs;' in bc_sps and \
        'c.frozenTimeS = 0;' in bc_sps and \
        'syncedAt: const Value(null)' not in _atlas_writes and \
@@ -5935,6 +5954,149 @@ if int(pv) >= 165:
         fail(f'BD8 atlas-entry radii disagree: {_r_body}')
 else:
     ok(f"Part BD skipped (build +{pv}, текст и масштаб land in +165)")
+
+# ══════════════════ Part BE — v0.1.67+166 «Честность записи» ═════════
+#
+# Патч чинит ТИХИЕ отказы: потерю замера при неудачной вставке и
+# карточку-призрак выше потолка сбора. Оба класса объединяет то, что на
+# экране всё выглядит правильно, — поэтому здесь пиннится не внешний
+# результат, а форма кода, которая делает отказ невозможным.
+if int(pv) >= 166:
+    be_sps = (root / 'lib/services/speed_profile_service.dart').read_text()
+    be_hal = (root / 'lib/services/hal_telemetry_service.dart').read_text()
+    be_db = (root / 'lib/data/database.dart').read_text()
+    _be_freeze = be_sps.split('void _freezeChunk(')[1] \
+                       .split('\n  /// ')[0]
+    _be_tick = be_sps.split('void _atlasTick(')[1].split('void _freezeChunk(')[0]
+
+    # BE1: сброс — ТОЛЬКО в ветке успеха. Это и есть весь A1: до +166
+    # клетка обнулялась синхронно, до вставки, а _persist() следом
+    # закреплял обнулённое состояние в prefs.
+    _be1 = ('inserted = true;' in _be_freeze and
+            'if (inserted) {' in _be_freeze and
+            _be_freeze.find('if (inserted) {') <
+            _be_freeze.find('cell.frozenEnergyKwh += tookEnergyKwh;') and
+            _be_freeze.find('if (inserted) {') <
+            _be_freeze.find('cell.energyKwh -= tookEnergyKwh;') and
+            'final tookEnergyKwh = cell.energyKwh;' in _be_freeze and
+            _be_freeze.find('final tookEnergyKwh = cell.energyKwh;') <
+            _be_freeze.find('_freezeInFlight.add(key);'))
+    if _be1:
+        ok('BE1 accumulator is rolled and subtracted ONLY after a '
+           'confirmed insert; the taken amounts are snapshotted first')
+    else:
+        fail('BE1 reset can still run without a confirmed insert')
+
+    # BE2: отказ оставляет след и повторяется. Без повтора единственный
+    # отказ означал бы «никогда»: переход через порог случается ровно
+    # один раз за круг накопления.
+    _be2 = ('_freezeRetry.add(key);' in _be_freeze and
+            '_freezeRetry.remove(key)' in _be_tick and
+            'final retry =' in _be_tick and
+            'if (crossed || retry) {' in _be_tick and
+            # событие — только на настоящем переходе, не на повторе
+            _be_tick.find('_maybeGenerateReveal(') <
+            _be_tick.find('if (crossed || retry) {') and
+            'if (crossed) {' in _be_tick)
+    if _be2:
+        ok('BE2 a failed insert is retried on the next qualified tick; '
+           'the reveal fires on the true crossing only')
+    else:
+        fail('BE2 retry path missing or the reveal duplicates on retry')
+
+    # BE3: одна клетка — одна вставка в полёте.
+    if '_freezeInFlight.contains(key)' in _be_freeze and \
+       '_freezeInFlight.remove(key);' in _be_freeze and \
+       'final Set<String> _freezeInFlight' in be_sps:
+        ok('BE3 one in-flight insert per cell')
+    else:
+        fail('BE3 in-flight guard missing')
+
+    # BE4: потолок применяется ТАМ, ГДЕ КЛЕТКА РОЖДАЕТСЯ. До +166 он
+    # стоял только на записи, и полоса 160 успевала стать карточкой,
+    # дорасти до 120 с и молча исчезнуть.
+    _be4 = ('_atlasAboveCeilingAtCreate++;' in _be_tick and
+            _be_tick.find('if (band > kAtlasBandMaxCollectKmh) {') <
+            _be_tick.find('l.cells.putIfAbsent('))
+    if _be4:
+        ok('BE4 the collection ceiling is enforced where the cell is born')
+    else:
+        fail('BE4 a cell above the ceiling can still be created')
+
+    # BE5: легаси-леджер от ≤+165 мог принести живую клетку выше
+    # потолка — она там лежала законно.
+    _be_from = be_sps.split('static _AtlasLedger fromJson(')[1] \
+                     .split('\n}')[0]
+    if 'droppedAboveCeiling' in _be_from and \
+       'b > kAtlasBandMaxCollectKmh' in _be_from and \
+       'droppedAboveCeiling: () => _atlasAboveCeilingAtRestore++' in be_sps:
+        ok('BE5 legacy cells above the ceiling are dropped on restore')
+    else:
+        fail('BE5 restore can resurrect a cell above the ceiling')
+
+    # BE6: без счётчиков ни один из двух починенных отказов не
+    # оставлял следа нигде, кроме debugPrint.
+    _be6 = all(k in be_sps for k in (
+        "'insert_failed_this_process': _atlasInsertFailed,",
+        "'insert_failed_total': _atlasInsertFailedTotal,",
+        "'above_ceiling_at_create': _atlasAboveCeilingAtCreate,",
+        "'above_ceiling_at_restore': _atlasAboveCeilingAtRestore,",
+        "'freeze_retry_pending': _freezeRetry.length,",
+        "'zad': z100AbortDip,",
+        "'zat': z100AbortTimeout,",
+        'z100AbortDip++',
+        'z100AbortTimeout++',
+    )) and '_kAtlasInsertFailKey' in be_sps
+    if _be6:
+        ok('BE6 insert failures, ceiling drops and 0–100 aborts are all '
+           'counted and reach the diag dump')
+    else:
+        fail('BE6 a +166 counter is missing or never dumped')
+
+    # BE7: три шва, без которых движок нельзя было поднять в тесте.
+    _be7 = ('abstract class HalTelemetrySource implements Listenable' in be_hal
+            and 'implements HalTelemetrySource {' in be_hal
+            and 'final HalTelemetrySource _hal;' in be_sps
+            and 'AppDatabase.forTesting(QueryExecutor e) : super(e);' in be_db
+            and 'final int Function() _nowMs;' in be_sps
+            and be_sps.count('final now = _nowMs();') == 2)
+    if _be7:
+        ok('BE7 three test seams in place: HAL interface, in-memory db, '
+           'injected tick clock (2 entry points)')
+    else:
+        fail('BE7 a test seam is missing')
+
+    # BE8: тесты существуют и CI их запускает. Отдельным workflow —
+    # lint.yml остаётся выключенным, его шум утопил бы сигнал.
+    _be_test = root / 'test/speed_profile_engine_test.dart'
+    _be_wf = root / '.github/workflows/test.yml'
+    if _be_test.exists() and _be_wf.exists():
+        _t = _be_test.read_text()
+        # Только строки КОДА: пояснение в шапке workflow называет
+        # `flutter test` по имени, и проверка по сырому тексту читала бы
+        # комментарий вместо шага (ровно та ловушка, на которой в +165
+        # попался BD5).
+        _w = '\n'.join(_l for _l in _be_wf.read_text().split('\n')
+                       if not _l.lstrip().startswith('#'))
+        if 'flutter test' in _w and 'build_runner build' in _w and \
+           'HalTelemetrySource' in _t and 'AppDatabase.forTesting' in _t and \
+           _t.count('test(') >= 5:
+            ok('BE8 executable engine tests exist and CI runs them')
+        else:
+            fail('BE8 test file or workflow incomplete')
+    else:
+        fail('BE8 test file or test.yml missing')
+
+    # BE9: комментарий, утверждавший «график сохраняет 40–180». Он был
+    # неправдой с тех пор, как график переехал на сетку атласа, и успел
+    # ввести в заблуждение архитектурное ревью.
+    if 'the chart keeps its 40–180 range' not in be_sps and \
+       'kAtlasBandMaxCollectKmh` in atlas_projection' not in be_sps:
+        ok('BE9 the stale «chart 40–180» claim is gone')
+    else:
+        fail('BE9 the stale chart-range comment survives')
+else:
+    ok(f"Part BE skipped (build +{pv}, честность записи lands in +166)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
