@@ -5,21 +5,26 @@
 //   • тихая    — the band is not in the set; the card is not built at
 //                all (no empty slots — the set is decided by the caller);
 //   • зреющая  — «Полоса 60» + «зреет», the 0…120 s bar, «96 с из 120»;
-//   • дозревшая— «Полоса 50» + «дозрела · замер этой поездки», the big
-//                number + «кВт·ч/100» + «≈ 430 км».
+//   • дозревшая— «Полоса 50» + «дозрела, замер этой поездки», the big
+//                number + «кВт·ч/100 км» + «около 430 км».
 // The maturing → matured transition is an AnimatedCrossFade ≤ 300 мс.
 //
 // DATA SOURCE (+163, решение владельца 26.07 п.1): the card renders the
 // LEDGER, never the session overlay — the number on the card is the
-// number that will land in the atlas. The atlas line («в атласе 12.6 ·
-// 3 поездки») rides on BOTH stages whenever the cell already has a
+// number that will land in the atlas. The atlas line («в атласе 12.6
+// за 3 поездки») rides on BOTH stages whenever the cell already has a
 // measurement in the display window: after a parked rotation the
 // matured card collapses into a fresh maturing round, and the number
 // the driver cares about stays on screen — already weight-updated.
 //
-// Every dimension below is a literal from DESIGN_extract_plus163.md
-// (макеты are drawn at native dp) — the design gate checks them
-// verbatim, «примерно так же» is a regression.
+// v0.1.66+165: the dimensions are NO LONGER the +163 mockup literals.
+// Мокапы 1.3 рисовались на холсте 2175 без сверки с существующей
+// шкалой приложения (и с рейлом 150 px против реальных 80 dp), из-за
+// чего экран вышел примерно вдвое крупнее всего остального. Числа
+// ниже — ступени общей лестницы (11/12/13/16/18/24/32), радиус 12,
+// отступ 14. Гейт BD4 держит их на лестнице, BD6 — арифметику слота
+// (82 + 10 = 92 dp, восемь карточек в колонке 736). «Примерно так
+// же» по-прежнему регрессия.
 
 import 'package:flutter/material.dart';
 
@@ -80,14 +85,14 @@ class BandCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final m = model;
     return Container(
-      constraints: bz3 ? null : const BoxConstraints(minHeight: 96),
+      constraints: bz3 ? null : const BoxConstraints(minHeight: 82),
       decoration: BoxDecoration(
         color: AtlasTokens.card,
-        borderRadius: BorderRadius.circular(bz3 ? 22 : 24),
+        borderRadius: BorderRadius.circular(12),
       ),
       padding: bz3
-          ? const EdgeInsets.symmetric(vertical: 26, horizontal: 28)
-          : const EdgeInsets.symmetric(vertical: 26, horizontal: 36),
+          ? const EdgeInsets.all(12)
+          : const EdgeInsets.all(14),
       child: bz3
           // 3a (720 wide): stacked — title block, then the stage body
           // full-width beneath (the bar needs a bounded width).
@@ -133,13 +138,13 @@ class BandCard extends StatelessWidget {
       children: [
         Text('${S.of('measure.band')} ${m.band}',
             style: TextStyle(
-                fontSize: bz3 ? 24 : 27,
+                fontSize: bz3 ? 16 : 18,
                 fontWeight: FontWeight.w500,
                 color: AtlasTokens.t85)),
         const SizedBox(height: 2),
         Text(stage,
             style: TextStyle(
-                fontSize: bz3 ? 17 : 20, color: AtlasTokens.t40)),
+                fontSize: bz3 ? 11 : 12, color: AtlasTokens.t40)),
         // Atlas line (решение 26.07 п.3, расширено на обе стадии): the
         // collected number stays visible through a fresh maturing round.
         if (m.atlasMean != null)
@@ -158,7 +163,7 @@ class BandCard extends StatelessWidget {
                           S.of('measure.trip_few'),
                           S.of('measure.trip_many'))),
               style: TextStyle(
-                  fontSize: bz3 ? 17 : 20, color: AtlasTokens.t40),
+                  fontSize: bz3 ? 11 : 12, color: AtlasTokens.t40),
             ),
           ),
       ],
@@ -190,7 +195,7 @@ class BandCard extends StatelessWidget {
               .of('measure.of_120')
               .replaceFirst('{s}', '${m.timeS.floor()}')
               .replaceFirst('{m}', '${kBandMinSeconds.floor()}'),
-          style: TextStyle(fontSize: bz3 ? 17 : 20, color: AtlasTokens.t40),
+          style: TextStyle(fontSize: bz3 ? 11 : 12, color: AtlasTokens.t40),
         ),
       ],
     );
@@ -212,14 +217,14 @@ class BandCard extends StatelessWidget {
       children: [
         Text(numText,
             style: TextStyle(
-                fontSize: bz3 ? 52 : 64,
+                fontSize: bz3 ? 24 : 32,
                 fontWeight: FontWeight.w700,
                 color: AtlasTokens.t100,
                 fontFeatures: const [FontFeature.tabularFigures()])),
         SizedBox(width: bz3 ? 10 : 16),
         Text(S.of('measure.kwh100'),
             style: TextStyle(
-                fontSize: bz3 ? 19 : 24, color: AtlasTokens.t50)),
+                fontSize: bz3 ? 13 : 16, color: AtlasTokens.t50)),
         if (!bz3 && cons != null && cons > 0.5) ...[
           const SizedBox(width: 24),
           Text(
@@ -227,7 +232,7 @@ class BandCard extends StatelessWidget {
                   .of('measure.range_est')
                   .replaceFirst('{km}', '${atlasRangeKm(cons)}'),
               style:
-                  const TextStyle(fontSize: 24, color: AtlasTokens.t60)),
+                  const TextStyle(fontSize: 16, color: AtlasTokens.t60)),
         ],
       ],
     );
@@ -246,17 +251,17 @@ class BandEmptyState extends StatelessWidget {
       width: double.infinity,
       decoration: BoxDecoration(
         color: AtlasTokens.cardMuted,
-        borderRadius: BorderRadius.circular(bz3 ? 22 : 24),
+        borderRadius: BorderRadius.circular(12),
       ),
       padding: bz3
-          ? const EdgeInsets.symmetric(vertical: 24, horizontal: 28)
-          : const EdgeInsets.symmetric(vertical: 26, horizontal: 36),
+          ? const EdgeInsets.all(12)
+          : const EdgeInsets.all(14),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text('${S.of('measure.band')} 60',
               style: TextStyle(
-                  fontSize: bz3 ? 22 : 26,
+                  fontSize: bz3 ? 16 : 18,
                   fontWeight: FontWeight.w500,
                   color: AtlasTokens.t85)),
           SizedBox(height: bz3 ? 10 : 12),
@@ -266,7 +271,7 @@ class BandEmptyState extends StatelessWidget {
                   .replaceFirst('{s}', '96')
                   .replaceFirst('{m}', '${kBandMinSeconds.floor()}'),
               style: TextStyle(
-                  fontSize: bz3 ? 17 : 20, color: AtlasTokens.t60)),
+                  fontSize: bz3 ? 11 : 12, color: AtlasTokens.t60)),
           SizedBox(height: bz3 ? 10 : 12),
           ClipRRect(
             borderRadius: BorderRadius.circular(bz3 ? 6 : 7),
@@ -288,7 +293,7 @@ class BandEmptyState extends StatelessWidget {
       children: [
         Text(S.of('measure.empty_title'),
             style: TextStyle(
-                fontSize: bz3 ? 26 : 32,
+                fontSize: bz3 ? 20 : 24,
                 height: 1.35,
                 fontWeight: FontWeight.w500,
                 // white .75 — the 2d/3d mockup value; deliberately a
@@ -297,7 +302,7 @@ class BandEmptyState extends StatelessWidget {
         SizedBox(height: bz3 ? 14 : 18),
         Text(S.of('measure.empty_body'),
             style: TextStyle(
-                fontSize: bz3 ? 17 : 21,
+                fontSize: bz3 ? 14 : 16,
                 height: 1.45,
                 color: AtlasTokens.t60)),
         SizedBox(height: bz3 ? 24 : 32),
@@ -306,7 +311,7 @@ class BandEmptyState extends StatelessWidget {
         SizedBox(height: bz3 ? 12 : 14),
         Text(S.of('measure.empty_ghost'),
             style: TextStyle(
-                fontSize: bz3 ? 16 : 19, color: AtlasTokens.t50)),
+                fontSize: bz3 ? 11 : 12, color: AtlasTokens.t50)),
       ],
     );
   }

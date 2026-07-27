@@ -3448,8 +3448,30 @@ else:
 if int(pv) >= 121:
     _cs = (root / 'lib/services/cloud_sync_service.dart').read_text()
     _db2 = (root / 'lib/data/database.dart').read_text()
-    # AF1: v2 pull wired into startRestore with legacy fallback kept.
-    if "_tryRestoreViaSyncPullV2(tripIdMap)" in _cs and \
+    # AF1 — ERA-AWARE (+165). До +165 легаси-путь v1 был ОБЯЗАТЕЛЕН:
+    # /v2/sync/pull мог, как тогда считалось, ответить 400 на pull без
+    # `vehicle`, и запасной путь был единственной страховкой. Друг 2
+    # закрыл это 27.07 — сервер так не отвечает никогда, машина
+    # выводится из device-токена. С +165 путь не просто не нужен, он
+    # ВРЕДЕН: он умеет поездки и снимки, но не умеет ни атласа, ни
+    # trip_series, то есть подменял бы полное восстановление
+    # обрезанным. Гейт переворачивается: раньше требовал наличия,
+    # теперь требует отсутствия — и требует, чтобы null на ПЕРВОЙ
+    # странице стал явной ошибкой, а не молчанием.
+    if int(pv) >= 165:
+        _af1_dead = (
+            "end `if (v2 == null)`" not in _cs and
+            "_getJson('/v1/data/trips'" not in _cs and
+            "_getJson('/v1/data/snapshots'" not in _cs)
+        _af1_hard = (
+            "_restoreError = 'Server does not serve /v2/sync/pull'" in _cs)
+        if "_tryRestoreViaSyncPullV2(tripIdMap)" in _cs and \
+           "if (v2 == null) {" in _cs and _af1_dead and _af1_hard:
+            ok("AF1 (re-era +165) v2 pull is the only restore path; "
+               "legacy v1 gone; null on page 1 is a hard error")
+        else:
+            fail("AF1 legacy v1 path still present or null is swallowed")
+    elif "_tryRestoreViaSyncPullV2(tripIdMap)" in _cs and \
        "if (v2 == null) {" in _cs and \
        "end `if (v2 == null)`" in _cs:
         ok("AF1 restore tries /v2/sync/pull, legacy v1 loops kept as fallback")
@@ -5504,8 +5526,14 @@ if int(pv) >= 164:
     else:
         fail('BC1 two-column row geometry wrong')
 
-    # BC2: right column — atlas → sync → 0–100, one order in EVERY
-    # state, sync parked-only, and no re-ordering machinery at all.
+    # BC2 — ERA-AWARE (+165). Порядок правой колонки развёрнут решением
+    # владельца 27.07: атлас → 0–100 → синхронизация. Обоснование —
+    # карточка синхронизации единственная из трёх приходит и уходит по
+    # стоянке, и, стоя посередине, она толкала блок 0–100 вниз ПОД
+    # водителем в момент парковки. Стоя последней, она не двигает
+    # ничего. Остальные требования BC2 не меняются: один порядок во
+    # всех состояниях, единственное условие в колонке — стояночный
+    # гейт на синхронизации, никакой перестановки по firstEntry.
     _aside = bc_spu.split('final aside = <Widget>[')[1].split('];')[0]
     _i_atlas = _aside.find('atlasEntry')
     _i_sync = _aside.find('syncCard')
@@ -5515,9 +5543,24 @@ if int(pv) >= 164:
     _no_flip = ('firstEntry' not in _aside and
                 _aside.count('if (') == 1 and
                 'if (_isParked) ...[' in _aside)
-    if -1 < _i_atlas < _i_sync < _i_z100 and _no_flip and \
-       bc_spu.count('final aside = <Widget>[') == 1 and \
-       bc_spu.count('...aside,') == 1:
+    _bc2_common = (_no_flip and
+                   bc_spu.count('final aside = <Widget>[') == 1 and
+                   bc_spu.count('...aside,') == 1)
+    if int(pv) >= 165:
+        # Стояночный гейт обязан обнимать ИМЕННО синхронизацию — если
+        # он уедет на 0–100, порядок формально сойдётся, а колонка
+        # начнёт прыгать.
+        _bc2_parked_wraps_sync = (
+            'if (_isParked) ...[' in _aside and
+            _aside.find('if (_isParked) ...[') < _i_sync and
+            _aside.find('if (_isParked) ...[') > _i_z100)
+        if -1 < _i_atlas < _i_z100 < _i_sync and _bc2_common and \
+           _bc2_parked_wraps_sync:
+            ok('BC2 (re-era +165) right column: atlas → 0–100 → sync, '
+               'one order, parked gate wraps sync only')
+        else:
+            fail('BC2 right column order or parked condition wrong')
+    elif -1 < _i_atlas < _i_sync < _i_z100 and _bc2_common:
         ok('BC2 right column: atlas → sync → 0–100, one order, sync parked')
     else:
         fail('BC2 right column order or parked condition wrong')
@@ -5582,10 +5625,37 @@ if int(pv) >= 164:
     else:
         fail('BC6 bar colours or highlight guard wrong')
 
-    # BC6a: internal chart literals per form factor, and the OUTER width
-    # explicitly absent — 1539/668 were measured off the full panel and
-    # ignore the 80 dp NavigationRail (real content area is 2094).
-    if 'vertical: 26, horizontal: 36' in bc_spu and \
+    # BC6a — ERA-AWARE (+165). Литералы графика переехали на лестницу
+    # приложения: отступ 26/36 → 14 (BZ3 28 → 12), высота области
+    # 260 → 180 (BZ3 180 → 140), ширина столбца 14 → 10 (BZ3 10 → 8),
+    # подписи осей 18 → 11 (BZ3 14 → 10). Неизменным остаётся то, ради
+    # чего гейт заведён: внешняя ширина по-прежнему НЕ пиннится —
+    # 1539/668 намерены по полной панели и игнорируют 80 dp рейла
+    # (реальная контентная область 2094).
+    #
+    # Проверка сужена на срез класса графика. В прошлой редакции она
+    # искала литералы по всему файлу, и, например, 'bz3 ? 8 : 10'
+    # совпало бы с зазором призрачных клеток входа в атлас — гейт
+    # прошёл бы, даже если бы столбцы остались прежними.
+    if int(pv) >= 165:
+        _chart = bc_spu.split('Widget _chart(')[1].split('\nclass ')[0]
+        _chart_card = bc_spu.split("Text(S.of('measure.chart_title')")[0]
+        _chart_card = _chart_card[_chart_card.rfind('return Container('):]
+        if 'const EdgeInsets.all(14)' in _chart_card and \
+           'const EdgeInsets.all(12)' in _chart_card and \
+           'BorderRadius.circular(12)' in _chart_card and \
+           'bz3 ? 140 : 180' in bc_spu and \
+           'width: bz3 ? 8 : 10,' in _chart and \
+           'fontSize: bz3 ? 10 : 11,' in _chart and \
+           _chart.count('fontSize: bz3 ? 10 : 11,') == 2 and \
+           'measure.chart_note_short' in bc_spu and \
+           '1539' not in bc_spu_code and '668' not in bc_spu_code:
+            ok('BC6a (re-era +165) chart literals on the app ladder; '
+               'outer width still not pinned')
+        else:
+            fail('BC6a chart literals wrong or an outer-width literal '
+                 'leaked in')
+    elif 'vertical: 26, horizontal: 36' in bc_spu and \
        'bz3 ? 180 : 260' in bc_spu and \
        'bz3 ? 10 : 14' in bc_spu and \
        'bz3 ? 14 : 18' in bc_spu and \
@@ -5679,6 +5749,192 @@ if int(pv) >= 164:
         fail('BC10 restore outcome reporting incomplete')
 else:
     ok(f"Part BC skipped (build +{pv}, сохранность lands in +164)")
+
+# ══════════════════ Part BD — v0.1.66+165 «Замеры: текст и масштаб» ══
+#
+# Патч не менял ни структуру страницы, ни число колонок. Он менял
+# ФОРМУЛИРОВКИ и КЕГЛИ — то есть ровно тот класс правок, который
+# текстовые гейты ловят плохо, а компилятор не ловит вообще. Отсюда
+# восемь проверок ниже: они пиннят не «примерно так же», а конкретные
+# инварианты, которые легко потерять при следующем касании экрана.
+if int(pv) >= 165:
+    import re as _bd_re
+    bd_spu = (root / 'lib/screens/speed_profile.dart').read_text()
+    bd_bcard = (root / 'lib/widgets/band_card.dart').read_text()
+    bd_l10n = (root / 'lib/l10n/strings.dart').read_text()
+    bd_css = (root / 'lib/services/cloud_sync_service.dart').read_text()
+
+    # ── разбор обеих карт l10n на пары (ключ, значение) ──
+    _i_en = bd_l10n.index('static const Map<String, String> _en')
+    _i_ru = bd_l10n.index('static const Map<String, String> _ru')
+    _bd_pat = _bd_re.compile(
+        r"'([a-z][a-z0-9_.]*)':\s*((?:'(?:[^'\\]|\\.)*'\s*)+),")
+
+    def _bd_pairs(blk):
+        out = {}
+        for m in _bd_pat.finditer(blk):
+            out[m.group(1)] = ''.join(
+                _bd_re.findall(r"'((?:[^'\\]|\\.)*)'", m.group(2)))
+        return out
+
+    _bd_en = _bd_pairs(bd_l10n[_i_en:_i_ru])
+    _bd_ru = _bd_pairs(bd_l10n[_i_ru:])
+
+    # BD1: ни одного ИИ-знака в поверхности «Замеры»/«Атлас», В ОБЕИХ
+    # картах. Английский — не косметика: системная локаль ГУ китайская,
+    # 'system' разрешается в 'en' (см. контракт в шапке strings.dart),
+    # то есть свежий головной блок показывает именно английский.
+    # «·» внутри «кВт·ч» — знак умножения в единице СИ, он законен;
+    # «–» в числовых интервалах (0–100, {lo}–{hi}) тоже.
+    _bd1_bad = []
+    for _lang, _map in (('EN', _bd_en), ('RU', _bd_ru)):
+        for _k, _v in _map.items():
+            if _k.split('.')[0] not in ('measure', 'atlas'):
+                continue
+            _probe = _v.replace('кВт·ч', '')
+            if any(_c in _v for _c in ('—', '→', '←', '⇒', '≈')) \
+               or '·' in _probe:
+                _bd1_bad.append(f'{_lang}/{_k}')
+    if not _bd1_bad:
+        ok('BD1 no em-dash / arrow / ≈ / middot left in measure.* '
+           'and atlas.*, both maps')
+    else:
+        fail(f'BD1 AI punctuation survives in l10n: {_bd1_bad[:6]}')
+
+    # BD2: несущие формулировки. Не весь словарь — только те строки, чья
+    # правка была не стилистикой, а починкой: две обрезались
+    # многоточием на 560 dp, остальные несли знак вместо слова.
+    _bd2 = (
+        _bd_ru.get('measure.sync_sub') == 'Облако подключено' and
+        _bd_en.get('measure.sync_sub') == 'Cloud connected' and
+        'Настройки' not in (_bd_ru.get('measure.sync_sub') or '') and
+        _bd_ru.get('atlas.counts_view') == '{n} {cells}, {m} {bands}' and
+        'просмотр' not in (_bd_ru.get('atlas.counts_view') or '') and
+        'view' not in (_bd_en.get('atlas.counts_view') or '') and
+        _bd_ru.get('measure.kwh100') == 'кВт·ч/100 км' and
+        _bd_en.get('measure.kwh100') == 'kWh/100 km' and
+        _bd_ru.get('measure.range_est') == 'около {km} км' and
+        _bd_en.get('measure.range_est') == 'about {km} km' and
+        'запаса' in (_bd_ru.get('measure.card_matured') or '') and
+        _bd_ru.get('atlas.cell_sub') ==
+        'минимум, среднее, максимум в кВт·ч на 100 км')
+    if _bd2:
+        ok('BD2 load-bearing strings reworded: sync path dropped, '
+           '«просмотр» out of the counter, unit spaced, ≈ spelled out')
+    else:
+        fail('BD2 one of the load-bearing +165 strings is wrong')
+
+    # BD3: разделители, зашитые в Dart мимо strings.dart. Сканер по
+    # словарю их не видит — а на экране они неотличимы от словарных.
+    # Три места, все на поверхности «Замеров».
+    _bd3 = (
+        ", ${S.of('measure.chip_rec_tail')}" in bd_spu and
+        " · ${S.of('measure.chip_rec_tail')}" not in bd_spu and
+        "'${S.of('measure.z100_last')}, ${_fmtDay(last.tsMs)}'" in bd_spu and
+        "'${S.of('atlas.title')}: $counts'" in bd_spu and
+        "'${S.of('atlas.title')} · $counts'" not in bd_spu)
+    if _bd3:
+        ok('BD3 the three Dart-side separators are commas/colon, '
+           'not middots')
+    else:
+        fail('BD3 a hardcoded middot survives in the Замеры widgets')
+
+    # BD4: лестница кеглей. §2.1 диагностировал экран как вдвое крупнее
+    # остального приложения (20/22/24/25/26/27/58/64 при лестнице
+    # 11/12/13/16/18/24/32/34) — гейт держит его на лестнице. Формы
+    # «N * k» исключены сознательно: карточка намерения несёт
+    # собственный множитель k и в таблицу §2.2 поимённо не входила.
+    _BD_LADDER = {10, 11, 12, 13, 14, 16, 18, 20, 24, 30, 32, 34}
+    _bd4_bad = []
+    for _f, _txt in (('speed_profile', bd_spu), ('band_card', bd_bcard)):
+        for _m in _bd_re.finditer(
+                r'fontSize:\s*bz3\s*\?\s*([0-9]+)\s*:\s*([0-9]+)', _txt):
+            for _g in (_m.group(1), _m.group(2)):
+                if int(_g) not in _BD_LADDER:
+                    _bd4_bad.append(f'{_f}:{_m.group(0)}')
+        for _m in _bd_re.finditer(r'fontSize:\s*([0-9]+)\s*[,)]', _txt):
+            if int(_m.group(1)) not in _BD_LADDER:
+                _bd4_bad.append(f'{_f}:{_m.group(0)}')
+    # Радиусы карточек: 12 везде. Исключения именованы — пилюля чипа
+    # (999), шапка столбца графика (4), полукруг прогресс-бара.
+    _BD_R_OK = {'12', '12 * k', '999', '4', 'barH / 2', 'radius',
+                'bz3 ? 6 : 7'}
+    _bd4_r = []
+    for _f, _txt in (('speed_profile', bd_spu), ('band_card', bd_bcard)):
+        for _m in _bd_re.finditer(r'circular\(([^)]*)\)', _txt):
+            if _m.group(1).strip() not in _BD_R_OK:
+                _bd4_r.append(f'{_f}:{_m.group(0)}')
+    if not _bd4_bad and not _bd4_r:
+        ok('BD4 every font size on the app ladder; every card radius 12')
+    else:
+        fail(f'BD4 off-ladder type {_bd4_bad[:4]} or radius {_bd4_r[:4]}')
+
+    # BD5: перелом раскладки §2.4. Свёрнутая карточка 0–100 держала
+    # заголовок и строку готовности в ОДНОМ Row за Spacer'ом, а
+    # Spacer(flex 1) + Flexible(flex 1) делят свободное место пополам —
+    # фраза получала половину остатка и складывалась в четырёхстрочный
+    # столбик у правого края. Подпись обязана быть второй строкой.
+    _z100 = bd_spu.split('class _ZeroTo100Card')[1].split('\nclass ')[0]
+    _collapsed = _z100.split('} else if (runs.isEmpty) {')[1] \
+                      .split('} else {')[0]
+    # Только строки КОДА: объяснение прямо над этой веткой называет
+    # Spacer и Flexible по именам, и проверка по сырому тексту читала
+    # бы собственный комментарий вместо виджетов (поймано на первом
+    # же прогоне BD5).
+    _collapsed = '\n'.join(
+        _l for _l in _collapsed.split('\n')
+        if not _l.lstrip().startswith(('//', '///')))
+    if 'const Spacer()' not in _collapsed and \
+       'Flexible(' not in _collapsed and \
+       'content = Column(' in _collapsed and \
+       'Row(children: titleRow)' in _collapsed:
+        ok('BD5 collapsed 0–100 card stacks title over readiness; '
+           'the Spacer+Flexible split is gone')
+    else:
+        fail('BD5 the 0–100 collapsed branch still splits the row')
+
+    # BD6: арифметика слота карточки полосы. §2.3 обещает восемь
+    # карточек в колонке 736 dp — это ровно 82 + 10. Числа связаны:
+    # разъедутся — обещание станет неправдой молча.
+    _bd6 = ('const BoxConstraints(minHeight: 82)' in bd_bcard and
+            'SizedBox(height: bz3 ? 8 : 10),' in bd_spu and
+            'const EdgeInsets.all(14)' in bd_bcard and
+            'const EdgeInsets.all(12)' in bd_bcard)
+    if _bd6:
+        ok('BD6 band-card slot is 82 + 10 = 92 dp (8 cards in 736)')
+    else:
+        fail('BD6 band-card slot arithmetic broken')
+
+    # BD7: /v2/device/me отдаёт vehicle с самого S4, клиент его не
+    # читал — отсюда «(неизвестный автомобиль)» и пустой _vehicleId на
+    # пути спаривания. Оба поля обязаны читаться И персиститься:
+    # без записи в prefs значение теряется на первом же перезапуске.
+    _fdm = bd_css.split('Future<void> fetchDeviceMe(')[1] \
+                 .split('\n  // v0.1.35+134')[0]
+    _bd7 = ("decoded['vehicle']" in _fdm and
+            "veh['display_name']" in _fdm and
+            '_vehicleId = vid;' in _fdm and
+            '_vehicleName = vname;' in _fdm and
+            'prefs.setString(_kVehicleId, vid)' in _fdm and
+            'prefs.setString(_kVehicleName, vname)' in _fdm)
+    if _bd7:
+        ok('BD7 fetchDeviceMe reads vehicle {id, display_name} '
+           'and persists both')
+    else:
+        fail('BD7 vehicle block unparsed or not persisted')
+
+    # BD8: радиус ряби InkWell карточки входа в атлас обязан совпадать
+    # с радиусом её тела. Они живут в разных строках, и +165 едва не
+    # оставил рябь на 24 при теле 12 — тогда касание скругляется по
+    # своему углу и вылезает за карточку.
+    _entry = bd_spu.split('class _AtlasEntryCard')[1].split('\nclass ')[0]
+    _r_body = _bd_re.findall(r'circular\(([^)]*)\)', _entry)
+    if _r_body and len(set(_r_body)) == 1 and _r_body[0].strip() == '12':
+        ok('BD8 atlas-entry ripple radius matches the card body (12)')
+    else:
+        fail(f'BD8 atlas-entry radii disagree: {_r_body}')
+else:
+    ok(f"Part BD skipped (build +{pv}, текст и масштаб land in +165)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
