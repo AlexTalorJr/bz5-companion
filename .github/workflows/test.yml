@@ -28,7 +28,9 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # +168: было 15. Прогон обязан умирать быстро — зависание
+    # тестов не должно занимать раннер на четверть часа.
+    timeout-minutes: 10
 
     steps:
       - name: Checkout
@@ -67,4 +69,4 @@ jobs:
         run: dart run build_runner build --delete-conflicting-outputs
 
       - name: Run tests
-        run: flutter test --reporter expanded
+        run: flutter test --reporter expanded --timeout 90s
