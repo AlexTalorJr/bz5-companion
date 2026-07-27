@@ -6096,8 +6096,20 @@ if int(pv) >= 166:
                     'atlasFreezeRetryPending' in _t and
                     'atlasInsertFailuresTotal' in _t and
                     'atlasLiveBands().firstWhere' not in _t)
+        # +168: тесты обязаны ГАСИТЬ сервис. SpeedProfileService держит
+        # два периодических таймера, и без dispose() `flutter test` не
+        # завершает изолят — первый прогон +167 не закончился вовсе.
+        # Плюс потолок на тест, чтобы зависание падало быстро и с
+        # именем виновника, а не съедало job целиком.
+        if int(pv) >= 168:
+            _be8 = (_be8 and
+                    'svc.dispose();' in _t and
+                    '@Timeout(' in _t and
+                    _t.index('svc.dispose();') < _t.index('db.close()') and
+                    '--timeout' in _w)
         if _be8:
-            ok('BE8 executable engine tests exist, are sharp, and CI runs them')
+            ok('BE8 executable engine tests exist, are sharp, disposed, '
+               'time-boxed, and CI runs them')
         else:
             fail('BE8 test file or workflow incomplete')
     else:
