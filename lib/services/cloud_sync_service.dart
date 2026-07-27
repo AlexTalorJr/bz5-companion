@@ -868,9 +868,36 @@ class CloudSyncService extends ChangeNotifier {
         _deviceMeStatus = null;
         _deviceMeLinked = false;
       }
+
+      // v0.1.66+165: /v2/device/me отдаёт `vehicle: {id,
+      // display_name}` (подтверждено Другом 2 27.07), а клиент его
+      // не читал. Отсюда «(неизвестный автомобиль)» в настройках и
+      // пустой _vehicleId на пути спаривания: до +165 машина
+      // приезжала ТОЛЬКО через register-device, и attach-путь
+      // оставался без неё навсегда. `id` принимаем и строкой, и
+      // числом — контракт фиксирует поле, но не его тип.
+      final veh = decoded['vehicle'];
+      if (veh is Map<String, dynamic>) {
+        final rawId = veh['id'];
+        final vid = rawId is String
+            ? rawId
+            : (rawId is num ? '$rawId' : null);
+        final vname = veh['display_name'];
+        final prefs = await SharedPreferences.getInstance();
+        if (vid != null && vid.isNotEmpty) {
+          _vehicleId = vid;
+          await prefs.setString(_kVehicleId, vid);
+        }
+        if (vname is String && vname.isNotEmpty) {
+          _vehicleName = vname;
+          await prefs.setString(_kVehicleName, vname);
+        }
+      }
+
       _deviceMeFetchedAt = DateTime.now();
-      debugPrint('CloudSync: device/me ok — '
-          '${_deviceMeLinked == true ? '${_deviceMeEmail ?? '?'} · ${_deviceMeStatus ?? '?'}' : 'not linked'}');
+      debugPrint('CloudSync: device/me ok, '
+          '${_deviceMeLinked == true ? '${_deviceMeEmail ?? '?'}, ${_deviceMeStatus ?? '?'}' : 'not linked'}'
+          ', vehicle=${_vehicleName ?? '?'} (${_vehicleId ?? '?'})');
       notifyListeners();
     } catch (e) {
       // Network blip / malformed body — display-only plane, swallow.
@@ -2414,8 +2441,8 @@ class CloudSyncService extends ChangeNotifier {
   /// cursor pull over a single global server_seq, applied idempotently by
   /// client_uuid (D8). Returns (tripsFetched, tripsInserted,
   /// snapshotsFetched, snapshotsInserted), or null when the endpoint is
-  /// unusable (400/404/405 — server without S4, or vehicle_id unknown on a
-  /// restore-token install) so the caller falls back to the legacy v1 loops.
+  /// unusable (400/404/405 — a server without S4). Since +165 there is no
+  /// fallback: null on the FIRST page fails the restore outright.
   ///
   /// Fetch is buffered and applied in two passes (trips, then snapshots):
   /// server_seq is insertion-ordered, and snapshots push continuously while
@@ -2716,10 +2743,13 @@ class CloudSyncService extends ChangeNotifier {
   /// the one caller that pulls the whole history at once, and a 500-row
   /// body is precisely what the head unit's Wi-Fi could not hold open.
   ///
-  /// Returns counters, or null → caller runs the legacy v1 loops. Null
-  /// is only ever returned when NOTHING has been applied yet: once a
-  /// page has landed, falling back to v1 would re-walk the same history
-  /// through a path that cannot restore atlas or series at all.
+  /// Returns counters, or null when /v2/sync/pull is unusable on the
+  /// FIRST page. Null therefore still means «nothing has been applied
+  /// yet» — once a page has landed the loop breaks and reports what it
+  /// got, because +164 persists page by page and discarding a partial
+  /// restore would throw away rows that are already in Drift. What
+  /// changed in +165 is only what the CALLER does with a null: there is
+  /// no legacy v1 path left to fall back to, so it fails the restore.
   Future<(int, int, int, int)?> _tryRestoreViaSyncPullV2(
       Map<int, int> tripIdMap) async {
     var since = 0;
@@ -2768,16 +2798,15 @@ class CloudSyncService extends ChangeNotifier {
             v2Probe: true);
       } on _EndpointNotDeployedException {
         if (pages > 0) {
-          // Mid-run: rows are already in Drift. Do NOT hand the caller a
-          // null — that would replay everything through the legacy v1
-          // path, which knows nothing about atlas or trip_series.
+          // Mid-run: rows are already in Drift and, since +164, already
+          // persisted page by page. Returning null here would fail a
+          // restore that partly succeeded; break and report what landed.
           debugPrint('CloudSync: /v2/sync/pull went away after $pages '
-              'page(s) — keeping what landed, no v1 fallback');
+              'page(s), keeping what landed');
           break;
         }
         debugPrint('CloudSync: /v2/sync/pull unusable '
-            '(400/404/405${_vehicleId == null ? ', vehicle_id unknown' : ''})'
-            ' — falling back to legacy v1 restore');
+            '(400/404/405), restore cannot proceed');
         return null;
       }
 
@@ -2835,8 +2864,8 @@ class CloudSyncService extends ChangeNotifier {
         }
         if (existing == null && uuid is! String) {
           // Null-uuid row (a device that never completed mapping): fall
-          // back to the legacy identity — (started_at, distance_km),
-          // same contract as the v1 restore loop.
+          // back to the legacy identity — (started_at, distance_km).
+          // This is about NULL-uuid rows, not the removed v1 path.
           final startedAtStr = data['started_at'];
           if (startedAtStr is! String) {
             tSkipBad++;
@@ -3026,144 +3055,33 @@ class CloudSyncService extends ChangeNotifier {
     _periodicTimer?.cancel();
     _heartbeatTimer?.cancel();
 
-    var tripsFetched = 0, tripsInserted = 0;
-    var snapshotsFetched = 0, snapshotsInserted = 0;
     final tripIdMap = <int, int>{}; // serverClientTripId → newLocalId
 
     try {
-      // ── v0.1.29+121 (C5): restore via /v2/sync/pull when available.
-      // Returns counters, or null → run the legacy v1 loops below. The
-      // legacy block keeps its original indentation on purpose (minimal,
-      // reviewable diff) — it is inside `if (v2 == null) { … }`.
+      // ── v0.1.29+121 (C5) → v0.1.66+165: restore goes through
+      // /v2/sync/pull and ONLY through it.
+      //
+      // The legacy v1 fallback (two GET loops over /v1/data/trips and
+      // /v1/data/snapshots) is gone. It existed for one stated reason:
+      // «/v2/sync/pull 400s when `vehicle` is unknown to this client».
+      // Друг 2 confirmed 27.07 that the server never does this — the
+      // vehicle is derived from the device token and the `vehicle`
+      // query param will never become mandatory. So the fallback
+      // could no longer help, only harm: it restores trips and
+      // snapshots but knows nothing of the atlas or trip_series, and
+      // would have silently substituted a truncated restore for a
+      // full one — exactly the failure mode +164 was built to end.
       final v2 = await _tryRestoreViaSyncPullV2(tripIdMap);
       if (_restoreStatus == CloudRestoreStatus.cancelled) return;
-      if (v2 != null) {
-        tripsFetched = v2.$1;
-        tripsInserted = v2.$2;
-        snapshotsFetched = v2.$3;
-        snapshotsInserted = v2.$4;
-      }
       if (v2 == null) {
-      // ── Phase 1: trips ──
-      String? cursor;
-      while (true) {
-        if (_restoreCancelRequested) {
-          _restoreStatus = CloudRestoreStatus.cancelled;
-          return;
-        }
-        final resp = await _getJson('/v1/data/trips', query: {
-          'limit': '100',
-          if (cursor != null) 'cursor': cursor,
-        });
-        final items = (resp['items'] as List?) ?? const [];
-        for (final raw in items) {
-          if (raw is! Map<String, dynamic>) continue;
-          tripsFetched++;
-          final clientTripId = raw['client_trip_id'];
-          if (clientTripId is! int) continue;
-          final startedAtStr = raw['started_at'];
-          if (startedAtStr is! String) continue;
-          final startedAt = DateTime.parse(startedAtStr).toLocal();
-          final distanceKm = (raw['distance_km'] as num?)?.toDouble();
-
-          // Dedup: (started_at, distance_km) is the contract from
-          // ROADMAP §P1.5 design. Multiple .where() calls AND together
-          // in Drift — matches the existing pattern in database.dart
-          // (getSamplesForTrip). Treat null distance_km as wildcard
-          // match against null in DB via .isNull().
-          //
-          // v0.1.29+19: was previously written using the `&` operator
-          // on Expression<bool>; that operator is defined through an
-          // extension in 'package:drift/drift.dart' which we don't
-          // import in full (only 'show Value'). Build failed in
-          // kernel_snapshot. Multiple .where() is the idiomatic
-          // Drift style and avoids the broader import.
-          final query = _db.select(_db.trips)..limit(1);
-          query.where((t) => t.startedAt.equals(startedAt));
-          if (distanceKm != null) {
-            query.where((t) => t.distanceKm.equals(distanceKm));
-          } else {
-            query.where((t) => t.distanceKm.isNull());
-          }
-          final existing = await query.getSingleOrNull();
-
-          if (existing != null) {
-            tripIdMap[clientTripId] = existing.id;
-            continue;
-          }
-
-          final newLocalId = await _db
-              .into(_db.trips)
-              .insert(_tripCompanionFromJson(raw));
-          tripIdMap[clientTripId] = newLocalId;
-          tripsInserted++;
-        }
-        _restoreProgress = CloudRestoreProgress(
-          phase: 'trips',
-          tripsFetched: tripsFetched,
-          tripsInserted: tripsInserted,
-        );
+        // Unusable on the FIRST page (mid-run losses break out and
+        // keep what landed — see the page loop). Nothing to restore
+        // from, and staying silent would look like an empty cloud.
+        _restoreError = 'Server does not serve /v2/sync/pull';
+        _restoreStatus = CloudRestoreStatus.error;
         notifyListeners();
-
-        final nextCursor = resp['next_cursor'];
-        if (nextCursor is! String) break;
-        cursor = nextCursor;
+        return;
       }
-
-      // ── Phase 2: snapshots ──
-      _restoreProgress = CloudRestoreProgress(
-        phase: 'snapshots',
-        tripsFetched: tripsFetched,
-        tripsInserted: tripsInserted,
-      );
-      notifyListeners();
-
-      cursor = null;
-      while (true) {
-        if (_restoreCancelRequested) {
-          _restoreStatus = CloudRestoreStatus.cancelled;
-          return;
-        }
-        final resp = await _getJson('/v1/data/snapshots', query: {
-          'limit': '200',
-          if (cursor != null) 'cursor': cursor,
-        });
-        final items = (resp['items'] as List?) ?? const [];
-        for (final raw in items) {
-          if (raw is! Map<String, dynamic>) continue;
-          snapshotsFetched++;
-          final capturedAtStr = raw['captured_at'];
-          if (capturedAtStr is! String) continue;
-          final capturedAt = DateTime.parse(capturedAtStr).toLocal();
-
-          final existing = await (_db.select(_db.snapshots)
-                ..where((s) => s.capturedAt.equals(capturedAt))
-                ..limit(1))
-              .getSingleOrNull();
-          if (existing != null) continue;
-
-          final rawTripId = raw['client_trip_id'];
-          final mappedTripId =
-              rawTripId is int ? tripIdMap[rawTripId] : null;
-
-          await _db.into(_db.snapshots).insert(
-              _snapshotCompanionFromJson(raw, tripId: mappedTripId));
-          snapshotsInserted++;
-        }
-        _restoreProgress = CloudRestoreProgress(
-          phase: 'snapshots',
-          tripsFetched: tripsFetched,
-          tripsInserted: tripsInserted,
-          snapshotsFetched: snapshotsFetched,
-          snapshotsInserted: snapshotsInserted,
-        );
-        notifyListeners();
-
-        final nextCursor = resp['next_cursor'];
-        if (nextCursor is! String) break;
-        cursor = nextCursor;
-      }
-      } // end `if (v2 == null)` — legacy v1 fallback (+121)
 
       // ── Cursor advancement ──
       // After restore, push cursors must skip everything currently
@@ -3200,8 +3118,7 @@ class CloudSyncService extends ChangeNotifier {
       // first-write-wins conflict on every restored row. Entities the
       // restore never touches (sweeps/livelogs/canmonitor) keep their
       // watermarks — their local ids didn't shift. Sits in the common
-      // success block, so both the v2 pull and the legacy v1 fallback
-      // paths are covered.
+      // success block, which since +165 is the only path there is.
       _uuidMapWm['trips'] = maxTripId;
       _uuidMapWm['snapshots'] = maxSnapId;
       await prefs.setInt('${_kUuidMapWmPrefix}trips', maxTripId);
@@ -3223,20 +3140,12 @@ class CloudSyncService extends ChangeNotifier {
           jsonEncode(_pushedTripIds.toList()));
 
       _restoreStatus = CloudRestoreStatus.done;
-      // v0.1.65+164 (B4): the v2 path already filled _restoreProgress
+      // v0.1.65+164 (B4) → +165: the v2 path filled _restoreProgress
       // with the full counter set (series/atlas/reveals/pages) page by
-      // page. Rebuilding it from four locals here would silently drop
-      // exactly the numbers the owner cares about — the atlas. Only the
-      // legacy v1 path, which has no such counters, needs the rebuild.
-      if (v2 == null) {
-        _restoreProgress = CloudRestoreProgress(
-          phase: 'done',
-          tripsFetched: tripsFetched,
-          tripsInserted: tripsInserted,
-          snapshotsFetched: snapshotsFetched,
-          snapshotsInserted: snapshotsInserted,
-        );
-      } else {
+      // page. The +164 rebuild-from-locals branch belonged to the
+      // legacy v1 path and died with it — v2 is the only path now, so
+      // the counters are simply carried over.
+      {
         _restoreProgress = CloudRestoreProgress(
           phase: 'done',
           tripsFetched: _restoreProgress.tripsFetched,
@@ -3341,10 +3250,18 @@ class CloudSyncService extends ChangeNotifier {
     Map<String, String>? query,
     // v0.1.29+121 (C5): opt-in — treat 400/404/405 as "v2 endpoint
     // unusable" (_EndpointNotDeployedException) instead of a permanent
-    // error, so the caller can fall back to the legacy v1 restore.
-    // 400 is included deliberately: /v2/sync/pull 400s when the required
-    // `vehicle` param is unknown to this client (restore-token installs
-    // don't learn a vehicle_id) — same remedy, legacy path.
+    // error.
+    //
+    // v0.1.66+165: the original justification for including 400 was
+    // «/v2/sync/pull 400s when the required `vehicle` param is unknown
+    // to this client». That is FALSE — Друг 2 confirmed 27.07 that the
+    // vehicle is derived from the device token and a device-token pull
+    // without `vehicle` is never rejected. 400 nevertheless STAYS in
+    // the triple (owner's ruling 27.07): the other caller is the
+    // incremental pull in syncOnce, which swallows this exception
+    // silently, and narrowing the code there is a change to a path
+    // outside this patch's frozen scope. Revisit together with that
+    // path, not before.
     bool v2Probe = false,
   }) async {
     final token = _clientToken;
@@ -4056,7 +3973,7 @@ class CloudSyncService extends ChangeNotifier {
   /// Read app version from the static value baked into the build.
   /// We don't have package_info_plus as a dep — pubspec-version is
   /// hardcoded here. Update when bumping. Off-by-one tolerated.
-  Future<String> _readAppVersion() async => '0.1.65+164';
+  Future<String> _readAppVersion() async => '0.1.66+165';
 }
 
 // ─── Internal exceptions ────────────────────────────────────────────

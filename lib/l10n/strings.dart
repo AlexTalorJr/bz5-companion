@@ -569,40 +569,40 @@ class S {
     // v0.1.52+151 «Замеры» — speed profile + 0–100
     'measure.status_idle': 'No session',
     'measure.status_running': 'recording',
-    'measure.status_stopped': 'stopped — can be saved',
+    'measure.status_stopped': 'stopped, can be saved',
     'measure.min': 'min',
     'measure.bands': 'bands',
     'measure.chart_title': 'Consumption per speed band',
     'measure.no_data':
-        'No bands yet — hold a steady 40–180 km/h and they will appear',
-    'measure.kwh100': 'kWh/100km',
+        'No bands yet. Hold a steady speed between 40 and 180 km/h and '
+            'they will appear',
+    'measure.kwh100': 'kWh/100 km',
     'measure.range_suffix': 'km per charge',
     'measure.m': 'm',
     'measure.s': 's',
     'measure.z100_title': '0–100 runs',
     'measure.z100_best': 'Best',
     'measure.z100_none':
-        'No completed 0–100 runs yet — only runs reaching a real 100 count',
+        'No 0–100 runs yet. Only runs that reach a real 100 are counted',
     'measure.z100_sec': 's',
     'measure.band': 'Band',
     'measure.cold_pack': 'cold battery',
     'measure.temp_passport': 'Battery temperature: min / avg / max',
     'measure.sleep_note':
-        'A sleeping head unit measures nothing — sessions only accumulate '
-            'while the screen unit is awake.',
+        'While the head unit screen is asleep, nothing is measured',
     'measure.maturing': 'Bands maturing',
     'measure.of': 'of',
     // +163 «Замеры по контракту, заход A»: статус-чип §6.2, карточки
     // полос §6.1, пустые состояния 2d/3d, 0–100 §6.6, намерение п.6.
-    'measure.chip_rec': 'Recording · {v} km/h',
+    'measure.chip_rec': 'Recording, {v} km/h',
     'measure.chip_rec_nv': 'Recording',
     'measure.chip_rec_tail': 'steady time counting',
-    'measure.chip_parked': 'Parked · steady time not counting',
+    'measure.chip_parked': 'Parked, steady time not counting',
     'measure.stage_maturing': 'maturing',
-    'measure.stage_matured': 'matured · this drive\u2019s measurement',
+    'measure.stage_matured': 'matured, this drive\u2019s measurement',
     'measure.of_120': '{s} s of {m}',
-    'measure.range_est': '≈ {km} km',
-    'measure.in_atlas': 'in atlas {x} · {n} {trips}',
+    'measure.range_est': 'about {km} km',
+    'measure.in_atlas': 'in atlas {x} over {n} {trips}',
     'measure.trip_one': 'drive',
     'measure.trip_few': 'drives',
     'measure.trip_many': 'drives',
@@ -610,28 +610,31 @@ class S {
     // and none other. `empty_title`/`empty_ghost` keep their keys — the
     // wording is replaced, the identifiers are not (canon §8).
     'measure.empty_title': 'Consumption counts itself while you drive',
-    'measure.empty_body': 'Two minutes of steady speed and a band appears: '
-        'how much the car uses at exactly that speed. Nothing to press.',
+    'measure.empty_body': 'Hold a steady speed for two minutes and a band '
+        'appears: how much the car uses at exactly that speed. Nothing '
+        'to press',
     'measure.empty_ghost': 'this is what a band looks like once steady '
         'time builds up',
-    'measure.empty_z100': 'Ready — starts when you pull away. Accelerate '
-        'without stopping and the time records itself.',
+    'measure.empty_z100': 'The run starts by itself when you pull away. '
+        'Accelerate without stopping and the time records itself',
     'measure.empty_atlas': 'Bands from a drive land here: speed × battery '
         'temperature. The first cell appears after your first drive.',
     // +164 [6d/6f/6g]: the band chart.
-    'measure.chart_sub': 'kWh per 100 km · all drives',
-    'measure.chart_note': 'Grey bars are bands with no steady time yet. '
-        'The highlight is the most economical of the ones that have it.',
-    'measure.chart_note_short': 'Grey bars are bands with no steady time yet.',
+    'measure.chart_sub': 'kWh per 100 km, all drives',
+    'measure.chart_note': 'A grey bar means no steady time in that band '
+        'yet. The highlight is the most economical of the ones that '
+        'have it',
+    'measure.chart_note_short': 'Grey bars: no steady time yet',
     // +164 [3b] §6.8: the sync card.
     'measure.sync_title': 'Sync with phone',
-    'measure.sync_sub': 'Cloud connected · Settings → Cloud services',
-    'measure.z100_ready': 'Ready — starts when you pull away',
+    'measure.sync_sub': 'Cloud connected',
+    'measure.z100_ready': 'Starts by itself when you pull away',
     'measure.z100_last': 'last',
     'measure.intent_hold': 'Hold {v} km/h for {t} more',
     'measure.intent_new': 'opens a new atlas cell',
     'measure.intent_refine': 'refines the measurement already collected',
-    'measure.intent_ctx': 'battery is {t}° right now — the right window',
+    'measure.intent_ctx': 'battery is {t}° right now, exactly the right '
+        'window',
     'measure.t_half': 'half a minute',
     'measure.t_one': 'a minute',
     'measure.t_onehalf': 'a minute and a half',
@@ -642,16 +645,17 @@ class S {
     'settings.adv.dump_ok': 'Dump written:',
     'settings.adv.dump_fail': 'Dump failed — storage unavailable',
     // +160: parking summary card (§132 of the UI contract).
-    'measure.card_trip': '{km} km · battery {t}°',
+    'measure.card_trip': '{km} km, battery {t}°',
     'measure.card_trip_nt': '{km} km',
-    'measure.card_matured': 'Band {v} matured: {x} kWh/100 → ≈ {km} km',
+    'measure.card_matured': 'Band {v} matured: {x} kWh/100, about {km} km '
+        'of range',
     'measure.card_matured_nr': 'Band {v} matured: {x} kWh/100',
-    'measure.card_cell': 'Atlas: new cell — {v} km/h at {w}°',
-    'measure.card_cell_nt': 'Atlas: new cell — {v} km/h, temperature unknown',
-    'measure.card_star': 'Band {v}: {lvl} — {n} drives now',
+    'measure.card_cell': 'Atlas: new cell {v} km/h at {w}°',
+    'measure.card_cell_nt': 'Atlas: new cell {v} km/h, temperature unknown',
+    'measure.card_star': 'Band {v}: {lvl}, {n} drives now',
     'measure.card_star_silver': 'silver',
     'measure.card_star_gold': 'gold',
-    'measure.card_loot': 'Band {v}: +{s} s of steady driving · {a} of {m} s '
+    'measure.card_loot': 'Band {v}: +{s} s of steady driving, {a} of {m} s '
         'collected',
     'measure.card_loot_flat': '+{s} s of steady driving',
     'measure.card_soon': 'Band {v} almost matured',
@@ -668,22 +672,22 @@ class S {
     'atlas.snap_one': 'reading',
     'atlas.snap_few': 'readings',
     'atlas.snap_many': 'readings',
-    'atlas.select_hint': 'Pick a dashed cell — that is the goal for the '
-        'next drive.',
+    'atlas.select_hint': 'Pick a dashed cell: that is the goal for the '
+        'next drive',
     'atlas.pending_note': 'A dashed cell with a number has already earned '
-        'its 2 minutes — it becomes a full cell when the drive ends.',
+        'its two minutes. It becomes a full cell when the drive ends',
     'measure.intent_title': 'On the next drive',
     'measure.intent_at': 'at battery',
     'measure.intent_note': 'Steady time in this cell continues from the '
-        'last drive. No seconds and no percentages here — the goal is '
-        'named by speed and temperature.',
+        'last drive. No seconds and no percentages here: the goal is '
+        'named by speed and temperature',
     'measure.intent_take': 'Take it',
     'measure.intent_other': 'Another cell',
     'measure.intent_taken': 'Goal taken: {v} km/h at {w}',
-    'measure.intent_taken_note': 'no reminders — the card waits at a stop',
+    'measure.intent_taken_note': 'no reminders, the card waits at a stop',
     'measure.intent_drop': 'Drop',
     'atlas.title_hu': 'ATLAS',
-    'atlas.counts': '{n} {cells} · {m} {bands}',
+    'atlas.counts': '{n} {cells}, {m} {bands}',
     'atlas.cell_one': 'cell',
     'atlas.cell_few': 'cells',
     'atlas.cell_many': 'cells',
@@ -696,25 +700,25 @@ class S {
     'atlas.session_one': 'drive',
     'atlas.session_few': 'drives',
     'atlas.session_many': 'drives',
-    'atlas.counts_view': '{n} {cells} · {m} {bands} · view',
+    'atlas.counts_view': '{n} {cells}, {m} {bands}',
     'atlas.season_ctx':
-        '{month} · battery {lo}–{hi}° · cold columns open '
+        '{month}, battery from {lo} to {hi}°. Cold columns open '
         'in winter',
-    'atlas.season_ctx_nr': '{month} · temperature columns open as you drive',
+    'atlas.season_ctx_nr': '{month}. Temperature columns open as you drive',
     'atlas.year_title': 'YEAR',
-    'atlas.year_summary': 'Collected over {n} {days} · {month} is running. '
+    'atlas.year_summary': 'Collected over {n} {days}, {month} is running. '
         'The full picture takes a year.',
     'atlas.months': 'jan,feb,mar,apr,may,jun,jul,aug,sep,oct,nov,dec',
     'atlas.legend_one': '1 drive',
     'atlas.legend_five': '5 drives',
     'atlas.legend_fifteen': '15 drives',
     'atlas.legend_marks': 'the more drives, the more exact the number',
-    'atlas.grid_note': 'Dashed — neighbouring cells: those can open next. '
-        'Blank space — you have not driven there yet.',
-    'atlas.window_rare': 'rare weather · battery {w}°',
-    'atlas.window_hot': 'hot weather · battery {w}°',
+    'atlas.grid_note': 'Dashed cells are neighbours you can open next. '
+        'Blank space means you have not driven there yet',
+    'atlas.window_rare': 'rare weather, battery {w}°',
+    'atlas.window_hot': 'hot weather, battery {w}°',
     'atlas.window_unknown': 'no temperature',
-    'atlas.view_only': 'view only — details on the phone',
+    'atlas.view_only': 'view only, details on the phone',
     'atlas.parked_chip': 'Parked',
     'atlas.tab_atlas': 'Atlas',
     'atlas.tab_forecast': 'Forecast',
@@ -725,14 +729,14 @@ class S {
     'atlas.empty': 'Empty so far. The first cell appears after 2 minutes of '
         'steady driving at one speed.',
     'atlas.load_failed': 'Could not read the atlas:',
-    'atlas.cell_title': '{v} km/h · battery {w}',
-    'atlas.cell_sub': 'from · average · to, kWh per 100 km',
-    'atlas.cell_sub_single': 'kWh per 100 km · a single reading',
+    'atlas.cell_title': '{v} km/h, battery {w}',
+    'atlas.cell_sub': 'minimum, average, maximum in kWh per 100 km',
+    'atlas.cell_sub_single': 'kWh per 100 km, a single reading',
     'atlas.cell_sessions': '{n} {sessions}',
-    'atlas.cell_steady': 'Steady driving {s} s · {n} {snaps}',
+    'atlas.cell_steady': 'Steady driving {s} s, {n} {snaps}',
     'atlas.cell_dist': 'HOW THE READINGS SPREAD',
     'atlas.cell_snapshots': 'READINGS',
-    'measure.plate_title': 'Trip results · {n} new',
+    'measure.plate_title': 'Trip results, {n} new',
     'export.title': 'Atlas image',
     'export.share': 'Share',
     'export.caption': '1080×1350 image · the whole map',
@@ -1667,41 +1671,41 @@ class S {
     // v0.1.52+151 «Замеры» — скоростной профиль + 0–100
     'measure.status_idle': 'Сессии нет',
     'measure.status_running': 'идёт',
-    'measure.status_stopped': 'остановлена — можно сохранить',
+    'measure.status_stopped': 'остановлена, можно сохранить',
     'measure.min': 'мин',
     'measure.bands': 'полос',
     'measure.chart_title': 'Расход по полосам скорости',
     'measure.no_data':
-        'Полос пока нет — держите ровные 40–180 км/ч, и они появятся',
-    'measure.kwh100': 'кВт·ч/100км',
+        'Полос пока нет. Держите ровную скорость от 40 до 180 км/ч, '
+            'и они появятся',
+    'measure.kwh100': 'кВт·ч/100 км',
     'measure.range_suffix': 'км на заряде',
     'measure.m': 'м',
     'measure.s': 'с',
     'measure.z100_title': 'Замеры 0–100',
     'measure.z100_best': 'Лучший',
     'measure.z100_none':
-        'Доведённых до сотни разгонов пока нет — считаются только '
-            'реальные 100',
+        'Разгонов до сотни пока нет. Считаются только те, что дошли '
+            'до 100',
     'measure.z100_sec': 'с',
     'measure.band': 'Полоса',
     'measure.cold_pack': 'холодная батарея',
     'measure.temp_passport': 'Температура батареи: мин / сред / макс',
     'measure.sleep_note':
-        'Спящее ГУ не меряет — сессия копится только при живом экране '
-            'головного устройства.',
+        'Пока экран головного устройства спит, замер не идёт',
     'measure.maturing': 'Полосы зреют',
     'measure.of': 'из',
     // +163 «Замеры по контракту, заход A»: статус-чип §6.2, карточки
     // полос §6.1, пустые состояния 2d/3d, 0–100 §6.6, намерение п.6.
-    'measure.chip_rec': 'Запись · {v} км/ч',
+    'measure.chip_rec': 'Запись, {v} км/ч',
     'measure.chip_rec_nv': 'Запись',
     'measure.chip_rec_tail': 'ровное время идёт',
-    'measure.chip_parked': 'Стоянка · ровное время не идёт',
+    'measure.chip_parked': 'Стоянка, ровное время не идёт',
     'measure.stage_maturing': 'зреет',
-    'measure.stage_matured': 'дозрела · замер этой поездки',
+    'measure.stage_matured': 'дозрела, замер этой поездки',
     'measure.of_120': '{s} с из {m}',
-    'measure.range_est': '≈ {km} км',
-    'measure.in_atlas': 'в атласе {x} · {n} {trips}',
+    'measure.range_est': 'около {km} км',
+    'measure.in_atlas': 'в атласе {x} за {n} {trips}',
     'measure.trip_one': 'поездка',
     'measure.trip_few': 'поездки',
     'measure.trip_many': 'поездок',
@@ -1709,30 +1713,29 @@ class S {
     // больше ни на какие. Ключи empty_title/empty_ghost сохранены —
     // меняется формулировка, не идентификатор (канон §8).
     'measure.empty_title': 'Расход считается сам, пока вы едете',
-    'measure.empty_body': 'Две минуты ровной скорости — и появляется полоса: '
-        'сколько машина ест именно на этой скорости. Нажимать ничего '
-        'не нужно.',
+    'measure.empty_body': 'Подержите ровную скорость две минуты, и появится '
+        'полоса: сколько машина ест именно на этой скорости. Нажимать '
+        'ничего не нужно',
     'measure.empty_ghost': 'так выглядит полоса, когда наберётся '
         'ровное время',
-    'measure.empty_z100': 'Готов — старт по началу движения. Разгонитесь '
-        'без остановок, и время запишется само.',
+    'measure.empty_z100': 'Замер стартует сам, когда тронетесь. Разгонитесь '
+        'без остановок, и время запишется',
     'measure.empty_atlas': 'Полосы за поездку ложатся сюда: скорость × '
         'температура батареи. Первая клетка появится после первой поездки.',
     // +164 [6d/6f/6g]: график по полосам.
-    'measure.chart_sub': 'кВт·ч на 100 км · все поездки',
-    'measure.chart_note': 'Серые столбцы — полосы без набранного времени. '
-        'Подсветка — самая экономичная из набранных.',
-    'measure.chart_note_short': 'Серые столбцы — полосы без набранного '
-        'времени.',
+    'measure.chart_sub': 'кВт·ч на 100 км, все поездки',
+    'measure.chart_note': 'Серый столбец значит, что время в этой полосе '
+        'ещё не набрано. Подсвечена самая экономичная из набранных',
+    'measure.chart_note_short': 'Серые столбцы: время ещё не набрано',
     // +164 [3b] §6.8: карточка синхронизации.
     'measure.sync_title': 'Синхронизация с телефоном',
-    'measure.sync_sub': 'Облако подключено · Настройки → Облачные сервисы',
-    'measure.z100_ready': 'Готов — старт по началу движения',
+    'measure.sync_sub': 'Облако подключено',
+    'measure.z100_ready': 'Стартует сам, когда тронетесь',
     'measure.z100_last': 'последний',
     'measure.intent_hold': 'Подержи {v} км/ч ещё {t}',
     'measure.intent_new': 'откроет новую клетку в атласе',
     'measure.intent_refine': 'уточнит уже собранный замер',
-    'measure.intent_ctx': 'сейчас батарея {t}° — то самое окно',
+    'measure.intent_ctx': 'сейчас батарея {t}°, как раз то окно',
     'measure.t_half': 'полминуты',
     'measure.t_one': 'минуту',
     'measure.t_onehalf': 'полторы минуты',
@@ -1743,17 +1746,18 @@ class S {
     'settings.adv.dump_ok': 'Дамп записан:',
     'settings.adv.dump_fail': 'Дамп не записан — хранилище недоступно',
     // +160: карточка итогов на стоянке (строки §132 контракта).
-    'measure.card_trip': '{km} км · батарея {t}°',
+    'measure.card_trip': '{km} км, батарея {t}°',
     'measure.card_trip_nt': '{km} км',
-    'measure.card_matured': 'Полоса {v} дозрела: {x} кВт·ч/100 → ≈ {km} км',
+    'measure.card_matured': 'Полоса {v} дозрела: {x} кВт·ч/100, это около '
+        '{km} км запаса',
     'measure.card_matured_nr': 'Полоса {v} дозрела: {x} кВт·ч/100',
-    'measure.card_cell': 'Атлас: новая клетка — {v} км/ч при {w}°',
-    'measure.card_cell_nt': 'Атлас: новая клетка — {v} км/ч, температура '
+    'measure.card_cell': 'Атлас: новая клетка {v} км/ч при {w}°',
+    'measure.card_cell_nt': 'Атлас: новая клетка {v} км/ч, температура '
         'неизвестна',
-    'measure.card_star': 'Полоса {v}: {lvl} — уже {n} поездок',
+    'measure.card_star': 'Полоса {v}: {lvl}, уже {n} поездок',
     'measure.card_star_silver': 'серебро',
     'measure.card_star_gold': 'золото',
-    'measure.card_loot': 'Полоса {v}: +{s} с ровной езды · накоплено {a} '
+    'measure.card_loot': 'Полоса {v}: +{s} с ровной езды, накоплено {a} '
         'из {m} с',
     'measure.card_loot_flat': '+{s} с ровной езды',
     'measure.card_soon': 'Полоса {v} почти дозрела',
@@ -1769,23 +1773,23 @@ class S {
     'atlas.snap_one': 'замер',
     'atlas.snap_few': 'замера',
     'atlas.snap_many': 'замеров',
-    'atlas.select_hint': 'Выберите клетку с пунктиром — это цель на '
-        'следующую поездку.',
+    'atlas.select_hint': 'Выберите клетку с пунктиром: это цель на '
+        'следующую поездку',
     'atlas.pending_note': 'Клетка с пунктиром и числом уже набрала свои '
-        '2 минуты — полноценной она станет, когда поездка закончится.',
+        'две минуты. Полноценной она станет, когда поездка закончится',
     'measure.intent_title': 'В следующей поездке',
     'measure.intent_at': 'при батарее',
     'measure.intent_note': 'Ровное время в этой клетке продолжится с '
-        'прошлой поездки. Секунд и процентов здесь нет — цель названа '
-        'скоростью и температурой.',
+        'прошлой поездки. Секунд и процентов здесь нет: цель названа '
+        'скоростью и температурой',
     'measure.intent_take': 'Взять',
     'measure.intent_other': 'Другая клетка',
     'measure.intent_taken': 'Намерение взято: {v} км/ч при {w}',
-    'measure.intent_taken_note': 'напоминания не будет — карточка ждёт '
+    'measure.intent_taken_note': 'напоминания не будет, карточка ждёт '
         'на стоянке',
     'measure.intent_drop': 'Снять',
     'atlas.title_hu': 'АТЛАС',
-    'atlas.counts': '{n} {cells} · {m} {bands}',
+    'atlas.counts': '{n} {cells}, {m} {bands}',
     // Три формы — первое, что покажет поле, это n = 1.
     'atlas.cell_one': 'клетка',
     'atlas.cell_few': 'клетки',
@@ -1799,27 +1803,27 @@ class S {
     'atlas.session_one': 'поездка',
     'atlas.session_few': 'поездки',
     'atlas.session_many': 'поездок',
-    'atlas.counts_view': '{n} {cells} · {m} {bands} · просмотр',
+    'atlas.counts_view': '{n} {cells}, {m} {bands}',
     'atlas.season_ctx':
-        '{month} · батарея {lo}–{hi}° · холодные столбцы '
+        '{month}, батарея от {lo} до {hi}°. Холодные столбцы '
         'откроются зимой',
     'atlas.season_ctx_nr':
-        '{month} · столбцы по температуре откроются '
+        '{month}. Столбцы по температуре откроются '
         'по мере езды',
     'atlas.year_title': 'ГОД',
-    'atlas.year_summary': 'Собрано за {n} {days} · идёт {month}. '
+    'atlas.year_summary': 'Собрано за {n} {days}, идёт {month}. '
         'Полная картина набирается за год.',
     'atlas.months': 'янв,фев,мар,апр,май,июн,июл,авг,сен,окт,ноя,дек',
     'atlas.legend_one': '1 поездка',
     'atlas.legend_five': '5 поездок',
     'atlas.legend_fifteen': '15 поездок',
     'atlas.legend_marks': 'чем больше поездок, тем точнее число',
-    'atlas.grid_note': 'Пунктиром — соседние клетки: их можно открыть '
-        'следующими. Пустое место — туда ещё не ездили.',
-    'atlas.window_rare': 'редкая погода · батарея {w}°',
-    'atlas.window_hot': 'жаркая погода · батарея {w}°',
+    'atlas.grid_note': 'Пунктиром показаны соседние клетки: их можно '
+        'открыть следующими. Пустое место значит, что туда ещё не ездили',
+    'atlas.window_rare': 'редкая погода, батарея {w}°',
+    'atlas.window_hot': 'жаркая погода, батарея {w}°',
     'atlas.window_unknown': 'без температуры',
-    'atlas.view_only': 'просмотр — подробности на телефоне',
+    'atlas.view_only': 'просмотр, подробности на телефоне',
     'atlas.parked_chip': 'Стоянка',
     'atlas.tab_atlas': 'Атлас',
     'atlas.tab_forecast': 'Прогноз',
@@ -1829,14 +1833,14 @@ class S {
     'atlas.empty': 'Пока пусто. Первая клетка появится после 2 минут ровной '
         'езды на одной скорости.',
     'atlas.load_failed': 'Не удалось прочитать атлас:',
-    'atlas.cell_title': '{v} км/ч · батарея {w}',
-    'atlas.cell_sub': 'от · среднее · до, кВт·ч на 100 км',
-    'atlas.cell_sub_single': 'кВт·ч на 100 км · один замер',
+    'atlas.cell_title': '{v} км/ч, батарея {w}',
+    'atlas.cell_sub': 'минимум, среднее, максимум в кВт·ч на 100 км',
+    'atlas.cell_sub_single': 'кВт·ч на 100 км, один замер',
     'atlas.cell_sessions': '{n} {sessions}',
-    'atlas.cell_steady': 'Ровная езда {s} с · {n} {snaps}',
+    'atlas.cell_steady': 'Ровная езда {s} с, {n} {snaps}',
     'atlas.cell_dist': 'КАК РАСПРЕДЕЛИЛИСЬ ЗАМЕРЫ',
     'atlas.cell_snapshots': 'ЗАМЕРЫ',
-    'measure.plate_title': 'Итоги поездки · {n} новых',
+    'measure.plate_title': 'Итоги поездки, {n} новых',
     'export.title': 'Картинка атласа',
     'export.share': 'Поделиться',
     'export.caption': 'Картинка 1080×1350 · вся карта целиком',

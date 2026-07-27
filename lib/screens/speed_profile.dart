@@ -270,7 +270,7 @@ class _SpeedProfileScreenState extends State<SpeedProfileScreen> {
               // standstill), Flutter moves the element instead of
               // rebuilding it — the crossfade state survives.
               BandCard(key: ValueKey('band_${m.band}'), model: m, bz3: bz3),
-              SizedBox(height: bz3 ? 16 : 20),
+              SizedBox(height: bz3 ? 8 : 10),
             ],
         ];
 
@@ -284,20 +284,21 @@ class _SpeedProfileScreenState extends State<SpeedProfileScreen> {
             _ZeroTo100Card(session: svc.session, bz3: bz3,
                 firstEntry: firstEntry);
 
-        // ── BZ5 right column: atlas → sync → 0–100 ──
-        // Owner's decision 26.07, and the SAME order in every state —
-        // the mockup's flipped first-entry column is cancelled, so
-        // nothing re-orders under the user and no standstill latch is
-        // needed for the composition.
+        // ── BZ5 right column: atlas → 0–100 → sync ──
+        // Owner's decision 27.07 (+165), superseding the 26.07 order:
+        // the sync card is the only one of the three that comes and
+        // goes with parking, so it belongs LAST — a card that appears
+        // in the middle pushes the 0–100 block down under the driver.
+        // The order is otherwise the SAME in every state.
         final aside = <Widget>[
           // +161 (§7.1): the door into the atlas — открыт всегда.
           atlasEntry,
-          const SizedBox(height: 20),
-          if (_isParked) ...[
-            syncCard,
-            const SizedBox(height: 20),
-          ],
+          const SizedBox(height: 12),
           zeroTo100,
+          if (_isParked) ...[
+            const SizedBox(height: 12),
+            syncCard,
+          ],
         ];
 
         // ── BZ3 ribbon tail: 0–100 → atlas → sync ──
@@ -432,8 +433,8 @@ class _ScreenHeader extends StatelessWidget {
 
 /// Status chip §6.2 — the ONLY recording indicator now. Two slots, the
 /// content swaps, nothing appears or disappears (И1): in motion a
-/// 16 dp `rec` dot + «Запись · {v} км/ч» + the «ровное время идёт»
-/// tail; parked a `gearP` 700 «P» + «Стоянка · ровное время не идёт»
+/// 10 dp `rec` dot + «Запись, {v} км/ч» + the «ровное время идёт»
+/// tail; parked a `gearP` 700 «P» + «Стоянка, ровное время не идёт»
 /// (решение владельца 26.07 п.7 — «запись остановлена» died with the
 /// Стоп button it described).
 class _StatusChip extends StatelessWidget {
@@ -444,14 +445,14 @@ class _StatusChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final v = context.read<HalTelemetryService>().halSpeedKmh;
-    final dotSize = bz3 ? 11.0 : 16.0;
-    final mainSize = bz3 ? 18.0 : 24.0;
+    final dotSize = bz3 ? 8.0 : 10.0;
+    final mainSize = bz3 ? 12.0 : 13.0;
     final Widget lead;
     final Widget label;
     if (isParked) {
       lead = Text('P',
           style: TextStyle(
-              fontSize: bz3 ? 20 : 26,
+              fontSize: bz3 ? 13 : 16,
               fontWeight: FontWeight.w700,
               color: AtlasTokens.gearP));
       label = Text(S.of('measure.chip_parked'),
@@ -477,7 +478,7 @@ class _StatusChip extends StatelessWidget {
                     bz3 ? const Color(0xCCFFFFFF) : AtlasTokens.t85)),
         if (!bz3)
           TextSpan(
-              text: ' · ${S.of('measure.chip_rec_tail')}',
+              text: ', ${S.of('measure.chip_rec_tail')}',
               style: TextStyle(
                   fontSize: mainSize, color: AtlasTokens.t40)),
       ]));
@@ -488,13 +489,13 @@ class _StatusChip extends StatelessWidget {
         borderRadius: BorderRadius.circular(999),
       ),
       padding: bz3
-          ? const EdgeInsets.symmetric(vertical: 8, horizontal: 18)
-          : const EdgeInsets.symmetric(vertical: 10, horizontal: 26),
+          ? const EdgeInsets.symmetric(vertical: 5, horizontal: 12)
+          : const EdgeInsets.symmetric(vertical: 6, horizontal: 14),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
           lead,
-          SizedBox(width: bz3 ? 9 : 14),
+          SizedBox(width: bz3 ? 6 : 8),
           label,
         ],
       ),
@@ -586,35 +587,35 @@ class _BandBarCard extends StatelessWidget {
     return Container(
       decoration: BoxDecoration(
         color: AtlasTokens.card,
-        borderRadius: BorderRadius.circular(bz3 ? 22 : 24),
+        borderRadius: BorderRadius.circular(12),
       ),
       padding: bz3
-          ? const EdgeInsets.symmetric(vertical: 26, horizontal: 28)
-          : const EdgeInsets.symmetric(vertical: 26, horizontal: 36),
+          ? const EdgeInsets.all(12)
+          : const EdgeInsets.all(14),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(S.of('measure.chart_title'),
               style: TextStyle(
-                  fontSize: bz3 ? 22 : 26,
+                  fontSize: bz3 ? 16 : 18,
                   fontWeight: FontWeight.w500,
                   color: AtlasTokens.t85)),
           SizedBox(height: bz3 ? 4 : 6),
           Text(S.of('measure.chart_sub'),
               style: TextStyle(
-                  fontSize: bz3 ? 16 : 20, color: AtlasTokens.t40)),
-          SizedBox(height: bz3 ? 18 : 22),
+                  fontSize: bz3 ? 11 : 12, color: AtlasTokens.t40)),
+          SizedBox(height: bz3 ? 12 : 14),
           SizedBox(
-            height: bz3 ? 180 : 260,
+            height: bz3 ? 140 : 180,
             child: _chart(bands, earned, bestBand, top, bottom),
           ),
-          SizedBox(height: bz3 ? 18 : 22),
+          SizedBox(height: bz3 ? 12 : 14),
           Text(
               // BZ3 drops the second sentence: at 668 dp it pushed the
               // card into an extra line for no new information.
               S.of(bz3 ? 'measure.chart_note_short' : 'measure.chart_note'),
               style: TextStyle(
-                  fontSize: bz3 ? 16 : 20,
+                  fontSize: 11,
                   height: 1.35,
                   color: AtlasTokens.t40)),
         ],
@@ -655,17 +656,17 @@ class _BandBarCard extends StatelessWidget {
           leftTitles: AxisTitles(
             sideTitles: SideTitles(
               showTitles: true,
-              reservedSize: bz3 ? 34 : 46,
+              reservedSize: bz3 ? 24 : 30,
               interval: (top - bottom) / 2,
               getTitlesWidget: (v, meta) {
                 final shown =
                     ticks.any((t) => (t - v).abs() < (top - bottom) / 200);
                 if (!shown) return const SizedBox.shrink();
                 return Padding(
-                  padding: EdgeInsets.only(right: bz3 ? 12 : 16),
+                  padding: EdgeInsets.only(right: bz3 ? 8 : 10),
                   child: Text(v.toStringAsFixed(0),
                       style: TextStyle(
-                          fontSize: bz3 ? 14 : 18,
+                          fontSize: bz3 ? 10 : 11,
                           color: AtlasTokens.t35,
                           fontFeatures: const [
                             FontFeature.tabularFigures()
@@ -677,7 +678,7 @@ class _BandBarCard extends StatelessWidget {
           bottomTitles: AxisTitles(
             sideTitles: SideTitles(
               showTitles: true,
-              reservedSize: bz3 ? 24 : 30,
+              reservedSize: bz3 ? 18 : 22,
               interval: 1,
               getTitlesWidget: (v, meta) {
                 final i = v.toInt();
@@ -688,7 +689,7 @@ class _BandBarCard extends StatelessWidget {
                   padding: const EdgeInsets.only(top: 4),
                   child: Text('${bands[i]}',
                       style: TextStyle(
-                          fontSize: bz3 ? 14 : 18,
+                          fontSize: bz3 ? 10 : 11,
                           color: AtlasTokens.t35,
                           fontFeatures: const [
                             FontFeature.tabularFigures()
@@ -707,7 +708,7 @@ class _BandBarCard extends StatelessWidget {
                 // A band with nothing collected still draws — a stub at
                 // the axis, so the curve keeps its shape.
                 toY: earned[bands[i]] ?? top * 0.06,
-                width: bz3 ? 10 : 14,
+                width: bz3 ? 8 : 10,
                 color: earned[bands[i]] == null
                     ? AtlasTokens.chartBarIdle
                     : (bands[i] == bestBand
@@ -753,11 +754,11 @@ class _ZeroTo100Card extends StatelessWidget {
     final runs = session?.runs ?? const <ZeroTo100Run>[];
     final titleRow = <Widget>[
       Icon(Icons.timer_outlined,
-          size: bz3 ? 28 : 30, color: AtlasTokens.info),
-      SizedBox(width: bz3 ? 12 : 14),
+          size: bz3 ? 18 : 22, color: AtlasTokens.info),
+      SizedBox(width: bz3 ? 8 : 10),
       Text(S.of('measure.z100_title'),
           style: TextStyle(
-              fontSize: bz3 ? 20 : 25,
+              fontSize: bz3 ? 14 : 16,
               fontWeight: FontWeight.w500,
               color: bz3 ? const Color(0xB3FFFFFF) : AtlasTokens.t85)),
     ];
@@ -767,25 +768,29 @@ class _ZeroTo100Card extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(children: titleRow),
-          SizedBox(height: bz3 ? 10 : 14),
+          SizedBox(height: bz3 ? 8 : 10),
           Text(S.of('measure.empty_z100'),
               style: TextStyle(
-                  fontSize: bz3 ? 16 : 20,
+                  fontSize: bz3 ? 11 : 12,
                   height: 1.4,
                   color: AtlasTokens.t50)),
         ],
       );
     } else if (runs.isEmpty) {
-      // Collapsed: one line — title + readiness, nothing else.
-      content = Row(
+      // +165 (§2.4): the readiness line moved UNDER the title. It used
+      // to sit in the same Row behind a Spacer, and Spacer(flex 1) +
+      // Flexible(flex 1) split the free space in half — on the head
+      // unit the sentence got half the remainder and wrapped into a
+      // four-line column pinned to the right edge. Second line, like
+      // every other card in this column.
+      content = Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          ...titleRow,
-          const Spacer(),
-          Flexible(
-            child: Text(S.of('measure.z100_ready'),
-                style: TextStyle(
-                    fontSize: bz3 ? 16 : 22, color: AtlasTokens.t50)),
-          ),
+          Row(children: titleRow),
+          SizedBox(height: bz3 ? 6 : 8),
+          Text(S.of('measure.z100_ready'),
+              style: TextStyle(
+                  fontSize: bz3 ? 11 : 12, color: AtlasTokens.t50)),
         ],
       );
     } else {
@@ -795,44 +800,44 @@ class _ZeroTo100Card extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(children: titleRow),
-          SizedBox(height: bz3 ? 16 : 14),
+          const SizedBox(height: 10),
           Row(
             crossAxisAlignment: CrossAxisAlignment.baseline,
             textBaseline: TextBaseline.alphabetic,
             children: [
               Text(best.toStringAsFixed(1),
                   style: TextStyle(
-                      fontSize: bz3 ? 30 : 58,
+                      fontSize: bz3 ? 24 : 32,
                       fontWeight: FontWeight.w700,
                       color: AtlasTokens.t100,
                       fontFeatures: const [
                         FontFeature.tabularFigures()
                       ])),
-              SizedBox(width: bz3 ? 8 : 14),
+              SizedBox(width: bz3 ? 6 : 8),
               Text(S.of('measure.z100_sec'),
                   style: TextStyle(
-                      fontSize: bz3 ? 16 : 26, color: AtlasTokens.t50)),
+                      fontSize: bz3 ? 13 : 16, color: AtlasTokens.t50)),
               const Spacer(),
-              Text('${S.of('measure.z100_last')} · ${_fmtDay(last.tsMs)}',
+              Text('${S.of('measure.z100_last')}, ${_fmtDay(last.tsMs)}',
                   style: TextStyle(
-                      fontSize: bz3 ? 16 : 22, color: AtlasTokens.t40)),
+                      fontSize: bz3 ? 11 : 12, color: AtlasTokens.t40)),
             ],
           ),
-          SizedBox(height: bz3 ? 8 : 14),
+          SizedBox(height: bz3 ? 6 : 8),
           Text(S.of('measure.z100_ready'),
               style: TextStyle(
-                  fontSize: bz3 ? 16 : 22, color: AtlasTokens.t50)),
+                  fontSize: bz3 ? 11 : 12, color: AtlasTokens.t50)),
         ],
       );
     }
     return Container(
       decoration: BoxDecoration(
         color: bz3 ? AtlasTokens.cardMuted : AtlasTokens.card,
-        borderRadius: BorderRadius.circular(bz3 ? 22 : 24),
+        borderRadius: BorderRadius.circular(12),
       ),
       padding: bz3
-          ? const EdgeInsets.symmetric(vertical: 22, horizontal: 28)
-          : const EdgeInsets.symmetric(vertical: 26, horizontal: 32),
+          ? const EdgeInsets.all(12)
+          : const EdgeInsets.all(14),
       child: content,
     );
   }
@@ -877,7 +882,7 @@ class _IntentCard extends StatelessWidget {
         child: Container(
           decoration: BoxDecoration(
             color: AtlasTokens.cardMuted,
-            borderRadius: BorderRadius.circular(16 * k),
+            borderRadius: BorderRadius.circular(12 * k),
           ),
           padding: EdgeInsets.symmetric(
               horizontal: 18 * k, vertical: 14 * k),
@@ -931,9 +936,9 @@ class _IntentCard extends StatelessWidget {
       child: Container(
         decoration: BoxDecoration(
           color: AtlasTokens.card,
-          borderRadius: BorderRadius.circular(16 * k),
+          borderRadius: BorderRadius.circular(12 * k),
         ),
-        padding: EdgeInsets.all(18 * k),
+        padding: EdgeInsets.all(14 * k),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -1028,11 +1033,15 @@ class _IntentCard extends StatelessWidget {
 
 // ─────────────────────── atlas entry card §7.1 ───────────────────────
 
-/// v0.1.62+161 → +163 — entry into the atlas from the «Замеры» screen.
-/// One line per the 2a mockup: grid_view 30 `info` → «Атлас · {n}
-/// клеток · {m} скоростей · просмотр» 24 → chevron 28 t40. Открыт
-/// всегда (канон 1.2 §0.1 — блокировка в движении отменена); the grid
-/// data arrives from the screen's shared loader.
+/// v0.1.62+161 → +163 → +165 — entry into the atlas from the «Замеры»
+/// screen. One line: grid_view 22 `info`, «Атлас: {n} клеток,
+/// {m} скоростей» 16, chevron 20 t40. The 2a mockup's 30/24/28 were
+/// drawn on a canvas that assumed a 150 px rail; +165 put the card on
+/// the app's own ladder, and «просмотр» left the counter (it names
+/// the atlas SCREEN's mode, not the count — atlas.view_only says it
+/// where it belongs). Открыт всегда (канон 1.2 §0.1 — блокировка в
+/// движении отменена); the grid data arrives from the screen's
+/// shared loader.
 class _AtlasEntryCard extends StatelessWidget {
   final AtlasGridData? data;
   final bool bz3;
@@ -1055,11 +1064,11 @@ class _AtlasEntryCard extends StatelessWidget {
     final body = Container(
       decoration: BoxDecoration(
         color: AtlasTokens.card,
-        borderRadius: BorderRadius.circular(bz3 ? 22 : 24),
+        borderRadius: BorderRadius.circular(12),
       ),
       padding: bz3
-          ? const EdgeInsets.symmetric(horizontal: 24, vertical: 20)
-          : const EdgeInsets.symmetric(vertical: 26, horizontal: 32),
+          ? const EdgeInsets.all(12)
+          : const EdgeInsets.all(14),
       child: firstEntry
           ? Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -1067,16 +1076,16 @@ class _AtlasEntryCard extends StatelessWidget {
                 Row(
                   children: [
                     Icon(Icons.grid_view,
-                        size: bz3 ? 24 : 30, color: AtlasTokens.info),
-                    SizedBox(width: bz3 ? 12 : 16),
+                        size: bz3 ? 18 : 22, color: AtlasTokens.info),
+                    SizedBox(width: bz3 ? 8 : 10),
                     Text(S.of('atlas.title'),
                         style: TextStyle(
-                            fontSize: bz3 ? 20 : 24,
+                            fontSize: bz3 ? 14 : 16,
                             fontWeight: FontWeight.w500,
                             color: AtlasTokens.t85)),
                   ],
                 ),
-                SizedBox(height: bz3 ? 14 : 18),
+                SizedBox(height: bz3 ? 10 : 12),
                 Row(
                   children: [
                     for (var i = 0; i < 4; i++) ...[
@@ -1086,10 +1095,10 @@ class _AtlasEntryCard extends StatelessWidget {
                     ],
                   ],
                 ),
-                SizedBox(height: bz3 ? 14 : 18),
+                SizedBox(height: bz3 ? 10 : 12),
                 Text(S.of('measure.empty_atlas'),
                     style: TextStyle(
-                        fontSize: bz3 ? 16 : 20,
+                        fontSize: bz3 ? 11 : 12,
                         height: 1.4,
                         color: AtlasTokens.t50)),
               ],
@@ -1097,25 +1106,27 @@ class _AtlasEntryCard extends StatelessWidget {
           : Row(
               children: [
                 Icon(Icons.grid_view,
-                    size: bz3 ? 24 : 30, color: AtlasTokens.info),
-                SizedBox(width: bz3 ? 12 : 16),
+                    size: bz3 ? 18 : 22, color: AtlasTokens.info),
+                SizedBox(width: bz3 ? 8 : 10),
                 Expanded(
                   child: Text(
-                    '${S.of('atlas.title')} · $counts',
+                    '${S.of('atlas.title')}: $counts',
                     style: TextStyle(
-                        fontSize: bz3 ? 18 : 24, color: AtlasTokens.t85),
+                        fontSize: bz3 ? 13 : 16, color: AtlasTokens.t85),
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
-                SizedBox(width: bz3 ? 12 : 16),
+                SizedBox(width: bz3 ? 8 : 10),
                 Icon(Icons.chevron_right,
-                    size: bz3 ? 24 : 28, color: AtlasTokens.t40),
+                    size: bz3 ? 18 : 20, color: AtlasTokens.t40),
               ],
             ),
     );
     if (!enabled) return Opacity(opacity: 0.55, child: body);
     return InkWell(
-      borderRadius: BorderRadius.circular(bz3 ? 22 : 24),
+      // Совпадает с радиусом тела карточки (+165): иначе рябь
+      // скругляется по своему углу и вылезает за карточку.
+      borderRadius: BorderRadius.circular(12),
       onTap: () {
         Navigator.of(context).push(MaterialPageRoute(
           builder: (_) =>
@@ -1156,7 +1167,7 @@ class _SyncCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final cloud = context.watch<CloudSyncService>();
     if (!cloud.isRegistered || !cloud.enabled) return const SizedBox.shrink();
-    final radius = bz3 ? 22.0 : 24.0;
+    const radius = 12.0;
     return InkWell(
       borderRadius: BorderRadius.circular(radius),
       onTap: () => Navigator.of(context).push(
@@ -1168,33 +1179,33 @@ class _SyncCard extends StatelessWidget {
           borderRadius: BorderRadius.circular(radius),
         ),
         padding: bz3
-            ? const EdgeInsets.symmetric(vertical: 22, horizontal: 28)
-            : const EdgeInsets.symmetric(vertical: 26, horizontal: 32),
+            ? const EdgeInsets.all(12)
+            : const EdgeInsets.all(14),
         child: Row(
           children: [
             Icon(Icons.cloud_done,
-                size: bz3 ? 28 : 30, color: AtlasTokens.info),
-            SizedBox(width: 16),
+                size: bz3 ? 18 : 22, color: AtlasTokens.info),
+            const SizedBox(width: 10),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(S.of('measure.sync_title'),
                       style: TextStyle(
-                          fontSize: bz3 ? 20 : 24,
+                          fontSize: bz3 ? 14 : 16,
                           fontWeight: FontWeight.w500,
                           color: AtlasTokens.t85)),
                   SizedBox(height: bz3 ? 4 : 6),
                   Text(S.of('measure.sync_sub'),
                       style: TextStyle(
-                          fontSize: bz3 ? 16 : 20, color: AtlasTokens.t40),
+                          fontSize: bz3 ? 11 : 12, color: AtlasTokens.t40),
                       overflow: TextOverflow.ellipsis),
                 ],
               ),
             ),
-            SizedBox(width: 16),
+            const SizedBox(width: 10),
             Icon(Icons.chevron_right,
-                size: bz3 ? 26 : 28, color: AtlasTokens.t40),
+                size: bz3 ? 18 : 20, color: AtlasTokens.t40),
           ],
         ),
       ),
@@ -1331,44 +1342,43 @@ class _RevealCard extends StatelessWidget {
       decoration: BoxDecoration(
         color: _bg,
         border: Border.all(color: _border),
-        borderRadius: BorderRadius.circular(24),
+        borderRadius: BorderRadius.circular(12),
       ),
-      padding: EdgeInsets.symmetric(
-          vertical: 26, horizontal: bz3 ? 28 : 36),
+      padding: EdgeInsets.all(bz3 ? 12 : 14),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           // 1. Строка поездки.
           Text(tripLine,
               style: TextStyle(
-                  fontSize: 24, color: Colors.white.withOpacity(0.85))),
+                  fontSize: 16, color: Colors.white.withOpacity(0.85))),
           // 2. Reveal-события 0…N.
           for (final r in sorted)
             Padding(
-              padding: const EdgeInsets.only(top: 14),
+              padding: const EdgeInsets.only(top: 10),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   _iconFor(_payload(r), r.type),
-                  const SizedBox(width: 14),
+                  const SizedBox(width: 10),
                   Expanded(
                     child: Text(_lineFor(_payload(r), r.type),
                         style: const TextStyle(
-                            fontSize: 25, color: Colors.white)),
+                            fontSize: 16, color: Colors.white)),
                   ),
                 ],
               ),
             ),
           // 3. Разделитель.
           Padding(
-            padding: const EdgeInsets.symmetric(vertical: 14),
+            padding: const EdgeInsets.symmetric(vertical: 10),
             child: Divider(
                 height: 1, color: Colors.white.withOpacity(0.08)),
           ),
           // 4. Микро-лут (всегда при видимой карточке, §138).
           Text(lootLine,
               style: TextStyle(
-                  fontSize: 20, color: Colors.white.withOpacity(0.6))),
+                  fontSize: 12, color: Colors.white.withOpacity(0.6))),
           // 5. Предвкушение (white .4, если есть; грубое, без
           // чисел-целей — инвариант И2).
           if (soonBand != null)
@@ -1379,24 +1389,27 @@ class _RevealCard extends StatelessWidget {
                       .of('measure.card_soon')
                       .replaceFirst('{v}', '$soonBand'),
                   style: TextStyle(
-                      fontSize: 20,
+                      fontSize: 12,
                       color: Colors.white.withOpacity(0.4))),
             ),
           // 6. Кнопка «Ок» (pill, progress/onProgress, цель ≥48 dp).
           Padding(
-            padding: const EdgeInsets.only(top: 18),
+            padding: const EdgeInsets.only(top: 14),
             child: FilledButton(
               style: FilledButton.styleFrom(
                 backgroundColor: _progress,
                 foregroundColor: _onProgress,
                 shape: const StadiumBorder(),
+                // vertical 16 НЕ уменьшается вместе с кеглем: канон
+                // §6.3 требует цель нажатия ≥48 dp, а 13 pt при
+                // отступе 10 дало бы 38.
                 padding: EdgeInsets.symmetric(
-                    vertical: 16, horizontal: bz3 ? 48 : 64),
+                    vertical: 16, horizontal: bz3 ? 40 : 48),
               ),
               onPressed: onOk,
               child: Text(S.of('common.ok'),
                   style: const TextStyle(
-                      fontSize: 20, fontWeight: FontWeight.w600)),
+                      fontSize: 13, fontWeight: FontWeight.w600)),
             ),
           ),
         ],
