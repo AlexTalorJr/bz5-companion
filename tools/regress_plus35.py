@@ -2349,6 +2349,69 @@ else:
     ok(f"Part T skipped (build +{pv}, moving/idle fix lands in +55)")
 
 
+def _strip_comments_safe(src: str) -> str:
+    """Убрать комментарии, НЕ ТРОГАЯ строковые литералы.
+
+    Правило проекта «любая проверка по тексту исходника обязана
+    вычищать комментарии» действует с +165 и держалось наивным
+    `re.sub(r'/\\*.*?\\*/')`. У него есть обратная сторона, которая
+    вылезла в +172: литерал MIME-маски `"*/*"` содержит
+    последовательность `/*`, регулярка принимает её за начало
+    комментария и съедает КОД до следующего `*/`. В ApkInstall.kt так
+    пропала половина файла вместе с определением функции, а гейт BI3
+    показал FAIL на исправном коде.
+
+    То есть та же ловушка, что и в +165–+170, только вывернутая: там
+    проверки читали комментарии как код, здесь вычистка прочла код как
+    комментарий. Обе стороны лечатся одним — разбирать, а не угадывать
+    регуляркой.
+
+    Комментарии заменяются ПРОБЕЛАМИ, а не удаляются: смещения
+    сохраняются, и проверки порядка через find() остаются честными.
+    Содержимое литералов сохраняется дословно — гейты пиннят строки.
+    """
+    out = []
+    i, n = 0, len(src)
+    while i < n:
+        c = src[i]
+        if c == '/' and i + 1 < n and src[i + 1] == '/':
+            j = src.find('\n', i)
+            j = n if j < 0 else j
+            out.append(' ' * (j - i))
+            i = j
+        elif c == '/' and i + 1 < n and src[i + 1] == '*':
+            j = src.find('*/', i + 2)
+            j = n if j < 0 else j + 2
+            # перевод строки сохраняем, иначе съезжает нумерация строк
+            out.append(''.join(
+                ch if ch == '\n' else ' ' for ch in src[i:j]))
+            i = j
+        elif c == '"' and src.startswith('"""', i):
+            j = src.find('"""', i + 3)
+            j = n if j < 0 else j + 3
+            out.append(src[i:j])
+            i = j
+        elif c == '"' or c == "'":
+            q = c
+            j = i + 1
+            while j < n:
+                if src[j] == '\\':
+                    j += 2
+                    continue
+                if src[j] == q:
+                    j += 1
+                    break
+                if src[j] == '\n':
+                    break
+                j += 1
+            out.append(src[i:j])
+            i = j
+        else:
+            out.append(c)
+            i += 1
+    return ''.join(out)
+
+
 def _aw16_fresh_clock(akt: str, pv: int) -> bool:
     """+157 measured fresh-boot on elapsedRealtime; +162 moved it to
     uptimeMillis. elapsedRealtime keeps ticking through deep sleep, so a
@@ -6477,9 +6540,10 @@ if int(pv) >= 171:
     # тексту не значило бы ничего. XML-комментарии чистятся отдельно:
     # манифестный блок объясняет ровно те строки, что гейт ищет.
     def _bh_kt(src):
-        s = _bh_re.sub(r'/\*.*?\*/', '', src, flags=_bh_re.S)
-        return '\n'.join(_l for _l in s.split('\n')
-                         if not _l.lstrip().startswith('//'))
+        # +172: перешли на _strip_comments_safe. Регулярка ломается о
+        # литерал, содержащий /* или */ — в файлах этой эры таких нет,
+        # но инструмент должен быть один и надёжный.
+        return _strip_comments_safe(src)
 
     _bh_mf = _bh_re.sub(r'<!--.*?-->', '', _bh_mf_raw, flags=_bh_re.S)
     _bh_br = _bh_kt(_bh_br_raw)
@@ -6659,6 +6723,205 @@ if int(pv) >= 171:
              'or a bridge permission is missing')
 else:
     ok(f"Part BH skipped (build +{pv}, the autostart bridge lands in +171)")
+
+# ══════════════ Part BI — v0.1.73+172 «Путь установки» ══════════════
+#
+# Обновиться на ГУ нечем: проводник APK не запускает, ADB нет, а
+# SilentInstaller на существующий пакет отвечает 系统已安装 и
+# засчитывает это себе в УСПЕХ — то есть установку не начинает.
+# Приложение, которое попробовало и не смогло, успех себе не пишет. На
+# телефоне тот же APK с той же подписью и тем же versionCode встаёт
+# поверх, значит дело не в пакете и подбирать ключи бессмысленно.
+#
+# Пока обновление идёт через удаление, КАЖДЫЙ патч стирает prefs и
+# Drift, а из облака не возвращаются samples/hal_samples и недобранные
+# полосы атласа. Отсюда цена ошибки в этой эре: цикл установки, на
+# который она рассчитана, стоит всех данных на устройстве.
+#
+# Гейты держат четыре вещи: манифест (без <queries> проба соврёт в
+# опасную сторону), чистоту пробы, две попытки вместо одной и то, что
+# ответ SAF не теряется.
+if int(pv) >= 172:
+    _bi_kt_dir = 'android/app/src/main/kotlin/com/bz5companion/bz5_companion/'
+
+    def _bi_slurp(rel):
+        p = root / rel
+        return p.read_text() if p.exists() else ''
+
+    _bi_mf_raw = _bi_slurp('android/app/src/main/AndroidManifest.xml')
+    _bi_ai_raw = _bi_slurp(_bi_kt_dir + 'ApkInstall.kt')
+    _bi_fp_raw = _bi_slurp(_bi_kt_dir + 'ApkFileProvider.kt')
+    _bi_ma_raw = _bi_slurp(_bi_kt_dir + 'MainActivity.kt')
+    _bi_sc_raw = _bi_slurp('lib/screens/install_update.dart')
+    _bi_st_raw = _bi_slurp('lib/screens/settings.dart')
+    _bi_l10_raw = _bi_slurp('lib/l10n/strings.dart')
+
+    import re as _bi_re
+
+    # _strip_comments_safe, а не регулярка: в ApkInstall.kt есть литерал
+    # "*/*" (MIME-маска выбора файла), и наивная вычистка приняла бы его
+    # за начало комментария и съела код до следующего */. Именно так
+    # BI3 сначала и показал FAIL на исправном файле.
+    _bi_mf = _bi_re.sub(r'<!--.*?-->', '', _bi_mf_raw, flags=_bi_re.S)
+    _bi_ai = _strip_comments_safe(_bi_ai_raw)
+    _bi_fp = _strip_comments_safe(_bi_fp_raw)
+    _bi_ma = _strip_comments_safe(_bi_ma_raw)
+    _bi_sc = _strip_comments_safe(_bi_sc_raw)
+    _bi_st = _strip_comments_safe(_bi_st_raw)
+
+    # BI1: разрешение и провайдер. Разбором XML, а не подстроками —
+    # урок BH1: split('<provider') поймал бы и <provider-disabled>.
+    _bi_ns = '{http://schemas.android.com/apk/res/android}'
+    _bi_prov = None
+    _bi_perms = set()
+    _bi_xml_ok = True
+    try:
+        import xml.etree.ElementTree as _bi_et
+        _bi_rootel = _bi_et.fromstring(_bi_mf_raw)
+        for _el in _bi_rootel.iter('provider'):
+            if _el.get(_bi_ns + 'name') == '.ApkFileProvider':
+                _bi_prov = _el
+        for _el in _bi_rootel.iter('uses-permission'):
+            _bi_perms.add(_el.get(_bi_ns + 'name'))
+    except Exception:
+        _bi_xml_ok = False
+
+    _bi1 = (_bi_xml_ok and _bi_prov is not None and
+            'android.permission.REQUEST_INSTALL_PACKAGES' in _bi_perms and
+            _bi_prov.get(_bi_ns + 'exported') == 'false' and
+            _bi_prov.get(_bi_ns + 'grantUriPermissions') == 'true' and
+            _bi_prov.get(_bi_ns + 'authorities', '').endswith('.apkprovider'))
+    if _bi1:
+        ok('BI1 install permission declared and the APK provider is '
+           'private with URI grants')
+    else:
+        fail('BI1 install permission or the APK provider is missing '
+             'or misdeclared')
+
+    # BI2: <queries>. С Android 11 queryIntentActivities и
+    # getPackageInfo фильтруются по видимости — БЕЗ этих записей проба
+    # вернёт пусто при полностью живом установщике, то есть соврёт
+    # ровно в ту сторону, которая закрыла бы тему как безнадёжную.
+    _bi_q = _bi_mf.split('<queries>')[-1].split('</queries>')[0] \
+        if '<queries>' in _bi_mf else ''
+    _bi2 = ('android.intent.action.VIEW' in _bi_q and
+            'android.intent.action.INSTALL_PACKAGE' in _bi_q and
+            'android.intent.action.OPEN_DOCUMENT' in _bi_q and
+            'android.settings.MANAGE_UNKNOWN_APP_SOURCES' in _bi_q and
+            'application/vnd.android.package-archive' in _bi_q and
+            'com.android.packageinstaller' in _bi_q and
+            'com.google.android.packageinstaller' in _bi_q and
+            'com.android.permissioncontroller' in _bi_q)
+    if _bi2:
+        ok('BI2 package-visibility queries cover every intent and '
+           'installer the probe reads')
+    else:
+        fail('BI2 a queries entry is missing — the probe would report '
+             'an empty install path on a healthy firmware')
+
+    # BI3: проба ТОЛЬКО читает. Её зовут при открытии экрана и после
+    # каждой попытки; побочное действие внутри превратило бы
+    # диагностику в источник событий.
+    _bi_probe = _bi_ai.split('fun probe(')[-1].split('private fun resolvers(')[0]
+    _bi3 = ('startActivity' not in _bi_probe and
+            'startActivityForResult' not in _bi_probe and
+            'outputStream' not in _bi_probe and
+            'queryIntentActivities' in _bi_ai and
+            'canRequestPackageInstalls()' in _bi_probe)
+    if _bi3:
+        ok('BI3 the probe only reads — no launch, no write')
+    else:
+        fail('BI3 the probe has a side effect')
+
+    # BI4: ДВЕ попытки, не одна. ACTION_VIEW — современный путь,
+    # ACTION_INSTALL_PACKAGE — устаревший, но на части OEM-прошивок
+    # зарегистрирован именно он. Вторая попытка стоит пяти строк,
+    # незаданный вопрос — цикла установки, то есть всех данных.
+    _bi_launch = _bi_ai.split('fun launch(')[-1]
+    _bi4 = ('Intent.ACTION_VIEW, Intent.ACTION_INSTALL_PACKAGE' in _bi_launch
+            and 'FLAG_GRANT_READ_URI_PERMISSION' in _bi_launch and
+            'FLAG_ACTIVITY_NEW_TASK' in _bi_launch and
+            'steps.add(' in _bi_launch and
+            't.javaClass.simpleName' in _bi_launch)
+    if _bi4:
+        ok('BI4 both install actions are tried and every step is '
+           'recorded with the exception class')
+    else:
+        fail('BI4 only one install action is tried or failures are silent')
+
+    # BI5: провайдер отдаёт РОВНО один файл и только на чтение. Он
+    # экспортируется грантом наружу, поэтому запись через него не
+    # должна существовать в принципе.
+    _bi5 = ('MODE_READ_ONLY' in _bi_fp and
+            'OpenableColumns.DISPLAY_NAME' in _bi_fp and
+            'OpenableColumns.SIZE' in _bi_fp and
+            'values: ContentValues?): Uri? = null' in _bi_fp and
+            _bi_fp.count('): Int = 0') == 2 and
+            'STAGED = "staged_update.apk"' in _bi_fp)
+    if _bi5:
+        ok('BI5 the provider serves exactly one file, read-only')
+    else:
+        fail('BI5 the provider is writable or serves more than the '
+             'staged file')
+
+    # BI6: экран живёт в «Расширенных», за тем же 15-тапным замком, и
+    # подписан на LocaleService (правило X4).
+    _bi_adv = _bi_st.split('Widget _advancedCard(')[-1].split('\n  Widget ')[0]
+    _bi6 = ('InstallUpdateScreen()' in _bi_adv and
+            "S.of('settings.install.title')" in _bi_adv and
+            'context.watch<LocaleService>()' in _bi_sc)
+    if _bi6:
+        ok('BI6 the screen sits in Advanced behind the 15-tap unlock '
+           'and follows the locale rule')
+    else:
+        fail('BI6 the screen escaped Advanced or ignores locale changes')
+
+    # BI7: паритет l10n. Ключ, забытый в одной карте, деградирует молча
+    # в английский — на dev-экране это заметят не сразу.
+    _bi_keys = [
+        'settings.install.title', 'settings.install.subtitle',
+        'install.title', 'install.probe.title', 'install.verdict.route',
+        'install.verdict.noroute', 'install.grant.title',
+        'install.grant.sub', 'install.pick.title', 'install.pick.sub',
+        'install.run.title', 'install.run.sub', 'install.log.title',
+        'install.log.empty', 'install.export', 'install.exported',
+    ]
+    _bi_miss = [k for k in _bi_keys
+                if _bi_l10_raw.count("'%s':" % k) != 2]
+    if not _bi_miss:
+        ok('BI7 all 16 install-path keys exist in both locale maps')
+    else:
+        fail(f'BI7 l10n keys missing from a locale map: {_bi_miss}')
+
+    # BI8: ответ SAF не теряется и не задваивается. Выбор файла —
+    # отдельная активити, ответить синхронно нечем; висящий Result без
+    # ответа подвесил бы экран навсегда, а два параллельных — уронил
+    # бы канал вторым success по тому же Result.
+    #
+    # Третья ветка — onResume: он вызывается ПОСЛЕ onActivityResult,
+    # поэтому висящий там запрос означает, что результата не будет
+    # никогда. Без ответа Dart ждал бы вечно и кнопка залипла бы
+    # насовсем — на экране, которым пользуются один раз и в неудачный
+    # момент.
+    _bi_oar = _bi_ma.split('override fun onActivityResult(')[-1]
+    _bi_ores = _bi_ma.split('override fun onResume()')[-1] \
+        .split('override fun onActivityResult(')[0]
+    _bi8 = ('pendingPick' in _bi_ma and
+            'super.onActivityResult(' in _bi_oar and
+            'pendingPick = null' in _bi_oar and
+            'pick already in flight' in _bi_ma and
+            'Activity.RESULT_OK' in _bi_oar and
+            '"error" to "cancelled"' in _bi_oar and
+            'pendingPick = null' in _bi_ores and
+            '"error" to "no-result"' in _bi_ores)
+    if _bi8:
+        ok('BI8 the SAF reply is answered exactly once — cancel and a '
+           'lost result included')
+    else:
+        fail('BI8 the file-picker reply can be lost, hung, or answered '
+             'twice')
+else:
+    ok(f"Part BI skipped (build +{pv}, the install path lands in +172)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
