@@ -62,6 +62,26 @@ object AutostartMarker {
 
     private var fallbackNoted = false
 
+    /**
+     * v0.1.74+173 — МЁРТВЫЙ ПУБЛИЧНЫЙ ПУТЬ БОЛЬШЕ НЕ ПРОБУЕТСЯ ДВАЖДЫ.
+     *
+     * Запись синхронна, и зовут её из onReceive (главный поток, лимит
+     * 10 секунд) и из heartbeat на главном лупере. Прежняя редакция на
+     * КАЖДУЮ строку сначала лезла в /sdcard/Download и ловила оттуда
+     * исключение — а поле 28.07 показало, что этот путь на прошивке
+     * мёртв наглухо. То есть на каждом пробуждении ГУ, в самый занятый
+     * момент загрузки, мы делали обречённое обращение к внешнему
+     * хранилищу на главном потоке. ANR маловероятен, но это ровно тот
+     * класс отказов, который срабатывает раз в сотню загрузок и не
+     * воспроизводится.
+     *
+     * Первая попытка в процессе остаётся: разрешение могло вернуться,
+     * и узнать об этом можно только попробовав. Отказавшись однажды,
+     * путь считается мёртвым до конца процесса — новый процесс
+     * попробует заново.
+     */
+    private var pubDead = false
+
     /** pid + тег процесса + пара uptime/elapsedRealtime. `up` не
      *  считает глубокий сон, `el` считает: расхождение между двумя
      *  строками ОДНОГО тега — это сон, который процесс пережил. */
@@ -89,12 +109,15 @@ object AutostartMarker {
         val ts =
             SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
         val text = "$ts  $line\n"
-        try {
-            File("/sdcard/Download/$FILE_NAME").appendText(text)
-            where = "pub"
-            return
-        } catch (t: Throwable) {
-            pubFails++
+        if (!pubDead) {
+            try {
+                File("/sdcard/Download/$FILE_NAME").appendText(text)
+                where = "pub"
+                return
+            } catch (t: Throwable) {
+                pubFails++
+                pubDead = true
+            }
         }
         try {
             File(context.filesDir, FILE_NAME).appendText(text)

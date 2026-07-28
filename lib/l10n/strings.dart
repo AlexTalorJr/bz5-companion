@@ -192,6 +192,10 @@ class S {
     // v0.1.73+172 — install path (Advanced). Technical row labels on
     // the screen itself stay untranslated by project rule; only chrome
     // is localized.
+    // v0.1.74+173 — autostart switch (Advanced, head unit only).
+    'settings.autostart.title': 'Autostart',
+    'settings.autostart.sub':
+        'Raise the app by itself when the head unit wakes',
     'settings.install.title': 'Install path',
     'settings.install.subtitle':
         'Probe the system installer and install an APK over this build',
@@ -1313,6 +1317,10 @@ class S {
         'Кольцевой буфер debugPrint + состояние CloudSync (dev)',
     'settings.hal.subtitle': 'Нативный BYD HAL — статус, подписки, логи',
     // v0.1.73+172 — путь установки (Расширенные).
+    // v0.1.74+173 — выключатель автозапуска (Расширенные, только ГУ).
+    'settings.autostart.title': 'Автозапуск',
+    'settings.autostart.sub':
+        'Поднимать приложение самостоятельно при пробуждении ГУ',
     'settings.install.title': 'Путь установки',
     'settings.install.subtitle':
         'Проба системного установщика и установка APK поверх',

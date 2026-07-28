@@ -6923,6 +6923,146 @@ if int(pv) >= 172:
 else:
     ok(f"Part BI skipped (build +{pv}, the install path lands in +172)")
 
+# ═══════ Part BJ — v0.1.74+173 «Выключатель и правки по ревизии» ═══════
+#
+# Архитектурная ревизия +171/+172 нашла механизм, который включается
+# тихо и не выключается вообще: `disarm` висел в канале с +155 и не
+# вызывался из Dart ниоткуда. Пока автозапуск держался на START_STICKY,
+# это сходило с рук — он выключался сам, процесс умирал и не воскресал.
+# С мостом +171 сервис поднимается на КАЖДОМ пробуждении ГУ, и
+# прекратить это стало нечем, кроме удаления приложения.
+#
+# Плюс три следствия той же ревизии: нотификация обещала запись,
+# которой нет; обоснование своего провайдера в +172 оказалось ложным
+# (проверить было чем — share_plus тянет androidx FileProvider);
+# мёртвый публичный путь маркера пробовался на каждую строку, синхронно,
+# на главном потоке, в момент загрузки.
+if int(pv) >= 173:
+    _bj_kt_dir = 'android/app/src/main/kotlin/com/bz5companion/bz5_companion/'
+
+    def _bj_slurp(rel):
+        p = root / rel
+        return p.read_text() if p.exists() else ''
+
+    _bj_pf_raw = _bj_slurp(_bj_kt_dir + 'AutostartPrefs.kt')
+    _bj_sv_raw = _bj_slurp(_bj_kt_dir + 'AutostartService.kt')
+    _bj_mk_raw = _bj_slurp(_bj_kt_dir + 'AutostartMarker.kt')
+    _bj_ma_raw = _bj_slurp(_bj_kt_dir + 'MainActivity.kt')
+    _bj_fp_raw = _bj_slurp(_bj_kt_dir + 'ApkFileProvider.kt')
+    _bj_arm_raw = _bj_slurp('lib/services/autostart_arm.dart')
+    _bj_st_raw = _bj_slurp('lib/screens/settings.dart')
+
+    _bj_pf = _strip_comments_safe(_bj_pf_raw)
+    _bj_sv = _strip_comments_safe(_bj_sv_raw)
+    _bj_mk = _strip_comments_safe(_bj_mk_raw)
+    _bj_ma = _strip_comments_safe(_bj_ma_raw)
+    _bj_arm = _strip_comments_safe(_bj_arm_raw)
+    _bj_st = _strip_comments_safe(_bj_st_raw)
+
+    # BJ1: выключатель существует, зовёт обе стороны и живёт в
+    # «Расширенных» (решение владельца 29.07 — мост ещё не доказан в
+    # поле, наверх такое не выносят), и только там, где он что-то
+    # делает: на телефоне автозапуск не взводится никогда.
+    _bj_adv = _bj_st.split('Widget _advancedCard(')[-1].split('\n  Widget ')[0]
+    _bj1 = ('SwitchListTile(' in _bj_adv and
+            "S.of('settings.autostart.title')" in _bj_adv and
+            'onChanged: _setAutostart' in _bj_adv and
+            'canUseHal' in _bj_adv and
+            'AutostartArm.enable()' in _bj_st and
+            'AutostartArm.disable()' in _bj_st)
+    if _bj1:
+        ok('BJ1 the autostart switch exists, sits in Advanced and is '
+           'shown only where it does something')
+    else:
+        fail('BJ1 autostart has no reachable off switch')
+
+    # BJ2: ОТКАЗ ПЕРЕЖИВАЕТ ПЕРЕЗАПУСК. Без этого выключатель — обман:
+    # attach зовёт arm при каждом запуске на ГУ, и следующий же старт
+    # приложения молча взвёл бы автозапуск обратно поверх отказа.
+    _bj2 = ('optedOut' in _bj_pf and
+            'KEY_OPT_OUT' in _bj_pf and
+            '.putBoolean(KEY_ARMED, armed)' in _bj_pf and
+            '.putBoolean(KEY_OPT_OUT, !armed)' in _bj_pf and
+            _bj_pf.count('.commit()') == 1 and
+            "_optOut ??= await _flag('optedOut')" in _bj_arm and
+            'if (_optOut == true) return;' in _bj_arm and
+            '"optedOut" -> result.success(AutostartPrefs.optedOut(this))'
+            in _bj_ma)
+    if _bj2:
+        ok('BJ2 the owner refusal outlives a relaunch and attach '
+           'honours it')
+    else:
+        fail('BJ2 the next app launch would re-arm over the refusal')
+
+    # BJ3: нотификация не обещает того, чего нет. Сборщика у companion
+    # нет — сбор живёт в BydNativePlugin внутри Flutter-движка внутри
+    # активити, и нажатие всего лишь откроет приложение.
+    _bj3 = ('нажмите, чтобы записывать' not in _bj_sv and
+            'автозапуск сработал — сбор начнётся при открытии' in _bj_sv)
+    if _bj3:
+        ok('BJ3 the headless notification describes the state instead '
+           'of promising a recording that cannot start')
+    else:
+        fail('BJ3 the notification still promises recording on tap')
+
+    # BJ4: мёртвый публичный путь не пробуется на каждую строку.
+    # Запись синхронна и зовётся с главного потока — из onReceive
+    # (лимит 10 с) и из heartbeat. Первая попытка в процессе остаётся:
+    # разрешение могло вернуться, и узнать об этом можно только
+    # попробовав.
+    _bj_write = _bj_mk.split('fun write(')[-1].split('fun noteFallback(')[0]
+    _bj4 = ('pubDead' in _bj_mk and
+            'if (!pubDead) {' in _bj_write and
+            'pubDead = true' in _bj_write and
+            '/sdcard/Download/$FILE_NAME' in _bj_write)
+    if _bj4:
+        ok('BJ4 a dead public path is tried once per process, not once '
+           'per line')
+    else:
+        fail('BJ4 every marker line still retries the dead public path')
+
+    # BJ5: ложное обоснование снято. Проверка по СЫРОМУ тексту — оно
+    # жило в комментарии, и на вычищенном прошла бы сама собой.
+    # Утверждение о невозможности проверить androidx было неправдой:
+    # share_plus объявляет ShareFileProvider :
+    # androidx.core.content.FileProvider, то есть androidx.core на
+    # classpath гарантированно.
+    #
+    # Урок о самих гейтах, полученный здесь же. Проверка на ОТСУТСТВИЕ
+    # фразы запрещает её везде — в том числе в поправке, которая эту
+    # фразу исправляет. Первая редакция BJ5 упала именно так:
+    # исправленный комментарий цитировал ложное утверждение дословно,
+    # а гейт цитату от утверждения отличить не может. Поэтому пара:
+    # отрицательная половина держит короткий маркер, который в
+    # пересказе не появится, положительная требует самого факта.
+    _bj5 = ('нечем' not in _bj_fp_raw and
+            'share_plus' in _bj_fp_raw and
+            'androidx.core.content.FileProvider' in _bj_fp_raw and
+            'ПОПРАВКА' in _bj_fp_raw)
+    if _bj5:
+        ok('BJ5 the false androidx rationale is replaced by the '
+           'checked fact')
+    else:
+        fail('BJ5 the provider still justifies itself with a guess')
+
+    # BJ6: UI не держит вторую копию правды. Состояние переключателя
+    # перечитывается с нативной стороны ПОСЛЕ переключения — если
+    # запись prefs не удалась, тумблер обязан вернуться назад, иначе
+    # он показывает состояние, которого нет.
+    _bj_set = _bj_st.split('Future<void> _setAutostart(')[-1] \
+        .split('\n  Future<')[0]
+    _bj6 = ('await AutostartArm.isArmed()' in _bj_set and
+            _bj_set.find('AutostartArm.isArmed()') >
+            _bj_set.find('AutostartArm.disable()') and
+            'isArmed' in _bj_arm)
+    if _bj6:
+        ok('BJ6 the switch reflects native state re-read after the '
+           'write, not the intent')
+    else:
+        fail('BJ6 the switch trusts its own intent')
+else:
+    ok(f"Part BJ skipped (build +{pv}, the autostart switch lands in +173)")
+
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
 print(f"+35→+51 REGRESSION — build +{pv}")

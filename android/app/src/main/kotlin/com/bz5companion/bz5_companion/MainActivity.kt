@@ -61,6 +61,12 @@ class MainActivity : FlutterActivity() {
                         result.success(false)
                     }
                 }
+                // v0.1.74+173: состояние для переключателя. До этого
+                // патча спросить у нативной стороны «взведено ли»
+                // было нечем, и UI пришлось бы держать вторую копию
+                // правды на стороне Dart.
+                "isArmed" -> result.success(AutostartPrefs.isArmed(this))
+                "optedOut" -> result.success(AutostartPrefs.optedOut(this))
                 else -> result.notImplemented()
             }
         }

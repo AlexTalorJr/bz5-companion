@@ -27,6 +27,30 @@ object AutostartPrefs {
     private const val PREFS = "bz5_autostart"
     private const val KEY_ARMED = "armed"
 
+    /**
+     * v0.1.74+173 — ЯВНЫЙ ОТКАЗ ВЛАДЕЛЬЦА.
+     *
+     * До этого патча выключателя не было вообще: `disarm` висел в
+     * MethodChannel с +155 и не вызывался из Dart ниоткуда. Пока
+     * автозапуск держался на START_STICKY, это сходило с рук —
+     * выключение происходило само, процесс умирал и не воскресал.
+     * С мостом +171 сервис поднимается на КАЖДОМ пробуждении ГУ, и
+     * прекратить это стало нечем, кроме удаления приложения.
+     *
+     * Одного `armed` для выключателя мало: он умеет только «ресивер
+     * может действовать», и его отсутствие означает «ещё ни разу не
+     * взводили», а не «владелец отказался». Без различения этих двух
+     * состояний следующий же запуск приложения взвёл бы автозапуск
+     * заново поверх отказа — AutostartArm зовёт `arm` при каждом
+     * старте на ГУ.
+     *
+     * Отсюда две записи, и значения ровно три:
+     *   armed=false, optOut=false — не решали, взводим по умолчанию;
+     *   armed=true,  optOut=false — владелец включил;
+     *   armed=false, optOut=true  — владелец выключил, не трогаем.
+     */
+    private const val KEY_OPT_OUT = "opt_out"
+
     /** По умолчанию false: свежая установка молчит, пока приложение не
      *  открыли хотя бы раз. Это не ограничение, а факт — из
      *  stopped-state ресивер всё равно не получает broadcast. */
@@ -37,10 +61,29 @@ object AutostartPrefs {
         false
     }
 
+    /** Владелец выключил автозапуск руками. Отличается от «ещё не
+     *  взводили» — см. таблицу трёх состояний выше. */
+    fun optedOut(context: Context): Boolean = try {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_OPT_OUT, false)
+    } catch (t: Throwable) {
+        false
+    }
+
+    /**
+     * Зовётся только из явного действия — arm/disarm в MainActivity,
+     * то есть либо автовзвод при запуске на ГУ, либо переключатель.
+     * Поэтому обе записи идут ОДНОЙ транзакцией и всегда встречно:
+     * промежуточных состояний у явного решения не бывает, а
+     * «не решали» остаётся тем, что записей не было вовсе.
+     */
     fun setArmed(context: Context, armed: Boolean) {
         try {
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .edit().putBoolean(KEY_ARMED, armed).commit()
+                .edit()
+                .putBoolean(KEY_ARMED, armed)
+                .putBoolean(KEY_OPT_OUT, !armed)
+                .commit()
         } catch (t: Throwable) {
             // Молча: отказ prefs не должен ронять открытие приложения.
             // Следствие — ресивер не сработает, и это видно по маркеру.
