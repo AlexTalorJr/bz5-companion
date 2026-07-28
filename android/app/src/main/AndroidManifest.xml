@@ -154,6 +154,15 @@
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
 
+    <!-- v0.1.73+172: своя установка APK. Обновиться на ГУ иначе нечем —
+         проводник APK не запускает, ADB нет, а SilentInstaller на
+         существующий пакет отвечает 系统已安装 и засчитывает это в
+         УСПЕХ, то есть установку не начинает. На телефоне тот же APK с
+         той же подписью встаёт поверх, значит дело не в пакете.
+         Разрешение — appop: объявления мало, владелец включает его
+         руками, и экран для этого открывается из приложения. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
     <application
         android:label="BZ5 Companion"
         android:name="${applicationName}"
@@ -227,6 +236,18 @@
                 <action android:name="com.bz5companion.AUTOSTART_ALARM" />
             </intent-filter>
         </receiver>
+        <!-- v0.1.73+172: провайдер одного файла — подготовленного APK.
+             file:// установщику отдать нельзя с Android 7
+             (FileUriExposedException), нужен content:// с временным
+             грантом. Свой, а не androidx FileProvider: тот потянул бы
+             androidx.core в compile-classpath, а проверить это локально
+             нечем — Gradle в контейнере не запускается, и «почти
+             наверняка есть» означало бы провал сборки на CI. -->
+        <provider
+            android:name=".ApkFileProvider"
+            android:authorities="${applicationId}.apkprovider"
+            android:exported="false"
+            android:grantUriPermissions="true" />
     </application>
     <queries>
         <intent>
@@ -244,5 +265,30 @@
              is exported and permission-free. Head-unit only; harmless on a
              phone where the authority does not resolve. -->
         <provider android:authorities="com.byd.carStatusProvider" />
+        <!-- v0.1.73+172: без этих записей проба пути установки вернёт
+             ПУСТО при полностью живом установщике — с Android 11
+             queryIntentActivities и getPackageInfo фильтруются по
+             видимости пакетов. Соврала бы она при этом в самую
+             опасную сторону: «установщика нет, идея мертва». Тот же
+             урок, что и с провайдером carserver в +100. -->
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:mimeType="application/vnd.android.package-archive" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.INSTALL_PACKAGE" />
+            <data android:mimeType="application/vnd.android.package-archive" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.OPEN_DOCUMENT" />
+            <data android:mimeType="*/*" />
+        </intent>
+        <intent>
+            <action
+                android:name="android.settings.MANAGE_UNKNOWN_APP_SOURCES" />
+        </intent>
+        <package android:name="com.android.packageinstaller" />
+        <package android:name="com.google.android.packageinstaller" />
+        <package android:name="com.android.permissioncontroller" />
     </queries>
 </manifest>

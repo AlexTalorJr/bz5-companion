@@ -189,6 +189,29 @@ class S {
     'settings.appdiag.subtitle':
         'debugPrint ring buffer + CloudSync internals (dev)',
     'settings.hal.subtitle': 'Native BYD HAL probe — status, subscriptions, logs',
+    // v0.1.73+172 — install path (Advanced). Technical row labels on
+    // the screen itself stay untranslated by project rule; only chrome
+    // is localized.
+    'settings.install.title': 'Install path',
+    'settings.install.subtitle':
+        'Probe the system installer and install an APK over this build',
+    'install.title': 'Install path',
+    'install.probe.title': 'Probe (read-only)',
+    'install.verdict.route':
+        'A system installer answers — an attempt makes sense',
+    'install.verdict.noroute':
+        'Nothing answers the install intent on this firmware',
+    'install.grant.title': 'Allow installing apps',
+    'install.grant.sub':
+        'Not granted. Opens the system screen for this app',
+    'install.pick.title': 'Choose APK',
+    'install.pick.sub': 'System file picker — USB stick included',
+    'install.run.title': 'Install',
+    'install.run.sub': 'Hand the chosen file to the system installer',
+    'install.log.title': 'Attempt log',
+    'install.log.empty': 'Nothing tried yet',
+    'install.export': 'To diag dump',
+    'install.exported': 'Written to',
 
     // App diagnostics screen (v0.1.29+122)
     'appdiag.title': 'App diagnostics',
@@ -1289,6 +1312,27 @@ class S {
     'settings.appdiag.subtitle':
         'Кольцевой буфер debugPrint + состояние CloudSync (dev)',
     'settings.hal.subtitle': 'Нативный BYD HAL — статус, подписки, логи',
+    // v0.1.73+172 — путь установки (Расширенные).
+    'settings.install.title': 'Путь установки',
+    'settings.install.subtitle':
+        'Проба системного установщика и установка APK поверх',
+    'install.title': 'Путь установки',
+    'install.probe.title': 'Проба (только чтение)',
+    'install.verdict.route':
+        'Системный установщик отзывается — попытка имеет смысл',
+    'install.verdict.noroute':
+        'На этой прошивке на установку не отзывается никто',
+    'install.grant.title': 'Разрешить установку приложений',
+    'install.grant.sub':
+        'Не выдано. Откроет системный экран для этого приложения',
+    'install.pick.title': 'Выбрать APK',
+    'install.pick.sub': 'Системный выбор файла, флешка в том числе',
+    'install.run.title': 'Установить',
+    'install.run.sub': 'Отдать выбранный файл системному установщику',
+    'install.log.title': 'Журнал попытки',
+    'install.log.empty': 'Пока ничего не пробовали',
+    'install.export': 'В диаг-дамп',
+    'install.exported': 'Записано в',
 
     // App diagnostics screen (v0.1.29+122)
     'appdiag.title': 'Диагностика приложения',

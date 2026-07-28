@@ -26,6 +26,7 @@ import 'account.dart';
 import 'app_diag.dart';
 import 'pairing.dart';
 import 'hal_test.dart';
+import 'install_update.dart';
 import 'wide/raw_data_wide.dart';
 import 'wide/native_explorer_wide.dart';
 import 'live_log.dart';
@@ -778,6 +779,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   : '${S.of('settings.adv.dump_ok')} ${res.path}'),
             ));
           },
+        ),
+        // v0.1.73+172: путь установки. Здесь, а не на верхнем уровне
+        // (решение владельца 29.07) — это инструмент, а не функция для
+        // ежедневного пользования, и живёт он за тем же 15-тапным
+        // замком, что и остальная исследовательская оснастка.
+        ListTile(
+          leading: const Icon(Icons.system_update, color: Colors.grey),
+          title: Text(S.of('settings.install.title')),
+          subtitle: Text(S.of('settings.install.subtitle')),
+          trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => const InstallUpdateScreen(),
+            ),
+          ),
         ),
         ListTile(
           leading: const Icon(Icons.memory, color: Colors.grey),
