@@ -242,6 +242,30 @@ class ExportService {
         utf8.encode(const JsonEncoder.withIndent('  ').convert(metadata));
     archive.addFile(ArchiveFile('metadata.json', metaBytes.length, metaBytes));
 
+    // v0.1.71+170: приватная копия маркера автостарта.
+    //
+    // AutostartService пишет маркер в публичные Downloads, а при
+    // отказе (слетевшее после переустановки разрешение на хранилище)
+    // отступает в приватную папку — там его не достать ни файловым
+    // менеджером, ни без ADB. Из-за этого результат опыта +169 был
+    // нечитаем: сервис жил, а сказать об этом было нечем.
+    //
+    // getApplicationSupportDirectory() на Android — это в точности
+    // Context.getFilesDir(), куда пишет Kotlin. Файла может не быть
+    // (публичный путь исправен, или сервис ни разу не стартовал) —
+    // это не ошибка экспорта, поэтому блок молчаливо пропускается.
+    try {
+      final support = await getApplicationSupportDirectory();
+      final mk = File(p.join(support.path, 'bz5_companion_autostart_log.txt'));
+      if (await mk.exists()) {
+        final bytes = await mk.readAsBytes();
+        archive.addFile(
+            ArchiveFile('autostart_marker.txt', bytes.length, bytes));
+      }
+    } catch (e) {
+      debugPrint('Export: autostart marker skipped — $e');
+    }
+
     onProgress?.call('compressing');
     final encoder = ZipEncoder();
     final zipBytes = encoder.encode(archive);

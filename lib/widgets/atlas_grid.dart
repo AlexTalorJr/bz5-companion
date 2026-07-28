@@ -449,16 +449,47 @@ class _CellSlot extends StatelessWidget {
             ? Border.all(color: AtlasTokens.newCellOutline, width: 1)
             : null,
       ),
+      // v0.1.71+170: ЗВЕЗДА ПЕРЕЕХАЛА ВПРАВО ОТ СРЕДНЕГО.
+      //
+      // Прежде колонка была «среднее → вилка → звезда», и при
+      // появлении вилки содержимое переставало влезать в клетку:
+      // BZ5 — 81.7 dp в клетке 78 (перебор 3.7), BZ3 — 75.8 в 68
+      // (перебор 7.8). На фото владельца от 28.07 это видно прямо:
+      // у клеток с вилкой (11.1–11.9, 5.9–12.6, 10.2–12.8) звезда
+      // нарисована ЗА пределами тёмного прямоугольника, а у 9.4 без
+      // вилки — внутри. То есть звезда не «уходила вниз», её
+      // выдавливало из клетки.
+      //
+      // Решение владельца: звезда рядом со средним, вилка под ними.
+      // Даёт 59.7 dp на BZ5 и 55.8 на BZ3 — с запасом, и вертикальное
+      // положение среднего больше не зависит от наличия вилки.
+      //
+      // FittedBox на строке — потому что при пятизначном среднем
+      // (105.3 зимой в городе) «среднее + звезда» выходит ~110 dp
+      // против cellW 104. Обычные значения не тронутся.
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Text(
-            c.mean.toStringAsFixed(1),
-            style: TextStyle(
-              fontSize: m.meanSize,
-              fontWeight: FontWeight.w700,
-              color: AtlasTokens.t100,
-              fontFeatures: const [FontFeature.tabularFigures()],
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                Text(
+                  c.mean.toStringAsFixed(1),
+                  style: TextStyle(
+                    fontSize: m.meanSize,
+                    fontWeight: FontWeight.w700,
+                    color: AtlasTokens.t100,
+                    fontFeatures: const [FontFeature.tabularFigures()],
+                  ),
+                ),
+                SizedBox(width: m.starSize * 0.2),
+                Icon(Icons.star,
+                    size: m.starSize,
+                    color: AtlasTokens.markColor(c.sessions)),
+              ],
             ),
           ),
           // Fork: head unit only, and only when there is a real spread
@@ -472,9 +503,6 @@ class _CellSlot extends StatelessWidget {
                 fontFeatures: const [FontFeature.tabularFigures()],
               ),
             ),
-          SizedBox(height: m.starSize * 0.15),
-          Icon(Icons.star,
-              size: m.starSize, color: AtlasTokens.markColor(c.sessions)),
         ],
       ),
     );
