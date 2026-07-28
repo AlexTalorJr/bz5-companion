@@ -4695,11 +4695,21 @@ if int(pv) >= 151:
         _aw14_null = ('val resurrected = intent == null' in akt
                       if int(pv) >= 169
                       else 'if (intent == null)' in akt)
+        # +171: имя файла журнала переехало в AutostartMarker — писать в
+        # него теперь должны двое, сервис и BootReceiver. Инвариант тот
+        # же: имя существует и совпадает с тем, что забирает экспорт.
+        if int(pv) >= 171:
+            _aw14_mk = (root / ('android/app/src/main/kotlin/com/bz5companion/'
+                                'bz5_companion/AutostartMarker.kt'))
+            _aw14_log = ('bz5_companion_autostart_log.txt'
+                         in (_aw14_mk.read_text() if _aw14_mk.exists() else ''))
+        else:
+            _aw14_log = 'bz5_companion_autostart_log.txt' in akt
         if 'return START_STICKY' in akt and \
            'return START_NOT_STICKY' in akt and \
            'intent?.action == ACTION_STOP' in akt and \
            _aw14_null and \
-           'bz5_companion_autostart_log.txt' in akt and \
+           _aw14_log and \
            'android:name=".AutostartService"' in mani and \
            'android:exported="false"' in mani and \
            'android.permission.FOREGROUND_SERVICE' in mani and \
@@ -4761,22 +4771,45 @@ if int(pv) >= 151:
         # время ЯДРА и не сбрасывается при перезапуске фреймворка поверх
         # живого ядра, а рассылает BOOT_COMPLETED именно фреймворк.
         # Числа up/el остаются — из них больше не делается вывод.
-        _aw16_born = ('"born: ${ident()} up=${upMs / 1000}s el=${elMs / 1000}s"'
-                      if int(pv) >= 170
-                      else '"born: ${ident()} fresh-boot=$freshBoot"')
+        # +171: пара up/el печаталась ДВАЖДЫ — `ident()` отдаёт её сам,
+        # а строка born дописывала свою копию (видно в поле 28.07:
+        # `up=8306s el=101601s up=8306s el=101601s`). Дубль снят.
+        if int(pv) >= 171:
+            _aw16_born = '"born: ${ident()} build=${appVersion()}"'
+        elif int(pv) >= 170:
+            _aw16_born = ('"born: ${ident()} up=${upMs / 1000}s'
+                          ' el=${elMs / 1000}s"')
+        else:
+            _aw16_born = '"born: ${ident()} fresh-boot=$freshBoot"'
+        # +171: тег процесса и обе метки времени переехали в
+        # AutostartMarker, потому что ресивер обязан писать ТЕМ ЖЕ
+        # тегом — совпадение тега доказывает, что мост и сервис в одном
+        # процессе. Инвариант не меняется, меняется файл: гейт смотрит
+        # на объединение сервиса и общего журнала.
+        if int(pv) >= 171:
+            _aw16_mk = root / ('android/app/src/main/kotlin/com/bz5companion/'
+                               'bz5_companion/AutostartMarker.kt')
+            akt2u = akt2 + '\n' + (_aw16_mk.read_text()
+                                   if _aw16_mk.exists() else '')
+            _aw16_tag = 'val procTag: String = "%04x".format(' \
+                        'Random.nextInt(0x10000))' in akt2u
+        else:
+            akt2u = akt2
+            _aw16_tag = ('val PROC_TAG = "%04x".format(Random.nextInt(0x10000))'
+                         in akt2)
         if 'const val HEARTBEAT_MS = 5 * 60 * 1000L' in akt2 and \
-           'val PROC_TAG = "%04x".format(Random.nextInt(0x10000))' in akt2 and \
+           _aw16_tag and \
            'override fun onCreate()' in akt2 and \
            'override fun onDestroy()' in akt2 and \
            _aw16_born in akt2 and \
            '"beat: ${ident()}"' in akt2 and \
            '"destroy: ${ident()}"' in akt2 and \
-           'SystemClock.uptimeMillis()' in akt2 and \
-           'SystemClock.elapsedRealtime()' in akt2 and \
-           'Process.myPid()' in akt2 and \
+           'SystemClock.uptimeMillis()' in akt2u and \
+           'SystemClock.elapsedRealtime()' in akt2u and \
+           'Process.myPid()' in akt2u and \
            'hbHandler.removeCallbacks(hbTick)' in akt2 and \
            'hbHandler.postDelayed(hbTick, HEARTBEAT_MS)' in akt2 and \
-           _aw16_fresh_clock(akt2, int(pv)):
+           _aw16_fresh_clock(akt2u, int(pv)):
             ok('AW16 heartbeat: born/beat/destroy + up/el pair + fresh-boot'
                + (' (uptime clock)' if int(pv) >= 162 else ''))
         else:
@@ -6229,33 +6262,79 @@ if int(pv) >= 169:
     else:
         fail('BF2 resurrection marker still claims a launch attempt')
 
-    # BF3: политика перезапуска не тронута — это контрольная переменная
-    # опыта, и сдвинуть её означало бы испортить сам замер.
-    _bf3 = (_bf.count('return START_STICKY') == 1 and
-            'return START_NOT_STICKY' in _bf and
-            'startForeground(NOTIF_ID, buildNotification(resurrected))' in _bf)
-    if _bf3:
-        ok('BF3 START_STICKY / ACTION_STOP policy unchanged (control '
-           'variable of the experiment)')
+    # BF3 — ERA-AWARE (+171). Политика перезапуска остаётся прежней:
+    # ровно один START_STICKY, явный STOP по-прежнему NOT_STICKY. В
+    # +169/+170 гейт вдобавок пиннил дословный вызов
+    # `buildNotification(resurrected)` как контрольную переменную
+    # опыта. Опыт закрыт (поле 28.07: ноль строк `resurrected:`),
+    # путей наверх без владельца стало два, и нотификация теперь
+    # получает их дизъюнкцию. Существо гейта — политика — не меняется.
+    if int(pv) >= 171:
+        _bf3 = (_bf.count('return START_STICKY') == 1 and
+                'return START_NOT_STICKY' in _bf and
+                'startForeground(NOTIF_ID, '
+                'buildNotification(resurrected || bridged))' in _bf)
+        if _bf3:
+            ok('BF3 (re-era +171) START_STICKY / ACTION_STOP policy '
+               'unchanged; the notification takes both headless paths')
+        else:
+            fail('BF3 (re-era +171) restart policy moved or the bridge '
+                 'does not reach the notification')
     else:
-        fail('BF3 restart policy moved — the experiment is contaminated')
+        _bf3 = (_bf.count('return START_STICKY') == 1 and
+                'return START_NOT_STICKY' in _bf and
+                'startForeground(NOTIF_ID, buildNotification(resurrected))'
+                in _bf)
+        if _bf3:
+            ok('BF3 START_STICKY / ACTION_STOP policy unchanged (control '
+               'variable of the experiment)')
+        else:
+            fail('BF3 restart policy moved — the experiment is contaminated')
 
-    # BF4: результат опыта виден на экране машины, а не только в файле
-    # в Downloads.
-    _bf4 = ('buildNotification(resurrected: Boolean = false)' in _bf and
-            'if (resurrected) {' in _bf and
-            'FLAG_IMMUTABLE' in _bf and
-            'Build.VERSION_CODES.M' in _bf and
-            '.setContentIntent(open)' in _bf)
-    if _bf4:
-        ok('BF4 notification states the resurrection and is tappable '
-           '(FLAG_IMMUTABLE guarded for API < 23)')
+    # BF4 — ERA-AWARE (+171). Существо прежнее: подъём БЕЗ владельца
+    # виден на экране машины, а не только в файле, и нотификация
+    # нажимается. Изменилось имя признака: `resurrected` описывал один
+    # путь из двух, `headless` описывает оба честно.
+    if int(pv) >= 171:
+        _bf4 = ('buildNotification(headless: Boolean = false)' in _bf and
+                'if (headless) {' in _bf and
+                'FLAG_IMMUTABLE' in _bf and
+                'Build.VERSION_CODES.M' in _bf and
+                '.setContentIntent(open)' in _bf)
+        if _bf4:
+            ok('BF4 (re-era +171) notification states an ownerless start '
+               'and is tappable (FLAG_IMMUTABLE guarded for API < 23)')
+        else:
+            fail('BF4 (re-era +171) notification does not report the '
+                 'ownerless start or is inert')
     else:
-        fail('BF4 notification does not report the resurrection or is inert')
+        _bf4 = ('buildNotification(resurrected: Boolean = false)' in _bf and
+                'if (resurrected) {' in _bf and
+                'FLAG_IMMUTABLE' in _bf and
+                'Build.VERSION_CODES.M' in _bf and
+                '.setContentIntent(open)' in _bf)
+        if _bf4:
+            ok('BF4 notification states the resurrection and is tappable '
+               '(FLAG_IMMUTABLE guarded for API < 23)')
+        else:
+            fail('BF4 notification does not report the resurrection '
+                 'or is inert')
 
-    # BF5: маркер дописывается с +155 и пережил полтора десятка сборок.
-    # Без версии в строке сравнение «до/после» неразличимо.
-    if 'build=${appVersion()}' in _bf and 'getPackageInfo(' in _bf:
+    # BF5 — ERA-AWARE (+171). Маркер дописывается с +155 и пережил
+    # полтора десятка сборок; без версии в строке сравнение «до/после»
+    # неразличимо. В +171 чтение versionName переехало в AutostartMarker
+    # (пишут двое), поэтому getPackageInfo ищется там, а не здесь.
+    if int(pv) >= 171:
+        _bf_mk_p = (root / ('android/app/src/main/kotlin/com/bz5companion/'
+                            'bz5_companion/AutostartMarker.kt'))
+        _bf_mk = _bf_mk_p.read_text() if _bf_mk_p.exists() else ''
+        if 'build=${appVersion()}' in _bf and 'getPackageInfo(' in _bf_mk:
+            ok('BF5 (re-era +171) the marker records which build wrote '
+               'each line, from the shared journal')
+        else:
+            fail('BF5 (re-era +171) marker lines are not attributable '
+                 'to a build')
+    elif 'build=${appVersion()}' in _bf and 'getPackageInfo(' in _bf:
         ok('BF5 the marker records which build wrote each line')
     else:
         fail('BF5 marker lines are not attributable to a build')
@@ -6275,18 +6354,42 @@ if int(pv) >= 170:
     bg_ag = (root / 'lib/widgets/atlas_grid.dart').read_text()
     bg_dp = (root / 'lib/widgets/driver_panels.dart').read_text()
 
-    # BG1: два уровня записи и отчёт о том, какой выбран.
-    _bg1 = ('File(filesDir, MARKER).appendText(text)' in bg_kt and
-            'File("/sdcard/Download/$MARKER").appendText(text)' in bg_kt and
-            'markerWhere = "pub"' in bg_kt and
-            'markerWhere = "priv"' in bg_kt and
-            'markerPubFails' in bg_kt and
-            'public Downloads unwritable' in bg_kt)
-    if _bg1:
-        ok('BG1 marker falls back to app-private storage and says so '
-           'in the file itself')
+    # BG1 — ERA-AWARE (+171). Существо прежнее: два уровня записи и
+    # отчёт о том, какой выбран. Тело переехало в AutostartMarker,
+    # потому что в файл теперь пишут двое — сервис и ресивер; поле
+    # 28.07 показало, что публичный путь мёртв, и приватная копия
+    # осталась единственным читаемым каналом.
+    if int(pv) >= 171:
+        _bg_mk_p = (root / ('android/app/src/main/kotlin/com/bz5companion/'
+                            'bz5_companion/AutostartMarker.kt'))
+        _bg_mk = _bg_mk_p.read_text() if _bg_mk_p.exists() else ''
+        _bg1 = ('File(context.filesDir, FILE_NAME).appendText(text)'
+                in _bg_mk and
+                'File("/sdcard/Download/$FILE_NAME").appendText(text)'
+                in _bg_mk and
+                'where = "pub"' in _bg_mk and
+                'where = "priv"' in _bg_mk and
+                'pubFails' in _bg_mk and
+                'public Downloads unwritable' in _bg_mk)
+        if _bg1:
+            ok('BG1 (re-era +171) the shared journal falls back to '
+               'app-private storage and says so in the file itself')
+        else:
+            fail('BG1 (re-era +171) the shared journal has a single '
+                 'write path')
     else:
-        fail('BG1 marker still has a single write path')
+        _bg1 = ('File(filesDir, MARKER).appendText(text)' in bg_kt and
+                'File("/sdcard/Download/$MARKER").appendText(text)'
+                in bg_kt and
+                'markerWhere = "pub"' in bg_kt and
+                'markerWhere = "priv"' in bg_kt and
+                'markerPubFails' in bg_kt and
+                'public Downloads unwritable' in bg_kt)
+        if _bg1:
+            ok('BG1 marker falls back to app-private storage and says so '
+               'in the file itself')
+        else:
+            fail('BG1 marker still has a single write path')
 
     # BG2: приватная копия доезжает экспортом — без ADB и файлового
     # менеджера. getApplicationSupportDirectory() на Android это ровно
@@ -6328,6 +6431,234 @@ if int(pv) >= 170:
         fail('BG4 trip cell can still overflow its box')
 else:
     ok(f"Part BG skipped (build +{pv}, marker delivery lands in +170)")
+
+# ═════════════ Part BH — v0.1.72+171 «Мост автозапуска» ═════════════
+#
+# Первый читаемый маркер (28.07) закрыл опыт +169 отрицательно: три
+# строки `born:` и все три в паре с `armed:`, то есть приложение
+# открывал владелец; `resurrected:` — ноль; `destroy:` — ноль, процесс
+# убивают жёстко. На том же железе recon вставал сам за 7–8 с после
+# каждого из четырёх пробуждений ГУ. Разница одна — ресивер.
+#
+# Патч ставит мост recon p115: ресивер → setAlarmClock на себя →
+# startForegroundService из alarm-контекста. Гейты держат четыре
+# вещи, каждая из которых уже однажды стоила поездки: двухступенчатость
+# (прямой FGS из boot-контекста упрётся в стену), различимость пути в
+# маркере (иначе опыт снова нечитаем), единственность журнала и
+# честность деградации точного будильника.
+if int(pv) >= 171:
+    _bh_kt_dir = 'android/app/src/main/kotlin/com/bz5companion/bz5_companion/'
+
+    def _bh_slurp(rel):
+        """Пропавший файл обязан дать FAIL, а не убить прогон.
+
+        Урок +170 в его общем виде: гейт, роняющий прогон исключением,
+        хуже отсутствующего — он не даёт НИ ОДНОЙ строки отчёта, и
+        падение читается как поломка инструмента. Тогда это был
+        .index(), здесь — read_text() по файлу, которого может не
+        оказаться при частичном откате патча.
+        """
+        p = root / rel
+        return p.read_text() if p.exists() else ''
+
+    _bh_mf_raw = _bh_slurp('android/app/src/main/AndroidManifest.xml')
+    _bh_br_raw = _bh_slurp(_bh_kt_dir + 'BootReceiver.kt')
+    _bh_sv_raw = _bh_slurp(_bh_kt_dir + 'AutostartService.kt')
+    _bh_mk_raw = _bh_slurp(_bh_kt_dir + 'AutostartMarker.kt')
+    _bh_pf_raw = _bh_slurp(_bh_kt_dir + 'AutostartPrefs.kt')
+    _bh_ma_raw = _bh_slurp(_bh_kt_dir + 'MainActivity.kt')
+    _bh_es_raw = _bh_slurp('lib/services/export_service.dart')
+
+    import re as _bh_re
+
+    # Правило, стоившее пяти патчей подряд: проверка по тексту исходника
+    # обязана вычищать комментарии. Здесь докстринги разбирают по именам
+    # и setAlarmClock, и startForegroundService, и ACTION_ARM — по сырому
+    # тексту не значило бы ничего. XML-комментарии чистятся отдельно:
+    # манифестный блок объясняет ровно те строки, что гейт ищет.
+    def _bh_kt(src):
+        s = _bh_re.sub(r'/\*.*?\*/', '', src, flags=_bh_re.S)
+        return '\n'.join(_l for _l in s.split('\n')
+                         if not _l.lstrip().startswith('//'))
+
+    _bh_mf = _bh_re.sub(r'<!--.*?-->', '', _bh_mf_raw, flags=_bh_re.S)
+    _bh_br = _bh_kt(_bh_br_raw)
+    _bh_sv = _bh_kt(_bh_sv_raw)
+    _bh_mk = _bh_kt(_bh_mk_raw)
+    _bh_pf = _bh_kt(_bh_pf_raw)
+    _bh_ma = _bh_kt(_bh_ma_raw)
+
+    # split(), а не index(): урок +170 — упавший на исключении гейт не
+    # «показывает FAIL», он роняет весь прогон и не даёт ни строки.
+    _bh_recv = _bh_br.split('override fun onReceive(')[-1] \
+        .split('private fun scheduleBridge(')[0]
+    _bh_sched = _bh_br.split('private fun scheduleBridge(')[-1] \
+        .split('private fun raiseService(')[0]
+    _bh_raise = _bh_br.split('private fun raiseService(')[-1] \
+        .split('private fun bridgeIntent(')[0]
+
+    # BH1: ресивер объявлен и экспортирован, все четыре действия на
+    # месте, MEDIA_MOUNTED несёт scheme=file (без data-фильтра он не
+    # доставляется).
+    #
+    # Проверка идёт РАЗБОРОМ XML, а не поиском подстрок. Первая
+    # редакция вырезала блок ресивера через split('<receiver') и
+    # прозевала мутацию `<receiver` → `<receiver-disabled`: split ловит
+    # префикс, содержимое блока остаётся на месте, и все подстроки
+    # находятся в отключённом элементе. Разбор заодно ловит поломанный
+    # манифест — цена такой поломки высока, потому что до неё
+    # добирается только сборка на CI.
+    _bh_ns = '{http://schemas.android.com/apk/res/android}'
+    _bh_rcv = None
+    _bh_xml_ok = True
+    try:
+        import xml.etree.ElementTree as _bh_et
+        _bh_root_el = _bh_et.fromstring(_bh_mf_raw)
+        for _el in _bh_root_el.iter('receiver'):
+            if _el.get(_bh_ns + 'name') == '.BootReceiver':
+                _bh_rcv = _el
+    except Exception:
+        _bh_xml_ok = False
+
+    _bh_acts, _bh_schemes = set(), set()
+    _bh_media_scheme = False
+    if _bh_rcv is not None:
+        for _f in _bh_rcv.findall('intent-filter'):
+            _fa = {_a.get(_bh_ns + 'name') for _a in _f.findall('action')}
+            _fs = {_d.get(_bh_ns + 'scheme') for _d in _f.findall('data')}
+            _bh_acts |= _fa
+            _bh_schemes |= _fs
+            if 'android.intent.action.MEDIA_MOUNTED' in _fa and 'file' in _fs:
+                _bh_media_scheme = True
+
+    _bh1 = (_bh_xml_ok and _bh_rcv is not None and
+            _bh_rcv.get(_bh_ns + 'exported') == 'true' and
+            _bh_rcv.get(_bh_ns + 'enabled') == 'true' and
+            'android.intent.action.BOOT_COMPLETED' in _bh_acts and
+            'android.intent.action.QUICKBOOT_POWERON' in _bh_acts and
+            'android.intent.action.MEDIA_MOUNTED' in _bh_acts and
+            'com.bz5companion.AUTOSTART_ALARM' in _bh_acts and
+            _bh_media_scheme)
+    if _bh1:
+        ok('BH1 receiver declared and exported, all four triggers, '
+           'MEDIA_MOUNTED carries scheme=file')
+    else:
+        fail('BH1 receiver declaration missing, disabled, malformed, '
+             'or a trigger dropped')
+
+    # BH2: мост ДВУХСТУПЕНЧАТ. Прямой startForegroundService из
+    # boot-контекста упирается в стену mAllowStartForeground (recon
+    # p113) — именно поэтому ресивер сначала ставит будильник на себя,
+    # а поднимает сервис только из alarm-ветки.
+    _bh2 = ('setAlarmClock(' in _bh_sched and
+            'startForegroundService' not in _bh_sched and
+            'startForegroundService(i)' in _bh_raise and
+            'setAlarmClock' not in _bh_raise and
+            0 <= _bh_recv.find('if (action == ACTION_ALARM)') <
+            _bh_recv.find('raiseService(context, action)') <
+            _bh_recv.find('scheduleBridge(context, action)'))
+    if _bh2:
+        ok('BH2 the bridge is two-stage: system action schedules an '
+           'alarm, only the alarm branch raises the service')
+    else:
+        fail('BH2 the receiver starts a foreground service straight '
+             'from the boot context')
+
+    # BH3: РАЗЛИЧИТЕЛЬ ОПЫТА. Подними мост сервис действием ARM — в
+    # маркере встала бы строка `armed:`, неотличимая от открытого
+    # владельцем приложения, и результат снова стал бы нечитаем, как
+    # у +169. Ресивер обязан не знать про ARM вообще.
+    _bh3 = ('const val ACTION_BRIDGE = "com.bz5companion.BRIDGE"' in _bh_sv and
+            'val bridged = intent?.action == ACTION_BRIDGE' in _bh_sv and
+            '"bridged: $ACTION_BRIDGE' in _bh_sv and
+            '.setAction(AutostartService.ACTION_BRIDGE)' in _bh_br and
+            'ACTION_ARM' not in _bh_br)
+    if _bh3:
+        ok('BH3 the bridge path is distinguishable in the marker: '
+           'bridged ≠ armed, and the receiver never touches ARM')
+    else:
+        fail('BH3 a bridge start would be indistinguishable from an '
+             'owner-opened app')
+
+    # BH4: ресивер уважает флаг, а флаг переживает процесс. commit(),
+    # не apply(): ГУ убивает процессы жёстко (за 28.07 ни одной строки
+    # `destroy:`), отложенную запись он может не дождаться.
+    _bh_na = _bh_recv.split('if (!armed) {')[-1].split('}')[0] \
+        if 'if (!armed) {' in _bh_recv else ''
+    _bh4 = ('AutostartPrefs.isArmed(context)' in _bh_br and
+            'result=NOT_ARMED' in _bh_br and
+            'return' in _bh_na and
+            0 <= _bh_recv.find('if (!armed)') <
+            _bh_recv.find('if (action == ACTION_ALARM)') and
+            'AutostartPrefs.setArmed(this, true)' in _bh_ma and
+            'AutostartPrefs.setArmed(this, false)' in _bh_ma and
+            '.commit()' in _bh_pf and '.apply()' not in _bh_pf)
+    if _bh4:
+        ok('BH4 receiver honours a persisted arm flag and bails before '
+           'scheduling; the flag is committed, not applied')
+    else:
+        fail('BH4 the arm flag is missing, transient, or not honoured')
+
+    # BH5: ЖУРНАЛ ОДИН. Публичные Downloads мертвы, приватная копия
+    # уезжает в ZIP — второй файл в эту трубу не влезет, и половина
+    # следа стала бы недоступной. Плюс общий тег процесса: одинаковый
+    # тег у ресивера и сервиса доказывает, что они в одном процессе.
+    _bh5 = ('AutostartMarker.write(' in _bh_br and
+            'object AutostartMarker' in _bh_mk and
+            'val procTag' in _bh_mk and
+            'FILE_NAME = "bz5_companion_autostart_log.txt"' in _bh_mk and
+            "'bz5_companion_autostart_log.txt'" in _bh_es_raw and
+            'private fun marker(line: String) = '
+            'AutostartMarker.write(this, line)' in _bh_sv and
+            'appendText' not in _bh_sv)
+    if _bh5:
+        ok('BH5 one journal for both writers; the service keeps no '
+           'write ladder of its own and the export name still pairs')
+    else:
+        fail('BH5 the autostart journal has split in two')
+
+    # BH6: дубль up/el снят. `ident()` отдаёт пару сам, а строка born
+    # печатала свою копию тех же чисел — видно в поле 28.07.
+    _bh_born = [_l for _l in _bh_sv.split('\n') if 'born: ' in _l]
+    _bh6 = (len(_bh_born) == 1 and
+            _bh_born[0].count('up=') == 0 and
+            'marker("born: ${ident()} build=${appVersion()}")' in _bh_sv)
+    if _bh6:
+        ok('BH6 the born line prints the up/el pair once')
+    else:
+        fail('BH6 the born line still doubles the up/el pair')
+
+    # BH7: точность будильника под гейтом возможностей, деградация
+    # записана. Временный allowlist, из которого только и разрешён FGS,
+    # даётся ТОЧНОМУ будильнику; если точность отняли, мост тихо
+    # перестанет работать, и `exact=no` — единственное, что это объяснит.
+    _bh7 = ('Build.VERSION_CODES.S' in _bh_sched and
+            'canScheduleExactAlarms()' in _bh_sched and
+            'exact=${if (exact) "yes" else "no"}' in _bh_sched and
+            'am.set(AlarmManager.RTC_WAKEUP' in _bh_sched and
+            'result=ALARM_ERR' in _bh_sched)
+    if _bh7:
+        ok('BH7 exact alarm is capability-gated and the downgrade '
+           'is written into the marker')
+    else:
+        fail('BH7 exact-alarm loss would be silent')
+
+    # BH8: манифест больше не утверждает, что boot-путь — стена. Это
+    # утверждение стояло с +155 и стоило полутора месяцев. Проверяется
+    # по СЫРОМУ тексту — оно жило в комментарии, и на вычищенном
+    # проверка прошла бы сама собой, ничего не значив.
+    _bh8 = ('proven wall on this firmware' not in _bh_mf_raw and
+            'android.permission.RECEIVE_BOOT_COMPLETED' in _bh_mf and
+            'android.permission.SCHEDULE_EXACT_ALARM' in _bh_mf and
+            'android.permission.USE_EXACT_ALARM' in _bh_mf)
+    if _bh8:
+        ok('BH8 the stale «boot path is a wall» claim is gone and the '
+           'three bridge permissions are declared')
+    else:
+        fail('BH8 the manifest still claims the boot path is a wall '
+             'or a bridge permission is missing')
+else:
+    ok(f"Part BH skipped (build +{pv}, the autostart bridge lands in +171)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
