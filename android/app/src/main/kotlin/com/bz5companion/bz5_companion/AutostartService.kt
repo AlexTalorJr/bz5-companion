@@ -11,14 +11,6 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
-import android.os.Process
-import android.os.SystemClock
-import android.util.Log
-import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
-import kotlin.random.Random
 
 /**
  * v0.1.56+155 — autostart net (вариант D, spec Друга 3 20.07).
@@ -99,30 +91,49 @@ import kotlin.random.Random
  * laxer. Every attempt is appended to the marker file in Downloads —
  * the recon p112/p113 diagnostic pattern.
  *
+ * v0.1.72+171 — ОПЫТ ЗАКРЫТ, ОТВЕТ ОТРИЦАТЕЛЬНЫЙ.
+ *
+ * Первый читаемый маркер (28.07, спасённый запасным путём +170) даёт
+ * три строки `born:` — 17:30:05, 19:22:24, 19:53:13 — и каждая идёт в
+ * паре с `armed: com.bz5companion.ARM`. Эта строка возможна ровно
+ * одна: MainActivity → MethodChannel → Dart, то есть приложение
+ * открывал владелец. Строк `resurrected:` ноль. Строк `destroy:` тоже
+ * ноль — процесс убивают жёстко, и перезапуск система не планирует.
+ * На том же железе в тот же день recon вставал сам за 7–8 секунд
+ * после каждого из четырёх пробуждений ГУ; единственная разница между
+ * приложениями — наличие ресивера.
+ *
+ * Поэтому START_STICKY остаётся (он ничего не стоит и однажды может
+ * сработать), но надежда на него снята, а наверх добавлен третий,
+ * рабочий путь: BootReceiver + мост через setAlarmClock. Его вход
+ * сюда — ACTION_BRIDGE, и он ОБЯЗАН быть отличим от ARM в маркере.
+ *
  * Lifecycle: Dart arms the net via MethodChannel("bz5/autostart") once
  * per app launch on the head unit (canUseHal gate). Explicit STOP
  * action returns START_NOT_STICKY; the null-intent resurrection path
- * NEVER hits the stop branch (the trap Друг 3 warned about).
+ * NEVER hits the stop branch (the trap Друг 3 warned about). Мост
+ * входит третьим действием и не задевает ни одну из двух веток.
  */
 class AutostartService : Service() {
 
     companion object {
-        private const val TAG = "Bz5Autostart"
         const val ACTION_ARM = "com.bz5companion.ARM"
         const val ACTION_STOP = "com.bz5companion.STOP"
+
+        /** v0.1.72+171. Действие моста — ОТДЕЛЬНОЕ от ACTION_ARM, и это
+         *  не косметика. Подними ресивер сервис с ARM — в маркере
+         *  появилась бы строка `armed: com.bz5companion.ARM`,
+         *  неотличимая от той, что пишет открытое владельцем
+         *  приложение, и весь опыт снова стал бы нечитаем ровно так
+         *  же, как опыт +169. Различитель обязан быть в самой строке. */
+        const val ACTION_BRIDGE = "com.bz5companion.BRIDGE"
+
         private const val CHANNEL_ID = "bz5_autostart"
         private const val NOTIF_ID = 4151
-        private const val MARKER = "bz5_companion_autostart_log.txt"
 
         /** +157 heartbeat cadence. 5 min: coarse enough to be free,
          *  fine enough to time a kill to the ignition-off it matches. */
         private const val HEARTBEAT_MS = 5 * 60 * 1000L
-
-        /** One tag per PROCESS — a companion-object val initialises
-         *  once per class load, i.e. once per process. Lines sharing a
-         *  tag came from one living process; a new tag is a full
-         *  process rebirth (Друг 3's session_ts evidence, made cheap). */
-        private val PROC_TAG = "%04x".format(Random.nextInt(0x10000))
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -140,11 +151,9 @@ class AutostartService : Service() {
     /** pid + process tag + the uptime/elapsedRealtime pair. `up`
      *  excludes deep sleep, `el` includes it: `el` jumping ahead of
      *  `up` between two beats of the SAME tag is a suspend the process
-     *  survived; both restarting near zero with a NEW tag is a reboot. */
-    private fun ident(): String =
-        "pid=${Process.myPid()} tag=$PROC_TAG" +
-            " up=${SystemClock.uptimeMillis() / 1000}s" +
-            " el=${SystemClock.elapsedRealtime() / 1000}s"
+     *  survived; both restarting near zero with a NEW tag is a reboot.
+     *  v0.1.72+171: тег общий с BootReceiver — см. AutostartMarker. */
+    private fun ident(): String = AutostartMarker.ident()
 
     override fun onCreate() {
         super.onCreate()
@@ -153,8 +162,6 @@ class AutostartService : Service() {
         // Оба числа по-прежнему пишутся — по ним видно, пережил ли
         // процесс засыпание (расхождение up и el между beat'ами одного
         // тега), а утверждений о характере загрузки они не несут.
-        val upMs = SystemClock.uptimeMillis()
-        val elMs = SystemClock.elapsedRealtime()
         // +169: версия сборки в маркер. Файл дописывается с +155 и
         // уже пережил полтора десятка сборок; без этого поля нельзя
         // сказать, какая строка чьей версией написана, а вся ценность
@@ -172,21 +179,16 @@ class AutostartService : Service() {
         // фреймворк. Отличить холодную загрузку от перезапуска
         // контейнера по up/el НЕЛЬЗЯ — поэтому числа остаются, а
         // вывод из них больше не делается.
-        marker(
-            "born: ${ident()} up=${upMs / 1000}s el=${elMs / 1000}s" +
-                " build=${appVersion()}"
-        )
-        if (markerWhere != "pub") {
-            // Сообщаем в самом файле, где он теперь лежит, — иначе
-            // при следующем разборе никто не поймёт, почему в
-            // Downloads пусто.
-            marker(
-                "marker: public Downloads unwritable" +
-                    " (fails=$markerPubFails), writing app-private" +
-                    " — arrives in the export ZIP as" +
-                    " autostart_marker.txt"
-            )
-        }
+        //
+        // v0.1.72+171: ПАРА up/el ПЕЧАТАЛАСЬ ДВАЖДЫ. `ident()` её уже
+        // отдаёт, а строка `born` дописывала свою копию тех же двух
+        // чисел — видно в поле 28.07:
+        //   born: pid=20990 tag=c490 up=8306s el=101601s
+        //         up=8306s el=101601s build=0.1.71.244
+        // Косметика, но в единственной диагностике, ради которой всё
+        // и затевалось.
+        marker("born: ${ident()} build=${appVersion()}")
+        AutostartMarker.noteFallback(this)
         hbHandler.postDelayed(hbTick, HEARTBEAT_MS)
     }
 
@@ -210,7 +212,11 @@ class AutostartService : Service() {
 
         // v0.1.70+169: null intent = system-driven STICKY relaunch.
         val resurrected = intent == null
-        startForeground(NOTIF_ID, buildNotification(resurrected))
+        // v0.1.72+171: третий путь наверх — мост из BootReceiver.
+        // Владельца в нём нет ровно так же, как в воскрешении, поэтому
+        // нотификация для обоих одна: «поднялся сам».
+        val bridged = intent?.action == ACTION_BRIDGE
+        startForeground(NOTIF_ID, buildNotification(resurrected || bridged))
 
         if (resurrected) {
             // HEADLESS. Никакого startActivity: из фона он всё равно
@@ -220,6 +226,12 @@ class AutostartService : Service() {
             // ненулевое значение отличило бы повтор доставки от
             // обычного sticky-перезапуска.
             marker("resurrected: headless flags=$flags · ${ident()}")
+        } else if (bridged) {
+            // Строка, ради которой сделан весь патч. Её появление БЕЗ
+            // предшествующего `armed:` и означает, что ГУ поднял нас
+            // сам. Перед ней в том же файле обязана стоять пара
+            // FIRED/ALARM_SCHEDULED → OK от ресивера.
+            marker("bridged: $ACTION_BRIDGE · flags=$flags · ${ident()}")
         } else {
             marker("armed: ${intent?.action ?: "no-action"} · ${ident()}")
         }
@@ -239,8 +251,14 @@ class AutostartService : Service() {
      *    это тап пользователя; BAL его разрешает, в отличие от
      *    startActivity из фона. На опыт это не влияет: PendingIntent
      *    пассивен, пока по нему не нажали.
+     *
+     * v0.1.72+171: параметр назывался `resurrected`, но путей наверх
+     * без владельца стало два — sticky-воскрешение и мост. Разделять
+     * их НА ЭКРАНЕ незачем: владельцу важно одно — приложение
+     * поднялось само и ждёт нажатия, чтобы начать писать. Какой
+     * именно путь сработал, различает маркер.
      */
-    private fun buildNotification(resurrected: Boolean = false): Notification {
+    private fun buildNotification(headless: Boolean = false): Notification {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             if (nm.getNotificationChannel(CHANNEL_ID) == null) {
@@ -279,8 +297,8 @@ class AutostartService : Service() {
             .setSmallIcon(applicationInfo.icon)
             .setContentTitle("BZ5 Companion")
             .setContentText(
-                if (resurrected) {
-                    "восстановлен системой — нажмите, чтобы записывать"
+                if (headless) {
+                    "поднялся сам — нажмите, чтобы записывать"
                 } else {
                     "автостарт взведён"
                 }
@@ -291,52 +309,21 @@ class AutostartService : Service() {
     }
 
     /** versionName приложения; «?» если PackageManager отказал. */
-    private fun appVersion(): String = try {
-        packageManager.getPackageInfo(packageName, 0).versionName ?: "?"
-    } catch (t: Throwable) {
-        "?"
-    }
-
-    /** Append-only field marker — the recon p112/p113 diagnostic pattern. */
-    /** Куда легла последняя строка: pub | priv | none. */
-    private var markerWhere = "?"
-    private var markerPubFails = 0
+    private fun appVersion(): String = AutostartMarker.appVersion(this)
 
     /**
-     * v0.1.71+170 — У МАРКЕРА ПОЯВИЛСЯ ЗАПАСНОЙ ПУТЬ.
+     * Append-only полевой маркер — рецепт recon p112/p113.
      *
-     * Прежняя редакция писала ТОЛЬКО в публичные Downloads и глотала
-     * любой отказ в Log.w, которого в поле никто не читает. После
-     * переустановки на этой прошивке слетает разрешение на хранилище
-     * (открытый пункт +166), и маркер замолчал: за 24–28.07 в файле
-     * осталась ОДНА строка от 24-го, при том что приложение
-     * запускалось многократно, а в базе лежат снимки от v0.1.70+169.
-     * То есть опыт +169 был нечитаем — сервис жил (нотификация
-     * висела), а сказать об этом было нечем.
+     * v0.1.71+170 дал ему запасной путь: публичные Downloads, при
+     * отказе — приватная папка приложения, о чём файл сообщает сам.
+     * Поле 28.07 подтвердило, что публичный путь на этой прошивке
+     * мёртв, и приватная копия — единственный читаемый канал; она
+     * уезжает в экспортный ZIP как `autostart_marker.txt`.
      *
-     * Dart-сторона давно решила ту же задачу двухуровнево:
-     * DiagDumpFile пишет в публичные Downloads, при отказе отступает
-     * в приватную папку и СООБЩАЕТ, куда легла. Здесь то же самое.
-     * Приватная копия уезжает в экспортный ZIP (export_service),
-     * поэтому доезжает без файлового менеджера и без ADB.
+     * v0.1.72+171: тело переехало в AutostartMarker, потому что писать
+     * в этот файл теперь должны двое — сервис и BootReceiver. Здесь
+     * остаётся обёртка: call-site короче, а главное — весь класс
+     * продолжает читаться как «пишу в маркер», а не «зову объект».
      */
-    private fun marker(line: String) {
-        val ts =
-            SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
-        val text = "$ts  $line\n"
-        try {
-            File("/sdcard/Download/$MARKER").appendText(text)
-            markerWhere = "pub"
-            return
-        } catch (t: Throwable) {
-            markerPubFails++
-        }
-        try {
-            File(filesDir, MARKER).appendText(text)
-            markerWhere = "priv"
-        } catch (t: Throwable) {
-            markerWhere = "none"
-            Log.w(TAG, "marker: both paths failed: ${t.message}")
-        }
-    }
+    private fun marker(line: String) = AutostartMarker.write(this, line)
 }

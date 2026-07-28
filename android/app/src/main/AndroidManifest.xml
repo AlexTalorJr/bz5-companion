@@ -128,10 +128,31 @@
     <uses-feature android:name="android.hardware.faketouch" android:required="false" />
     <!-- v0.1.56+155: autostart net (AutostartService, START_STICKY).
          FOREGROUND_SERVICE is a normal-level permission required since
-         SDK 28 to call startForeground. No BOOT_COMPLETED here — the
-         boot-receiver path is a proven wall on this firmware (recon
-         p112/p113); resurrection rides on START_STICKY alone. -->
+         SDK 28 to call startForeground.
+
+         v0.1.72+171: УТВЕРЖДЕНИЕ «boot-путь — доказанная стена» СНЯТО.
+         Оно стояло здесь с +155 и стоило нам полутора месяцев: стена
+         (recon p112/p113) действительно есть, но она вокруг запуска
+         foreground-СЕРВИСА из boot-контекста, а не вокруг доставки
+         самого broadcast'а. Ресиверный лог recon 28.07 показывает
+         BOOT_COMPLETED, дошедший до приложения; из него ставится
+         будильник, и уже из alarm-контекста startForegroundService
+         разрешён. Поле того же дня: recon встаёт сам за 7–8 с после
+         каждого пробуждения ГУ, companion не встаёт ни разу, и
+         единственная разница между ними — этот ресивер.
+
+         RECEIVE_BOOT_COMPLETED — доставка BOOT_COMPLETED.
+         SCHEDULE_EXACT_ALARM — точный будильник; на Android 12 (у нас
+         sdk=32) выдаётся автоматически по одному объявлению, но
+         отзываем пользователем, поэтому код проверяет
+         canScheduleExactAlarms() и пишет деградацию в маркер.
+         USE_EXACT_ALARM — на будущее: с Android 14 автоматической
+         выдачи SCHEDULE_EXACT_ALARM больше нет. Существует с API 33,
+         на 32 просто игнорируется. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
 
     <application
         android:label="BZ5 Companion"
@@ -172,6 +193,40 @@
         <service
             android:name=".AutostartService"
             android:exported="false" />
+        <!-- v0.1.72+171: мост автозапуска. Рецепт recon p115, целиком.
+
+             exported="true" обязателен: системные broadcast'ы
+             доставляются только экспортированным ресиверам. Поверхность
+             атаки нулевая — единственное, что ресивер умеет делать по
+             чужой команде, это поднять НАШ же сервис, чего мы и хотим.
+
+             Три системных действия: BOOT_COMPLETED (на этой прошивке
+             приходит и при перезапуске фреймворка поверх живого ядра —
+             лог recon показывает FIRED при uptime в сутки),
+             QUICKBOOT_POWERON (быстрый старт) и MEDIA_MOUNTED со
+             scheme=file (ГУ поднял хранилище). Дублей они не создают:
+             PendingIntent один, второй setAlarmClock заменяет первый.
+
+             Четвёртое действие — собственное. Будильник приходит явным
+             intent'ом и фильтра не требует, но у recon оно объявлено, а
+             отклоняться от проверенного в поле рецепта ради косметики
+             дороже: цена ошибки здесь — поездка. -->
+        <receiver
+            android:name=".BootReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.MEDIA_MOUNTED" />
+                <data android:scheme="file" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="com.bz5companion.AUTOSTART_ALARM" />
+            </intent-filter>
+        </receiver>
     </application>
     <queries>
         <intent>

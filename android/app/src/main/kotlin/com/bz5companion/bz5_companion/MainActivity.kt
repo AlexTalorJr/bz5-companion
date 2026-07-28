@@ -21,6 +21,14 @@ class MainActivity : FlutterActivity() {
         // v0.1.56+155: autostart net arm/disarm. Dart calls "arm" once
         // per launch on the head unit (canUseHal gate) — the initial
         // manual wind-up that the START_STICKY contract requires.
+        //
+        // v0.1.72+171: тот же вызов теперь ещё и ЗАПОМИНАЕТ взвод.
+        // BootReceiver просыпается в процессе, где нет ни Flutter-
+        // движка, ни сервиса, и спросить «нужен ли автозапуск» ему
+        // больше не у кого. Флаг ставится здесь, а не в сервисе,
+        // потому что здесь он ставится ровно тогда, когда владелец
+        // открыл приложение на ГУ, — и только на ГУ: Dart-сторона за
+        // гейтом canUseHal.
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             "bz5/autostart",
@@ -28,6 +36,7 @@ class MainActivity : FlutterActivity() {
             when (call.method) {
                 "arm" -> {
                     try {
+                        AutostartPrefs.setArmed(this, true)
                         val i = Intent(this, AutostartService::class.java)
                             .setAction(AutostartService.ACTION_ARM)
                         if (android.os.Build.VERSION.SDK_INT >= 26) {
@@ -42,6 +51,7 @@ class MainActivity : FlutterActivity() {
                 }
                 "disarm" -> {
                     try {
+                        AutostartPrefs.setArmed(this, false)
                         val i = Intent(this, AutostartService::class.java)
                             .setAction(AutostartService.ACTION_STOP)
                         startService(i)
