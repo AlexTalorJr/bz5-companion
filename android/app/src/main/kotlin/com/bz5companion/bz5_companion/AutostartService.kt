@@ -39,7 +39,7 @@ import kotlin.random.Random
  *
  * +157 therefore adds the ONLY instrument that yields facts instead of
  * hypotheses — a heartbeat trail: `born` (onCreate, pid + per-process
- * tag + fresh-boot flag), `beat` every 5 min (uptime/elapsedRealtime
+ * tag + the up/el pair), `beat` every 5 min (uptime/elapsedRealtime
  * pair — their divergence between beats of one tag is a suspend the
  * process SURVIVED), `destroy` (onDestroy — its ABSENCE before a new
  * `born` is a silent kill, i.e. force-stop-like). One day of ordinary
@@ -118,10 +118,6 @@ class AutostartService : Service() {
          *  fine enough to time a kill to the ignition-off it matches. */
         private const val HEARTBEAT_MS = 5 * 60 * 1000L
 
-        /** v0.1.63+162: fresh-boot window, measured on uptimeMillis
-         *  (which stops in deep sleep) rather than elapsedRealtime. */
-        private const val FRESH_BOOT_MS = 5 * 60 * 1000L
-
         /** One tag per PROCESS — a companion-object val initialises
          *  once per class load, i.e. once per process. Lines sharing a
          *  tag came from one living process; a new tag is a full
@@ -152,26 +148,45 @@ class AutostartService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        // fresh-boot flag. v0.1.63+162 FIX: the original test used
-        // elapsedRealtime, which keeps ticking through deep sleep. A head
-        // unit that has been parked overnight and merely woke up reported
-        // hours of elapsed time and the flag said «not a fresh boot»
-        // even when the OS had genuinely just started; the inverse case
-        // (a real reboot after a long sleep) is the one that made the log
-        // lie. uptimeMillis stops in deep sleep, so a small uptime really
-        // does mean the kernel started recently. Both numbers are written
-        // out so an old log can still be read against a new one.
+        // История флага, снятого в +170: +157 мерил по elapsedRealtime,
+        // +162 перевёл на uptimeMillis, +170 снял вывод целиком.
+        // Оба числа по-прежнему пишутся — по ним видно, пережил ли
+        // процесс засыпание (расхождение up и el между beat'ами одного
+        // тега), а утверждений о характере загрузки они не несут.
         val upMs = SystemClock.uptimeMillis()
         val elMs = SystemClock.elapsedRealtime()
-        val freshBoot = upMs < FRESH_BOOT_MS
         // +169: версия сборки в маркер. Файл дописывается с +155 и
         // уже пережил полтора десятка сборок; без этого поля нельзя
         // сказать, какая строка чьей версией написана, а вся ценность
         // опыта — в сравнении «до/после».
+        //
+        // v0.1.71+170: FLAG `fresh-boot` УБРАН, ОН ВРАЛ.
+        //
+        // Он считался как upMs < FRESH_BOOT_MS, то есть кодировал
+        // допущение «BOOT_COMPLETED приходит только при малом
+        // uptime». На этой платформе это неверно: ресиверный лог
+        // recon от 28.07 показывает FIRED BOOT_COMPLETED в 12:29 при
+        // системе, поднятой сутками ранее. uptimeMillis — монотонное
+        // время ЯДРА, оно не сбрасывается при перезапуске фреймворка
+        // поверх живого ядра, а BOOT_COMPLETED рассылает именно
+        // фреймворк. Отличить холодную загрузку от перезапуска
+        // контейнера по up/el НЕЛЬЗЯ — поэтому числа остаются, а
+        // вывод из них больше не делается.
         marker(
-            "born: ${ident()} fresh-boot=$freshBoot" +
-                " (up=${upMs / 1000}s el=${elMs / 1000}s) build=${appVersion()}"
+            "born: ${ident()} up=${upMs / 1000}s el=${elMs / 1000}s" +
+                " build=${appVersion()}"
         )
+        if (markerWhere != "pub") {
+            // Сообщаем в самом файле, где он теперь лежит, — иначе
+            // при следующем разборе никто не поймёт, почему в
+            // Downloads пусто.
+            marker(
+                "marker: public Downloads unwritable" +
+                    " (fails=$markerPubFails), writing app-private" +
+                    " — arrives in the export ZIP as" +
+                    " autostart_marker.txt"
+            )
+        }
         hbHandler.postDelayed(hbTick, HEARTBEAT_MS)
     }
 
@@ -233,7 +248,7 @@ class AutostartService : Service() {
                     NotificationChannel(
                         CHANNEL_ID,
                         "BZ5 Companion autostart",
-                        NotificationManager.IMPORTANCE_MIN,
+                        NotificationManager.IMPORTANCE_MIN
                     ).apply { setShowBadge(false) }
                 )
             }
@@ -283,13 +298,45 @@ class AutostartService : Service() {
     }
 
     /** Append-only field marker — the recon p112/p113 diagnostic pattern. */
+    /** Куда легла последняя строка: pub | priv | none. */
+    private var markerWhere = "?"
+    private var markerPubFails = 0
+
+    /**
+     * v0.1.71+170 — У МАРКЕРА ПОЯВИЛСЯ ЗАПАСНОЙ ПУТЬ.
+     *
+     * Прежняя редакция писала ТОЛЬКО в публичные Downloads и глотала
+     * любой отказ в Log.w, которого в поле никто не читает. После
+     * переустановки на этой прошивке слетает разрешение на хранилище
+     * (открытый пункт +166), и маркер замолчал: за 24–28.07 в файле
+     * осталась ОДНА строка от 24-го, при том что приложение
+     * запускалось многократно, а в базе лежат снимки от v0.1.70+169.
+     * То есть опыт +169 был нечитаем — сервис жил (нотификация
+     * висела), а сказать об этом было нечем.
+     *
+     * Dart-сторона давно решила ту же задачу двухуровнево:
+     * DiagDumpFile пишет в публичные Downloads, при отказе отступает
+     * в приватную папку и СООБЩАЕТ, куда легла. Здесь то же самое.
+     * Приватная копия уезжает в экспортный ZIP (export_service),
+     * поэтому доезжает без файлового менеджера и без ADB.
+     */
     private fun marker(line: String) {
+        val ts =
+            SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
+        val text = "$ts  $line\n"
         try {
-            val ts = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
-            val f = File("/sdcard/Download/$MARKER")
-            f.appendText("$ts  $line\n")
+            File("/sdcard/Download/$MARKER").appendText(text)
+            markerWhere = "pub"
+            return
         } catch (t: Throwable) {
-            Log.w(TAG, "marker write failed: ${t.message}")
+            markerPubFails++
+        }
+        try {
+            File(filesDir, MARKER).appendText(text)
+            markerWhere = "priv"
+        } catch (t: Throwable) {
+            markerWhere = "none"
+            Log.w(TAG, "marker: both paths failed: ${t.message}")
         }
     }
 }

@@ -524,7 +524,30 @@ class TripCell extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Column(
+    // v0.1.71+170: FittedBox поверх всей ячейки.
+    //
+    // Владелец прислал фото BZ5: подписи «расстояние», «энергия»,
+    // «расход» шли ПО разделительной линии карточки. Это не отступы,
+    // это переполнение. Бюджет широкого вида: значение 36 → 43 dp +
+    // зазор 2 + подпись 11 → 13 = 58 dp на ячейку, две строки 117,
+    // Divider(height: 16) рисует линию ПО ЦЕНТРУ своей полосы (то
+    // есть в 8 dp ниже строки), шапка ещё 34 — итого 167 dp. Панель
+    // сидит в Expanded, и когда высоты меньше, Column с
+    // mainAxisAlignment.center выдавливает содержимое за границы
+    // бокса симметрично; подпись последняя, её выносит вниз ровно на
+    // линию. В релизной сборке это происходит молча, без полосатой
+    // рамки. На BZ3 не видно, потому что там cellFontSize 22, не 36.
+    //
+    // Константу не подбираю: точную высоту, которую отдаёт Expanded,
+    // я не вижу, а scaleDown верен при любой — при нехватке места
+    // ячейка сожмётся, при достатке останется натуральной. Ширину
+    // по-прежнему держит внутренний FittedBox вокруг значения, так
+    // что внешний ограничивается высотой и масштабирует ячейки
+    // одинаково.
+    return FittedBox(
+      fit: BoxFit.scaleDown,
+      alignment: Alignment.centerLeft,
+      child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
@@ -582,6 +605,7 @@ class TripCell extends StatelessWidget {
                 letterSpacing: 0.5,
                 color: Colors.grey)),
       ],
+      ),
     );
   }
 }

@@ -2356,6 +2356,33 @@ def _aw16_fresh_clock(akt: str, pv: int) -> bool:
     reboot after a long park was misreported — the flag lied in exactly
     the case the autostart investigation cares about. Both numbers are
     still printed, so the gate keeps requiring the pair above."""
+    if pv >= 170:
+        # +170: ТРЕТИЙ И ПОСЛЕДНИЙ ПОДХОД — флага больше нет.
+        #
+        # +157 считал fresh-boot по elapsedRealtime, +162 перевёл на
+        # uptimeMillis (см. абзац выше — el врал при пробуждении). +170
+        # снимает саму идею: ресиверный лог recon от 28.07 показывает
+        # FIRED BOOT_COMPLETED в 12:29 при системе, поднятой сутками
+        # ранее. uptimeMillis — монотонное время ЯДРА, оно не
+        # сбрасывается при перезапуске фреймворка поверх живого ядра, а
+        # BOOT_COMPLETED рассылает именно фреймворк. Значит холодную
+        # загрузку от перезапуска контейнера по up/el НЕ РАЗЛИЧИТЬ ни
+        # одним из двух часов, и любой такой флаг будет врать.
+        #
+        # Пара чисел остаётся (её требует условие выше), вывод из неё —
+        # нет. Гейт теперь следит за ОТСУТСТВИЕМ флага: вернуть его
+        # значило бы вернуть ложное утверждение.
+        # Комментарии вычищаются ПЕРЕД проверкой: история флага в этом
+        # файле разбирается по имени, и проверка по сырому тексту читала
+        # бы объяснение вместо кода. Пятый патч подряд с этой ловушкой —
+        # BD5 (+165), BE8 (+166), вакуумный тест (+167), BF1 (+169).
+        import re as _re
+        _code = _re.sub(r'/\*.*?\*/', '', akt, flags=_re.S)
+        _code = '\n'.join(_l for _l in _code.split('\n')
+                          if not _l.lstrip().startswith('//'))
+        return ('freshBoot' not in _code and
+                'FRESH_BOOT_MS' not in _code and
+                'fresh-boot=' not in _code)
     if pv >= 162:
         return ('val freshBoot = upMs < FRESH_BOOT_MS' in akt and
                 'private const val FRESH_BOOT_MS = 5 * 60 * 1000L' in akt and
@@ -4726,11 +4753,22 @@ if int(pv) >= 151:
         auto_kt2 = root / ('android/app/src/main/kotlin/com/bz5companion/'
                            'bz5_companion/AutostartService.kt')
         akt2 = auto_kt2.read_text() if auto_kt2.exists() else ''
+        # +170: флаг fresh-boot СНЯТ, потому что врал. Он считался как
+        # upMs < FRESH_BOOT_MS, то есть кодировал допущение
+        # «BOOT_COMPLETED приходит только при малом uptime». Ресиверный
+        # лог recon от 28.07 показывает FIRED BOOT_COMPLETED в 12:29 при
+        # системе, поднятой сутками ранее: uptimeMillis — монотонное
+        # время ЯДРА и не сбрасывается при перезапуске фреймворка поверх
+        # живого ядра, а рассылает BOOT_COMPLETED именно фреймворк.
+        # Числа up/el остаются — из них больше не делается вывод.
+        _aw16_born = ('"born: ${ident()} up=${upMs / 1000}s el=${elMs / 1000}s"'
+                      if int(pv) >= 170
+                      else '"born: ${ident()} fresh-boot=$freshBoot"')
         if 'const val HEARTBEAT_MS = 5 * 60 * 1000L' in akt2 and \
            'val PROC_TAG = "%04x".format(Random.nextInt(0x10000))' in akt2 and \
            'override fun onCreate()' in akt2 and \
            'override fun onDestroy()' in akt2 and \
-           '"born: ${ident()} fresh-boot=$freshBoot"' in akt2 and \
+           _aw16_born in akt2 and \
            '"beat: ${ident()}"' in akt2 and \
            '"destroy: ${ident()}"' in akt2 and \
            'SystemClock.uptimeMillis()' in akt2 and \
@@ -6223,6 +6261,73 @@ if int(pv) >= 169:
         fail('BF5 marker lines are not attributable to a build')
 else:
     ok(f"Part BF skipped (build +{pv}, autostart step 1 lands in +169)")
+
+# ═══════════ Part BG — v0.1.71+170 «Маркер доезжает» ═══════════
+#
+# Опыт +169 оказался нечитаем: сервис жил (нотификация висела, в базе
+# снимки от v0.1.70+169), а маркер молчал с 24.07 — единственный канал
+# писал только в публичные Downloads и глотал отказ в Log.w. Плюс две
+# правки вёрстки по фото владельца.
+if int(pv) >= 170:
+    bg_kt = (root / ('android/app/src/main/kotlin/com/bz5companion/'
+                     'bz5_companion/AutostartService.kt')).read_text()
+    bg_es = (root / 'lib/services/export_service.dart').read_text()
+    bg_ag = (root / 'lib/widgets/atlas_grid.dart').read_text()
+    bg_dp = (root / 'lib/widgets/driver_panels.dart').read_text()
+
+    # BG1: два уровня записи и отчёт о том, какой выбран.
+    _bg1 = ('File(filesDir, MARKER).appendText(text)' in bg_kt and
+            'File("/sdcard/Download/$MARKER").appendText(text)' in bg_kt and
+            'markerWhere = "pub"' in bg_kt and
+            'markerWhere = "priv"' in bg_kt and
+            'markerPubFails' in bg_kt and
+            'public Downloads unwritable' in bg_kt)
+    if _bg1:
+        ok('BG1 marker falls back to app-private storage and says so '
+           'in the file itself')
+    else:
+        fail('BG1 marker still has a single write path')
+
+    # BG2: приватная копия доезжает экспортом — без ADB и файлового
+    # менеджера. getApplicationSupportDirectory() на Android это ровно
+    # Context.getFilesDir(), куда пишет Kotlin.
+    _bg2 = ('getApplicationSupportDirectory()' in bg_es and
+            "'bz5_companion_autostart_log.txt'" in bg_es and
+            "ArchiveFile('autostart_marker.txt'" in bg_es)
+    if _bg2:
+        ok('BG2 the private marker copy rides out in the export ZIP')
+    else:
+        fail('BG2 marker never reaches the export bundle')
+
+    # BG3: клетка атласа. Звезда рядом со средним, вилка под ними —
+    # иначе содержимое не влезает (BZ5 81.7 dp в клетке 78, BZ3 75.8 в
+    # 68), и на фото 28.07 звезда нарисована ЗА пределами клетки.
+    _bg_cell = bg_ag.split('final content = Container(')[1].split('final tap')[0]
+    # find(), а не index(): index бросает ValueError, и гейт не «падал
+    # бы», а РОНЯЛ ВЕСЬ ПРОГОН, не дав ни одной строки отчёта. Поймано
+    # мутацией, удалявшей звезду целиком.
+    _bg_star = _bg_cell.find('Icon(Icons.star')
+    _bg_fork = _bg_cell.find('c.lo.toStringAsFixed(1)')
+    _bg3 = (_bg_star >= 0 and _bg_fork >= 0 and _bg_star < _bg_fork and
+            'MainAxisSize.min' in _bg_cell and
+            'BoxFit.scaleDown' in _bg_cell)
+    if _bg3:
+        ok('BG3 atlas cell: star beside the mean, fork below, scaleDown')
+    else:
+        fail('BG3 atlas cell still stacks the star under the fork')
+
+    # BG4: ячейка карточки поездки не выдавливает подпись на
+    # разделитель. Бюджет широкого вида 167 dp против Expanded, который
+    # может дать меньше; scaleDown вернее подобранной константы.
+    _bg_tc = bg_dp.split('class TripCell extends StatelessWidget')[1]
+    _bg4 = ('return FittedBox(' in _bg_tc and
+            _bg_tc.index('return FittedBox(') < _bg_tc.index('child: Column('))
+    if _bg4:
+        ok('BG4 trip cell scales down instead of overflowing onto the rule')
+    else:
+        fail('BG4 trip cell can still overflow its box')
+else:
+    ok(f"Part BG skipped (build +{pv}, marker delivery lands in +170)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
