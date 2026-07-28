@@ -16,6 +16,7 @@ import '../services/account_auth_service.dart';
 import '../services/cloud_sync_service.dart';
 import '../services/bridge_diag_service.dart';
 import '../services/speed_profile_service.dart';
+import '../services/autostart_arm.dart';
 import 'about.dart';
 import 'data_management.dart';
 import 'diagnostics.dart';
@@ -48,6 +49,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
   // 15 taps on the APP card in the About screen (Android dev-options
   // style). Persisted — once unlocked, stays unlocked.
   bool _advancedUnlocked = false;
+  // v0.1.74+173: состояние выключателя автозапуска. Правда живёт на
+  // нативной стороне (AutostartPrefs — её же читает BootReceiver),
+  // здесь только отражение, поэтому читаем через канал, а не из
+  // SharedPreferences Dart-стороны: две копии разошлись бы.
+  bool _autostartOn = false;
 
   @override
   void initState() {
@@ -62,6 +68,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _autoConnect = prefs.getBool('auto_connect_enabled') ?? false;
       _advancedUnlocked = prefs.getBool('advanced_unlocked') ?? false;
     });
+    final on = await AutostartArm.isArmed();
+    if (!mounted) return;
+    setState(() => _autostartOn = on);
+  }
+
+  Future<void> _setAutostart(bool v) async {
+    if (v) {
+      await AutostartArm.enable();
+    } else {
+      await AutostartArm.disable();
+    }
+    // Перечитываем с нативной стороны, а не верим намерению: если
+    // запись prefs не удалась, переключатель обязан вернуться назад,
+    // иначе он покажет состояние, которого нет.
+    final on = await AutostartArm.isArmed();
+    if (!mounted) return;
+    setState(() => _autostartOn = on);
   }
 
   Future<void> _setAutoConnect(bool v) async {
@@ -780,6 +803,32 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ));
           },
         ),
+        // v0.1.74+173: выключатель автозапуска. До этого патча его не
+        // было вовсе — `disarm` висел в канале с +155 и не вызывался
+        // ниоткуда. Пока автозапуск держался на START_STICKY, это
+        // сходило с рук: он выключался сам, процесс умирал и не
+        // воскресал. С мостом +171 сервис поднимается на каждом
+        // пробуждении ГУ, и остановить это стало нечем, кроме
+        // удаления приложения.
+        //
+        // В «Расширенных», а не в настройках (решение владельца
+        // 29.07): мост ещё не доказан в поле, и выносить наверх
+        // управление механизмом, про который неизвестно, работает ли
+        // он, рано.
+        //
+        // Только на ГУ: на телефоне нечего собирать, автозапуск там
+        // не взводится никогда, и переключатель, который заведомо
+        // ничего не делает, — та же нечестность, что и вкладка
+        // «Замеры» на телефоне.
+        if (context.watch<HalTelemetryService>().canUseHal)
+          SwitchListTile(
+            secondary:
+                const Icon(Icons.play_circle_outline, color: Colors.grey),
+            title: Text(S.of('settings.autostart.title')),
+            subtitle: Text(S.of('settings.autostart.sub')),
+            value: _autostartOn,
+            onChanged: _setAutostart,
+          ),
         // v0.1.73+172: путь установки. Здесь, а не на верхнем уровне
         // (решение владельца 29.07) — это инструмент, а не функция для
         // ежедневного пользования, и живёт он за тем же 15-тапным
