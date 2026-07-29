@@ -6647,7 +6647,13 @@ if int(pv) >= 171:
     # BH4: ресивер уважает флаг, а флаг переживает процесс. commit(),
     # не apply(): ГУ убивает процессы жёстко (за 28.07 ни одной строки
     # `destroy:`), отложенную запись он может не дождаться.
-    _bh_na = _bh_recv.split('if (!armed) {')[-1].split('}')[0] \
+    # Область «не взведено» берётся ДО ветки будильника, а не резкой по
+    # первой '}': +174 добавил в эту строку `${AutostartMarker.ident()}`,
+    # и наивный split стал обрывать блок внутри шаблона, до `return`.
+    # Гейт упал на исправном коде — та же болезнь, что у регулярной
+    # вычистки комментариев, только в другом месте.
+    _bh_na = _bh_recv.split('if (!armed) {')[-1] \
+        .split('if (action == ACTION_ALARM)')[0] \
         if 'if (!armed) {' in _bh_recv else ''
     _bh4 = ('AutostartPrefs.isArmed(context)' in _bh_br and
             'result=NOT_ARMED' in _bh_br and
@@ -7062,6 +7068,128 @@ if int(pv) >= 173:
         fail('BJ6 the switch trusts its own intent')
 else:
     ok(f"Part BJ skipped (build +{pv}, the autostart switch lands in +173)")
+
+# ═════════ Part BK — v0.1.75+174 «Четыре долга по полю 29.07» ═════════
+#
+# Мост подтверждён (8 строк bridged:, ноль resurrected:), но поле
+# опровергло два моих комментария и вскрыло два пробела в приборах:
+#   1. Экспортный ZIP дважды приехал обрезанным ровно на кратном 32 КиБ.
+#      Маркер — единственный читаемый экземпляр — ехал только в нём.
+#   2. Строки ресивера не печатали ident(), хотя докстринг обещал, что
+#      общий procTag доказывает работу в одном процессе.
+#   3. Утверждение «дублей не бывает» ложно: 8 bridged: на 6 born:.
+#   4. Проверка A1 жила в голове и дала ложную тревогу на 120 с.
+if int(pv) >= 174:
+    _bk_kt = 'android/app/src/main/kotlin/com/bz5companion/bz5_companion/'
+
+    def _bk_slurp(rel):
+        p = root / rel
+        return p.read_text() if p.exists() else ''
+
+    _bk_mk_raw = _bk_slurp(_bk_kt + 'AutostartMarker.kt')
+    _bk_br_raw = _bk_slurp(_bk_kt + 'BootReceiver.kt')
+    _bk_ma_raw = _bk_slurp(_bk_kt + 'MainActivity.kt')
+    _bk_arm_raw = _bk_slurp('lib/services/autostart_arm.dart')
+    _bk_st_raw = _bk_slurp('lib/screens/settings.dart')
+    _bk_a1_raw = _bk_slurp('tools/atlas_a1_check.py')
+    _bk_mf_raw = _bk_slurp('android/app/src/main/AndroidManifest.xml')
+
+    _bk_mk = _strip_comments_safe(_bk_mk_raw)
+    _bk_br = _strip_comments_safe(_bk_br_raw)
+    _bk_ma = _strip_comments_safe(_bk_ma_raw)
+    _bk_arm = _strip_comments_safe(_bk_arm_raw)
+    _bk_st = _strip_comments_safe(_bk_st_raw)
+
+    # BK1: маркер уезжает ВТОРЫМ каналом. Диаг-дамп 29.07 доехал целым
+    # каждый раз, экспортный ZIP — дважды обрезанным. Критическая мелочь
+    # не должна зависеть от доставки хрупкой большой посылки.
+    _bk_adv = _bk_st.split('Widget _advancedCard(')[-1].split('\n  Widget ')[0]
+    _bk1 = ('fun read(context: Context' in _bk_mk and
+            '"marker" -> result.success(AutostartMarker.read(this))'
+            in _bk_ma and
+            "invokeMethod<String>('marker')" in _bk_arm and
+            'AutostartArm.marker()' in _bk_st and
+            'DiagDumpFile.instance.append' in _bk_st and
+            "S.of('settings.marker.title')" in _bk_adv and
+            'onTap: _dumpMarker' in _bk_adv)
+    if _bk1:
+        ok('BK1 the marker travels through the diag dump, not only '
+           'inside the fragile export ZIP')
+    else:
+        fail('BK1 the marker still depends on the export ZIP alone')
+
+    # BK2: отдаётся хвост, обрезанный по границе строки. Журнал
+    # append-only и растёт без предела; огрызок строки в дампе читался
+    # бы как повреждение данных.
+    _bk_read = _bk_mk.split('fun read(context: Context')[-1] \
+        .split('fun noteFallback(')[0]
+    # Держим САМУ границу, а не упоминание параметра: журнал растёт
+    # ~10 МБ в год (поле 29.07), и readText() положил бы его целиком в
+    # память на главном потоке. Проверяется позиционирование, потому
+    # что только оно и даёт границу; наличие имени `maxBytes` в теле
+    # ничего не гарантирует.
+    _bk2 = ('fun read(context: Context, maxBytes: Int = ' in _bk_mk and
+            'readText()' not in _bk_read.split('if (total <= maxBytes)')[-1]
+            .split('else {')[-1] and
+            'RandomAccessFile(f, "r")' in _bk_read and
+            'raf.seek(total - maxBytes)' in _bk_read and
+            "indexOf('\\n')" in _bk_read and
+            'catch (t: Throwable)' in _bk_read)
+    if _bk2:
+        ok('BK2 the marker read is bounded and cut on a line boundary')
+    else:
+        fail('BK2 the marker read is unbounded or can emit a half line')
+
+    # BK3: ident() в КАЖДОЙ строке ресивера. Докстринг AutostartMarker
+    # с +171 утверждал, что совпадение procTag доказывает работу
+    # ресивера и сервиса в одном процессе, — а тега в строках ресивера
+    # не было вовсе. Обещание без доказательства, ровно тот же класс,
+    # что «стена» boot-пути.
+    # Держим ОТНОШЕНИЕ, а не абсолютное число: инвариант в том, что у
+    # каждой записи есть тег, а не в том, что записей ровно шесть.
+    # Пиннить число значило бы ронять гейт от любой будущей строки лога
+    # без всякой причины — это тормоз, а не сторож.
+    _bk3 = (_bk_br.count('AutostartMarker.write(') > 0 and
+            _bk_br.count('AutostartMarker.ident()') >=
+            _bk_br.count('AutostartMarker.write('))
+    if _bk3:
+        ok('BK3 every receiver line carries ident(), so the shared '
+           'process tag can actually be compared')
+    else:
+        fail('BK3 receiver lines still omit the tag the docs promise')
+
+    # BK4: ложное утверждение про дедуп снято. Проверка по СЫРОМУ
+    # тексту — оно жило в комментарии. Отрицательная половина держит
+    # короткий маркер, который в пересказе не появится (урок BJ5),
+    # положительная требует полевого факта.
+    _bk4 = ('заменяет первый' not in _bk_br_raw and
+            'Дублей они не создают' not in _bk_mf_raw and
+            'ПОПРАВКА' in _bk_br_raw and
+            'идемпотентен' in _bk_br_raw)
+    if _bk4:
+        ok('BK4 the false «no duplicates» claim is replaced by what the '
+           'field showed')
+    else:
+        fail('BK4 the receiver still claims duplicates cannot happen')
+
+    # BK5: проверка A1 стала инструментом с критерием применимости.
+    # Раньше жила ad-hoc и 29.07 подала 120 с как аномалию данных, хотя
+    # сломана была она сама. Первая редакция инструмента ошиблась в
+    # другую сторону — пропускала всё; гейт держит и это.
+    _bk5 = ('def check_dump(' in _bk_a1_raw and
+            'def baselines(' in _bk_a1_raw and
+            'def frozen_in_memory(' in _bk_a1_raw and
+            'snapshots_in_db' in _bk_a1_raw and
+            "'skip'" in _bk_a1_raw and "'fail'" in _bk_a1_raw and
+            'ни один дамп не попал в область применения' in _bk_a1_raw and
+            'возможен ложный вердикт' in _bk_a1_raw)
+    if _bk5:
+        ok('BK5 the A1 identity is a tool with an applicability rule '
+           'and it reports when it checked nothing')
+    else:
+        fail('BK5 the A1 check is missing its applicability rule')
+else:
+    ok(f"Part BK skipped (build +{pv}, the field debts land in +174)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)

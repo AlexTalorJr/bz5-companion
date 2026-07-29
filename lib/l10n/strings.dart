@@ -196,6 +196,9 @@ class S {
     'settings.autostart.title': 'Autostart',
     'settings.autostart.sub':
         'Raise the app by itself when the head unit wakes',
+    // v0.1.75+174 — autostart marker → diag dump (Advanced, HU only).
+    'settings.marker.title': 'Autostart log',
+    'settings.marker.sub': 'Write the autostart marker into the diag dump',
     'settings.install.title': 'Install path',
     'settings.install.subtitle':
         'Probe the system installer and install an APK over this build',
@@ -1321,6 +1324,9 @@ class S {
     'settings.autostart.title': 'Автозапуск',
     'settings.autostart.sub':
         'Поднимать приложение самостоятельно при пробуждении ГУ',
+    // v0.1.75+174 — журнал автозапуска → диаг-дамп (Расширенные, ГУ).
+    'settings.marker.title': 'Журнал автозапуска',
+    'settings.marker.sub': 'Записать маркер автозапуска в диаг-дамп',
     'settings.install.title': 'Путь установки',
     'settings.install.subtitle':
         'Проба системного установщика и установка APK поверх',

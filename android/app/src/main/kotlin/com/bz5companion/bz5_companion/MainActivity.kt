@@ -65,6 +65,10 @@ class MainActivity : FlutterActivity() {
                 // патча спросить у нативной стороны «взведено ли»
                 // было нечем, и UI пришлось бы держать вторую копию
                 // правды на стороне Dart.
+                // v0.1.75+174: отдать журнал наружу, чтобы он уехал
+                // диаг-дампом. Экспортный ZIP 29.07 дважды приехал
+                // обрезанным, диаг-дамп — целым оба раза.
+                "marker" -> result.success(AutostartMarker.read(this))
                 "isArmed" -> result.success(AutostartPrefs.isArmed(this))
                 "optedOut" -> result.success(AutostartPrefs.optedOut(this))
                 else -> result.notImplemented()

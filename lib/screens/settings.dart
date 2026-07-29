@@ -17,6 +17,7 @@ import '../services/cloud_sync_service.dart';
 import '../services/bridge_diag_service.dart';
 import '../services/speed_profile_service.dart';
 import '../services/autostart_arm.dart';
+import '../services/diag_dump_file.dart';
 import 'about.dart';
 import 'data_management.dart';
 import 'diagnostics.dart';
@@ -27,6 +28,7 @@ import 'account.dart';
 import 'app_diag.dart';
 import 'pairing.dart';
 import 'hal_test.dart';
+import 'dashboard.dart' show kAppVersion;
 import 'install_update.dart';
 import 'wide/raw_data_wide.dart';
 import 'wide/native_explorer_wide.dart';
@@ -71,6 +73,41 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final on = await AutostartArm.isArmed();
     if (!mounted) return;
     setState(() => _autostartOn = on);
+  }
+
+  /// v0.1.75+174: журнал автозапуска в диаг-дамп.
+  ///
+  /// До этого патча единственным каналом доставки маркера был
+  /// экспортный ZIP. 29.07 он дважды приехал обрезанным ровно на
+  /// кратном 32 КиБ — подпись несброшенного буфера. Диаг-дамп при этом
+  /// доезжал целым каждый раз: он мелкий и пишется отдельно. Значит
+  /// критическая мелочь не должна зависеть от доставки хрупкой большой
+  /// посылки — и теперь не зависит.
+  bool _dumpingMarker = false;
+
+  Future<void> _dumpMarker() async {
+    // Чтение журнала уходит через канал и занимает заметное время;
+    // без защёлки двойное касание положило бы в диаг-дамп две копии
+    // одной секции и заставило бы потом гадать, что это значит.
+    if (_dumpingMarker) return;
+    _dumpingMarker = true;
+    try {
+      await _dumpMarkerInner();
+    } finally {
+      _dumpingMarker = false;
+    }
+  }
+
+  Future<void> _dumpMarkerInner() async {
+    final text = await AutostartArm.marker();
+    final res = await DiagDumpFile.instance.append(
+      title: 'Autostart marker — $kAppVersion',
+      body: '```\n$text\n```',
+    );
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('${S.of('install.exported')} ${res.path}')),
+    );
   }
 
   Future<void> _setAutostart(bool v) async {
@@ -828,6 +865,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
             subtitle: Text(S.of('settings.autostart.sub')),
             value: _autostartOn,
             onChanged: _setAutostart,
+          ),
+        // v0.1.75+174: журнал автозапуска в диаг-дамп. Рядом с
+        // выключателем, потому что это его же прибор: включил, дождался
+        // пробуждения ГУ, выгрузил журнал — и видно, сработал ли мост.
+        // Только на ГУ: на телефоне журнал пуст по построению.
+        if (context.watch<HalTelemetryService>().canUseHal)
+          ListTile(
+            leading: const Icon(Icons.receipt_long, color: Colors.grey),
+            title: Text(S.of('settings.marker.title')),
+            subtitle: Text(S.of('settings.marker.sub')),
+            trailing: const Icon(Icons.save_alt, color: Colors.grey),
+            onTap: _dumpMarker,
           ),
         // v0.1.73+172: путь установки. Здесь, а не на верхнем уровне
         // (решение владельца 29.07) — это инструмент, а не функция для
