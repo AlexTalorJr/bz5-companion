@@ -39,10 +39,23 @@ import android.os.Build
  * рассылается и при перезапуске фреймворка поверх живого ядра (лог
  * recon: FIRED при uptime в сутки), QUICKBOOT_POWERON — вариант для
  * быстрого старта, MEDIA_MOUNTED ловит момент, когда ГУ поднял
- * хранилище. Дедуп не нужен: PendingIntent один и тот же, и второй
- * setAlarmClock заменяет первый, а не добавляет второй. Поле это
- * подтверждает — 19:16:59 MEDIA_MOUNTED и 19:17:03 BOOT_COMPLETED
- * дали ОДНО срабатывание в 19:17:11.
+ * хранилище.
+ *
+ * ПОПРАВКА v0.1.75+174 — ДУБЛИ ВСЁ-ТАКИ БЫВАЮТ. Здесь стояло
+ * утверждение, что повторное планирование будильника вытесняет
+ * предыдущее и потому дублей не бывает. Поле 29.07 его опровергло:
+ * 8 строк `bridged:` на 6 `born:`. Замена работает только внутри окна ДО срабатывания, а
+ * реальная задержка моста 5–9 секунд при разбросе broadcast'ов в
+ * 9–19 секунд означает, что первый будильник успевает выстрелить
+ * раньше, чем приходит второе действие. Тогда планируется новый, и
+ * сервис получает второй `startForegroundService`.
+ *
+ * Вреда нет и защищаться незачем: повторный старт идемпотентен —
+ * `onStartCommand` обновляет нотификацию, пишет вторую строку
+ * `bridged:` и возвращает тот же START_STICKY. Именно поэтому дедуп
+ * не нужен, но по причине «повтор безвреден», а не «повтора не
+ * бывает». Разница существенная: первая формулировка проверяема и
+ * верна, вторая была догадкой и оказалась ложной.
  *
  * ЧЕГО ЭТОТ ПАТЧ НЕ ДЕЛАЕТ. Поднимается существующий
  * AutostartService, который ничего не собирает: сборщика у companion
@@ -76,18 +89,27 @@ class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
         val action = intent?.action ?: "null"
         val armed = AutostartPrefs.isArmed(context)
+        // v0.1.75+174: ident() здесь появился не для красоты. В
+        // докстринге AutostartMarker написано, что совпадение procTag
+        // у ресивера и у сервиса доказывает их работу в ОДНОМ
+        // процессе, — а строки ресивера тега не печатали вовсе, и
+        // сравнивать было нечего. Обещание было, доказательства не
+        // было. Теперь есть.
         AutostartMarker.write(
             context,
             "FIRED action=$action autostart=${if (armed) "on" else "off"}" +
-                " sdk=${Build.VERSION.SDK_INT} build=" +
-                AutostartMarker.appVersion(context)
+                " sdk=${Build.VERSION.SDK_INT}" +
+                " build=${AutostartMarker.appVersion(context)}" +
+                " · ${AutostartMarker.ident()}"
         )
         AutostartMarker.noteFallback(context)
 
         if (!armed) {
             // Телефон или свежая установка, которую ещё не открывали.
             AutostartMarker.write(
-                context, "START action=$action result=NOT_ARMED"
+                context,
+                "START action=$action result=NOT_ARMED" +
+                    " · ${AutostartMarker.ident()}"
             )
             return
         }
@@ -133,13 +155,15 @@ class BootReceiver : BroadcastReceiver() {
                 context,
                 "START action=$action result=ALARM_SCHEDULED" +
                     " delay=${BRIDGE_DELAY_MS}ms" +
-                    " exact=${if (exact) "yes" else "no"}"
+                    " exact=${if (exact) "yes" else "no"}" +
+                    " · ${AutostartMarker.ident()}"
             )
         } catch (t: Throwable) {
             AutostartMarker.write(
                 context,
                 "START action=$action result=ALARM_ERR" +
-                    " ${t.javaClass.simpleName}: ${t.message}"
+                    " ${t.javaClass.simpleName}: ${t.message}" +
+                    " · ${AutostartMarker.ident()}"
             )
         }
     }
@@ -155,7 +179,9 @@ class BootReceiver : BroadcastReceiver() {
                 context.startService(i)
             }
             AutostartMarker.write(
-                context, "START action=$action result=OK"
+                context,
+                "START action=$action result=OK" +
+                    " · ${AutostartMarker.ident()}"
             )
         } catch (t: Throwable) {
             // Сюда попадает ForegroundServiceStartNotAllowedException,
@@ -164,7 +190,8 @@ class BootReceiver : BroadcastReceiver() {
             AutostartMarker.write(
                 context,
                 "START action=$action result=ERR" +
-                    " ${t.javaClass.simpleName}: ${t.message}"
+                    " ${t.javaClass.simpleName}: ${t.message}" +
+                    " · ${AutostartMarker.ident()}"
             )
         }
     }
