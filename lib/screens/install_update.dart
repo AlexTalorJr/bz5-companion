@@ -286,14 +286,21 @@ class _InstallUpdateScreenState extends State<InstallUpdateScreen> {
       'apks': _apks,
       'log': _log.reversed.toList(),
     });
-    final res = await DiagDumpFile.instance.append(
-      title: 'Install path probe — $kAppVersion',
-      body: '```json\n$body\n```',
-    );
+    // +179: append() бросает DiagDumpWriteFailure с +178. В настройках
+    // обе точки обёрнуты, а эта была пропущена — исключение уходило в
+    // никуда, и владелец видел отсутствие реакции вместо причины.
+    String msg;
+    try {
+      final res = await DiagDumpFile.instance.append(
+        title: 'Install path probe — $kAppVersion',
+        body: '```json\n$body\n```',
+      );
+      msg = '${S.of('install.exported')} ${res.path}';
+    } catch (e) {
+      msg = '${S.of('settings.adv.dump_fail')} $e';
+    }
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('${S.of('install.exported')} ${res.path}')),
-    );
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
   @override

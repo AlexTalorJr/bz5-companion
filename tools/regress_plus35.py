@@ -6391,12 +6391,26 @@ if int(pv) >= 169:
         _bf_mk_p = (root / ('android/app/src/main/kotlin/com/bz5companion/'
                             'bz5_companion/AutostartMarker.kt'))
         _bf_mk = _bf_mk_p.read_text() if _bf_mk_p.exists() else ''
-        if 'build=${appVersion()}' in _bf and 'getPackageInfo(' in _bf_mk:
-            ok('BF5 (re-era +171) the marker records which build wrote '
-               'each line, from the shared journal')
+        # ПЕРЕПИН +179, И ПРИЧИНУ НАШЁЛ МУТАЦИОННЫЙ ХАРНЕСС. Проверка
+        # шла по ВСЕМУ файлу, а +179 завёл второй вызов getPackageInfo —
+        # в pubFileName, ради ключа зеркала по versionCode. С этого
+        # момента условие выполнялось чужим кодом: убери чтение
+        # versionName из appVersion() совсем, и гейт остался бы зелёным.
+        # Сужаем до самой функции, которая и есть предмет.
+        if int(pv) >= 179:
+            _bf_av = _bf_mk.split('fun appVersion(')[-1] \
+                .split('fun write(')[0]
+            _bf5 = ('build=${appVersion()}' in _bf and
+                    'getPackageInfo(' in _bf_av and
+                    'versionName' in _bf_av)
         else:
-            fail('BF5 (re-era +171) marker lines are not attributable '
-                 'to a build')
+            _bf5 = ('build=${appVersion()}' in _bf and
+                    'getPackageInfo(' in _bf_mk)
+        if _bf5:
+            ok('BF5 (re-era +171/+179) the marker records which build '
+               'wrote each line, from the shared journal')
+        else:
+            fail('BF5 marker lines are not attributable to a build')
     elif 'build=${appVersion()}' in _bf and 'getPackageInfo(' in _bf:
         ok('BF5 the marker records which build wrote each line')
     else:
@@ -6428,11 +6442,15 @@ if int(pv) >= 170:
         _bg_mk = _bg_mk_p.read_text() if _bg_mk_p.exists() else ''
         _bg1 = ('File(context.filesDir, FILE_NAME).appendText(text)'
                 in _bg_mk and
-                ('File("$PUB_DIR/${pubName ?: FILE_NAME}").appendText(text)'
+                ('File("$PUB_DIR/${pubFileName(context)}").appendText(text)'
+                 in _bg_mk if int(pv) >= 179 else
+                 'File("$PUB_DIR/${pubName ?: FILE_NAME}").appendText(text)'
                  in _bg_mk if int(pv) >= 178 else
                  'File("/sdcard/Download/$FILE_NAME").appendText(text)'
                  in _bg_mk) and
-                'where = "pub"' in _bg_mk and
+                ('where = if (privOk) "priv+pub" else "pub"' in _bg_mk
+                 if int(pv) >= 179 else
+                 'where = "pub"' in _bg_mk) and
                 'where = "priv"' in _bg_mk and
                 'pubFails' in _bg_mk and
                 ('public Downloads refused' in _bg_mk
@@ -7105,7 +7123,9 @@ if int(pv) >= 173:
     _bj4 = ('pubDead' in _bj_mk and
             'if (!pubDead) {' in _bj_write and
             'pubDead = true' in _bj_write and
-            ('$PUB_DIR/${pubName ?: FILE_NAME}' in _bj_write
+            ('$PUB_DIR/${pubFileName(context)}' in _bj_write
+             if int(pv) >= 179 else
+             '$PUB_DIR/${pubName ?: FILE_NAME}' in _bj_write
              if int(pv) >= 178 else
              '/sdcard/Download/$FILE_NAME' in _bj_write))
     if _bj4:
@@ -7653,7 +7673,9 @@ if int(pv) >= 178:
     # семья, что слепота BI2, и найдена тем же харнессом.
     _bm_app = _bm_dd.split('Future<DiagDumpAppendResult> append(')[-1] \
         .split('String _freshFilename()')[0]
-    _bm1 = ('final fresh = _freshFilename();' in _bm_app and
+    _bm1 = (('final fresh = await _fallbackFilename(dir);' in _bm_app
+            if int(pv) >= 179 else
+            'final fresh = _freshFilename();' in _bm_app) and
             'File(p.join(dir.path, _filename))' in _bm_app and
             'File(p.join(dir.path, fresh))' in _bm_app and
             'for (final candidate in candidates)' in _bm_app and
@@ -7747,6 +7769,89 @@ if int(pv) >= 178:
         fail('BM7 the probe still depends on a file to be read')
 else:
     ok(f"Part BM skipped (build +{pv}, the 30.07 field answers land in +178)")
+
+# ═════ Part BN — v0.1.80+179 «Журнал — приватный файл» ═════
+#
+# Ревизия +178 нашла дефект, которого +178 не создавал, но БУДИЛ.
+# С +170 маркер писал «сначала публичная папка, при успехе выходим», и
+# вреда не было ровно потому, что публичный путь отказывал всегда. +178
+# научил его работать — и включил спящую поломку: `read()` и
+# `export_service` берут файл ТОЛЬКО из filesDir, поэтому при успешной
+# публичной записи оба канала чтения маркера показывали бы устаревший
+# след. Молча, и ровно на том визите, где маркер и нужен.
+if int(pv) >= 179:
+    _bn_kt = 'android/app/src/main/kotlin/com/bz5companion/bz5_companion/'
+
+    def _bn_slurp(rel):
+        p = root / rel
+        return p.read_text() if p.exists() else ''
+
+    _bn_mk = _strip_comments_safe(_bn_slurp(_bn_kt + 'AutostartMarker.kt'))
+    _bn_dd = _strip_comments_safe(_bn_slurp('lib/services/diag_dump_file.dart'))
+
+    _bn_write = _bn_mk.split('fun write(')[-1].split('private fun pubFileName(')[0]
+    _bn_read = _bn_mk.split('fun read(context: Context')[-1] \
+        .split('fun noteFallback(')[0]
+
+    # BN1: приватная запись идёт ПЕРВОЙ и БЕЗУСЛОВНО, и пишет ровно тот
+    # файл, который потом читают. Порядок здесь — не стиль: любой
+    # ранний выход выше приватной ступени возвращает исходный дефект.
+    _bn_priv_at = _bn_write.find('File(context.filesDir, FILE_NAME)')
+    _bn_pub_at = _bn_write.find('$PUB_DIR/')
+    _bn_head = _bn_write[:_bn_priv_at] if _bn_priv_at > 0 else _bn_write
+    _bn1 = (_bn_priv_at > 0 and _bn_pub_at > _bn_priv_at and
+            'return' not in _bn_head and
+            'pubDead' not in _bn_head and
+            'File(context.filesDir, FILE_NAME)' in _bn_read and
+            _bn_write.count('return') == 0)
+    if _bn1:
+        ok('BN1 the private file is written first and unconditionally, '
+           'and it is the same file read() and the export take')
+    else:
+        fail('BN1 a public write can still starve the journal that '
+             'read() and the export depend on')
+
+    # BN2: имя зеркала привязано к УСТАНОВКЕ, а не ко времени. Ключ по
+    # времени при процессном состоянии давал бы файл на каждый процесс —
+    # три-четыре за загрузку ГУ.
+    _bn2 = ('private fun pubFileName(' in _bn_mk and
+            'getPackageInfo(context.packageName, 0).versionCode' in _bn_mk and
+            'FILE_NAME.removeSuffix(".txt") + "_$code.txt"' in _bn_mk and
+            'yyyyMMdd-HHmmss' not in _bn_mk)
+    if _bn2:
+        ok('BN2 the public mirror is keyed by versionCode — one file per '
+           'install, not one per process')
+    else:
+        fail('BN2 the public mirror name can multiply per process')
+
+    # BN3: запасной файл дампа ПЕРЕИСПОЛЬЗУЕТСЯ, и ни один вызов append
+    # не остаётся без обработки отказа. append бросает с +178; молчащий
+    # вызов означает экран без реакции.
+    _bn_unguarded = []
+    for _f in sorted((root / 'lib').rglob('*.dart')):
+        _src = _f.read_text()
+        if 'DiagDumpFile.instance.append(' not in _src:
+            continue
+        for _chunk in _src.split('DiagDumpFile.instance.append(')[1:]:
+            _before = _src.split('DiagDumpFile.instance.append(')[0]
+        # try обязан стоять В ТОЙ ЖЕ функции выше вызова
+        for _piece in _src.split('DiagDumpFile.instance.append(')[:-1]:
+            _fn = _piece.rsplit('async {', 1)[-1]
+            if 'try {' not in _fn:
+                _bn_unguarded.append(str(_f.relative_to(root)))
+    _bn3 = (not _bn_unguarded and
+            'static String? _fallbackName;' in _bn_dd and
+            'Future<String> _fallbackFilename(' in _bn_dd and
+            'if (memo != null) return memo;' in _bn_dd and
+            "mode: FileMode.append, flush: true" in _bn_dd)
+    if _bn3:
+        ok('BN3 the dump reuses its fallback file and every append call '
+           'site handles the refusal')
+    else:
+        fail(f'BN3 fallback files multiply or an append is unguarded: '
+             f'{sorted(set(_bn_unguarded))}')
+else:
+    ok(f"Part BN skipped (build +{pv}, the journal inversion lands in +179)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)

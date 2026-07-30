@@ -91,13 +91,6 @@ object AutostartMarker {
     var pubErr: String = "-"
         private set
 
-    /** Имя файла в публичной папке, которое реально принимает запись.
-     *  Отличается от FILE_NAME, если канонический занят прежней
-     *  установкой и пришлось взять свежее. */
-    @Volatile
-    var pubName: String? = null
-        private set
-
     private var fallbackNoted = false
 
     /**
@@ -168,43 +161,73 @@ object AutostartMarker {
         val ts =
             SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
         val text = "$ts  $line\n"
-        if (!pubDead) {
-            try {
-                File("$PUB_DIR/${pubName ?: FILE_NAME}").appendText(text)
-                where = "pub"
-                return
-            } catch (t: Throwable) {
-                pubFails++
-                pubErr = "${t.javaClass.simpleName}: ${t.message}"
-                // Вторая и последняя попытка в процессе: СВЕЖЕЕ ИМЯ.
-                // Канонический файл мог остаться от прежней установки и
-                // принадлежать другому uid — дописать в такой нельзя, а
-                // создать новый можно (экспорт делает это годами).
-                if (pubName == null) {
-                    val fresh = FILE_NAME.removeSuffix(".txt") +
-                        "_" + SimpleDateFormat(
-                            "yyyyMMdd-HHmmss", Locale.US
-                        ).format(Date()) + ".txt"
-                    try {
-                        File("$PUB_DIR/$fresh").appendText(text)
-                        pubName = fresh
-                        where = "pub"
-                        return
-                    } catch (t2: Throwable) {
-                        pubErr = "$pubErr / fresh: " +
-                            "${t2.javaClass.simpleName}: ${t2.message}"
-                    }
-                }
-                pubDead = true
-            }
-        }
+        // ── ЖУРНАЛ — ЭТО ПРИВАТНЫЙ ФАЙЛ. ПИШЕТСЯ ПЕРВЫМ И ВСЕГДА. ──
+        //
+        // v0.1.80+179, и это исправление дефекта, который +178 не создал,
+        // но РАЗБУДИЛ. С +170 лестница шла «сначала публичная папка, при
+        // успехе выходим», и вреда не было ровно потому, что публичный
+        // путь отказывал всегда. +178 научил его работать (имя по
+        // установке) — и тем самым включил спящую поломку: `read()` и
+        // `export_service` берут файл ТОЛЬКО из filesDir, поэтому при
+        // успешной публичной записи оба канала чтения маркера начали бы
+        // показывать устаревший след. Молча, и ровно на том визите, где
+        // маркер и нужен.
+        //
+        // Отсюда порядок: приватный файл не «запасной», он источник для
+        // чтения, экспорта и ротации. Он же не отказывает практически
+        // никогда — это внутреннее хранилище приложения.
+        var privOk = false
         try {
             File(context.filesDir, FILE_NAME).appendText(text)
+            privOk = true
             where = "priv"
         } catch (t: Throwable) {
             where = "none"
-            Log.w(TAG, "marker: both paths failed: ${t.message}")
+            Log.w(TAG, "marker: private path failed: ${t.message}")
         }
+        // ── Публичная папка — ЗЕРКАЛО. Удобство, а не канал. ──
+        //
+        // Одна попытка на процесс: pubDead держит обещание +173 не
+        // ходить в обречённое место на каждой строке. Отказ здесь
+        // безобиден — журнал уже записан выше.
+        if (!pubDead) {
+            try {
+                File("$PUB_DIR/${pubFileName(context)}").appendText(text)
+                where = if (privOk) "priv+pub" else "pub"
+            } catch (t: Throwable) {
+                pubFails++
+                pubErr = "${t.javaClass.simpleName}: ${t.message}"
+                pubDead = true
+            }
+        }
+    }
+
+    /**
+     * Имя публичной копии, привязанное К УСТАНОВКЕ, а не ко времени.
+     *
+     * +178 брал имя с меткой времени, и ключ был выбран неверно: у
+     * маркера состояние процессное, значит каждый процесс создавал бы
+     * СВОЙ файл — на ГУ это три-четыре штуки за загрузку. Один мёртвый
+     * файл поменялся бы на россыпь живых.
+     *
+     * Ключ обязан меняться ровно тогда, когда возникает проблема, а
+     * возникает она при переустановке: меняется uid, и дописать в файл
+     * прежнего владельца больше нельзя. `versionCode` меняется тем же
+     * событием и одинаков для всех процессов одной установки.
+     *
+     * Остаётся край: переустановка ТОГО ЖЕ номера сборки даст новый uid
+     * при старом имени, и зеркало снова откажет. Это приемлемо — журнал
+     * лежит в приватном файле, а зеркало ровно зеркало.
+     */
+    private fun pubFileName(context: Context): String {
+        val code = try {
+            @Suppress("DEPRECATION")
+            context.packageManager
+                .getPackageInfo(context.packageName, 0).versionCode
+        } catch (t: Throwable) {
+            0
+        }
+        return FILE_NAME.removeSuffix(".txt") + "_$code.txt"
     }
 
     /**

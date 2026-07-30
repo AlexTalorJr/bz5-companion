@@ -306,9 +306,32 @@ MUTATIONS = [
 
     # ─── эра BM (+178) «Что сказало поле 30.07» ─────────────────────
     ('BM1', DD,
-     'final fresh = _freshFilename();',
+     'final fresh = await _fallbackFilename(dir);',
      'final fresh = _filename;',
      'лишить дамп свежего имени — один файл и один шанс'),
+
+    # ─── эра BN (+179) «Журнал — приватный файл» ────────────────────
+    ('BN1', MK,
+     '        var privOk = false',
+     '        if (!pubDead) {\n'
+     '            try {\n'
+     '                File("$PUB_DIR/x.txt").appendText(text)\n'
+     '                return\n'
+     '            } catch (t: Throwable) {\n'
+     '                pubDead = true\n'
+     '            }\n'
+     '        }\n'
+     '        var privOk = false',
+     'вернуть публичную запись ПЕРЕД приватной с ранним выходом'),
+    ('BN2', MK,
+     'FILE_NAME.removeSuffix(".txt") + "_$code.txt"',
+     'FILE_NAME.removeSuffix(".txt") + "_" + SimpleDateFormat('
+     '"yyyyMMdd-HHmmss", Locale.US).format(Date()) + ".txt"',
+     'вернуть ключ по времени — файл на каждый процесс'),
+    ('BN3', DD,
+     '    if (memo != null) return memo;',
+     '',
+     'снять память запасного имени — новый файл на каждый вызов'),
     ('BM2', DD,
      "reasons.add('${candidate.path}: ${e.runtimeType}: $e');",
      "reasons.add('write failed');",

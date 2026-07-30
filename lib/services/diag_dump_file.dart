@@ -142,7 +142,7 @@ class DiagDumpFile {
     required String body,
   }) async {
     final dir = await _resolveDownloadsDir();
-    final fresh = _freshFilename();
+    final fresh = await _fallbackFilename(dir);
     final reasons = <String>[];
     final candidates = <File>[File(p.join(dir.path, _filename))];
     candidates.add(File(p.join(dir.path, fresh)));
@@ -164,11 +164,55 @@ class DiagDumpFile {
     throw DiagDumpWriteFailure(reasons);
   }
 
+  /// Выбранное запасное имя. Статическое намеренно: без памяти каждый
+  /// вызов заводил бы НОВЫЙ файл, и журнал рассыпался бы на десятки
+  /// кусков — +178 менял один мёртвый файл на россыпь живых.
+  static String? _fallbackName;
+
+  /// Запасное имя: сначала ПЕРЕИСПОЛЬЗОВАТЬ уже созданное нами, и лишь
+  /// потом заводить новое.
+  ///
+  /// Память в статике живёт один процесс, а дампы снимают в разных —
+  /// поэтому перед созданием осматриваем папку и пробуем дописать в
+  /// самый свежий из наших файлов. Проба записи, а не проверка прав:
+  /// владельца файла узнать иначе нельзя, а именно он тут и решает.
+  Future<String> _fallbackFilename(Directory dir) async {
+    final memo = _fallbackName;
+    if (memo != null) return memo;
+    try {
+      final mine = dir
+          .listSync()
+          .whereType<File>()
+          .map((f) => p.basename(f.path))
+          .where((n) => n.startsWith(_fallbackPrefix) && n.endsWith('.md'))
+          .toList()
+        ..sort();
+      for (final name in mine.reversed) {
+        try {
+          await File(p.join(dir.path, name))
+              .writeAsString('', mode: FileMode.append, flush: true);
+          _fallbackName = name;
+          return name;
+        } catch (e) {
+          // Этот наш, но от прежней установки — пробуем следующий.
+          continue;
+        }
+      }
+    } catch (e) {
+      // Каталог не перечислился — просто заведём новое имя.
+    }
+    final fresh = _freshFilename();
+    _fallbackName = fresh;
+    return fresh;
+  }
+
+  static const String _fallbackPrefix = 'bz5_companion_diag_';
+
   /// Имя со временем — как у экспорта, который этим и жив.
   String _freshFilename() {
     final n = DateTime.now();
     String two(int v) => v.toString().padLeft(2, '0');
-    return 'bz5_companion_diag_${n.year}${two(n.month)}${two(n.day)}'
+    return '$_fallbackPrefix${n.year}${two(n.month)}${two(n.day)}'
         '-${two(n.hour)}${two(n.minute)}${two(n.second)}.md';
   }
 
