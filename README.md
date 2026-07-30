@@ -11,7 +11,7 @@ It surfaces what the dashboard keeps to itself: real state of health, per-cell b
 
 > **Unofficial project.** Not affiliated with Toyota, FAW-Toyota or BYD. Written by one BZ5 owner, for that car, after off-the-shelf scanners turned out not to see it. There are no stability guarantees: screens, database schema and constants change from build to build.
 
-Current version: **0.1.75+174**. Releases are published automatically as GitHub Releases tagged `build-N`.
+Current version: **0.1.76+175**. Releases are published automatically as GitHub Releases tagged `build-N`.
 
 ---
 
@@ -25,6 +25,8 @@ Current version: **0.1.75+174**. Releases are published automatically as GitHub 
 ### The two data planes
 
 **OBD-II / UDS.** The BZ5 answers on non-standard diagnostic addresses outside the usual `7E0-7E7` block; the addressing rule is `RX = TX + 8`. Thirty-one ECUs are catalogued in `lib/data/ecu_registry.dart` together with the DIDs that were found to mean something. Reads are plain UDS `22 XX YY`.
+
+The head-unit framework exposes its properties as literal hex feature IDs rather than names, and the full parsed registry of them — 10016 entries lifted out of the vehicle software's own configuration — is deliberately **not** published here. The right to decompile for interoperability does not extend to handing the results to everyone; the identifiers this app actually uses are the presets in `native_explorer_wide.dart` and the decoder table beside it.
 
 **BYD vehicle HAL.** On the head unit the app subscribes to the framework's push telemetry. The important architectural detail: only the `*_COMMON` permission family is grantable at runtime, and it only opens the *listener* channel — the synchronous getters behind `*_GET` stay closed. So every live HAL value arrives as a push, never as a poll.
 
@@ -86,7 +88,7 @@ What comes back after a reinstall: trips, snapshots, atlas reveals, chart series
 
 ## What it does not do
 
-* **Read-only.** No commands to the car — no climate, no locks, no windows.
+* **Read-only as shipped.** Nothing in the app writes to the vehicle: no climate, no locks, no windows. To be precise rather than reassuring: a property-write call does exist in the native layer (`BydCarPropertyClient.setProperty`, wrapped in `native_car_channel.dart`) because the framework exposes one, but it has no callers anywhere in the app and no screen reaches it. Grep for it and see.
 * **No clearing of fault codes.**
 * **Not a driving display.** Read it parked or charging; background logging while driving is the intended use.
 * **No broadcast CAN sniffing over OBD.** The diagnostic gateway is isolated from the vehicle bus, so `ATMA` sees nothing. On the head unit the HAL plane fills part of that gap.
@@ -166,6 +168,7 @@ android/app/src/main/
 tools/          verification gates
 docs/           reverse-engineering notes
 test/           flutter test suite
+LICENSE  NOTICE  SECURITY.md
 ```
 
 ---
@@ -184,9 +187,7 @@ Physical constants live in `Bz5Model` in `lib/services/connection.dart`.
 ## Known gaps
 
 * **No collector service.** Collection runs inside the Flutter engine inside the activity; the only declared service is the autostart one. When Android kills the process, collection stops until something wakes it. A headless collector is an open design problem, not a bug with a fix pending.
-* **The 0-100 km/h auto-measurement never fires** in normal traffic — the acceleration rules are satisfiable in principle and unreachable in practice.
 * **Gaps in the tick stream** of roughly 35-40 s per session, reproducible across sessions, cause unknown.
-* **No `LICENSE` file** is committed although MIT is intended.
 * Head-unit installs remain manual; in-app installation is in progress.
 
 ---
@@ -199,7 +200,13 @@ Verified on the Toyota BZ5 (FAW-Toyota). The DID map and the HAL signal table we
 
 ## License
 
-MIT is intended; the `LICENSE` file has not been committed yet. Until it is, treat the code as "all rights reserved" if that distinction matters to you, and open an issue to hurry it along.
+Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+Apache rather than MIT for reasons specific to this project: it grants patents explicitly, it states in section 6 that no trademark rights travel with it (which matters in a repository full of other people's model names), it requires modified files to be marked as changed so a broken fork is not mistaken for this build, and its warranty and liability sections are written out rather than compressed into a single line.
+
+**Supplied free of charge, outside any commercial activity.** There is no paid edition, no paid service, and no donation that gates access to the software or to its updates. The optional cloud sync collects vehicle telemetry only in order to serve the app itself. This is stated because it is a condition rather than a slogan: EU law exempts free and open-source software supplied outside a commercial activity from the product-liability and cyber-resilience regimes that otherwise treat software as a product, and that exemption is what this project relies on.
+
+Security reports: see [SECURITY.md](SECURITY.md).
 
 ---
 

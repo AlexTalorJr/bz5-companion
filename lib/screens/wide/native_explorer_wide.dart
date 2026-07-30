@@ -378,8 +378,7 @@ class _NativeExplorerWideState extends State<NativeExplorerWide> {
   String _validationHint(String s) {
     if (s.isEmpty || s == '0x') {
       return 'Enter a hex feature ID (e.g. 0x99002B0A). '
-          'See assets/native_api/bz5_feature_catalog.csv for the 10016 known IDs, '
-          'or tap a preset below.';
+          'Tap a preset below.';
     }
     if (!s.toLowerCase().startsWith('0x')) {
       return 'Feature ID must start with 0x (e.g. 0x99002B0A).';
@@ -764,7 +763,7 @@ class _NativeExplorerWideState extends State<NativeExplorerWide> {
                     border: OutlineInputBorder(),
                     isDense: true,
                     hintText: '0x99002B0A',
-                    helperText: 'Hex feature ID. Tap a preset below or pick one from docs/bz5_feature_catalog.csv',
+                    helperText: 'Hex feature ID. Tap a preset below.',
                   ),
                 ),
                 const SizedBox(height: 6),

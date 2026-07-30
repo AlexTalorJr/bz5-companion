@@ -22,7 +22,7 @@
 | `BYDAutoXxxDevice` framework (system jar) | прямой HAL без сервера | Особые случаи, обход сервера | reflection-доступ, требует BYDAUTO_*_COMMON |
 | Unix socket `diag_socket_channel` | snapshot DTC database (json key/value) | DTC scan, заводские диагностики | нет (LocalSocket abstract namespace) |
 
-Реестр известных features — **10016 свойств** в `assets/config_{1,2,3}.bin` сервера. Распарсенный CSV — `bz5_feature_catalog.csv`.
+Реестр известных features — **10016 свойств** в `assets/config_{1,2,3}.bin` сервера. Полный разобранный каталог (10016 свойств) в публичном репозитории НЕ публикуется: право на декомпиляцию ради совместимости не покрывает оптовую передачу полученных данных третьим лицам. Используемые идентификаторы перечислены пресетами в `native_explorer_wide.dart` и таблицей декодеров.
 
 **Ключевая дисквалификация прошлого плана**: string property names — это **НЕ** `"battery.soc"`, а литеральные hex-encoded feature IDs вида `"0x99002B0A"`. Человекочитаемых имён в системе нет.
 
@@ -288,7 +288,7 @@ message Feature {
 - `assets/config_2.bin` (32 KB, **2668 features**) — write-only
 - `assets/config_3.bin` (6.8 KB, **559 features**) — read-write
 
-Итого **10016 уникальных feature ID**. Catalog экспортирован в `bz5_feature_catalog.csv`.
+Итого **10016 уникальных feature ID**. Каталог держится вне публичного репозитория, см. выше.
 
 **dataType codes** в config (TBD — нужна runtime-калибровка):
 
@@ -319,7 +319,7 @@ return Long.parseLong(s.substring(2), 16);
 
 ## 8. Что мы НЕ знаем (требуется runtime-проба)
 
-1. **Какой featureID = SOC, voltage, speed, etc.** — нужно runtime-перебирать catalog и логировать значения. На стоянке SOC = константа, скорость = 0, voltage ≈ 350-400V. Можно отфильтровать по диапазонам и dataType. Каталог из 10016 featureID есть в `bz5_feature_catalog.csv`.
+1. **Какой featureID = SOC, voltage, speed, etc.** — нужно runtime-перебирать catalog и логировать значения. На стоянке SOC = константа, скорость = 0, voltage ≈ 350-400V. Можно отфильтровать по диапазонам и dataType. Стартовый список идентификаторов — пресеты в `native_explorer_wide.dart`.
 
 2. **Какой dataType code в `config_*.bin` = `"java.lang.Integer"` / `"java.lang.Long"` / ...** Калибровка: `getPropertyConfigs(["0x..."])` вернёт `CarPropertyConfig` с полем-классом значения. Текущая гипотеза `dataType=1=Integer, 2=Long, 3=Float, 4=Double, 23=byte[]` неверна — proto-конфиги используют другой `dataType` код, чем wire format типа. Type name на wire — это **строковое имя Java-класса** (см. §3.1), независимо от `dataType` в protobuf.
 
@@ -404,11 +404,11 @@ String vin = (String) c.getMethod("getRealAutoVIN").invoke(dev);
 - 🔍 Permission gating empirics
 - 🔍 BinderProvider.query() bootstrap URI / extras format
 
-Catalog в `bz5_feature_catalog.csv` — стартовый список для probing.
+Стартовый список для probing — пресеты в `native_explorer_wide.dart`.
 
 ## 12. Источники в репо
 
-- `bz5_feature_catalog.csv` — все 10016 features parsed из proto configs
+- полный каталог 10016 features (parsed из proto configs) — вне публичного репозитория
 - `byd_internals_findings.md` — recon до текущей сессии
 - `bz5_findings_v1_0_0.zip` — AIDL сигнатуры всех 93 сервисов  
 - `carserver_assets/` — оригинальные `config_*.bin` + parsed `.txt` (proto raw decode)

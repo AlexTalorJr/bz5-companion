@@ -401,7 +401,6 @@ APK подписывается одним и тем же keystore во всех 
 └── docs/
     ├── BZ5_NATIVE_API_RECON.md                 ← BYD framework reverse engineering
     ├── INTEGRATION.md                          ← v0.1.27 install/test guide
-    └── bz5_feature_catalog.csv                 ← 10016 feature IDs
 ```
 
 ### Запомнённые vehicle facts (из livelog сессий)
@@ -430,7 +429,7 @@ APK подписывается одним и тем же keystore во всех 
 
 ### Запомнённые decompile findings (BYD car framework)
 
-- **Property names = literal hex feature IDs** `"0x<HEX>"`, НЕ человекочитаемые. Парсится через `HalFeatureProvider.transformHexString2Long`. Каталог 10016 features в `docs/bz5_feature_catalog.csv`.
+- **Property names = literal hex feature IDs** `"0x<HEX>"`, НЕ человекочитаемые. Парсится через `HalFeatureProvider.transformHexString2Long`. Полный каталог 10016 features держится вне публичного репозитория; используемые идентификаторы — пресеты в `native_explorer_wide.dart`.
 - **3 параллельных канала данных**:
   1. `ICarPropertyService` через BinderProvider (URI=any, projection[0]=FQCN селектор)
   2. Direct HAL через reflection на `android.hardware.bydauto.*` (BYDAutoPowerDevice, BYDAutoVehicleDataDevice etc.)
