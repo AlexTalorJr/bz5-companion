@@ -1,199 +1,208 @@
 # BZ5 Companion
 
-**An Android app for monitoring the Toyota BZ5** through an OBD-II Bluetooth adapter.
+Telemetry and monitoring for the **Toyota BZ5** (FAW-Toyota, BYD e-platform).
 
-Shows what the dashboard hides: precise battery health, cell balance, real pack voltage, temperature, and more — all in one place, in real time.
+The app runs in two different places and reads the car in two different ways:
 
-> ⚠️ **Unofficial project.** Not affiliated with Toyota or FAW-Toyota. Built by a BZ5 owner after popular apps like CarScanner Pro refused to work with this car.
+* on an **Android phone**, over an ELM327 BLE adapter plugged into the OBD-II port;
+* **natively on the car's own head unit** (DiLink 5.0, Android 12), where it talks to the BYD vehicle framework directly and needs no adapter at all.
 
----
+It surfaces what the dashboard keeps to itself: real state of health, per-cell balance across all 136 series cells, pack voltage under load, precise odometer, charging power and energy, and a long-running map of how much the car actually consumes at each speed and each outside temperature.
 
-## Why this exists
+> **Unofficial project.** Not affiliated with Toyota, FAW-Toyota or BYD. Written by one BZ5 owner, for that car, after off-the-shelf scanners turned out not to see it. There are no stability guarantees: screens, database schema and constants change from build to build.
 
-The Toyota BZ5 is a relatively new EV built on the BYD platform with a 65.28 kWh blade LiFePO4 battery. The car talks to diagnostic equipment on non-standard addresses, and most generic OBD scanners simply don't see it.
-
-This app speaks the car's native language and surfaces data that's otherwise impossible to get.
-
-## What the app shows
-
-### Main screen
-
-**State of Charge (SOC)** — large, with color indication. Range estimate in kilometers is calculated against the real-world consumption of 14.4 kWh/100km.
-
-**State of Health (SOH)** — as a percentage. New cars sit at 98-100%; this number drops over time. Shows what the dashboard keeps to itself.
-
-**Battery temperature** — in °C. Useful in winter and summer to know when the battery is uncomfortable.
-
-**Pack voltage** — actual voltage across all cells combined. Drops under acceleration, rises during regen — you can watch the car "breathe."
-
-**Odometer** — accurate to 100 meters. Don't confuse with the dashboard odometer, which rounds.
-
-**Charge cycles** — how many full-equivalent charge cycles the battery has gone through in its lifetime. Battery "mileage" beyond kilometers driven.
-
-**Gear and parking pawl** — which gear is engaged (P/R/N/D) and whether the mechanical parking pawl is locked (more reliable than the parking brake).
-
-### Charging
-
-When you plug in the cable, a dedicated card appears showing:
-- Current charging power in kW
-- Estimated time to 100%
-- How much energy has been added in this session
-
-### Cell balance
-
-A separate screen with the voltage of every one of the 20 battery cells. On a healthy battery, the difference between the lowest and highest cell should be:
-- 20-50 mV in the mid-SOC range
-- 50-100 mV at 100% (a normal LFP chemistry quirk)
-- if it goes above 150 mV — diagnostics needed
-
-The app understands the context and grades the balance as Excellent / Good / Fair / Poor.
-
-### Trip history
-
-Every drive is saved locally with timestamp, distance, energy used, start and end SOC. Charging sessions are **not** logged as trips.
-
-### All ECUs
-
-For the curious — a separate screen showing all 30 electronic control units of the car and what they expose.
+Current version: **0.1.75+174**. Releases are published automatically as GitHub Releases tagged `build-N`.
 
 ---
 
-## What you need
+## Two ways to run it
 
-### Hardware
+| Target | How it reads the car | Notes |
+|---|---|---|
+| Android phone, 12+ | ELM327 BLE adapter, ISO 15765-4 + UDS | Needs the adapter plugged in and the car awake. Full OBD data set including per-cell voltages. |
+| BZ5 / BZ3 head unit, DiLink 5.0 (Android 12, API 32) | BYD vehicle HAL push channel, plus the same OBD path if an adapter happens to be present | No adapter needed. Cluster-grade signal quality. Wide layout drawn for the car's own 2175 dp panel. |
 
-**Bluetooth ELM327 adapter.** Tested with Vgate iCar Pro BLE. Any ELM327 v2.1+ with BLE should work (BLE / Bluetooth 4.0+, **not** classic Bluetooth).
+### The two data planes
 
-**Android phone** running Android 12 or newer. There's no iOS version (Apple Developer account required for distribution, and the author doesn't have one).
+**OBD-II / UDS.** The BZ5 answers on non-standard diagnostic addresses outside the usual `7E0-7E7` block; the addressing rule is `RX = TX + 8`. Thirty-one ECUs are catalogued in `lib/data/ecu_registry.dart` together with the DIDs that were found to mean something. Reads are plain UDS `22 XX YY`.
 
-### Setup
+**BYD vehicle HAL.** On the head unit the app subscribes to the framework's push telemetry. The important architectural detail: only the `*_COMMON` permission family is grantable at runtime, and it only opens the *listener* channel — the synchronous getters behind `*_GET` stay closed. So every live HAL value arrives as a push, never as a poll.
 
-You can grab the APK from [Releases](../../releases) or build it yourself from source.
-
-On first launch:
-1. Grant Bluetooth and Location permissions (needed for BLE scanning)
-2. Sit in the car, press Start with the brake pedal → car in Ready
-3. Open Settings in the app → "Find adapter"
-4. Pick your ELM327 from the list
-5. Done — the app will start receiving data automatically
-
-If data isn't coming after pairing, double-check that the adapter actually plugged into the OBD port (located under the steering wheel on the left, you'll need to crouch a little).
+Where the two planes overlap (speed, pack voltage, current, SOC, gear, temperatures) the HAL value silently substitutes for the OBD one inside the *same* widget, in the same position, with no "HAL" badge. Signals that only one plane has — motor RPM, parking sensors, climate, odometer on one side; per-cell voltages and DTCs on the other — appear only where they exist. The rule the UI follows everywhere: **a card is shown when data actually flows, and is absent otherwise** — never a dash standing in for a number nobody measured.
 
 ---
 
-## What the app does **not** do
+## What it shows
 
-- **It doesn't control the car.** Read-only. No "start the AC", "open the windows", or similar commands.
-- **It doesn't clear error codes.** That requires a different access level and could potentially break things.
-- **The UI isn't meant to be used while driving.** For safety, only check the screen while parked or charging. Background data logging while driving is fine.
-- **It doesn't show speed or RPM in real time.** These signals on the BZ5 are architecturally protected — the diagnostic port is isolated from the main vehicle bus. This isn't an app bug; it's a manufacturer security measure.
-- **No remote access.** Only works while you're near the car with Bluetooth on.
+**Dashboard.** SOC with range estimate, SOH, battery temperature, pack voltage and HV bus, odometer to 100 m, gear and mechanical parking-pawl state, lifetime cycle count.
 
----
+**Cells.** All 136 series cells with min/max/spread, graded in context — LFP chemistry legitimately spreads wider near 100%, so a flat threshold would lie.
 
-## Security and privacy
+**Charging.** Live power, energy added this session, time to full. Energy comes from ΔSOC × pack capacity, not from the car's own counter (see *Calibration*).
 
-- The app **does not send any data** to any servers. Everything stays local on your phone.
-- No registration, account, or login required.
-- Connects only to the BLE OBD adapter. No other network connections.
-- Source is open — verify it yourself.
+**Trips and history.** Every drive stored locally with distance, energy, SOC and temperature envelope, peak power and regen. Chart series are persisted separately so they survive a reinstall. Charging is not logged as a trip.
 
----
+**Trends.** Consumption and efficiency over time, built from odometer/SOC anchor walks rather than from summed trip fields, and averaged only over days where both sides of the ratio are actually covered.
 
-## Frequently Asked Questions
+**Measurements.** Steady-state consumption per speed band: a band earns a row after 120 s of qualified in-band driving, with dwell and guard rules so that traffic noise does not manufacture numbers.
 
-**Is this safe for the car?**
-Yes. The app uses only standard diagnostic queries — the same kind an official dealer service uses during diagnostics. The car retains no record of the connection after the adapter is unplugged. No traces, no changes.
+**Atlas.** The long game: a grid of **11 speed bands (40-140 km/h) × 12 temperature windows (-20 °C to +35 °C in 5° steps) = 132 cells**. A cell freezes once it has collected its qualified 120 seconds, is stamped with the app version that produced it, and stops moving. Coverage is marked bronze/silver/gold; matured-but-not-frozen cells show as dashed. Collection stops at 140 km/h by design. The whole map can be exported as a shareable image with a QR code.
 
-**Will it work on other cars?**
-Only on the Toyota BZ5 (FAW-Toyota). Parameters were reverse-engineered specifically for this model. May partially work on related BYD vehicles on the same platform, but with no guarantees.
+**Explorers and tools.** ECU explorer, HAL explorer, DID sweep (long, screen-awake), live logging with results view, app diagnostics, and an append-only diagnostic dump that can be handed off as a single file.
 
-**Why does the adapter have to be BLE and not classic Bluetooth?**
-Modern Android handles BLE better for long background connections. Classic-Bluetooth ELM327 adapters also need pairing through system settings, which complicates UX.
+**Export.** One ZIP containing CSVs for every table, the SQLite file itself, and the diagnostic dump.
 
-**Does the app drain the car's battery?**
-The adapter pulls roughly 50 mA from the 12V battery. Overnight that's nothing. If you leave the adapter plugged in for a week with the car off, you might drain the 12V battery. Best to unplug when not in use, or get an adapter with auto-sleep.
-
-**How fast does data update?**
-A full poll cycle is 1-2 seconds. Numbers and charts update in real time.
-
-**What if I have questions or find a bug?**
-Open an Issue in this repository.
+**Install / update screen.** The head unit cannot update an APK in place, so there is a dedicated screen for staging and launching an installation. See *Installing*.
 
 ---
 
-## Acknowledgments
+## Autostart on the head unit
 
-This project was built by one person over a long evening with help from an AI assistant (Claude Opus 4.7), which handled protocol analysis and code generation. Without AI it would have taken weeks. Without a real car and a "but why doesn't CarScanner work?" itch — it wouldn't exist at all.
+Android 12 blocks starting a foreground service straight from a broadcast receiver, so the app does not try. Instead:
 
-Thanks to the EV enthusiast communities in China and Russia, whose scattered forum posts and chat snippets pointed at what to look for.
+```
+BOOT_COMPLETED / QUICKBOOT_POWERON / MEDIA_MOUNTED
+        → setAlarmClock(+250 ms) on itself
+        → alarm fires → startForegroundService (allowed from alarm context)
+```
+
+Every wake is written to a marker log, which also travels out inside the diagnostic dump so it can be read without pulling files off the device. Measured latency of the bridge in the field is a few seconds rather than the nominal 250 ms — the alarm is exact, the framework's own startup is not.
+
+The app must be opened by hand once after installation, otherwise it stays in Android's *stopped* state and receives no broadcasts at all.
+
+---
+
+## Cloud sync — optional, off until you turn it on
+
+There is a sync client for a self-hosted bridge (`carbridge.neardo.work`). It exists for one concrete reason: the head unit cannot update an APK in place, and every reinstall wipes the local SQLite database.
+
+If you register a device with a setup token, the app uploads trips, snapshots, sweep runs and results, live logs, and a once-a-minute heartbeat carrying the app version. The device token lives in the Android Keystore. Raw high-rate samples are never uploaded — the server refuses them by default and the client does not attempt it. The client never pulls anything back for its own UI; local storage is the source of truth.
+
+**If you never register, nothing leaves the device.** There is no telemetry, no analytics and no third-party SDK anywhere in the build. But the earlier claim that this app "sends no data to any servers" is no longer true in general, and this README says so plainly.
+
+What comes back after a reinstall: trips, snapshots, atlas reveals, chart series. What does **not** come back: raw samples and the Atlas collection ledger — meaning partially collected bands are lost.
+
+---
+
+## What it does not do
+
+* **Read-only.** No commands to the car — no climate, no locks, no windows.
+* **No clearing of fault codes.**
+* **Not a driving display.** Read it parked or charging; background logging while driving is the intended use.
+* **No broadcast CAN sniffing over OBD.** The diagnostic gateway is isolated from the vehicle bus, so `ATMA` sees nothing. On the head unit the HAL plane fills part of that gap.
+* **No signed pack current over UDS.** It has to be inferred, or taken from HAL on the head unit.
+* **No remote access.**
+* **No iOS build.**
+
+---
+
+## Installing
+
+**Phone.** Grab the APK from [Releases](../../releases), sideload it, grant Bluetooth and Location (BLE scanning needs Location on Android), then pair the adapter from Settings → *Find adapter*. The OBD port is under the steering column on the left.
+
+**Head unit.** DiLink's built-in installer performs clean installs only — it answers "already installed" to anything it recognises and counts that as success. So: uninstall the old version first, then install. Put the APK in a `SilentInstaller/` folder on a USB stick and plug it into the armrest port. On macOS run `dot_clean -m /Volumes/STICK` first, or AppleDouble `._*` files show up in the installer's list. There is no ADB access to the head unit.
+
+Consequence worth planning around: **every head-unit reinstall wipes preferences and the local database.**
+
+---
+
+## Building from source
+
+Flutter **3.27.4** stable, Dart 3.
+
+One non-obvious thing: `android/` in this repository contains only `app/src/main` — the manifest, the Kotlin sources and the resources. The Gradle project is **not** committed. CI generates it with `flutter create --platforms=android` and then patches it (Kotlin 2.1.0 in `settings.gradle`, release signing in `app/build.gradle`). To build locally, run `flutter create --platforms=android --org com.bz5companion --project-name bz5_companion .` in a checkout first, then `flutter build apk`.
+
+A real device is required for anything involving BLE or the car framework; emulators are useless here.
+
+Workflows in `.github/workflows/`:
+
+* `build.yml` — APK build, then a GitHub Release tagged `build-N` with `make_latest`, where N is the commit count;
+* `test.yml` — `flutter test`, independent of the build;
+* `lint.yml` — analysis.
+
+---
+
+## Verification harness
+
+Changes to this repository are gated by scripts in `tools/`, run before anything is committed:
+
+| Script | What it checks |
+|---|---|
+| `check_repo.py` | structural sanity of protected files, layout invariants |
+| `const_l10n_check.py` | no localisation lookups inside `const` spans |
+| `hal_sync_check.py` | HAL signal table stays in sync with its consumers |
+| `regress_plus35.py` | the standing regression suite, organised into lettered eras — every behavioural fix that ever regressed has a named check here |
+| `dart_balance.py` | brace/paren balance and missing imports across `lib/` |
+| `atlas_a1_check.py` | Atlas identity: frozen ⊕ live must equal the session counter, verified against real field dumps |
+| `mirror_plus164.py` | Dart↔Python mirror of the consumption maths |
+
+Baseline for the current HEAD: `7/7` · `OK` · `22/0/0` · `490 PASS / 1 WARN / 0 FAIL` · `74/74`.
+
+Two hard-won rules encoded here: any check that matches source text must strip comments first (five separate gates once passed by reading their own explanatory comment), and every gate must be *mutation-tested* — revert the thing it guards and require that specific gate to fail, or it is not a gate.
+
+---
+
+## Language
+
+The UI ships in **English and Russian** (`lib/l10n/strings.dart`, resolved by `LocaleService`).
+
+Source comments, `docs/` and the gate scripts are substantially in Russian. This is not purely cosmetic: the regression gate alone carries 97 quoted Russian UI strings as match anchors, so the Russian text in this repository is load-bearing and cannot be swapped out without rewriting the harness alongside it.
+
+---
+
+## Repository layout
+
+```
+lib/
+  ble/          ELM327 transport and client
+  data/         Drift database, ECU/DID registry, atlas projection
+  screens/      phone screens; screens/wide/ = head-unit layouts
+  services/     connection, HAL telemetry, cloud sync, export, autostart
+  widgets/      atlas grid and export, band cards, driver panels
+  l10n/         EN/RU strings
+android/app/src/main/
+  kotlin/       BYD framework bridge, HAL subscriber, autostart, APK install
+  AndroidManifest.xml
+tools/          verification gates
+docs/           reverse-engineering notes
+test/           flutter test suite
+```
+
+---
+
+## Calibration and constants
+
+* **Pack capacity 65.28 kWh** on this vehicle; a 73.984 kWh variant is owner-reported. Auto-detection of the variant is not implemented.
+* **136 series cells**, read from DID `790/0x0B03` with 136 as the fallback.
+* **Nominal 14.4 kWh/100 km** is used only as a fallback for the range estimate when the car's own figure is unavailable.
+* **Charge counter `0x0B00` is deprecated and must not be used.** It was originally calibrated at ~460 Wh per unit; a controlled 5-minute AC charge at constant power proved it is not a linear energy counter at all — it increments on internal BMS/OBC state-machine events. All energy now comes from ΔSOC × pack capacity.
+
+Physical constants live in `Bz5Model` in `lib/services/connection.dart`.
+
+---
+
+## Known gaps
+
+* **No collector service.** Collection runs inside the Flutter engine inside the activity; the only declared service is the autostart one. When Android kills the process, collection stops until something wakes it. A headless collector is an open design problem, not a bug with a fix pending.
+* **The 0-100 km/h auto-measurement never fires** in normal traffic — the acceleration rules are satisfiable in principle and unreachable in practice.
+* **Gaps in the tick stream** of roughly 35-40 s per session, reproducible across sessions, cause unknown.
+* **No `LICENSE` file** is committed although MIT is intended.
+* Head-unit installs remain manual; in-app installation is in progress.
+
+---
+
+## Vehicle support
+
+Verified on the Toyota BZ5 (FAW-Toyota). The DID map and the HAL signal table were derived specifically for it. Related DiLink 5.0 / BYD e-platform vehicles may work partially — the head-unit side is more likely to port than the OBD side — but nothing is promised.
 
 ---
 
 ## License
 
-MIT. Use, fork, modify — at your own risk.
+MIT is intended; the `LICENSE` file has not been committed yet. Until it is, treat the code as "all rights reserved" if that distinction matters to you, and open an issue to hurry it along.
 
 ---
 
-<details>
-<summary><strong>📡 Technical details (for developers)</strong></summary>
+## Acknowledgments
 
-### Architecture
-
-- **Flutter 3.27.4** + Dart 3, Material 3
-- **flutter_blue_plus** for BLE transport
-- **Drift (SQLite)** for local trip / sample / snapshot storage
-- **fl_chart, provider, intl** for UI and state management
-
-### Protocol
-
-- **ISO 15765-4 (CAN 11-bit, 500 kbps)** — protocol 6 in ELM327
-- **UDS** for diagnostic queries (`22 XX YY` for read DID)
-- 30 ECUs discovered on non-standard addresses outside the 7E0-7E7 range
-- Addressing rule: RX = TX + 8
-
-### Key ECUs
-
-| TX→RX | Name | Purpose |
-|---|---|---|
-| 790→798 | BMS master | SOC, SOH, temperature, cells, pack voltage, counters |
-| 791→799 | VCU | Odometer, gear, power, parking pawl, VIN |
-| 782→78A | OBC charger | Cable status, charger parameters |
-| 757→75F | GPS (Asensing) | Coordinates (placeholder when stationary) |
-| 740→748 | Pack monitor | Cached voltage snapshots |
-
-### Key DIDs (BMS, ECU 790)
-
-| DID | Meaning | Scale |
-|---|---|---|
-| 0x0005 | SOC | % |
-| 0x0015 | Pack voltage | × 0.02 V |
-| 0x0029 | SOH | % |
-| 0x002B / 0x002D | Cell V min/max | mV |
-| 0x002F | Battery temp | offset −40 °C |
-| 0x016D-0x01B7 | 20 cell voltages | mV |
-| 0x0B00 | Lifetime charge counter | × 460 Wh (calibrated) |
-| 0x0B02 | Cycle count | unit |
-
-### What doesn't work
-
-- **Broadcast traffic (ATMA)** is unavailable — the diagnostic gateway is isolated from the main vehicle bus
-- **Signed current** isn't exposed via UDS, has to be inferred indirectly via Power-A (VCU) / Pack Voltage
-- **Real-time RPM and speed** — not accessible via diagnostics
-- **DID 0x0009 on BMS** has unclear semantics, not used
-
-### Contributing
-
-1. Fork the repo
-2. Install Flutter 3.27.4 and dependencies from `pubspec.yaml`
-3. Plug in your ELM327 BLE adapter
-4. `flutter run` on a real Android device (emulators won't work — real BLE required)
-
-APK builds run via GitHub Actions — see `.github/workflows/`.
-
-### Calibration
-
-All physical constants live in `lib/services/connection.dart` inside the `Bz5Model` class. Calibrated against a full charge session (48% → 100%) and dashboard readings. Accuracy ±5%.
-
-</details>
+Built by one owner over several months of driving, reading and reverse engineering, with Claude (Anthropic) doing protocol analysis, code generation, and most of the verification harness. Scattered posts from Chinese and Russian EV communities pointed at where to look first.
