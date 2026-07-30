@@ -86,16 +86,11 @@ class MainActivity : FlutterActivity() {
                 "pick" -> {
                     // Ответ придёт из onActivityResult: SAF — это
                     // отдельная активити, и вернуться раньше нечем.
-                    if (pendingPick != null) {
-                        result.success(mapOf<String, Any?>(
-                            "ok" to false, "error" to "pick already in flight"
-                        ))
-                    } else {
-                        pendingPick = result
+                    if (claimPending(result, ApkInstall.REQ_PICK)) {
                         try {
                             ApkInstall.pick(this)
                         } catch (t: Throwable) {
-                            pendingPick = null
+                            releasePending()
                             result.success(mapOf<String, Any?>(
                                 "ok" to false,
                                 "error" to
@@ -111,12 +106,65 @@ class MainActivity : FlutterActivity() {
                             "ok" to false, "error" to "no uri"
                         ))
                     } else {
-                        result.success(ApkInstall.stage(this, uri))
+                        offMain(result) { ApkInstall.stage(this, uri) }
                     }
                 }
-                "launch" -> result.success(ApkInstall.launch(this))
+                "launch" -> {
+                    // v0.1.77+176: попытка идёт через
+                    // startActivityForResult, и resultCode придёт в
+                    // onActivityResult. Сам вызов отвечает сразу — он
+                    // сообщает, ЧТО запустилось; ответ установщика
+                    // приезжает второй строкой в журнал попытки.
+                    result.success(ApkInstall.launch(this))
+                }
                 "unknownSources" ->
                     result.success(ApkInstall.openUnknownSources(this))
+                // ── +176 §A1: обозреватель ────────────────────────
+                "openTree" -> {
+                    if (claimPending(result, ApkInstall.REQ_TREE)) {
+                        val r = ApkInstall.openTree(this)
+                        if (r["ok"] != true) {
+                            // Ни один из двух интентов дерева не пошёл —
+                            // ответа из onActivityResult не будет, и
+                            // держать Result значит подвесить экран.
+                            releasePending()
+                            result.success(r)
+                        }
+                    }
+                }
+                "rememberTree" -> {
+                    val uri = call.argument<String>("uri")
+                    result.success(
+                        if (uri == null) {
+                            mapOf<String, Any?>(
+                                "ok" to false, "error" to "no uri"
+                            )
+                        } else {
+                            ApkInstall.rememberTree(this, uri)
+                        }
+                    )
+                }
+                "listApks" -> offMain(result) { ApkInstall.listApks(this) }
+                "openDoor" -> {
+                    val name = call.argument<String>("door")
+                    result.success(
+                        if (name == null) {
+                            mapOf<String, Any?>(
+                                "ok" to false, "error" to "no door"
+                            )
+                        } else {
+                            ApkInstall.openDoor(this, name)
+                        }
+                    )
+                }
+                // Путь к подготовленному файлу отдаётся наружу, чтобы
+                // §B скачивал ровно туда, откуда читает провайдер, а не
+                // в место, которое Dart считает тем же самым.
+                "stagedPath" -> result.success(mapOf<String, Any?>(
+                    "ok" to true,
+                    "path" to
+                        java.io.File(cacheDir, ApkFileProvider.STAGED).path
+                ))
                 else -> result.notImplemented()
             }
         }
@@ -124,6 +172,85 @@ class MainActivity : FlutterActivity() {
 
     /** Ответ SAF-выбора. Держится ровно один запрос за раз. */
     private var pendingPick: MethodChannel.Result? = null
+
+    /** Какой именно ответ мы ждём. v0.1.77+176: запросов стало три
+     *  (файл, дерево, установка), и без кода они неразличимы — а
+     *  ответить надо по существу каждого. */
+    private var pendingCode: Int = 0
+
+    /**
+     * Занять единственный слот ожидания.
+     *
+     * ОДНА КОПИЯ НА ДВА ВЫЗОВА, и это не косметика. В первой редакции
+     * +176 охрана слота стояла отдельно в `pick` и в `openTree`, и
+     * мутационный харнесс отказался работать: анкер гейта BI8 перестал
+     * быть уникальным. Предохранитель «анкер ровно один раз» поймал не
+     * свою ошибку, а мою — две копии условия, которые разошлись бы при
+     * первой правке одной из них. Слот один, значит и охрана одна.
+     *
+     * Возвращает true, если слот занят нами и вызывающему можно
+     * запускать активити; false — если ответ уже отправлен отказом.
+     */
+    private fun claimPending(
+        result: MethodChannel.Result, code: Int
+    ): Boolean {
+        if (pendingPick != null) {
+            result.success(mapOf<String, Any?>(
+                "ok" to false, "error" to "pick already in flight"
+            ))
+            return false
+        }
+        pendingPick = result
+        pendingCode = code
+        return true
+    }
+
+    /** Освободить слот, не отвечая: ответ отправляет вызывающий. */
+    private fun releasePending() {
+        pendingPick = null
+        pendingCode = 0
+    }
+
+    /**
+     * v0.1.77+176 — ТЯЖЁЛУЮ РАБОТУ С ФАЙЛАМИ УБРАТЬ С ГЛАВНОГО ПОТОКА.
+     *
+     * Обработчики MethodChannel вызываются на платформенном потоке, то
+     * есть на главном. Через них теперь проходят две операции, которые
+     * там стоять не могут:
+     *
+     *   • `stage` копирует APK целиком — десятки мегабайт, и читает их
+     *     с USB-флешки, у которой скорость чтения непредсказуема;
+     *   • `listApks` делает до 64 запросов к DocumentsProvider флешки,
+     *     каждый из которых уходит в чужой процесс.
+     *
+     * Это ровно тот класс отказа, за который проект уже платил дважды:
+     * обречённое обращение к мёртвым Downloads на каждую строку маркера
+     * (+173) и `readText()` многомегабайтного журнала (+174). Оба раза
+     * ANR был маловероятен и оба раза его убирали — потому что
+     * срабатывает он раз в сотню случаев и не воспроизводится.
+     *
+     * Ответ ОБЯЗАН уйти на главном потоке: `MethodChannel.Result` не
+     * потокобезопасен, и вызов `success` из рабочего потока — это
+     * плавающий отказ канала. Поэтому работа в потоке, ответ через
+     * Handler главного лупера.
+     */
+    private fun offMain(
+        result: MethodChannel.Result,
+        work: () -> Map<String, Any?>
+    ) {
+        val main = android.os.Handler(android.os.Looper.getMainLooper())
+        Thread {
+            val out = try {
+                work()
+            } catch (t: Throwable) {
+                mapOf<String, Any?>(
+                    "ok" to false,
+                    "error" to "${t.javaClass.simpleName}: ${t.message}"
+                )
+            }
+            main.post { result.success(out) }
+        }.start()
+    }
 
     /**
      * Страховка от повисшего Future.
@@ -141,6 +268,7 @@ class MainActivity : FlutterActivity() {
         super.onResume()
         val pending = pendingPick ?: return
         pendingPick = null
+        pendingCode = 0
         pending.success(
             mapOf<String, Any?>("ok" to false, "error" to "no-result")
         )
@@ -150,13 +278,37 @@ class MainActivity : FlutterActivity() {
         requestCode: Int, resultCode: Int, data: Intent?
     ) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode != ApkInstall.REQ_PICK) return
+        // v0.1.77+176: REQ_INSTALL отвечает НЕ в pendingPick. Ответ
+        // установщика — главный неизвестный факт этой темы (пять
+        // прогонов 29.07 дали staged_bytes: 0, то есть он не
+        // спрашивался ни разу), и потерять его из-за того, что
+        // Dart-сторона уже получила ответ на «что запустилось», нельзя.
+        // Поэтому resultCode уезжает в журнал автозапуска — канал,
+        // который доехал целым оба раза, когда ZIP приезжал обрезанным.
+        if (requestCode == ApkInstall.REQ_INSTALL) {
+            AutostartMarker.write(
+                this,
+                "install-result: resultCode=$resultCode" +
+                    " data=${data?.dataString ?: "-"}"
+            )
+            return
+        }
+        if (requestCode != ApkInstall.REQ_PICK &&
+            requestCode != ApkInstall.REQ_TREE
+        ) {
+            return
+        }
         val pending = pendingPick ?: return
         pendingPick = null
+        pendingCode = 0
         val uri = data?.data
         pending.success(
             if (resultCode == Activity.RESULT_OK && uri != null) {
-                mapOf<String, Any?>("ok" to true, "uri" to uri.toString())
+                mapOf<String, Any?>(
+                    "ok" to true,
+                    "uri" to uri.toString(),
+                    "tree" to (requestCode == ApkInstall.REQ_TREE)
+                )
             } else {
                 mapOf<String, Any?>("ok" to false, "error" to "cancelled")
             }

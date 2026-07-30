@@ -46,9 +46,32 @@
         android:maxSdkVersion="29" />
     <!-- v0.1.13: read permission for re-importing exports later (and on some
          OEM ROMs read is required to enumerate the Downloads folder).
-         Same maxSdkVersion logic. -->
+         Same maxSdkVersion logic.
+
+         v0.1.77+176: потолок поднят 29 → 32, и это ПРОБА С ИЗВЕСТНЫМ
+         СТРУКТУРНЫМ ПОТОЛКОМ, а не ожидаемое решение. Наш targetSdk
+         равен 35 (проверено в flutter.groovy тега 3.27.4; CI это нигде
+         не переопределяет — grep targetSdk по .github/workflows пуст),
+         поэтому requestLegacyExternalStorage ниже не действует вовсе, а
+         при targetSdk >= 30 на устройстве API 32 это разрешение
+         открывает через scoped storage только МЕДИА. APK не медиа —
+         значит прочитать его File-API со съёмного тома снятием потолка
+         НЕ ОТКРОЕТСЯ В ПРИНЦИПЕ. Объявление стоит здесь ровно затем,
+         чтобы путь A1c был пробирован, а не предположен: правило «ни
+         один путь не предполагать» уже дважды стоило дороже, чем
+         лишняя строка манифеста. Побочная выгода того же прогона —
+         проверить, оживают ли публичные Downloads, мёртвые с +166. -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
-        android:maxSdkVersion="29" />
+        android:maxSdkVersion="32" />
+    <!-- v0.1.77+176: второй путь к файлу (A1b). Разрешение особое: одним
+         объявлением не выдаётся, экран для него открывается из
+         приложения — и этого экрана на прошивке может не оказаться
+         ровно так же, как не оказалось экрана unknown-sources (поле
+         29.07, ActivityNotFoundException). Поэтому оно НЕ является
+         условием работы обозревателя: listApks деградирует к
+         SAF-дереву, которое прав на хранилище не требует вообще. -->
+    <uses-permission
+        android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
 
     <!-- v0.1.27: BYD car framework access for native head-unit mode.
          These permissions only mean anything on real BZ5/BYD head units —
@@ -243,10 +266,56 @@
         <!-- v0.1.73+172: провайдер одного файла — подготовленного APK.
              file:// установщику отдать нельзя с Android 7
              (FileUriExposedException), нужен content:// с временным
-             грантом. Свой, а не androidx FileProvider: тот потянул бы
-             androidx.core в compile-classpath, а проверить это локально
-             нечем — Gradle в контейнере не запускается, и «почти
-             наверняка есть» означало бы провал сборки на CI. -->
+             грантом.
+
+             ПОПРАВКА v0.1.77+176. Обоснование «androidx.core проверить
+             локально нечем» БЫЛО НЕВЕРНО и снято здесь тем же разбором,
+             что и в ApkFileProvider.kt в +173: share_plus, который стоит
+             у нас в pubspec, объявляет ShareFileProvider как наследника
+             androidx.core.content.FileProvider — значит androidx.core на
+             classpath гарантированно, и риска сборки не было. Утверждение
+             простояло в манифесте на четыре патча дольше, чем в коде,
+             потому что гейт BJ5 читает только .kt. Настоящая причина
+             оставить свой провайдер — она же и достаточная: штатный
+             требует res/xml с описанием путей и обслуживает каталоги, а
+             нам нужен РОВНО ОДИН файл. -->
+        <!-- v0.1.77+176 §A2: приём APK через «поделиться». Если штатный
+             проводник это умеет, файл придёт к нам в обход первой стены
+             (ACTION_OPEN_DOCUMENT захвачен галереей BYD, которая
+             перечисляет только изображения и видео).
+
+             ОТДЕЛЬНАЯ activity, а НЕ фильтр на MainActivity: у главной
+             taskAffinity="" и launchMode="singleTop", и менять её
+             поверхность запуска ради приёма файла — риск, несоразмерный
+             выгоде, она же лончер.
+
+             exported="true" обязателен — иначе нас нет в списке «кому
+             поделиться». Поверхность атаки: чужое приложение может
+             положить нам в кэш свой файл под именем staged_update.apk.
+             Установить его молча нельзя (диалог системного установщика
+             показывает пакет и требует подтверждения), поэтому цена
+             ограничена содержимым нашего же кэша.
+
+             noHistory + excludeFromRecents + NoDisplay: активити
+             стажирует файл и немедленно закрывается, своего UI у неё
+             нет. -->
+        <activity
+            android:name=".StageActivity"
+            android:exported="true"
+            android:noHistory="true"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.NoDisplay">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/vnd.android.package-archive" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/octet-stream" />
+            </intent-filter>
+        </activity>
         <provider
             android:name=".ApkFileProvider"
             android:authorities="${applicationId}.apkprovider"
@@ -291,8 +360,47 @@
             <action
                 android:name="android.settings.MANAGE_UNKNOWN_APP_SOURCES" />
         </intent>
+        <!-- v0.1.77+176: те же грабли видимости для НОВЫХ дверей.
+             Без этих записей расширенная проба вернёт пустой список у
+             живого экрана, и мы второй раз закроем как безнадёжное то,
+             что просто не видно. OPEN_DOCUMENT_TREE здесь главный: это
+             ДРУГОЕ действие, чем перехваченный галереей OPEN_DOCUMENT, и
+             единственный путь, который на API 30+ для съёмных томов
+             задуман работать. -->
+        <intent>
+            <action android:name="android.intent.action.OPEN_DOCUMENT_TREE" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.GET_CONTENT" />
+            <data android:mimeType="*/*" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SEND" />
+            <data android:mimeType="application/vnd.android.package-archive" />
+        </intent>
+        <intent>
+            <action
+                android:name="android.settings.MANAGE_ALL_UNKNOWN_APP_SOURCES" />
+        </intent>
+        <intent>
+            <action
+                android:name="android.settings.MANAGE_ALL_FILES_ACCESS_PERMISSION" />
+        </intent>
+        <intent>
+            <action
+                android:name="android.settings.APPLICATION_DETAILS_SETTINGS" />
+        </intent>
+        <intent>
+            <action android:name="android.settings.SECURITY_SETTINGS" />
+        </intent>
+        <intent>
+            <action
+                android:name="android.settings.MANAGE_APPLICATIONS_SETTINGS" />
+        </intent>
         <package android:name="com.android.packageinstaller" />
         <package android:name="com.google.android.packageinstaller" />
         <package android:name="com.android.permissioncontroller" />
+        <package android:name="com.android.documentsui" />
+        <package android:name="com.google.android.documentsui" />
     </queries>
 </manifest>

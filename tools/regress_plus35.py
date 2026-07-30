@@ -6808,22 +6808,74 @@ if int(pv) >= 172:
     # getPackageInfo фильтруются по видимости — БЕЗ этих записей проба
     # вернёт пусто при полностью живом установщике, то есть соврёт
     # ровно в ту сторону, которая закрыла бы тему как безнадёжную.
+    #
+    # ПЕРЕПИН +176, И ПРИЧИНА НАЙДЕНА МУТАЦИЕЙ. Прежняя редакция искала
+    # подстроки, и мутация `com.android.permissioncontroller` →
+    # `com.android.permissioncontroller.off` её НЕ уронила: имя с
+    # суффиксом содержит имя без суффикса, `in` этого не различает.
+    # То есть гейт пропускал ровно ту поломку, от которой стоял —
+    # неверное имя пакета, при котором видимость снова отключена.
+    # Он был первым слепым гейтом, найденным восстановленным
+    # tools/mutate_gates.py, и это его окупило целиком.
+    #
+    # Теперь имена сравниваются ТОЧНО и не со списком в этом файле, а с
+    # тем, что читает сама проба: вторая копия правды разошлась бы с
+    # ApkInstall.kt при первой же его правке.
     _bi_q = _bi_mf.split('<queries>')[-1].split('</queries>')[0] \
         if '<queries>' in _bi_mf else ''
-    _bi2 = ('android.intent.action.VIEW' in _bi_q and
-            'android.intent.action.INSTALL_PACKAGE' in _bi_q and
-            'android.intent.action.OPEN_DOCUMENT' in _bi_q and
-            'android.settings.MANAGE_UNKNOWN_APP_SOURCES' in _bi_q and
-            'application/vnd.android.package-archive' in _bi_q and
-            'com.android.packageinstaller' in _bi_q and
-            'com.google.android.packageinstaller' in _bi_q and
-            'com.android.permissioncontroller' in _bi_q)
+    _bi_qpkgs, _bi_qacts, _bi_qmimes = set(), set(), set()
+    try:
+        import xml.etree.ElementTree as _bi_et2
+        _bi_qroot = _bi_et2.fromstring(_bi_mf_raw)
+        for _qs in _bi_qroot.iter('queries'):
+            for _el in _qs.iter('package'):
+                _bi_qpkgs.add(_el.get(_bi_ns + 'name'))
+            for _el in _qs.iter('action'):
+                _bi_qacts.add(_el.get(_bi_ns + 'name'))
+            for _el in _qs.iter('data'):
+                _bi_qmimes.add(_el.get(_bi_ns + 'mimeType'))
+    except Exception:
+        _bi_xml_ok = False
+
+    # Пакеты, которые проба реально проверяет через getPackageInfo.
+    _bi_probe_pkgs = set()
+    if 'out["installer_packages"] = listOf(' in _bi_ai:
+        _bi_pblk = _bi_ai.split('out["installer_packages"] = listOf(')[-1] \
+            .split(')')[0]
+        _bi_probe_pkgs = set(_bi_re.findall(r'"([^"]+)"', _bi_pblk))
+
+    _bi_need_acts = {
+        'android.intent.action.VIEW',
+        'android.intent.action.INSTALL_PACKAGE',
+        'android.intent.action.OPEN_DOCUMENT',
+        'android.settings.MANAGE_UNKNOWN_APP_SOURCES',
+    }
+    if int(pv) >= 176:
+        # Двери +176. Каждая — отдельное действие, и отсутствие записи
+        # означает пустой список у живого экрана.
+        _bi_need_acts |= {
+            'android.intent.action.OPEN_DOCUMENT_TREE',
+            'android.intent.action.GET_CONTENT',
+            'android.intent.action.SEND',
+            'android.settings.MANAGE_ALL_UNKNOWN_APP_SOURCES',
+            'android.settings.MANAGE_ALL_FILES_ACCESS_PERMISSION',
+            'android.settings.APPLICATION_DETAILS_SETTINGS',
+            'android.settings.SECURITY_SETTINGS',
+            'android.settings.MANAGE_APPLICATIONS_SETTINGS',
+        }
+    _bi2 = (_bi_xml_ok and
+            not (_bi_need_acts - _bi_qacts) and
+            'application/vnd.android.package-archive' in _bi_qmimes and
+            bool(_bi_probe_pkgs) and
+            not (_bi_probe_pkgs - _bi_qpkgs))
     if _bi2:
-        ok('BI2 package-visibility queries cover every intent and '
-           'installer the probe reads')
+        ok(f'BI2 (re-era +176) queries parsed from XML: '
+           f'{len(_bi_need_acts)} actions and every package the probe '
+           f'reads, matched exactly')
     else:
-        fail('BI2 a queries entry is missing — the probe would report '
-             'an empty install path on a healthy firmware')
+        fail(f'BI2 queries incomplete — missing actions '
+             f'{sorted(_bi_need_acts - _bi_qacts)}, packages '
+             f'{sorted(_bi_probe_pkgs - _bi_qpkgs)}')
 
     # BI3: проба ТОЛЬКО читает. Её зовут при открытии экрана и после
     # каждой попытки; побочное действие внутри превратило бы
@@ -6843,17 +6895,46 @@ if int(pv) >= 172:
     # ACTION_INSTALL_PACKAGE — устаревший, но на части OEM-прошивок
     # зарегистрирован именно он. Вторая попытка стоит пяти строк,
     # незаданный вопрос — цикла установки, то есть всех данных.
-    _bi_launch = _bi_ai.split('fun launch(')[-1]
-    _bi4 = ('Intent.ACTION_VIEW, Intent.ACTION_INSTALL_PACKAGE' in _bi_launch
-            and 'FLAG_GRANT_READ_URI_PERMISSION' in _bi_launch and
-            'FLAG_ACTIVITY_NEW_TASK' in _bi_launch and
-            'steps.add(' in _bi_launch and
-            't.javaClass.simpleName' in _bi_launch)
-    if _bi4:
-        ok('BI4 both install actions are tried and every step is '
-           'recorded with the exception class')
+    _bi_launch = _bi_ai.split('fun launch(')[-1] \
+        .split('fun openUnknownSources(')[0]
+    if int(pv) >= 176:
+        # ПЕРЕПИН +176. Существо прежнее: обе попытки, каждый шаг с
+        # именем класса исключения. Изменилось одно — попытка обязана
+        # ВЕРНУТЬ resultCode, потому что за пять прогонов 29.07
+        # установщик не спрашивался ни разу (`staged_bytes: 0`), и его
+        # ответ остаётся главным неизвестным фактом темы.
+        #
+        # FLAG_ACTIVITY_NEW_TASK при этом обязан ИСЧЕЗНУТЬ, и это не
+        # косметика: с ним активити уходит в отдельную задачу и
+        # onActivityResult не зовётся никогда. Оставить флаг и ждать
+        # ответа — построить прибор, который молчит по конструкции.
+        _bi4 = ('Intent.ACTION_VIEW, Intent.ACTION_INSTALL_PACKAGE'
+                in _bi_launch and
+                'FLAG_GRANT_READ_URI_PERMISSION' in _bi_launch and
+                'FLAG_ACTIVITY_NEW_TASK' not in _bi_launch and
+                'startActivityForResult(i, REQ_INSTALL)' in _bi_launch and
+                'steps.add(' in _bi_launch and
+                't.javaClass.simpleName' in _bi_launch)
+        if _bi4:
+            ok('BI4 (re-era +176) both actions tried, every step keeps '
+               'the exception class, and the attempt can return a '
+               'resultCode (no NEW_TASK)')
+        else:
+            fail('BI4 (re-era +176) the attempt cannot report the '
+                 'installer answer')
     else:
-        fail('BI4 only one install action is tried or failures are silent')
+        _bi4 = ('Intent.ACTION_VIEW, Intent.ACTION_INSTALL_PACKAGE'
+                in _bi_launch
+                and 'FLAG_GRANT_READ_URI_PERMISSION' in _bi_launch and
+                'FLAG_ACTIVITY_NEW_TASK' in _bi_launch and
+                'steps.add(' in _bi_launch and
+                't.javaClass.simpleName' in _bi_launch)
+        if _bi4:
+            ok('BI4 both install actions are tried and every step is '
+               'recorded with the exception class')
+        else:
+            fail('BI4 only one install action is tried or failures '
+                 'are silent')
 
     # BI5: провайдер отдаёт РОВНО один файл и только на чтение. Он
     # экспортируется грантом наружу, поэтому запись через него не
@@ -7190,6 +7271,264 @@ if int(pv) >= 174:
         fail('BK5 the A1 check is missing its applicability rule')
 else:
     ok(f"Part BK skipped (build +{pv}, the field debts land in +174)")
+
+# ═══════════ Part BL — v0.1.77+176 «Установка поверх» ═══════════
+#
+# Поле 29.07, пять прогонов, одинаковый ответ: системный установщик на
+# прошивке ЖИВ, но `staged_bytes` во всех пяти равен нулю — до него дело
+# не дошло ни разу, и его ответ до сих пор НЕИЗВЕСТЕН. Обе стены стоят
+# раньше: файла нет (ACTION_OPEN_DOCUMENT захвачен галереей BYD, она
+# перечисляет только изображения и видео) и разрешения нет (экрана
+# unknown-sources не существует, ActivityNotFoundException).
+#
+# Разрешение главнее файла: скачивание без него даёт файл, который
+# некому поставить. Отсюда порядок §A → §B и предметы гейтов ниже.
+if int(pv) >= 176:
+    _bl_kt = 'android/app/src/main/kotlin/com/bz5companion/bz5_companion/'
+
+    def _bl_slurp(rel):
+        p = root / rel
+        return p.read_text() if p.exists() else ''
+
+    _bl_mf_raw = _bl_slurp('android/app/src/main/AndroidManifest.xml')
+    _bl_ai_raw = _bl_slurp(_bl_kt + 'ApkInstall.kt')
+    _bl_ma_raw = _bl_slurp(_bl_kt + 'MainActivity.kt')
+    _bl_mk_raw = _bl_slurp(_bl_kt + 'AutostartMarker.kt')
+    _bl_br_raw = _bl_slurp(_bl_kt + 'BootReceiver.kt')
+    _bl_sv_raw = _bl_slurp(_bl_kt + 'AutostartService.kt')
+    _bl_ch_raw = _bl_slurp('lib/services/apk_install_channel.dart')
+    _bl_sc_raw = _bl_slurp('lib/screens/install_update.dart')
+
+    _bl_ai = _strip_comments_safe(_bl_ai_raw)
+    _bl_ma = _strip_comments_safe(_bl_ma_raw)
+    _bl_mk = _strip_comments_safe(_bl_mk_raw)
+    _bl_br = _strip_comments_safe(_bl_br_raw)
+    _bl_sv = _strip_comments_safe(_bl_sv_raw)
+    _bl_ch = _strip_comments_safe(_bl_ch_raw)
+    _bl_sc = _strip_comments_safe(_bl_sc_raw)
+
+    _bl_ns = '{http://schemas.android.com/apk/res/android}'
+
+    # BL1: манифест РАЗБОРОМ XML (урок BH1: split('<receiver') ловит и
+    # <receiver-disabled>, содержимое отключённого блока при этом
+    # находится целиком). Три предмета: тонкая activity приёма
+    # объявлена и экспортирована с фильтром SEND на APK-мимотип; оба
+    # разрешения на хранилище объявлены; поверхность запуска
+    # MainActivity НЕ ТРОНУТА — у неё по-прежнему ровно один фильтр
+    # MAIN/LAUNCHER, и это самостоятельный предмет: она же лончер, и
+    # поломка здесь стоит доступа к приложению целиком.
+    _bl_stage = None
+    _bl_main = None
+    _bl_perms = {}
+    _bl_xml_ok = True
+    try:
+        import xml.etree.ElementTree as _bl_et
+        _bl_root_el = _bl_et.fromstring(_bl_mf_raw)
+        for _el in _bl_root_el.iter('activity'):
+            _n = _el.get(_bl_ns + 'name')
+            if _n == '.StageActivity':
+                _bl_stage = _el
+            if _n == '.MainActivity':
+                _bl_main = _el
+        for _el in _bl_root_el.iter('uses-permission'):
+            _bl_perms[_el.get(_bl_ns + 'name')] = _el.get(
+                _bl_ns + 'maxSdkVersion')
+    except Exception:
+        _bl_xml_ok = False
+
+    _bl_send_ok = False
+    if _bl_stage is not None:
+        for _f in _bl_stage.findall('intent-filter'):
+            _fa = {_a.get(_bl_ns + 'name') for _a in _f.findall('action')}
+            _fm = {_d.get(_bl_ns + 'mimeType') for _d in _f.findall('data')}
+            if ('android.intent.action.SEND' in _fa and
+                    'application/vnd.android.package-archive' in _fm):
+                _bl_send_ok = True
+    _bl_main_filters = (
+        len(_bl_main.findall('intent-filter')) if _bl_main is not None else -1)
+    _bl_read_max = _bl_perms.get(
+        'android.permission.READ_EXTERNAL_STORAGE', 'absent')
+    _bl1 = (_bl_xml_ok and _bl_stage is not None and
+            _bl_stage.get(_bl_ns + 'exported') == 'true' and
+            _bl_stage.get(_bl_ns + 'noHistory') == 'true' and
+            _bl_send_ok and
+            'android.permission.MANAGE_EXTERNAL_STORAGE' in _bl_perms and
+            _bl_read_max == '32' and
+            _bl_main is not None and
+            _bl_main.get(_bl_ns + 'launchMode') == 'singleTop' and
+            _bl_main.get(_bl_ns + 'taskAffinity') == '' and
+            _bl_main_filters == 1)
+    if _bl1:
+        ok('BL1 stage activity declared with a SEND filter, both storage '
+           'permissions present, MainActivity launch surface untouched')
+    else:
+        fail('BL1 manifest: stage activity missing/misdeclared, a storage '
+             'permission absent, or MainActivity launch surface changed')
+
+    # BL2: расширенная проба ТОЛЬКО читает. Её зовут при открытии экрана
+    # и после КАЖДОЙ попытки; побочное действие превратило бы прибор в
+    # источник событий, а +176 добавил в неё десять новых чтений.
+    _bl_probe = _bl_ai.split('fun probe(')[-1] \
+        .split('fun doorIntents(')[0]
+    _bl2 = ('startActivity' not in _bl_probe and
+            'outputStream' not in _bl_probe and
+            'takePersistableUriPermission' not in _bl_probe and
+            'out["tree_doc_resolvers"]' in _bl_probe and
+            'out["doors"]' in _bl_probe and
+            'out["target_sdk"]' in _bl_probe and
+            'out["version_code"]' in _bl_probe and
+            'out["persisted_trees"]' in _bl_probe)
+    if _bl2:
+        ok('BL2 the extended probe still only reads, and it reports '
+           'targetSdk and versionCode from the field')
+    else:
+        fail('BL2 the extended probe has a side effect or lost a reading')
+
+    # BL3: НИ ОДНА ДВЕРЬ НЕ ПОТЕРЯНА. Их девять, они перечислены одним
+    # списком, и проба обходит ИМЕННО ЭТОТ список — иначе перечень и
+    # попытка разойдутся, а перечень тут и есть предмет.
+    _bl_doors_fn = _bl_ai.split('fun doorIntents(')[-1] \
+        .split('private fun createTreeIntent(')[0]
+    _bl_need_doors = [
+        'Intent.ACTION_OPEN_DOCUMENT_TREE to',
+        'DOOR_CREATE_TREE to',
+        'Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES to',
+        'Settings.ACTION_MANAGE_ALL_UNKNOWN_APP_SOURCES to',
+        'Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION to',
+        'Settings.ACTION_APPLICATION_DETAILS_SETTINGS to',
+        'Settings.ACTION_SECURITY_SETTINGS to',
+        'Settings.ACTION_MANAGE_APPLICATIONS_SETTINGS to',
+        'Intent.ACTION_GET_CONTENT to',
+    ]
+    _bl_lost = [d for d in _bl_need_doors if d not in _bl_doors_fn]
+    _bl3 = (not _bl_lost and
+            'for ((name, intent) in doorIntents(context))' in _bl_probe and
+            'fun openDoor(' in _bl_ai and
+            'doorIntents(activity).firstOrNull' in _bl_ai)
+    if _bl3:
+        ok(f'BL3 all {len(_bl_need_doors)} doors are declared once and '
+           f'both the probe and the opener walk that same list')
+    else:
+        fail(f'BL3 a door was lost or the opener keeps its own list: '
+             f'{_bl_lost}')
+
+    # BL4: ПОПЫТКА НИЧЕГО НЕ ГЛОТАЕТ. Ответ установщика — главный
+    # неизвестный факт темы; проглоченное исключение или потерянный
+    # resultCode стоят ещё одного цикла установки, то есть всех данных
+    # на устройстве.
+    _bl_launch = _bl_ai.split('fun launch(')[-1] \
+        .split('fun openUnknownSources(')[0]
+    _bl_oar = _bl_ma.split('override fun onActivityResult(')[-1]
+    _bl4 = ('out["can_request_installs_at_attempt"]' in _bl_launch and
+            'out["exception"] = "${t.javaClass.simpleName}: ${t.message}"'
+            in _bl_launch and
+            'steps.add(' in _bl_launch and
+            'REQ_INSTALL' in _bl_oar and
+            'install-result: resultCode=$resultCode' in _bl_oar)
+    if _bl4:
+        ok('BL4 the attempt records the appop state, the exception class '
+           'and the installer resultCode')
+    else:
+        fail('BL4 the attempt can swallow the installer answer')
+
+    # BL5: ОБОЗРЕВАТЕЛЬ ДЕГРАДИРУЕТ, А НЕ ТРЕБУЕТ. Права на хранилище
+    # НЕ являются условием: их экран может отсутствовать точно так же,
+    # как отсутствует unknown-sources. Сделай их обязательными — и
+    # обозреватель умрёт там, где SAF-дерево работало бы.
+    #
+    # Проверяется ОТСУТСТВИЕ выхода до permission-free пути: между
+    # началом listApks и обходом отданных деревьев не должно быть ни
+    # одного return.
+    _bl_list = _bl_ai.split('fun listApks(')[-1] \
+        .split('private const val TREE_DIR_BUDGET')[0]
+    _bl_before_saf = _bl_list.split('val trees = persistedTrees(context)')[0]
+    _bl_files = _bl_ai.split('private fun scanFiles(')[-1] \
+        .split('fun openDoor(')[0]
+    _bl5 = ('return' not in _bl_before_saf and
+            'val trees = persistedTrees(context)' in _bl_list and
+            _bl_list.find('scanTree(context, t)') <
+            _bl_list.find('scanFiles(context, notes)') and
+            'if (!manage && !read)' in _bl_files and
+            'notes.add("file: ни одного разрешения на хранилище — пропуск")'
+            in _bl_files and
+            'TREE_DIR_BUDGET' in _bl_ai and 'APK_LIMIT' in _bl_ai)
+    if _bl5:
+        ok('BL5 the browser degrades: the permission-free path runs '
+           'first and missing storage rights are an answer, not an error')
+    else:
+        fail('BL5 the browser requires a storage permission to work')
+
+    # BL6: СКАЧИВАНИЕ НЕ ДАЁТ ОТКАТА, пишет туда, откуда читает
+    # провайдер, сверяет размер и не оставляет огрызка. Плюс лимит
+    # запросов отделён от «обновлений нет»: свести их к одному ответу
+    # значило бы соврать тем самым прибором, который делается ради
+    # честности (найдено пробой api.github.com в этом же окне — 403 с
+    # телом-JSON приходит буднично, 60 запросов в час на адрес).
+    _bl_up = _bl_ch.split('class ApkUpdate')[-1]
+    _bl6 = ('available > installed' in _bl_up and
+            'rateLimited' in _bl_ch and
+            "contains('rate limit')" in _bl_up and
+            'UpdateLookup.rateLimited' in _bl_up and
+            'size != release.bytes' in _bl_up and
+            'await file.delete()' in _bl_up and
+            'ApkInstallChannel.stagedPath()' in _bl_sc and
+            'ApkUpdate.isUpgrade(installed, rel.buildNumber)' in _bl_sc and
+            'token' not in _bl_up.lower())
+    if _bl6:
+        ok('BL6 the download refuses a downgrade, verifies the size, '
+           'leaves no partial file, ships no token, and tells a rate '
+           'limit apart from «no release»')
+    else:
+        fail('BL6 the download can roll back, keep a partial file, or '
+             'report a rate limit as «up to date»')
+
+    # BL7: РОТАЦИЯ НЕ ИЗ BOOT-КОНТЕКСТА. Перезапись многомегабайтного
+    # файла на главном потоке в момент загрузки ГУ — ровно тот риск,
+    # который +174 здесь убирал. Защита конструктивная, а не флагом:
+    # единственный вызов стоит в read(), который зовут из MethodChannel;
+    # ресивер и сервис знают только write().
+    _bl_read = _bl_mk.split('fun read(context: Context')[-1] \
+        .split('fun noteFallback(')[0]
+    _bl_write = _bl_mk.split('fun write(')[-1].split('fun read(')[0]
+    _bl7 = (_bl_mk.count('private fun rotateIfHuge(') == 1 and
+            'rotateIfHuge(context)' in _bl_read and
+            'rotateIfHuge' not in _bl_write and
+            'rotateIfHuge' not in _bl_br and
+            'rotateIfHuge' not in _bl_sv and
+            _bl_mk.count('rotateIfHuge(context)') == 1 and
+            'tmp.renameTo(f)' in _bl_mk and
+            'ROTATE_KEEP' in _bl_mk and
+            "indexOf('\\n')" in _bl_mk)
+    if _bl7:
+        ok('BL7 rotation is reachable only from read(): tail, temp file, '
+           'rename — never from the boot context')
+    else:
+        fail('BL7 rotation can run from the boot context or is not '
+             'crash-safe')
+
+    # BL8: SAF-ПУТЬ НЕ ТРЕБУЕТ НИ ОДНОГО РАЗРЕШЕНИЯ НА ХРАНИЛИЩЕ —
+    # иначе смысл третьего пути потерян целиком: он затем и первый, что
+    # на API 30+ для съёмных томов работает БЕЗ прав, а targetSdk 35
+    # делает File-API по съёмному тому структурно закрытым.
+    _bl_saf = (
+        _bl_ai.split('private fun scanTree(')[-1].split('private fun scanFiles(')[0] +
+        _bl_ai.split('fun openTree(')[-1].split('fun rememberTree(')[0] +
+        _bl_ai.split('fun rememberTree(')[-1].split('fun listApks(')[0] +
+        _bl_ai.split('fun persistedTrees(')[-1].split('private fun volumeReport(')[0]
+    )
+    _bl8 = ('READ_EXTERNAL_STORAGE' not in _bl_saf and
+            'isExternalStorageManager' not in _bl_saf and
+            'checkSelfPermission' not in _bl_saf and
+            'DocumentsContract' in _bl_saf and
+            'takePersistableUriPermission' in _bl_saf and
+            'ACTION_OPEN_DOCUMENT_TREE' in _bl_saf)
+    if _bl8:
+        ok('BL8 the SAF path asks for no storage permission at all — '
+           'the whole point of putting it first')
+    else:
+        fail('BL8 the SAF path leans on a storage permission')
+else:
+    ok(f"Part BL skipped (build +{pv}, install-over lands in +176)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)

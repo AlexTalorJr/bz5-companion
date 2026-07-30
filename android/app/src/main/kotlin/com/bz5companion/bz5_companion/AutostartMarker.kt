@@ -167,19 +167,34 @@ object AutostartMarker {
      * UTF-8 последовательности. Размер целого файла сообщается в первой
      * строке, чтобы рост был виден без доступа к устройству.
      *
-     * Ротации здесь нет сознательно, это открытый пункт. В файл пишут
-     * и из boot-контекста на главном потоке, а перезапись
-     * многомегабайтного файла в такой момент — риск того же класса,
-     * который здесь и убирается. Нужна отдельная блокировка.
+     * v0.1.77+176 — РОТАЦИЯ ПОЯВИЛАСЬ, И ИМЕННО ЗДЕСЬ.
+     *
+     * Открытый пункт +174 закрыт. Место выбрано не по удобству: `read()`
+     * зовут из MethodChannel, то есть на переднем плане и по инициативе
+     * владельца, а не в момент загрузки ГУ. Из boot-контекста ротация
+     * недостижима КОНСТРУКТИВНО — не по флагу, который можно уронить, а
+     * потому что единственный её вызов стоит здесь, а ресивер и сервис
+     * зовут только `write()`. Перезапись многомегабайтного файла на
+     * главном потоке во время загрузки — риск того же класса, который
+     * +174 здесь и убирал.
+     *
+     * Rename между записями безопасен: наши записи открывают и
+     * закрывают файл на КАЖДУЮ строку (`appendText`), поэтому открытого
+     * дескриптора, который переехал бы вместе с inode, не существует.
+     * Худшее, что может случиться при совпадении по времени, — одна
+     * строка биения ляжет в файл, который через миллисекунду сменят;
+     * цена — одна строка раз в несколько месяцев.
      */
     fun read(context: Context, maxBytes: Int = 64 * 1024): String = try {
+        val rotated = rotateIfHuge(context)
         val f = File(context.filesDir, FILE_NAME)
+        val head = if (rotated != null) "($rotated)\n" else ""
         if (!f.exists()) {
             "(маркера нет: $FILE_NAME не создан в filesDir)"
         } else {
             val total = f.length()
             if (total <= maxBytes) {
-                f.readText()
+                head + f.readText()
             } else {
                 val buf = ByteArray(maxBytes)
                 RandomAccessFile(f, "r").use { raf ->
@@ -192,7 +207,7 @@ object AutostartMarker {
                 // последовательности — отрезаем до первого перевода.
                 val cut = tail.indexOf('\n')
                 val body = if (cut >= 0) tail.substring(cut + 1) else tail
-                "(показан хвост $maxBytes из $total байт)\n$body"
+                head + "(показан хвост $maxBytes из $total байт)\n$body"
             }
         }
     } catch (t: Throwable) {
@@ -215,5 +230,78 @@ object AutostartMarker {
                 " (fails=$pubFails), writing app-private" +
                 " — arrives in the export ZIP as autostart_marker.txt"
         )
+    }
+
+    /** Выше этого размера журнал усекается. */
+    private const val ROTATE_ABOVE = 2 * 1024 * 1024
+
+    /** Сколько хвоста остаётся после усечения. */
+    private const val ROTATE_KEEP = 256 * 1024
+
+    /**
+     * v0.1.77+176 — §C: УСЕЧЕНИЕ ЖУРНАЛА.
+     *
+     * Журнал append-only и не чистился никогда: по полю 29.07 средняя
+     * строка 96 байт, биения каждые 5 минут, то есть ~27 КБ в сутки и
+     * порядка 10 МБ в год при круглосуточном процессе. +174 вылечил
+     * только ЧТЕНИЕ (позиционированием), рост остался.
+     *
+     * ЕДИНСТВЕННЫЙ ВЫЗОВ — из `read()`. Это и есть защита от
+     * boot-контекста: не флаг, который можно уронить правкой, а
+     * отсутствие второго пути. Ресивер и сервис зовут `write()`, и
+     * `write()` про ротацию не знает.
+     *
+     * Хвост читается позиционированием, пишется в ВРЕМЕННЫЙ файл и
+     * подставляется одним `rename` — атомарно на POSIX. Порядок именно
+     * такой: усечение на месте (открыть на запись, переписать) в момент
+     * отказа питания оставило бы обрезанный журнал, а он здесь
+     * единственный свидетель.
+     *
+     * Обрезка по границе строки обязательна и здесь: позиция попадает в
+     * середину UTF-8 последовательности так же, как при чтении.
+     *
+     * Возвращает строку отчёта для диаг-дампа либо null, если ротация не
+     * потребовалась. Молча не усекает: пропавшие килобайты журнала
+     * читались бы как потеря данных.
+     */
+    @Synchronized
+    private fun rotateIfHuge(context: Context): String? {
+        val f = File(context.filesDir, FILE_NAME)
+        val total = try {
+            if (!f.exists()) return null else f.length()
+        } catch (t: Throwable) {
+            return null
+        }
+        if (total <= ROTATE_ABOVE) return null
+        val tmp = File(context.filesDir, "$FILE_NAME.rot")
+        return try {
+            val buf = ByteArray(ROTATE_KEEP)
+            RandomAccessFile(f, "r").use { raf ->
+                raf.seek(total - ROTATE_KEEP)
+                raf.readFully(buf)
+            }
+            val tail = String(buf, Charsets.UTF_8)
+            val cut = tail.indexOf('\n')
+            val body = if (cut >= 0) tail.substring(cut + 1) else tail
+            val ts = SimpleDateFormat(
+                "yyyy-MM-dd HH:mm:ss", Locale.US
+            ).format(Date())
+            tmp.writeText(
+                "$ts  marker: rotated, was $total bytes," +
+                    " kept the last $ROTATE_KEEP\n" + body
+            )
+            if (tmp.renameTo(f)) {
+                "rotate: $total → ${f.length()} bytes"
+            } else {
+                tmp.delete()
+                "rotate: rename refused, file left as is"
+            }
+        } catch (t: Throwable) {
+            try {
+                tmp.delete()
+            } catch (ignored: Throwable) {
+            }
+            "rotate: ${t.javaClass.simpleName}: ${t.message}"
+        }
     }
 }

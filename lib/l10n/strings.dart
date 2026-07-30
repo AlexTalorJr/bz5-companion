@@ -219,6 +219,29 @@ class S {
     'install.log.empty': 'Nothing tried yet',
     'install.export': 'To diag dump',
     'install.exported': 'Written to',
+    // v0.1.77+176 — the install path grew a browser and a downloader.
+    'install.doors.title': 'Doors to the permission',
+    'install.doors.sub':
+        'The number is how many activities accepted the action. '
+        'Zero means this firmware has no such screen.',
+    'install.tree.title': 'Point at the USB stick',
+    'install.tree.sub':
+        'Hand over the volume once — the grant survives a reboot',
+    'install.browse.title': 'Look for APKs',
+    'install.browse.sub': 'Handed-over volume first, then plain files',
+    'install.browse.empty': 'No APK found yet',
+    'install.update.title': 'Check for a build',
+    'install.update.check': 'Ask GitHub for the latest release',
+    'install.update.rate':
+        'GitHub is rate-limiting this address — try later',
+    'install.update.none': 'No release available',
+    'install.update.offline': 'No network',
+    'install.update.bad': 'Reply could not be read',
+    'install.update.download': 'Download build',
+    'install.update.notnewer': 'Not newer than installed — refused',
+    'install.update.unknown':
+        'Installed build number unreadable — refused',
+    'install.update.cancel': 'Cancel',
 
     // App diagnostics screen (v0.1.29+122)
     'appdiag.title': 'App diagnostics',
@@ -1347,6 +1370,29 @@ class S {
     'install.log.empty': 'Пока ничего не пробовали',
     'install.export': 'В диаг-дамп',
     'install.exported': 'Записано в',
+    // v0.1.77+176 — у пути установки появились обозреватель и загрузка.
+    'install.doors.title': 'Двери к разрешению',
+    'install.doors.sub':
+        'Число — сколько активити приняло действие. Ноль значит, что '
+        'такого экрана на прошивке нет.',
+    'install.tree.title': 'Указать флешку',
+    'install.tree.sub':
+        'Отдайте том один раз — доступ переживёт перезагрузку',
+    'install.browse.title': 'Искать APK',
+    'install.browse.sub': 'Сначала отданный том, потом обычные файлы',
+    'install.browse.empty': 'Пока ни одного APK не найдено',
+    'install.update.title': 'Проверить сборку',
+    'install.update.check': 'Спросить у GitHub последний релиз',
+    'install.update.rate':
+        'GitHub ограничил число запросов с этого адреса — позже',
+    'install.update.none': 'Релиза нет',
+    'install.update.offline': 'Сети нет',
+    'install.update.bad': 'Ответ не разобрался',
+    'install.update.download': 'Скачать сборку',
+    'install.update.notnewer': 'Не новее установленной — отказ',
+    'install.update.unknown':
+        'Номер установленной сборки не прочитан — отказ',
+    'install.update.cancel': 'Отмена',
 
     // App diagnostics screen (v0.1.29+122)
     'appdiag.title': 'Диагностика приложения',

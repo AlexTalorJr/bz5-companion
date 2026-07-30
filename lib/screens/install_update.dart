@@ -23,17 +23,30 @@ import 'dashboard.dart' show kAppVersion;
 /// снимки, откровения и trip_series, но НЕ возвращаются
 /// samples/hal_samples и недобранные полосы атласа.
 ///
-/// ДВА БЛОКА, И ОБА НУЖНЫ В ОДНОЙ СБОРКЕ. Проба (только чтение)
-/// отвечает, есть ли на прошивке системный установщик вообще: если его
-/// вырезали, никакая кнопка не поможет, и знать это надо ДО того, как
-/// строить скачивание из GitHub Releases. Попытка отвечает, работает
-/// ли он на самом деле. Проба без попытки объяснит отказ, но не
-/// докажет успех; попытка без пробы в случае отказа не скажет почему.
-/// Один цикл установки должен закрыть вопрос целиком — а цикл здесь
-/// стоит полного стирания данных.
+/// ── v0.1.77+176: ЭКРАН СТАЛ ОБОЗРЕВАТЕЛЕМ ───────────────────────────
 ///
-/// Dev-поверхность: технические строки (имена резолверов, шаги) не
-/// переводятся по правилу проекта, переводится только обвязка.
+/// Поле 29.07 (пять прогонов, одинаковый ответ) показало, что стен две и
+/// обе стоят ДО установщика: `staged_bytes: 0` во всех пяти, то есть
+/// установщик не пробовался ни разу.
+///
+///   1. ФАЙЛА НЕТ — системный выбор файла перехвачен галереей BYD,
+///      которая перечисляет только изображения и видео.
+///   2. РАЗРЕШЕНИЯ НЕТ — экрана «неизвестные источники» на прошивке не
+///      существует вовсе (`ActivityNotFoundException`).
+///
+/// Разрешение главнее файла: скачивание без него даёт файл, который
+/// некому поставить. Поэтому порядок блоков на экране — сначала
+/// разрешение и файл со флешки, и только потом сеть.
+///
+/// Ни один путь к файлу не объявлен обязательным. «Указать флешку»
+/// (SAF-дерево) идёт первым, потому что это ДРУГОЕ действие, чем
+/// перехваченное галереей, и единственное, которое на API 30+ для
+/// съёмных томов задумано работать; File-API остаётся ниже и включается
+/// сам, если хоть одно разрешение на хранилище выдано.
+///
+/// Dev-поверхность: технические строки (имена резолверов, шаги, заметки
+/// обхода) не переводятся по правилу проекта, переводится только
+/// обвязка.
 ///
 /// Живёт в Настройки → Расширенные (решение владельца 29.07).
 class InstallUpdateScreen extends StatefulWidget {
@@ -50,10 +63,26 @@ class _InstallUpdateScreenState extends State<InstallUpdateScreen> {
   int _stagedBytes = 0;
   final List<String> _log = <String>[];
 
+  List<Map<String, dynamic>> _apks = const <Map<String, dynamic>>[];
+  List<String> _scanNotes = const <String>[];
+
+  UpdateLookupResult? _lookup;
+  DownloadHandle? _dl;
+  int _dlGot = 0;
+  int _dlTotal = 0;
+
   @override
   void initState() {
     super.initState();
     _runProbe();
+  }
+
+  @override
+  void dispose() {
+    // Закачка живёт дольше кадра: без этого она продолжила бы писать в
+    // файл после ухода с экрана, а отменить её стало бы нечем.
+    _dl?.cancel();
+    super.dispose();
   }
 
   void _say(String line) {
@@ -81,20 +110,62 @@ class _InstallUpdateScreenState extends State<InstallUpdateScreen> {
         return;
       }
       _say('pick → ${picked['uri']}');
-      final staged = await ApkInstallChannel.stage('${picked['uri']}');
-      if (staged['ok'] != true) {
-        _say('stage → ${staged['error']}');
-        return;
-      }
-      if (!mounted) return;
-      setState(() {
-        _stagedName = '${staged['source_name'] ?? '?'}';
-        _stagedBytes = (staged['bytes'] as num?)?.toInt() ?? 0;
-      });
-      _say('stage → $_stagedName, $_stagedBytes B');
+      await _stage('${picked['uri']}');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  /// Общий конец всех путей к файлу: и выбор, и обозреватель, и «поделиться»
+  /// заканчиваются копией в наш кэш. Одна точка намеренно — три копии
+  /// этой логики разошлись бы при первой правке.
+  Future<void> _stage(String uri) async {
+    final staged = await ApkInstallChannel.stage(uri);
+    if (staged['ok'] != true) {
+      _say('stage → ${staged['error']}');
+      return;
+    }
+    if (!mounted) return;
+    setState(() {
+      _stagedName = '${staged['source_name'] ?? '?'}';
+      _stagedBytes = (staged['bytes'] as num?)?.toInt() ?? 0;
+    });
+    _say('stage → $_stagedName, $_stagedBytes B');
+  }
+
+  Future<void> _askForVolume() async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      final r = await ApkInstallChannel.openTree();
+      for (final s in (r['steps'] as List<dynamic>? ?? const <dynamic>[])) {
+        _say('$s');
+      }
+      if (r['ok'] != true || r['uri'] == null) {
+        _say('tree → ${r['error'] ?? 'cancelled'}');
+        return;
+      }
+      final kept = await ApkInstallChannel.rememberTree('${r['uri']}');
+      _say('tree → ${r['uri']} · persisted=${kept['ok']}');
+      await _browse();
+      await _runProbe();
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _browse() async {
+    final r = await ApkInstallChannel.listApks();
+    if (!mounted) return;
+    setState(() {
+      _apks = ((r['apks'] as List<dynamic>?) ?? const <dynamic>[])
+          .whereType<Map<dynamic, dynamic>>()
+          .map((e) => e.cast<String, dynamic>())
+          .toList();
+      _scanNotes = ((r['notes'] as List<dynamic>?) ?? const <dynamic>[])
+          .map((e) => '$e')
+          .toList();
+    });
   }
 
   Future<void> _launch() async {
@@ -102,11 +173,13 @@ class _InstallUpdateScreenState extends State<InstallUpdateScreen> {
     setState(() => _busy = true);
     try {
       final res = await ApkInstallChannel.launch();
-      for (final s in (res['steps'] as List<dynamic>? ?? <dynamic>[])) {
+      for (final s in (res['steps'] as List<dynamic>? ?? const <dynamic>[])) {
         _say('$s');
       }
+      _say('appop at attempt: ${res['can_request_installs_at_attempt']}');
+      if (res['exception'] != null) _say('exception: ${res['exception']}');
       _say(res['ok'] == true
-          ? 'installer opened via ${res['action']}'
+          ? 'installer opened via ${res['action']} — resultCode пойдёт в журнал автозапуска'
           : 'installer did not open');
       // Проба перечитывается: разрешение могли выдать между попытками,
       // и показывать устаревшее «нет» после успешной выдачи — врать.
@@ -116,9 +189,82 @@ class _InstallUpdateScreenState extends State<InstallUpdateScreen> {
     }
   }
 
+  Future<void> _openDoor(String door) async {
+    final r = await ApkInstallChannel.openDoor(door);
+    _say('door $door → ${r['ok'] == true ? 'открыт' : r['error']}');
+    if (r['ok'] == true) await _runProbe();
+  }
+
+  // ── §B: сеть ───────────────────────────────────────────────────────
+
+  Future<void> _check() async {
+    if (_busy) return;
+    setState(() {
+      _busy = true;
+      _lookup = null;
+    });
+    try {
+      final r = await ApkUpdate.lookupLatest();
+      if (!mounted) return;
+      setState(() => _lookup = r);
+      final rel = r.release;
+      _say(rel == null
+          ? 'latest → ${r.state.name}: ${r.detail}'
+          : 'latest → ${rel.tag} · ${rel.assetName} · ${rel.bytes} B');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _download(UpdateRelease rel) async {
+    final installed = (_probe?['version_code'] as num?)?.toInt() ?? -1;
+    if (!ApkUpdate.isUpgrade(installed, rel.buildNumber)) {
+      _say('отказ: установлено $installed, предложено ${rel.buildNumber}');
+      return;
+    }
+    final where = await ApkInstallChannel.stagedPath();
+    final path = '${where['path'] ?? ''}';
+    if (path.isEmpty) {
+      _say('stagedPath → пусто');
+      return;
+    }
+    final handle = DownloadHandle();
+    setState(() {
+      _dl = handle;
+      _dlGot = 0;
+      _dlTotal = rel.bytes;
+    });
+    final r = await ApkUpdate.download(
+      release: rel,
+      path: path,
+      handle: handle,
+      onProgress: (got, total) {
+        if (!mounted) return;
+        setState(() {
+          _dlGot = got;
+          _dlTotal = total;
+        });
+      },
+    );
+    if (!mounted) return;
+    setState(() => _dl = null);
+    if (r['ok'] == true) {
+      setState(() {
+        _stagedName = rel.assetName;
+        _stagedBytes = (r['bytes'] as num?)?.toInt() ?? 0;
+      });
+      _say('download → ${rel.assetName}, $_stagedBytes B');
+    } else {
+      _say('download → ${r['error']}');
+    }
+    await _runProbe();
+  }
+
   Future<void> _export() async {
     final body = const JsonEncoder.withIndent('  ').convert(<String, dynamic>{
       'probe': _probe ?? <String, dynamic>{},
+      'scan_notes': _scanNotes,
+      'apks': _apks,
       'log': _log.reversed.toList(),
     });
     final res = await DiagDumpFile.instance.append(
@@ -144,6 +290,10 @@ class _InstallUpdateScreenState extends State<InstallUpdateScreen> {
         (p?['install_resolvers'] as List<dynamic>? ?? <dynamic>[]);
     final pickers =
         (p?['open_document_resolvers'] as List<dynamic>? ?? <dynamic>[]);
+    final treePickers =
+        (p?['tree_doc_resolvers'] as List<dynamic>? ?? <dynamic>[]);
+    final trees = (p?['persisted_trees'] as List<dynamic>? ?? <dynamic>[]);
+    final doors = (p?['doors'] as Map<dynamic, dynamic>? ?? <dynamic, dynamic>{});
     // Единственный вывод, который экран делает сам, и он намеренно
     // осторожный: путь ЕСТЬ, если хоть одно действие кем-то принято.
     // Утверждать по этому, что установка пройдёт, нельзя — это скажет
@@ -173,9 +323,22 @@ class _InstallUpdateScreenState extends State<InstallUpdateScreen> {
                       '${installers.length}'),
                   _row('ACTION_OPEN_DOCUMENT resolvers', '${pickers.length}',
                       bad: pickers.isEmpty),
+                  _row('ACTION_OPEN_DOCUMENT_TREE resolvers',
+                      '${treePickers.length}', bad: treePickers.isEmpty),
                   _row('installer packages',
                       '${(p?['installer_packages'] as List<dynamic>? ?? const []).length}'),
                   _row('sdk', '${p?['sdk'] ?? '?'}'),
+                  // targetSdk из поля, а не из моего чтения gradle: при
+                  // 30+ READ_EXTERNAL_STORAGE открывает только медиа, и
+                  // путь A1c имеет структурный потолок.
+                  _row('targetSdk', '${p?['target_sdk'] ?? '?'}'),
+                  _row('versionCode', '${p?['version_code'] ?? '?'}'),
+                  _row('MANAGE_EXTERNAL_STORAGE',
+                      '${p?['has_manage_all_files'] ?? '?'}'),
+                  _row('READ_EXTERNAL_STORAGE',
+                      '${p?['read_storage_granted'] ?? '?'}'),
+                  _row('persisted trees', '${trees.length}',
+                      bad: trees.isEmpty),
                   const SizedBox(height: 8),
                   Text(
                     anyRoute
@@ -212,9 +375,83 @@ class _InstallUpdateScreenState extends State<InstallUpdateScreen> {
                 },
               ),
             ),
+          // ── двери. Каждая показана вместе с числом резолверов: пустая
+          // дверь — это ответ прошивки, а не наша ошибка.
+          if (doors.isNotEmpty)
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(14),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(S.of('install.doors.title'),
+                        style: const TextStyle(
+                            fontSize: 16, fontWeight: FontWeight.w600)),
+                    Text(S.of('install.doors.sub'),
+                        style: const TextStyle(
+                            fontSize: 12, color: Colors.grey)),
+                    const SizedBox(height: 4),
+                    for (final e in doors.entries)
+                      _DoorRow(
+                        name: '${e.key}',
+                        resolvers:
+                            (e.value as List<dynamic>? ?? const <dynamic>[])
+                                .length,
+                        onTap: () => _openDoor('${e.key}'),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          const SizedBox(height: 12),
+          // ── файл: флешка, обозреватель, системный выбор ──────────
           Card(
             child: Column(
               children: [
+                ListTile(
+                  leading: const Icon(Icons.usb),
+                  title: Text(S.of('install.tree.title')),
+                  subtitle: Text(trees.isEmpty
+                      ? S.of('install.tree.sub')
+                      : '${trees.length}: ${trees.first}'),
+                  onTap: _busy ? null : _askForVolume,
+                ),
+                ListTile(
+                  leading: const Icon(Icons.travel_explore),
+                  title: Text(S.of('install.browse.title')),
+                  subtitle: Text(S.of('install.browse.sub')),
+                  onTap: _busy ? null : _browse,
+                ),
+                if (_scanNotes.isNotEmpty)
+                  Padding(
+                    padding:
+                        const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        for (final n in _scanNotes)
+                          Text('· $n',
+                              style: const TextStyle(
+                                  fontSize: 11, color: Colors.grey)),
+                      ],
+                    ),
+                  ),
+                if (_apks.isEmpty)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                    child: Text(S.of('install.browse.empty'),
+                        style: const TextStyle(color: Colors.grey)),
+                  ),
+                for (final a in _apks)
+                  ListTile(
+                    dense: true,
+                    leading: const Icon(Icons.android, size: 20),
+                    title: Text('${a['name']}',
+                        style: const TextStyle(fontSize: 13)),
+                    subtitle: Text('${a['bytes']} B · ${a['src']}',
+                        style: const TextStyle(fontSize: 11)),
+                    onTap: _busy ? null : () => _stage('${a['uri']}'),
+                  ),
                 ListTile(
                   leading: const Icon(Icons.folder_open),
                   title: Text(S.of('install.pick.title')),
@@ -230,6 +467,41 @@ class _InstallUpdateScreenState extends State<InstallUpdateScreen> {
                   subtitle: Text(S.of('install.run.sub')),
                   onTap: (_busy || _stagedName == null) ? null : _launch,
                 ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          // ── §B: сеть. Ниже файла намеренно — разрешение и файл
+          // главнее, скачивание без них даёт файл, который некому
+          // поставить.
+          Card(
+            child: Column(
+              children: [
+                ListTile(
+                  leading: const Icon(Icons.cloud_download),
+                  title: Text(S.of('install.update.title')),
+                  subtitle: Text(_updateSubtitle()),
+                  onTap: (_busy || _dl != null) ? null : _check,
+                ),
+                if (_dl != null) ...[
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: LinearProgressIndicator(
+                      value: _dlTotal > 0 ? _dlGot / _dlTotal : null,
+                    ),
+                  ),
+                  ListTile(
+                    dense: true,
+                    title: Text('$_dlGot / $_dlTotal B',
+                        style: const TextStyle(fontSize: 12)),
+                    trailing: TextButton(
+                      onPressed: () => _dl?.cancel(),
+                      child: Text(S.of('install.update.cancel')),
+                    ),
+                  ),
+                ],
+                if (_dl == null && _lookup?.state == UpdateLookup.ok)
+                  _upgradeTile(_lookup!.release!),
               ],
             ),
           ),
@@ -271,6 +543,51 @@ class _InstallUpdateScreenState extends State<InstallUpdateScreen> {
     );
   }
 
+  /// Подпись блока обновления. Каждое состояние поиска имеет СВОЙ текст:
+  /// показать «обновлений нет» на исчерпанный лимит запросов значило бы
+  /// соврать ровно тем прибором, который делается ради честности.
+  String _updateSubtitle() {
+    final l = _lookup;
+    if (l == null) return S.of('install.update.check');
+    switch (l.state) {
+      case UpdateLookup.ok:
+        final rel = l.release!;
+        return '${rel.tag} · ${rel.assetName}';
+      case UpdateLookup.rateLimited:
+        return S.of('install.update.rate');
+      case UpdateLookup.notFound:
+        return '${S.of('install.update.none')} · ${l.detail}';
+      case UpdateLookup.offline:
+        return '${S.of('install.update.offline')} · ${l.detail}';
+      case UpdateLookup.malformed:
+        return '${S.of('install.update.bad')} · ${l.detail}';
+    }
+  }
+
+  Widget _upgradeTile(UpdateRelease rel) {
+    final installed = (_probe?['version_code'] as num?)?.toInt() ?? -1;
+    final up = ApkUpdate.isUpgrade(installed, rel.buildNumber);
+    // «Версию установленной сборки не прочитали» и «предложенная не
+    // новее» — РАЗНЫЕ отказы, и оба ведут к одному действию, но не к
+    // одному объяснению. Показать первое как второе значит соврать
+    // владельцу о причине: он пойдёт искать более новый релиз, которого
+    // нет, вместо того чтобы понять, что отказал PackageManager.
+    final unknown = installed <= 0;
+    return ListTile(
+      dense: true,
+      leading: Icon(up ? Icons.download : Icons.block,
+          color: up ? null : Colors.orangeAccent),
+      title: Text(up
+          ? '${S.of('install.update.download')} ${rel.buildNumber}'
+          : unknown
+              ? S.of('install.update.unknown')
+              : S.of('install.update.notnewer')),
+      subtitle: Text('installed $installed → ${rel.buildNumber}',
+          style: const TextStyle(fontSize: 11)),
+      onTap: up ? () => _download(rel) : null,
+    );
+  }
+
   Widget _row(String k, String v, {bool bad = false}) => Padding(
         padding: const EdgeInsets.symmetric(vertical: 2),
         child: Row(
@@ -287,4 +604,45 @@ class _InstallUpdateScreenState extends State<InstallUpdateScreen> {
           ],
         ),
       );
+}
+
+/// Строка двери: имя, сколько её приняло, и попытка открыть. Пустая
+/// дверь не скрывается — «на этой прошивке её нет» такой же результат,
+/// как открывшийся экран, и увидеть его надо один раз, а не гадать.
+class _DoorRow extends StatelessWidget {
+  const _DoorRow({
+    required this.name,
+    required this.resolvers,
+    required this.onTap,
+  });
+
+  final String name;
+  final int resolvers;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final short = name.replaceFirst('android.settings.', '')
+        .replaceFirst('android.intent.action.', '');
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 5),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(short, style: const TextStyle(fontSize: 12)),
+            ),
+            Text('$resolvers',
+                style: TextStyle(
+                  fontSize: 13,
+                  color: resolvers == 0 ? Colors.orangeAccent : null,
+                )),
+            const SizedBox(width: 6),
+            const Icon(Icons.open_in_new, size: 14, color: Colors.grey),
+          ],
+        ),
+      ),
+    );
+  }
 }
