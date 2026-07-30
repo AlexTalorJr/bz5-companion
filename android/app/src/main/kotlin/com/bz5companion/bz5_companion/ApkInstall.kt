@@ -79,17 +79,26 @@ import java.io.File
  *   A1b. `MANAGE_EXTERNAL_STORAGE` — вторым, потому что его экран
  *        может отсутствовать точно так же, как отсутствует
  *        unknown-sources.
- *   A1c. `READ_EXTERNAL_STORAGE` — третьим и ТОЛЬКО как проба.
- *        `targetSdk` у нас 35 (проверено в `flutter.groovy` тега
- *        3.27.4, CI это нигде не переопределяет), поэтому
- *        `requestLegacyExternalStorage` не действует, а при
- *        `targetSdk ≥ 30` на устройстве API 32 это разрешение открывает
- *        только МЕДИА через scoped storage. APK не медиа — значит путь
- *        имеет структурный потолок и открыться не может. Пробируем всё
- *        равно: правило «ни один путь не предполагать» уже дважды
- *        оказывалось дороже, чем лишние двадцать строк. Побочная выгода
- *        — тем же прогоном проверяется, оживают ли публичные Downloads,
- *        мёртвые с +166.
+ *   A1c. `READ_EXTERNAL_STORAGE` — третьим и ТОЛЬКО как проба. При
+ *        `targetSdk >= 30` на устройстве API 32 это разрешение
+ *        открывает через scoped storage только МЕДИА, а APK не медиа —
+ *        значит путь имеет структурный потолок и открыться не может.
+ *        `requestLegacyExternalStorage` при этом не действует по той же
+ *        причине.
+ *
+ *        ПОПРАВКА v0.1.78+177: точное значение `targetSdk` я НЕ ЗНАЛ,
+ *        когда писал это. В +176 здесь стояло «равен 35, проверено в
+ *        flutter.groovy» — а я проверил лишь то, что CI его нигде не
+ *        переопределяет, и число взял из хендоффа. Лог сборки +176
+ *        показал установку Android SDK Platform 33, что с числом 35
+ *        не сходится. Для существа это безразлично: потолок наступает
+ *        на 30 и выше, а обе величины выше. Точное число приедет из
+ *        поля ключом `target_sdk` — затем он и добавлен.
+ *
+ *        Пробируем всё равно: правило «ни один путь не предполагать»
+ *        уже дважды оказывалось дороже, чем лишние двадцать строк.
+ *        Побочная выгода — тем же прогоном проверяется, оживают ли
+ *        публичные Downloads, мёртвые с +166.
  *
  * `target_sdk` и `version_code` теперь приезжают ИЗ ПОЛЯ, а не из моего
  * чтения gradle: первое превращает структурное рассуждение выше в
@@ -116,6 +125,42 @@ object ApkInstall {
     /** Имя двери, которой нет среди строк Settings: интент собирается
      *  у тома, а не у константы. */
     const val DOOR_CREATE_TREE = "StorageVolume.createOpenDocumentTreeIntent"
+
+    // ── v0.1.78+177: ИМЕНА ДВЕРЕЙ — ПРИБИТЫЕ ЛИТЕРАЛЫ, НЕ КОНСТАНТЫ ──
+    //
+    // ЧТО СЛОМАЛОСЬ. +176 не собрался на CI: я взял
+    // `Settings.ACTION_MANAGE_ALL_UNKNOWN_APP_SOURCES` как публичную
+    // константу SDK, а её там нет — действие в системе существует, но
+    // константа скрыта. Проверить это в песочнице было НЕЧЕМ: kotlinc
+    // без Android SDK помечает `unresolved reference` ВСЕ android-символы
+    // без разбора (649 таких в базовой линии), и одна настоящая ошибка
+    // ничем не отличалась от шума.
+    //
+    // ПОЧЕМУ ЛИТЕРАЛ ЗДЕСЬ НЕ ХУЖЕ, А ЛУЧШЕ. Дверь — это ИМЯ, о котором
+    // мы спрашиваем систему, а не API, который вызываем. Отсутствие
+    // резолвера — законный ответ пробы («такого экрана на прошивке
+    // нет»), ровно его мы и измеряем. Константа давала бы
+    // compile-time-проверку того, что нам не нужно, и роняла бы сборку
+    // от версии SDK — то есть от вещи, к предмету не относящейся.
+    //
+    // Взамен потерянной проверки компилятора стоит гейт BL3: он требует
+    // литералов, запрещает вернуть скрытую константу и сверяет ЭТОТ
+    // список с блоком <queries> манифеста. Без записи в манифесте
+    // видимость выключена, и проба соврала бы в опасную сторону.
+    private const val ACT_MANAGE_ALL_UNKNOWN =
+        "android.settings.MANAGE_ALL_UNKNOWN_APP_SOURCES"
+    private const val ACT_MANAGE_UNKNOWN =
+        "android.settings.MANAGE_UNKNOWN_APP_SOURCES"
+    private const val ACT_MANAGE_ALL_FILES =
+        "android.settings.MANAGE_ALL_FILES_ACCESS_PERMISSION"
+    private const val ACT_APP_DETAILS =
+        "android.settings.APPLICATION_DETAILS_SETTINGS"
+    private const val ACT_SECURITY = "android.settings.SECURITY_SETTINGS"
+    private const val ACT_MANAGE_APPS =
+        "android.settings.MANAGE_APPLICATIONS_SETTINGS"
+    private const val ACT_OPEN_TREE =
+        "android.intent.action.OPEN_DOCUMENT_TREE"
+    private const val ACT_GET_CONTENT = "android.intent.action.GET_CONTENT"
 
     private const val MIME = ApkFileProvider.MIME
 
@@ -265,51 +310,35 @@ object ApkInstall {
         val doors = ArrayList<Pair<String, Intent>>()
         // Дерево первым: это ответ на первую стену, и он же
         // единственный, который на API 30+ задуман работать.
-        doors.add(
-            Intent.ACTION_OPEN_DOCUMENT_TREE to
-                Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
-        )
+        doors.add(ACT_OPEN_TREE to Intent(ACT_OPEN_TREE))
         val volumeTree = createTreeIntent(context)
         if (volumeTree != null) {
             doors.add(DOOR_CREATE_TREE to volumeTree)
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             doors.add(
-                Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES to
-                    Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES)
-                        .setData(pkg)
+                ACT_MANAGE_UNKNOWN to Intent(ACT_MANAGE_UNKNOWN).setData(pkg)
             )
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             // Список вместо страницы одного приложения: страницы у нас
             // нет (поле 29.07), список — другой экран.
             doors.add(
-                Settings.ACTION_MANAGE_ALL_UNKNOWN_APP_SOURCES to
-                    Intent(Settings.ACTION_MANAGE_ALL_UNKNOWN_APP_SOURCES)
+                ACT_MANAGE_ALL_UNKNOWN to Intent(ACT_MANAGE_ALL_UNKNOWN)
             )
             doors.add(
-                Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION to
-                    Intent(
-                        Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION
-                    ).setData(pkg)
+                ACT_MANAGE_ALL_FILES to
+                    Intent(ACT_MANAGE_ALL_FILES).setData(pkg)
             )
         }
         doors.add(
-            Settings.ACTION_APPLICATION_DETAILS_SETTINGS to
-                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
-                    .setData(pkg)
+            ACT_APP_DETAILS to Intent(ACT_APP_DETAILS).setData(pkg)
         )
+        doors.add(ACT_SECURITY to Intent(ACT_SECURITY))
+        doors.add(ACT_MANAGE_APPS to Intent(ACT_MANAGE_APPS))
         doors.add(
-            Settings.ACTION_SECURITY_SETTINGS to
-                Intent(Settings.ACTION_SECURITY_SETTINGS)
-        )
-        doors.add(
-            Settings.ACTION_MANAGE_APPLICATIONS_SETTINGS to
-                Intent(Settings.ACTION_MANAGE_APPLICATIONS_SETTINGS)
-        )
-        doors.add(
-            Intent.ACTION_GET_CONTENT to
-                Intent(Intent.ACTION_GET_CONTENT)
+            ACT_GET_CONTENT to
+                Intent(ACT_GET_CONTENT)
                     .addCategory(Intent.CATEGORY_OPENABLE)
                     .setType("*/*")
         )
@@ -699,9 +728,7 @@ object ApkInstall {
             return out
         }
         return try {
-            if (name == Intent.ACTION_OPEN_DOCUMENT_TREE ||
-                name == DOOR_CREATE_TREE
-            ) {
+            if (name == ACT_OPEN_TREE || name == DOOR_CREATE_TREE) {
                 activity.startActivityForResult(intent, REQ_TREE)
             } else {
                 activity.startActivity(intent)

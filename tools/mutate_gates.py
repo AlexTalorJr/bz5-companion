@@ -277,9 +277,16 @@ MUTATIONS = [
      '        out["tree_doc_resolvers"] = resolvers(',
      'дать расширенной пробе побочное действие'),
     ('BL3', AI,
-     'Settings.ACTION_MANAGE_ALL_UNKNOWN_APP_SOURCES to',
-     '"android.settings.UNUSED_DOOR" to',
+     'ACT_SECURITY to Intent(ACT_SECURITY)',
+     '"android.settings.UNUSED_DOOR" to Intent("android.settings.UNUSED")',
      'потерять одну из девяти дверей к разрешению'),
+    # Вторая половина перепина +177: дверь, забытая в <queries>, отдаёт
+    # пустой список резолверов при живом экране — проба врёт в самую
+    # опасную сторону. Раньше эту половину не держал никто.
+    ('BL3', MF,
+     '<action android:name="android.settings.SECURITY_SETTINGS" />',
+     '<action android:name="android.settings.SECURITY_SETTINGS_OFF" />',
+     'объявить дверь в коде, но забыть её в <queries> манифеста'),
     ('BL4', AI,
      'out["exception"] = "${t.javaClass.simpleName}: ${t.message}"',
      'out["exception"] = "failed"',

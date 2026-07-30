@@ -7389,28 +7389,80 @@ if int(pv) >= 176:
     # попытка разойдутся, а перечень тут и есть предмет.
     _bl_doors_fn = _bl_ai.split('fun doorIntents(')[-1] \
         .split('private fun createTreeIntent(')[0]
-    _bl_need_doors = [
-        'Intent.ACTION_OPEN_DOCUMENT_TREE to',
-        'DOOR_CREATE_TREE to',
-        'Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES to',
-        'Settings.ACTION_MANAGE_ALL_UNKNOWN_APP_SOURCES to',
-        'Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION to',
-        'Settings.ACTION_APPLICATION_DETAILS_SETTINGS to',
-        'Settings.ACTION_SECURITY_SETTINGS to',
-        'Settings.ACTION_MANAGE_APPLICATIONS_SETTINGS to',
-        'Intent.ACTION_GET_CONTENT to',
-    ]
-    _bl_lost = [d for d in _bl_need_doors if d not in _bl_doors_fn]
-    _bl3 = (not _bl_lost and
-            'for ((name, intent) in doorIntents(context))' in _bl_probe and
-            'fun openDoor(' in _bl_ai and
-            'doorIntents(activity).firstOrNull' in _bl_ai)
-    if _bl3:
-        ok(f'BL3 all {len(_bl_need_doors)} doors are declared once and '
-           f'both the probe and the opener walk that same list')
+    if int(pv) >= 177:
+        # ПЕРЕПИН +177, И ПРИЧИНА — УПАВШАЯ СБОРКА.
+        #
+        # +176 не собрался на CI: `Settings.ACTION_MANAGE_ALL_UNKNOWN_APP_
+        # SOURCES` взята как публичная константа SDK, а её там нет —
+        # действие в системе есть, константа скрыта. Поймать это в
+        # песочнице было нечем: kotlinc без Android SDK помечает
+        # `unresolved reference` ВСЕ android-символы (649 в базовой
+        # линии), и настоящая ошибка ничем не отличалась от шума.
+        #
+        # Лечение структурное, а не заплатка на одну строку. Имя двери —
+        # это ИМЯ, о котором мы спрашиваем систему, а не API, который
+        # вызываем: отсутствие резолвера есть законный ответ пробы, ровно
+        # его и измеряем. Поэтому все двери переведены на ПРИБИТЫЕ
+        # ЛИТЕРАЛЫ, и гейт держит три вещи, которых до этого не держал
+        # никто: литералы вместо констант, невозможность вернуть скрытую
+        # константу, и — главное — СВЕРКУ С МАНИФЕСТОМ. Дверь, забытая в
+        # <queries>, отдаёт пустой список резолверов при живом экране, то
+        # есть проба врёт в самую опасную сторону.
+        _bl_consts = dict(_bi_re.findall(
+            r'private const val (ACT_[A-Z_]+)\s*=\s*"?\s*\n?\s*"([^"]+)"',
+            _bl_ai))
+        _bl_used = _bi_re.findall(r'\b(ACT_[A-Z_]+) to\b', _bl_doors_fn)
+        _bl_need_consts = [
+            'ACT_OPEN_TREE', 'ACT_MANAGE_UNKNOWN', 'ACT_MANAGE_ALL_UNKNOWN',
+            'ACT_MANAGE_ALL_FILES', 'ACT_APP_DETAILS', 'ACT_SECURITY',
+            'ACT_MANAGE_APPS', 'ACT_GET_CONTENT',
+        ]
+        _bl_lost = [d for d in _bl_need_consts if d not in _bl_used]
+        if 'DOOR_CREATE_TREE to' not in _bl_doors_fn:
+            _bl_lost.append('DOOR_CREATE_TREE')
+        # Каждый литерал вида android.* обязан стоять в <queries>.
+        _bl_undeclared = []
+        for _c in _bl_used:
+            _lit = _bl_consts.get(_c, '')
+            if _lit.startswith('android.') and _lit not in _bi_qacts:
+                _bl_undeclared.append(_lit)
+        _bl3 = (not _bl_lost and not _bl_undeclared and
+                len(_bl_consts) >= len(_bl_need_consts) and
+                'Settings.ACTION_' not in _bl_doors_fn and
+                'for ((name, intent) in doorIntents(context))' in _bl_probe and
+                'fun openDoor(' in _bl_ai and
+                'doorIntents(activity).firstOrNull' in _bl_ai)
+        if _bl3:
+            ok(f'BL3 (re-era +177) all {len(_bl_need_consts) + 1} doors '
+               f'are pinned literals, no hidden SDK constant, and every '
+               f'action is declared in <queries>')
+        else:
+            fail(f'BL3 doors lost {_bl_lost}, undeclared in manifest '
+                 f'{_bl_undeclared}, or an SDK constant came back')
     else:
-        fail(f'BL3 a door was lost or the opener keeps its own list: '
-             f'{_bl_lost}')
+        _bl_need_doors = [
+            'Intent.ACTION_OPEN_DOCUMENT_TREE to',
+            'DOOR_CREATE_TREE to',
+            'Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES to',
+            'Settings.ACTION_MANAGE_ALL_UNKNOWN_APP_SOURCES to',
+            'Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION to',
+            'Settings.ACTION_APPLICATION_DETAILS_SETTINGS to',
+            'Settings.ACTION_SECURITY_SETTINGS to',
+            'Settings.ACTION_MANAGE_APPLICATIONS_SETTINGS to',
+            'Intent.ACTION_GET_CONTENT to',
+        ]
+        _bl_lost = [d for d in _bl_need_doors if d not in _bl_doors_fn]
+        _bl3 = (not _bl_lost and
+                'for ((name, intent) in doorIntents(context))'
+                in _bl_probe and
+                'fun openDoor(' in _bl_ai and
+                'doorIntents(activity).firstOrNull' in _bl_ai)
+        if _bl3:
+            ok(f'BL3 all {len(_bl_need_doors)} doors are declared once '
+               f'and both the probe and the opener walk that same list')
+        else:
+            fail(f'BL3 a door was lost or the opener keeps its own list: '
+                 f'{_bl_lost}')
 
     # BL4: ПОПЫТКА НИЧЕГО НЕ ГЛОТАЕТ. Ответ установщика — главный
     # неизвестный факт темы; проглоченное исключение или потерянный
