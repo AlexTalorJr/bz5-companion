@@ -26,7 +26,7 @@ Current version: **0.1.76+175**. Releases are published automatically as GitHub 
 
 **OBD-II / UDS.** The BZ5 answers on non-standard diagnostic addresses outside the usual `7E0-7E7` block; the addressing rule is `RX = TX + 8`. Thirty-one ECUs are catalogued in `lib/data/ecu_registry.dart` together with the DIDs that were found to mean something. Reads are plain UDS `22 XX YY`.
 
-The head-unit framework exposes its properties as literal hex feature IDs rather than names, and the full parsed registry of them — 10016 entries lifted out of the vehicle software's own configuration — is deliberately **not** published here. The right to decompile for interoperability does not extend to handing the results to everyone; the identifiers this app actually uses are the presets in `native_explorer_wide.dart` and the decoder table beside it.
+The head-unit framework names its properties with literal hex feature IDs rather than words. The full registry runs to 10016 entries and is not published here; the ones this app uses are the presets in `native_explorer_wide.dart` and the decoder table beside it.
 
 **BYD vehicle HAL.** On the head unit the app subscribes to the framework's push telemetry. The important architectural detail: only the `*_COMMON` permission family is grantable at runtime, and it only opens the *listener* channel — the synchronous getters behind `*_GET` stay closed. So every live HAL value arrives as a push, never as a poll.
 
@@ -80,7 +80,7 @@ There is a sync client for a self-hosted bridge (`carbridge.neardo.work`). It ex
 
 If you register a device with a setup token, the app uploads trips, snapshots, sweep runs and results, live logs, and a once-a-minute heartbeat carrying the app version. The device token lives in the Android Keystore. Raw high-rate samples are never uploaded — the server refuses them by default and the client does not attempt it. The client never pulls anything back for its own UI; local storage is the source of truth.
 
-**If you never register, nothing leaves the device.** There is no telemetry, no analytics and no third-party SDK anywhere in the build. But the earlier claim that this app "sends no data to any servers" is no longer true in general, and this README says so plainly.
+**If you never register, nothing leaves the device.** There is no telemetry, no analytics and no third-party SDK anywhere in the build.
 
 What comes back after a reinstall: trips, snapshots, atlas reveals, chart series. What does **not** come back: raw samples and the Atlas collection ledger — meaning partially collected bands are lost.
 
@@ -88,7 +88,7 @@ What comes back after a reinstall: trips, snapshots, atlas reveals, chart series
 
 ## What it does not do
 
-* **Read-only as shipped.** Nothing in the app writes to the vehicle: no climate, no locks, no windows. To be precise rather than reassuring: a property-write call does exist in the native layer (`BydCarPropertyClient.setProperty`, wrapped in `native_car_channel.dart`) because the framework exposes one, but it has no callers anywhere in the app and no screen reaches it. Grep for it and see.
+* **Read-only as shipped.** Nothing in the app writes to the vehicle: no climate, no locks, no windows. A property-write call exists in the native layer, `BydCarPropertyClient.setProperty`, because the framework exposes one — it has no callers and no screen reaches it.
 * **No clearing of fault codes.**
 * **Not a driving display.** Read it parked or charging; background logging while driving is the intended use.
 * **No broadcast CAN sniffing over OBD.** The diagnostic gateway is isolated from the vehicle bus, so `ATMA` sees nothing. On the head unit the HAL plane fills part of that gap.
@@ -112,7 +112,7 @@ Consequence worth planning around: **every head-unit reinstall wipes preferences
 
 Flutter **3.27.4** stable, Dart 3.
 
-One non-obvious thing: `android/` in this repository contains only `app/src/main` — the manifest, the Kotlin sources and the resources. The Gradle project is **not** committed. CI generates it with `flutter create --platforms=android` and then patches it (Kotlin 2.1.0 in `settings.gradle`, release signing in `app/build.gradle`). To build locally, run `flutter create --platforms=android --org com.bz5companion --project-name bz5_companion .` in a checkout first, then `flutter build apk`.
+`android/` in this repository contains only `app/src/main` — the manifest, the Kotlin sources and the resources. The Gradle project is **not** committed. CI generates it with `flutter create --platforms=android` and then patches it (Kotlin 2.1.0 in `settings.gradle`, release signing in `app/build.gradle`). To build locally, run `flutter create --platforms=android --org com.bz5companion --project-name bz5_companion .` in a checkout first, then `flutter build apk`.
 
 A real device is required for anything involving BLE or the car framework; emulators are useless here.
 
@@ -140,7 +140,7 @@ Changes to this repository are gated by scripts in `tools/`, run before anything
 
 Baseline for the current HEAD: `7/7` · `OK` · `22/0/0` · `490 PASS / 1 WARN / 0 FAIL` · `74/74`.
 
-Two hard-won rules encoded here: any check that matches source text must strip comments first (five separate gates once passed by reading their own explanatory comment), and every gate must be *mutation-tested* — revert the thing it guards and require that specific gate to fail, or it is not a gate.
+Two rules the gates follow: a check that matches source text strips comments first, and every gate is mutation-tested — revert the thing it guards and that gate must fail, or it is not a gate.
 
 ---
 
@@ -148,7 +148,7 @@ Two hard-won rules encoded here: any check that matches source text must strip c
 
 The UI ships in **English and Russian** (`lib/l10n/strings.dart`, resolved by `LocaleService`).
 
-Source comments, `docs/` and the gate scripts are substantially in Russian. This is not purely cosmetic: the regression gate alone carries 97 quoted Russian UI strings as match anchors, so the Russian text in this repository is load-bearing and cannot be swapped out without rewriting the harness alongside it.
+Source comments, `docs/` and the gate scripts are largely in Russian. The Russian UI strings are load-bearing beyond the interface: the regression gate quotes 97 of them as match anchors, so translating them means rewriting the harness in the same change.
 
 ---
 
@@ -186,7 +186,7 @@ Physical constants live in `Bz5Model` in `lib/services/connection.dart`.
 
 ## Known gaps
 
-* **No collector service.** Collection runs inside the Flutter engine inside the activity; the only declared service is the autostart one. When Android kills the process, collection stops until something wakes it. A headless collector is an open design problem, not a bug with a fix pending.
+* **No collector service.** Collection runs inside the Flutter engine inside the activity; the only declared service is the autostart one. When Android kills the process, collection stops until something wakes it. A headless collector is an open design problem.
 * **Gaps in the tick stream** of roughly 35-40 s per session, reproducible across sessions, cause unknown.
 * Head-unit installs remain manual; in-app installation is in progress.
 
@@ -200,11 +200,9 @@ Verified on the Toyota BZ5 (FAW-Toyota). The DID map and the HAL signal table we
 
 ## License
 
-Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
+Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE). Two clauses worth knowing before you fork: section 6 grants no rights in anyone's trademarks, and section 4(b) requires a modified file to be marked as modified, so a fork is not mistaken for this build.
 
-Apache rather than MIT for reasons specific to this project: it grants patents explicitly, it states in section 6 that no trademark rights travel with it (which matters in a repository full of other people's model names), it requires modified files to be marked as changed so a broken fork is not mistaken for this build, and its warranty and liability sections are written out rather than compressed into a single line.
-
-**Supplied free of charge, outside any commercial activity.** There is no paid edition, no paid service, and no donation that gates access to the software or to its updates. The optional cloud sync collects vehicle telemetry only in order to serve the app itself. This is stated because it is a condition rather than a slogan: EU law exempts free and open-source software supplied outside a commercial activity from the product-liability and cyber-resilience regimes that otherwise treat software as a product, and that exemption is what this project relies on.
+**Supplied free of charge, outside any commercial activity.** There is no paid edition, no paid service, and no donation that gates access to the software or to its updates. The optional cloud sync collects vehicle telemetry only in order to serve the app itself.
 
 Security reports: see [SECURITY.md](SECURITY.md).
 
