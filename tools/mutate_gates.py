@@ -73,6 +73,7 @@ ST = 'lib/screens/settings.dart'
 L10 = 'lib/l10n/strings.dart'
 ARM = 'lib/services/autostart_arm.dart'
 A1 = 'tools/atlas_a1_check.py'
+DD = 'lib/services/diag_dump_file.dart'
 CH = 'lib/services/apk_install_channel.dart'
 
 # (гейт, файл, анкер, замена, что откатывает)
@@ -299,9 +300,40 @@ MUTATIONS = [
      '        }',
      'сделать MANAGE_EXTERNAL_STORAGE обязательным условием обзора'),
     ('BL6', CH,
+     'available >= installed && installed > 0 && available > 0',
      'available > installed && installed > 0 && available > 0',
-     'available >= 0',
-     'разрешить откат версии при скачивании'),
+     'снова закрыть равную версию — единственный путь к файлу'),
+
+    # ─── эра BM (+178) «Что сказало поле 30.07» ─────────────────────
+    ('BM1', DD,
+     'final fresh = _freshFilename();',
+     'final fresh = _filename;',
+     'лишить дамп свежего имени — один файл и один шанс'),
+    ('BM2', DD,
+     "reasons.add('${candidate.path}: ${e.runtimeType}: $e');",
+     "reasons.add('write failed');",
+     'снять причину отказа — остаётся голый вердикт'),
+    ('BM3', MK,
+     ' * ── ПОПРАВКА v0.1.79+178',
+     ' * Публичные Downloads unwritable (fails=1) — мертвы. ──',
+     'вернуть опровергнутое «публичные Downloads мертвы»'),
+    ('BM4', ST,
+     "S.of('settings.adv.dump_empty')",
+     "S.of('settings.adv.dump_fail')",
+     'снова назвать отсутствие данных отказом хранилища'),
+    ('BM5', AI,
+     '        if (out["error"] == null) out["error"] = '
+     '"no tree intent to try"',
+     '',
+     'вернуть журналу подстановку «cancelled» вместо причины'),
+    ('BM6', AI,
+     '    fun pickContent(activity: Activity) {',
+     '    fun pickContentUnused(activity: Activity) {',
+     'убрать GET_CONTENT как путь к файлу'),
+    ('BM7', SC,
+     "S.of('install.raw.title')",
+     "S.of('install.log.title')",
+     'убрать пробу с экрана — читать её станет нечем'),
     ('BL7', MK,
      '            where = "priv"',
      '            where = "priv"\n            rotateIfHuge(context)',

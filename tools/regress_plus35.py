@@ -6428,12 +6428,16 @@ if int(pv) >= 170:
         _bg_mk = _bg_mk_p.read_text() if _bg_mk_p.exists() else ''
         _bg1 = ('File(context.filesDir, FILE_NAME).appendText(text)'
                 in _bg_mk and
-                'File("/sdcard/Download/$FILE_NAME").appendText(text)'
-                in _bg_mk and
+                ('File("$PUB_DIR/${pubName ?: FILE_NAME}").appendText(text)'
+                 in _bg_mk if int(pv) >= 178 else
+                 'File("/sdcard/Download/$FILE_NAME").appendText(text)'
+                 in _bg_mk) and
                 'where = "pub"' in _bg_mk and
                 'where = "priv"' in _bg_mk and
                 'pubFails' in _bg_mk and
-                'public Downloads unwritable' in _bg_mk)
+                ('public Downloads refused' in _bg_mk
+                 if int(pv) >= 178 else
+                 'public Downloads unwritable' in _bg_mk))
         if _bg1:
             ok('BG1 (re-era +171) the shared journal falls back to '
                'app-private storage and says so in the file itself')
@@ -7101,7 +7105,9 @@ if int(pv) >= 173:
     _bj4 = ('pubDead' in _bj_mk and
             'if (!pubDead) {' in _bj_write and
             'pubDead = true' in _bj_write and
-            '/sdcard/Download/$FILE_NAME' in _bj_write)
+            ('$PUB_DIR/${pubName ?: FILE_NAME}' in _bj_write
+             if int(pv) >= 178 else
+             '/sdcard/Download/$FILE_NAME' in _bj_write))
     if _bj4:
         ok('BJ4 a dead public path is tried once per process, not once '
            'per line')
@@ -7517,14 +7523,31 @@ if int(pv) >= 176:
     # честности (найдено пробой api.github.com в этом же окне — 403 с
     # телом-JSON приходит буднично, 60 запросов в час на адрес).
     _bl_up = _bl_ch.split('class ApkUpdate')[-1]
-    _bl6 = ('available > installed' in _bl_up and
+    if int(pv) >= 178:
+        # ПЕРЕПИН +178. «Есть ли новее» и «можно ли ставить» — разные
+        # вопросы, а в +176 на оба отвечало строгое «больше». Поле 30.07:
+        # на ГУ установлено 254 и доступно 254, скачивание отказало, и
+        # единственный работающий путь к файлу закрылся ровно тогда,
+        # когда был нужен. Равная версия не откат — система ставит её
+        # поверх штатно (проверено на телефоне). Отказ остаётся строго
+        # младшей.
+        _bl6_ver = ('static bool canInstall(int installed, int available) =>'
+                    in _bl_up and
+                    'available >= installed' in _bl_up and
+                    'static bool isNewer(int installed, int available) =>'
+                    in _bl_up and
+                    'available > installed' in _bl_up and
+                    'ApkUpdate.canInstall(installed, rel.buildNumber)'
+                    in _bl_sc)
+    else:
+        _bl6_ver = 'available > installed' in _bl_up
+    _bl6 = (_bl6_ver and
             'rateLimited' in _bl_ch and
             "contains('rate limit')" in _bl_up and
             'UpdateLookup.rateLimited' in _bl_up and
             'size != release.bytes' in _bl_up and
             'await file.delete()' in _bl_up and
             'ApkInstallChannel.stagedPath()' in _bl_sc and
-            'ApkUpdate.isUpgrade(installed, rel.buildNumber)' in _bl_sc and
             'token' not in _bl_up.lower())
     if _bl6:
         ok('BL6 the download refuses a downgrade, verifies the size, '
@@ -7581,6 +7604,149 @@ if int(pv) >= 176:
         fail('BL8 the SAF path leans on a storage permission')
 else:
     ok(f"Part BL skipped (build +{pv}, install-over lands in +176)")
+
+# ═══════════ Part BM — v0.1.79+178 «Что сказало поле 30.07» ═══════════
+#
+# Визит ответил на всё, ради чего делался, и три ответа из пяти были
+# против того, что стояло в коде.
+#
+#   1. DocumentsUI на прошивке НЕТ: оба интента дерева дают
+#      ActivityNotFoundException. А журнал писал «cancelled» — то есть
+#      сообщал, что владелец отменил выбор, когда активити просто нет.
+#   2. §B РАБОТАЕТ: build-254 · bz5-companion-0.1.78.254.apk · 30171855 B.
+#      Сеть стала первым путём к файлу, а не последним.
+#   3. Утверждение «публичные Downloads мертвы» НЕВЕРНО: экспорт пишет
+#      туда новый файл после переустановки, отказывает только
+#      дописывание в файл прежней установки.
+#   4. «Дамп не записан — хранилище недоступно» показывался там, где
+#      писать было просто нечего. Текст называл причиной то, чего не
+#      проверял, и на нём был построен неверный разбор.
+#   5. targetSdk измерен: 35. Поправка +177 снята как ошибка второго
+#      рода — верное число опровергнуто по неверно прочитанной улике.
+if int(pv) >= 178:
+    _bm_kt = 'android/app/src/main/kotlin/com/bz5companion/bz5_companion/'
+
+    def _bm_slurp(rel):
+        p = root / rel
+        return p.read_text() if p.exists() else ''
+
+    _bm_mk_raw = _bm_slurp(_bm_kt + 'AutostartMarker.kt')
+    _bm_ai_raw = _bm_slurp(_bm_kt + 'ApkInstall.kt')
+    _bm_dd_raw = _bm_slurp('lib/services/diag_dump_file.dart')
+    _bm_st_raw = _bm_slurp('lib/screens/settings.dart')
+    _bm_sc_raw = _bm_slurp('lib/screens/install_update.dart')
+    _bm_ch_raw = _bm_slurp('lib/services/apk_install_channel.dart')
+
+    _bm_mk = _strip_comments_safe(_bm_mk_raw)
+    _bm_ai = _strip_comments_safe(_bm_ai_raw)
+    _bm_dd = _strip_comments_safe(_bm_dd_raw)
+    _bm_st = _strip_comments_safe(_bm_st_raw)
+    _bm_sc = _strip_comments_safe(_bm_sc_raw)
+    _bm_ch = _strip_comments_safe(_bm_ch_raw)
+
+    # BM1: диаг-дамп при отказе берёт СВЕЖЕЕ ИМЯ. Экспорт годами жив
+    # именно этим, а дамп дописывал в постоянное имя и падал после
+    # переустановки — файл остаётся за прежним uid.
+    # Область режется ДО определения _freshFilename: первая редакция
+    # гейта включала его в область и читала само определение вместо
+    # вызова — мутация «взять постоянное имя» её не роняла. Ровно та же
+    # семья, что слепота BI2, и найдена тем же харнессом.
+    _bm_app = _bm_dd.split('Future<DiagDumpAppendResult> append(')[-1] \
+        .split('String _freshFilename()')[0]
+    _bm1 = ('final fresh = _freshFilename();' in _bm_app and
+            'File(p.join(dir.path, _filename))' in _bm_app and
+            'File(p.join(dir.path, fresh))' in _bm_app and
+            'for (final candidate in candidates)' in _bm_app and
+            'DiagDumpWriteFailure(reasons)' in _bm_app and
+            'class DiagDumpWriteFailure' in _bm_dd)
+    if _bm1:
+        ok('BM1 the diag dump falls back to a fresh filename instead of '
+           'giving up on a file it no longer owns')
+    else:
+        fail('BM1 the diag dump still has one filename and one chance')
+
+    # BM2: причина отказа ПОИМЁННО. «Хранилище недоступно» — это вывод,
+    # а не измерение, и на нём уже построили неверное объяснение.
+    _bm2 = ("reasons.add('\\${candidate.path}: \\${e.runtimeType}: \\$e')"
+            .replace('\\', '') in _bm_app and
+            'String toString() =>' in _bm_dd and
+            "reasons.join(' · ')" in _bm_dd and
+            'pubErr' in _bm_mk and
+            'reason=$pubErr' in _bm_mk)
+    if _bm2:
+        ok('BM2 every write refusal carries its exception class and path')
+    else:
+        fail('BM2 a write refusal is still reported as a bare verdict')
+
+    # BM3: ложное «публичные Downloads мертвы» снято. Проверка по СЫРОМУ
+    # тексту — утверждение жило в комментарии (урок BJ5: отрицательная
+    # половина держит короткий маркер, который в пересказе не появится).
+    _bm3 = ('unwritable (fails=' not in _bm_mk_raw and
+            'ПОПРАВКА v0.1.79+178' in _bm_mk_raw and
+            'bz5_export_20260730-192239.zip' in _bm_mk_raw and
+            'public Downloads refused' in _bm_mk)
+    if _bm3:
+        ok('BM3 the «public Downloads are dead» claim is replaced by the '
+           'three field measurements that refuted it')
+    else:
+        fail('BM3 the refuted claim is still stated as fact')
+
+    # BM4: «писать нечего» ≠ «запись отказала». Один текст на два разных
+    # состояния — тот же класс, что и остальные три ошибки этой эры.
+    _bm4 = ("S.of('settings.adv.dump_empty')" in _bm_st and
+            "'${S.of('settings.adv.dump_fail')} $e'" in _bm_st and
+            _bm_st.count("S.of('settings.adv.dump_fail')") == 2 and
+            "'settings.adv.dump_empty':" in
+            _bm_slurp('lib/l10n/strings.dart'))
+    if _bm4:
+        ok('BM4 «nothing to dump» and «the write refused» are different '
+           'answers with different texts')
+    else:
+        fail('BM4 an empty dump is still reported as a storage failure')
+
+    # BM5: журнал дерева не врёт. Поле 30.07: из-за подставленного
+    # «cancelled» кнопка выглядела нерабочей, хотя отрабатывала штатно.
+    _bm_tree = _bm_ai.split('fun openTree(')[-1].split('fun rememberTree(')[0]
+    _bm5 = ('out["error"] = "${t.javaClass.simpleName}: ${t.message}"'
+            in _bm_tree and
+            'if (out["error"] == null) out["error"] = "no tree intent to try"'
+            in _bm_tree)
+    if _bm5:
+        ok('BM5 a missing activity is reported as a missing activity, '
+           'not as a cancelled choice')
+    else:
+        fail('BM5 the tree log can still claim the owner cancelled')
+
+    # BM6: GET_CONTENT заведён как настоящий путь к файлу. Одна из трёх
+    # дверей, живых на прошивке, и действие ДРУГОЕ, чем перехваченный
+    # галереей OPEN_DOCUMENT.
+    _bm6 = ('fun pickContent(' in _bm_ai and
+            'REQ_PICK' in _bm_ai.split('fun pickContent(')[-1]
+            .split('fun pick(')[0] and
+            "static Future<Map<String, dynamic>> pickContent()" in _bm_ch and
+            '_pickContentAndStage' in _bm_sc and
+            "S.of('install.getcontent.title')" in _bm_sc)
+    if _bm6:
+        ok('BM6 GET_CONTENT is a real fourth path to the file, not just '
+           'a door in the probe')
+    else:
+        fail('BM6 GET_CONTENT is still probe-only')
+
+    # BM7: проба читается без файловой системы. Поле 30.07: дамп на ГУ
+    # не записался, и единственным доехавшим каналом была фотография
+    # экрана. Прибор обязан быть читаем в этом состоянии.
+    _bm7 = ("S.of('install.raw.title')" in _bm_sc and
+            'JsonEncoder.withIndent' in _bm_sc and
+            'SelectableText(' in _bm_sc and
+            'ExpansionTile(' in _bm_sc and
+            'out["target_sdk"]' in _bm_ai)
+    if _bm7:
+        ok('BM7 the whole probe is readable on screen — the one channel '
+           'that worked when no file could be written')
+    else:
+        fail('BM7 the probe still depends on a file to be read')
+else:
+    ok(f"Part BM skipped (build +{pv}, the 30.07 field answers land in +178)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)

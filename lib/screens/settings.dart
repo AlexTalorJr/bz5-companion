@@ -100,14 +100,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _dumpMarkerInner() async {
     final text = await AutostartArm.marker();
-    final res = await DiagDumpFile.instance.append(
-      title: 'Autostart marker — $kAppVersion',
-      body: '```\n$text\n```',
-    );
+    String msg;
+    try {
+      final res = await DiagDumpFile.instance.append(
+        title: 'Autostart marker — $kAppVersion',
+        body: '```\n$text\n```',
+      );
+      msg = '${S.of('install.exported')} ${res.path}';
+    } catch (e) {
+      // Отказ записи больше не молчит. До +178 исключение уходило в
+      // никуда, и владелец видел просто отсутствие реакции.
+      msg = '${S.of('settings.adv.dump_fail')} $e';
+    }
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('${S.of('install.exported')} ${res.path}')),
-    );
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
   Future<void> _setAutostart(bool v) async {
@@ -830,14 +836,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
           title: Text(S.of('settings.adv.dump')),
           subtitle: Text(S.of('settings.adv.dump_sub')),
           onTap: () async {
-            final res =
-                await context.read<SpeedProfileService>().dumpDiag();
+            // v0.1.79+178: ДВА РАЗНЫХ ОТКАЗА, а текст был один.
+            //
+            // `dumpDiag()` отдаёт null, когда писать НЕЧЕГО — нет ни
+            // сессии, ни леджера, что штатно для свежей установки до
+            // первой поездки. Строка при этом сообщала «хранилище
+            // недоступно», то есть называла причиной то, чего не
+            // проверяла. Поле 30.07: ровно на этой строке я построил
+            // разбор про права доступа к папке Download и потратил на
+            // него два сообщения, пока экспорт из той же папки работал.
+            String text;
+            try {
+              final res =
+                  await context.read<SpeedProfileService>().dumpDiag();
+              text = res == null
+                  ? S.of('settings.adv.dump_empty')
+                  : '${S.of('settings.adv.dump_ok')} ${res.path}';
+            } catch (e) {
+              text = '${S.of('settings.adv.dump_fail')} $e';
+            }
             if (!context.mounted) return;
-            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-              content: Text(res == null
-                  ? S.of('settings.adv.dump_fail')
-                  : '${S.of('settings.adv.dump_ok')} ${res.path}'),
-            ));
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text(text)),
+            );
           },
         ),
         // v0.1.74+173: выключатель автозапуска. До этого патча его не

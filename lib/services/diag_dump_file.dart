@@ -118,12 +118,65 @@ class DiagDumpFile {
   /// a hard cap because some legitimate dumps (HAL probe full enum)
   /// can be larger, and silently truncating would be worse than letting
   /// the writer through.
+  /// v0.1.79+178 — ПРИ ОТКАЗЕ БЕРЁМ СВЕЖЕЕ ИМЯ, А НЕ СДАЁМСЯ.
+  ///
+  /// Поле 30.07 дало три точки в одной папке в один день: экспорт
+  /// записал НОВЫЙ файл уже после переустановки — успешно; этот дамп
+  /// попытался дописать в `bz5_companion_diag.md`, оставшийся от
+  /// сборки 0.1.75.248, — отказ; маркер попытался дописать в свой
+  /// постоянный файл — отказ.
+  ///
+  /// Причина не в scoped storage и не в правах: переустановка меняет
+  /// uid, файл в общей папке остаётся за прежним владельцем, и
+  /// дописывание в него запрещено — а СОЗДАНИЕ нового разрешено.
+  /// Экспорт годами не замечал проблемы ровно потому, что каждый раз
+  /// берёт имя со временем.
+  ///
+  /// Отсюда лестница: канонический файл → свежее имя рядом с ним →
+  /// свежее имя в приватной папке. Последняя ступень не отказывает
+  /// никогда. Каждый отказ записывается С КЛАССОМ ИСКЛЮЧЕНИЯ: «дамп не
+  /// записан» без причины стоило нам целого визита, на котором вывод
+  /// «хранилище недоступно» оказался заведомо сильнее данных.
   Future<DiagDumpAppendResult> append({
     required String title,
     required String body,
   }) async {
     final dir = await _resolveDownloadsDir();
-    final file = File(p.join(dir.path, _filename));
+    final fresh = _freshFilename();
+    final reasons = <String>[];
+    final candidates = <File>[File(p.join(dir.path, _filename))];
+    candidates.add(File(p.join(dir.path, fresh)));
+    try {
+      final docs = await getApplicationDocumentsDirectory();
+      if (docs.path != dir.path) {
+        candidates.add(File(p.join(docs.path, fresh)));
+      }
+    } catch (e) {
+      reasons.add('appDocs: ${e.runtimeType}');
+    }
+    for (final candidate in candidates) {
+      try {
+        return await _appendTo(candidate, title, body);
+      } catch (e) {
+        reasons.add('${candidate.path}: ${e.runtimeType}: $e');
+      }
+    }
+    throw DiagDumpWriteFailure(reasons);
+  }
+
+  /// Имя со временем — как у экспорта, который этим и жив.
+  String _freshFilename() {
+    final n = DateTime.now();
+    String two(int v) => v.toString().padLeft(2, '0');
+    return 'bz5_companion_diag_${n.year}${two(n.month)}${two(n.day)}'
+        '-${two(n.hour)}${two(n.minute)}${two(n.second)}.md';
+  }
+
+  Future<DiagDumpAppendResult> _appendTo(
+    File file,
+    String title,
+    String body,
+  ) async {
     final isNew = !await file.exists();
     final ts = _isoLikeTimestamp(DateTime.now());
 
@@ -164,7 +217,7 @@ class DiagDumpFile {
     return DiagDumpAppendResult(
       path: file.path,
       sizeBytes: size,
-      isPublicDownloads: _isPublicDownloads(dir.path),
+      isPublicDownloads: _isPublicDownloads(file.parent.path),
       wasNewFile: isNew,
     );
   }
@@ -290,4 +343,16 @@ class DiagDumpFile {
     // 3. App docs dir — always exists, but not visible to file manager.
     return getApplicationDocumentsDirectory();
   }
+}
+
+/// Все ступени лестницы отказали. Несёт причины ПОИМЁННО: без класса
+/// исключения и пути «дамп не записан» — это вывод, а не измерение, и
+/// на нём уже один раз построили неверное объяснение.
+class DiagDumpWriteFailure implements Exception {
+  DiagDumpWriteFailure(this.reasons);
+
+  final List<String> reasons;
+
+  @override
+  String toString() => 'дамп не записан: ${reasons.join(' · ')}';
 }

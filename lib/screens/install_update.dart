@@ -100,6 +100,25 @@ class _InstallUpdateScreenState extends State<InstallUpdateScreen> {
     });
   }
 
+  /// Четвёртый путь к файлу. GET_CONTENT — одна из трёх дверей, живых
+  /// на этой прошивке (поле 30.07), и это ДРУГОЕ действие, чем
+  /// перехваченный галереей OPEN_DOCUMENT.
+  Future<void> _pickContentAndStage() async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      final picked = await ApkInstallChannel.pickContent();
+      if (picked['ok'] != true) {
+        _say('getContent → ${picked['error'] ?? 'no file'}');
+        return;
+      }
+      _say('getContent → ${picked['uri']}');
+      await _stage('${picked['uri']}');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
   Future<void> _pickAndStage() async {
     if (_busy) return;
     setState(() => _busy = true);
@@ -218,7 +237,7 @@ class _InstallUpdateScreenState extends State<InstallUpdateScreen> {
 
   Future<void> _download(UpdateRelease rel) async {
     final installed = (_probe?['version_code'] as num?)?.toInt() ?? -1;
-    if (!ApkUpdate.isUpgrade(installed, rel.buildNumber)) {
+    if (!ApkUpdate.canInstall(installed, rel.buildNumber)) {
       _say('отказ: установлено $installed, предложено ${rel.buildNumber}');
       return;
     }
@@ -453,6 +472,12 @@ class _InstallUpdateScreenState extends State<InstallUpdateScreen> {
                     onTap: _busy ? null : () => _stage('${a['uri']}'),
                   ),
                 ListTile(
+                  leading: const Icon(Icons.attachment),
+                  title: Text(S.of('install.getcontent.title')),
+                  subtitle: Text(S.of('install.getcontent.sub')),
+                  onTap: _busy ? null : _pickContentAndStage,
+                ),
+                ListTile(
                   leading: const Icon(Icons.folder_open),
                   title: Text(S.of('install.pick.title')),
                   subtitle: Text(_stagedName == null
@@ -502,6 +527,28 @@ class _InstallUpdateScreenState extends State<InstallUpdateScreen> {
                 ],
                 if (_dl == null && _lookup?.state == UpdateLookup.ok)
                   _upgradeTile(_lookup!.release!),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          // Проба целиком, прямо на экране. Поле 30.07: диаг-дамп на ГУ
+          // не записался, и ЕДИНСТВЕННЫМ каналом оказалась фотография
+          // экрана. Прибор обязан быть читаем без файловой системы.
+          Card(
+            child: ExpansionTile(
+              leading: const Icon(Icons.data_object),
+              title: Text(S.of('install.raw.title')),
+              subtitle: Text(S.of('install.raw.sub')),
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
+                  child: SelectableText(
+                    const JsonEncoder.withIndent('  ')
+                        .convert(_probe ?? <String, dynamic>{}),
+                    style: const TextStyle(
+                        fontSize: 10, fontFamily: 'monospace'),
+                  ),
+                ),
               ],
             ),
           ),
@@ -566,7 +613,8 @@ class _InstallUpdateScreenState extends State<InstallUpdateScreen> {
 
   Widget _upgradeTile(UpdateRelease rel) {
     final installed = (_probe?['version_code'] as num?)?.toInt() ?? -1;
-    final up = ApkUpdate.isUpgrade(installed, rel.buildNumber);
+    final up = ApkUpdate.canInstall(installed, rel.buildNumber);
+    final same = up && !ApkUpdate.isNewer(installed, rel.buildNumber);
     // «Версию установленной сборки не прочитали» и «предложенная не
     // новее» — РАЗНЫЕ отказы, и оба ведут к одному действию, но не к
     // одному объяснению. Показать первое как второе значит соврать
@@ -578,10 +626,12 @@ class _InstallUpdateScreenState extends State<InstallUpdateScreen> {
       leading: Icon(up ? Icons.download : Icons.block,
           color: up ? null : Colors.orangeAccent),
       title: Text(up
-          ? '${S.of('install.update.download')} ${rel.buildNumber}'
+          ? (same
+              ? '${S.of('install.update.same')} ${rel.buildNumber}'
+              : '${S.of('install.update.download')} ${rel.buildNumber}')
           : unknown
               ? S.of('install.update.unknown')
-              : S.of('install.update.notnewer')),
+              : S.of('install.update.older')),
       subtitle: Text('installed $installed → ${rel.buildNumber}',
           style: const TextStyle(fontSize: 11)),
       onTap: up ? () => _download(rel) : null,

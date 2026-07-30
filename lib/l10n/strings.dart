@@ -238,10 +238,15 @@ class S {
     'install.update.offline': 'No network',
     'install.update.bad': 'Reply could not be read',
     'install.update.download': 'Download build',
-    'install.update.notnewer': 'Not newer than installed — refused',
+    'install.update.older': 'Older than installed — refused',
+    'install.update.same': 'Same build, install over the top:',
     'install.update.unknown':
         'Installed build number unreadable — refused',
     'install.update.cancel': 'Cancel',
+    'install.getcontent.title': 'Choose APK (other picker)',
+    'install.getcontent.sub': 'GET_CONTENT — a different action',
+    'install.raw.title': 'Probe as JSON',
+    'install.raw.sub': 'Readable from a photo when no file is written',
 
     // App diagnostics screen (v0.1.29+122)
     'appdiag.title': 'App diagnostics',
@@ -696,7 +701,9 @@ class S {
     'settings.adv.dump_sub': 'Session + ledger JSON into '
         'bz5_companion_diag.md',
     'settings.adv.dump_ok': 'Dump written:',
-    'settings.adv.dump_fail': 'Dump failed — storage unavailable',
+    'settings.adv.dump_fail': 'Dump not written:',
+    'settings.adv.dump_empty':
+        'Nothing to dump yet — no session and no ledger',
     // +160: parking summary card (§132 of the UI contract).
     'measure.card_trip': '{km} km, battery {t}°',
     'measure.card_trip_nt': '{km} km',
@@ -1389,10 +1396,15 @@ class S {
     'install.update.offline': 'Сети нет',
     'install.update.bad': 'Ответ не разобрался',
     'install.update.download': 'Скачать сборку',
-    'install.update.notnewer': 'Не новее установленной — отказ',
+    'install.update.older': 'Старее установленной — отказ',
+    'install.update.same': 'Та же сборка, поставить поверх:',
     'install.update.unknown':
         'Номер установленной сборки не прочитан — отказ',
     'install.update.cancel': 'Отмена',
+    'install.getcontent.title': 'Выбрать APK (другой выбор)',
+    'install.getcontent.sub': 'GET_CONTENT — другое действие',
+    'install.raw.title': 'Проба целиком, JSON',
+    'install.raw.sub': 'Читается с фотографии, когда файл не пишется',
 
     // App diagnostics screen (v0.1.29+122)
     'appdiag.title': 'Диагностика приложения',
@@ -1848,7 +1860,9 @@ class S {
     'settings.adv.dump_sub': 'JSON сессии и леджера в '
         'bz5_companion_diag.md',
     'settings.adv.dump_ok': 'Дамп записан:',
-    'settings.adv.dump_fail': 'Дамп не записан — хранилище недоступно',
+    'settings.adv.dump_fail': 'Дамп не записан:',
+    'settings.adv.dump_empty':
+        'Писать нечего — ни сессии, ни леджера',
     // +160: карточка итогов на стоянке (строки §132 контракта).
     'measure.card_trip': '{km} км, батарея {t}°',
     'measure.card_trip_nt': '{km} км',

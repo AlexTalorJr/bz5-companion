@@ -99,6 +99,20 @@ class MainActivity : FlutterActivity() {
                         }
                     }
                 }
+                "pickContent" -> {
+                    if (claimPending(result, ApkInstall.REQ_PICK)) {
+                        try {
+                            ApkInstall.pickContent(this)
+                        } catch (t: Throwable) {
+                            releasePending()
+                            result.success(mapOf<String, Any?>(
+                                "ok" to false,
+                                "error" to
+                                    "${t.javaClass.simpleName}: ${t.message}",
+                            ))
+                        }
+                    }
+                }
                 "stage" -> {
                     val uri = call.argument<String>("uri")
                     if (uri == null) {

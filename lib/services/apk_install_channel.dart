@@ -32,6 +32,10 @@ class ApkInstallChannel {
   /// диалога: `{ok, uri}` или `{ok: false, error}`.
   static Future<Map<String, dynamic>> pick() => _call('pick');
 
+  /// Выбор файла через ACTION_GET_CONTENT — другое действие, чем
+  /// ACTION_OPEN_DOCUMENT, и на этой прошивке оно живо (поле 30.07).
+  static Future<Map<String, dynamic>> pickContent() => _call('pickContent');
+
   /// Копия выбранного в кэш приложения. `{ok, bytes, source_name}`.
   static Future<Map<String, dynamic>> stage(String uri) =>
       _call('stage', {'uri': uri});
@@ -161,11 +165,23 @@ class ApkUpdate {
       'https://api.github.com/repos/AlexTalorJr/bz5-companion'
       '/releases/latest';
 
-  /// Правило отказа в откате. Строгое «больше», а не «не равно»:
-  /// поставить поверх более старую сборку — это потеря данных, и
-  /// объяснить её потом будет нечем. Равные версии тоже незачем: они
-  /// байт-в-байт то же самое.
-  static bool isUpgrade(int installed, int available) =>
+  /// v0.1.79+178 — ДВА РАЗНЫХ ВОПРОСА, КОТОРЫЕ Я СЛИЛ В ОДИН.
+  ///
+  /// «Есть ли сборка новее» и «можно ли это ставить» — не одно и то же,
+  /// а в +176 на оба отвечало строгое «больше». Поле 30.07 показало
+  /// цену: на ГУ установлено 254, доступно 254, и скачивание отказало —
+  /// то есть ЕДИНСТВЕННЫЙ работающий путь к файлу (сеть; SAF на этой
+  /// прошивке мёртв, системный выбор перехвачен галереей) закрылся
+  /// ровно тогда, когда он и нужен.
+  ///
+  /// Равная версия — не откат. Система ставит одинаковый versionCode
+  /// поверх себя штатно, это проверено на телефоне 30.07: данные целы,
+  /// приложение обновилось. Отказ остаётся только строго младшей.
+  static bool canInstall(int installed, int available) =>
+      available >= installed && installed > 0 && available > 0;
+
+  /// Строго новее — только для уведомления «есть свежая сборка».
+  static bool isNewer(int installed, int available) =>
       available > installed && installed > 0 && available > 0;
 
   /// Номер сборки из тега `build-N`. null, если тег не такой.
