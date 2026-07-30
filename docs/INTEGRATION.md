@@ -38,7 +38,6 @@ lib/screens/wide/
   native_explorer_wide.dart                                (new — debug UI с log tail)
 docs/
   BZ5_NATIVE_API_RECON.md                                  (new — recon отчёт)
-  bz5_feature_catalog.csv                                  (new — 10016 feature IDs)
 ```
 
 ## Сборка через GitHub Actions
@@ -144,7 +143,7 @@ Permissions card покажет какие из 24 BYDAUTO_* permissions не gr
 - 12V voltage: ~12-14V (или ~120-140 если ×10).
 - Pack current: меняется при включении фар (+5-10A). `ENERGY`.
 
-`docs/bz5_feature_catalog.csv` (10016 строк) — фильтруй по interfaceName, пробуй featureID, отмечай в своей таблице. Когда найдёшь SOC/speed/voltage/current — это и есть исходные данные для следующей итерации (NativeCarDataSource).
+Полный каталог (10016 строк) держится вне публичного репозитория — фильтруй по interfaceName, пробуй featureID, отмечай в своей таблице. Когда найдёшь SOC/speed/voltage/current — это и есть исходные данные для следующей итерации (NativeCarDataSource).
 
 ### Шаг 5 — DTC snapshot
 

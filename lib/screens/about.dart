@@ -194,7 +194,7 @@ class _AppInfoCardState extends State<_AppInfoCard> {
               _SpecRow(S.of('about.spec.version'), kAppVersion),
               _SpecRow(S.of('about.spec.source'),
                   'github.com/AlexTalorJr/bz5-companion'),
-              _SpecRow(S.of('about.spec.license'), 'MIT'),
+              _SpecRow(S.of('about.spec.license'), 'Apache-2.0'),
               _SpecRow(S.of('about.spec.hardware'), 'OBD2 Bluetooth adapter'),
             ],
           ),

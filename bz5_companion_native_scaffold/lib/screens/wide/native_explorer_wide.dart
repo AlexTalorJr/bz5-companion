@@ -283,7 +283,7 @@ class _NativeExplorerWideState extends State<NativeExplorerWide> {
                     border: OutlineInputBorder(),
                     isDense: true,
                     hintText: '0x99002B0A',
-                    helperText: 'Hex feature ID from bz5_feature_catalog.csv',
+                    helperText: 'Hex feature ID — tap a preset below',
                   ),
                 ),
                 const SizedBox(height: 8),

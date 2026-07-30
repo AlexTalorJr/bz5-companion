@@ -1,9 +1,19 @@
 #!/usr/bin/env python3
-"""Rewrite the Russian commit messages of this repository into English.
+"""Rewrite this repository's history once, for going public.
 
-The repository went public on 2026-07-30. Sixty-three of the 248 commit
-messages were written in Russian, so the published history read in two
-languages. This tool replaces them.
+Two jobs in one pass, because both need the same rewrite and doing them
+separately would mean two force-pushes and two CI builds.
+
+JOB 1 - language. Sixty-three commit messages were written in Russian, so the
+published history read in two languages. They become English; --check prints
+the totals for the branch it is run on rather than trusting this paragraph.
+
+JOB 2 - purge the parsed feature catalogue. Deleting the file at the tip was
+not enough: a deletion commit leaves the blob reachable from every earlier
+commit and from all 98 build-N tags, so the 615863-byte dump extracted from
+the vehicle software stayed fully downloadable from the public repository.
+Removing it from the published history means rewriting every ref that can
+reach it, tags included.
 
 Three mechanisms, deliberately different:
 
@@ -34,25 +44,49 @@ Usage:
     python3 tools/anglicize_history.py --check   # report only, no writes
     python3 tools/anglicize_history.py --run     # rewrite refs/heads/main
 
---run rewrites ONLY refs/heads/main and deliberately leaves tags alone.
-The 98 build-N tags carry the GitHub Releases that are this app's sole
-delivery channel, and deleting or moving such a tag can turn its Release
-into a draft. The old commits stay reachable from those tags, so nothing
-is lost; the two histories simply coexist on the remote.
+--run rewrites EVERY ref, tags included. That is a change of plan and the
+reason is job 2: leaving the 98 build-N tags on their old commits would leave
+the catalogue downloadable, which defeats the point. Tags keep their names and
+move to the rewritten commits, so the GitHub Releases attached to those names -
+this app's only delivery channel - keep their APK assets. That last part is the
+one claim here I could not verify offline; check one Release afterwards.
+
+Rewriting history does not guarantee the data is unreachable. Objects can
+survive in clones and forks, and on GitHub they stay addressable by SHA in
+cached views until the platform garbage-collects. If that matters, open a
+support ticket after the force-push and ask for a GC.
+
+Because the purge prunes the blob locally as well, --run refuses to touch
+anything until it is shown a copy of the catalogue outside this repository:
+
+    git show HEAD:docs/bz5_feature_catalog.csv > ~/bz5_feature_catalog.csv
+    python3 tools/rewrite_history.py --run --backup ~/bz5_feature_catalog.csv
 
 Afterwards:
 
     git push --force origin main
+    git push --force --tags
 
 Requires git-filter-repo (pip install git-filter-repo).
 """
 
 import argparse
+import hashlib
+import os
 import re
 import subprocess
 import sys
 
 CYRILLIC = re.compile(r'[\u0400-\u04FF]')
+
+# Paths purged from every ref. Both entries are the same blob.
+PURGE_PATHS = [
+    'docs/bz5_feature_catalog.csv',
+    'bz5_companion_native_scaffold/docs/bz5_feature_catalog.csv',
+]
+CATALOGUE_SHA256 = ('80fc73ff91316177ab9e3a9a40ab3aba'
+                    '3e5fef88bd05eea6b4e70f4f89394593')
+CATALOGUE_BYTES = 615863
 
 # ---------------------------------------------------------------------------
 # FULL_MESSAGES - commits whose message is replaced whole.
@@ -1906,6 +1940,40 @@ def build_map():
     return mapping, whole
 
 
+def purge_targets():
+    """PURGE_PATHS still reachable from some ref, with commit counts."""
+    hits = {}
+    for path in PURGE_PATHS:
+        out = git('log', '--all', '--format=%H', '--', path).strip()
+        n = len([l for l in out.split('\n') if l])
+        if n:
+            hits[path] = n
+    return hits
+
+
+def check_backup(path):
+    """Confirm a copy of the catalogue exists outside this repository."""
+    if path is None:
+        sys.exit('--backup is required while the catalogue is still in history.\n'
+                 '  git show HEAD:%s > ~/bz5_feature_catalog.csv' % PURGE_PATHS[0])
+    real = os.path.realpath(path)
+    inside = os.path.realpath(git('rev-parse', '--show-toplevel').strip())
+    if real.startswith(inside + os.sep):
+        sys.exit('backup %s is inside the repository - the purge would take it '
+                 'with everything else; put it elsewhere' % real)
+    try:
+        data = open(real, 'rb').read()
+    except OSError as exc:
+        sys.exit('cannot read backup %s: %s' % (real, exc))
+    got = hashlib.sha256(data).hexdigest()
+    if len(data) != CATALOGUE_BYTES or got != CATALOGUE_SHA256:
+        sys.exit('backup does not match the catalogue in history\n'
+                 '  expected %d bytes sha256 %s\n'
+                 '  got      %d bytes sha256 %s'
+                 % (CATALOGUE_BYTES, CATALOGUE_SHA256, len(data), got))
+    print('backup verified:          %s' % real)
+
+
 def report(mapping, whole):
     total = int(git('rev-list', '--count', 'HEAD').strip())
     raw = git('log', '--format=%H%x1f%B%x1e')
@@ -1923,6 +1991,12 @@ def report(mapping, whole):
     print('messages to be rewritten: %d' % len(mapping))
     print('  of them replaced whole: %d' % len(whole))
     print('russian lines remaining:  %d' % len(left))
+    hits = purge_targets()
+    if hits:
+        for path, n in sorted(hits.items()):
+            print('to purge from history:    %s (%d commits)' % (path, n))
+    else:
+        print('to purge from history:    nothing, already absent')
     for sha, line in left[:40]:
         print('  %s | %s' % (sha, line[:110]))
     if len(left) > 40:
@@ -1931,8 +2005,6 @@ def report(mapping, whole):
 
 
 def run(mapping):
-    if git('status', '--porcelain').strip():
-        sys.exit('working tree is dirty - commit or stash first')
     try:
         import git_filter_repo as fr
     except ImportError:
@@ -1945,14 +2017,40 @@ def run(mapping):
         if new is not None:
             commit.message = new
 
-    args = fr.FilteringOptions.parse_args([
-        '--force',
-        '--refs', 'refs/heads/main',
-        '--replace-refs', 'delete-no-add',
-    ])
+    # git-filter-repo deletes the remote named `origin` in full mode, on
+    # purpose, so that a rewrite cannot be pushed by accident. We want the
+    # push to be deliberate but not hand-typed: remember the URL and put the
+    # remote back afterwards, so nobody re-adds it with a typo.
+    origin = subprocess.run(('git', 'remote', 'get-url', 'origin'),
+                            capture_output=True, text=True).stdout.strip()
+
+    argv = ['--force', '--replace-refs', 'delete-no-add']
+    hits = purge_targets()
+    if hits:
+        argv.append('--invert-paths')
+        for path in PURGE_PATHS:
+            argv += ['--path', path]
+    # No --refs: every ref is rewritten, tags included. Tags have to move or
+    # the purged blob stays reachable through them.
+    args = fr.FilteringOptions.parse_args(argv)
     fr.RepoFilter(args, commit_callback=commit_callback).run()
-    print('rewrote %d messages on refs/heads/main' % len(mapping))
-    print('tags were not touched; now: git push --force origin main')
+
+    print('rewrote %d messages' % len(mapping))
+    if hits:
+        print('purged %d path(s) from every ref' % len(hits))
+
+    if origin:
+        have = subprocess.run(('git', 'remote'), capture_output=True,
+                              text=True).stdout.split()
+        if 'origin' not in have:
+            subprocess.run(('git', 'remote', 'add', 'origin', origin),
+                           check=True)
+            print('restored remote origin -> %s' % origin)
+    else:
+        print('no remote named origin was configured; add one before pushing')
+
+    print('now:  git push --force origin main')
+    print('      git push --force --tags')
 
 
 def main():
@@ -1961,7 +2059,12 @@ def main():
     group.add_argument('--check', action='store_true',
                        help='report what would change, write nothing')
     group.add_argument('--run', action='store_true',
-                       help='rewrite refs/heads/main in place')
+                       help='rewrite every ref in place')
+    parser.add_argument('--backup', metavar='PATH',
+                        help='copy of the feature catalogue kept outside this '
+                             'repository; required by --run while the file is '
+                             'still in history, because the purge prunes it '
+                             'locally too')
     opts = parser.parse_args()
 
     mapping, whole = build_map()
@@ -1970,6 +2073,10 @@ def main():
         return 0 if clean else 1
     if not clean:
         sys.exit('refusing to run: russian lines would remain (see above)')
+    if git('status', '--porcelain').strip():
+        sys.exit('working tree is dirty - commit or stash first')
+    if purge_targets():
+        check_backup(opts.backup)
     run(mapping)
     return 0
 

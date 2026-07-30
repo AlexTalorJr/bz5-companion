@@ -12,7 +12,6 @@ bz5_companion_native_scaffold/
 ├── INTEGRATION.md                                               ← step-by-step мерж
 ├── docs/
 │   ├── BZ5_NATIVE_API_RECON.md                                  ← reverse-engineering отчёт
-│   └── bz5_feature_catalog.csv                                  ← все 10016 features из proto config
 │
 ├── android/app/src/main/
 │   ├── AndroidManifest_additions.xml                            ← permissions + queries snippet
