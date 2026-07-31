@@ -75,6 +75,9 @@ ARM = 'lib/services/autostart_arm.dart'
 A1 = 'tools/atlas_a1_check.py'
 DD = 'lib/services/diag_dump_file.dart'
 CH = 'lib/services/apk_install_channel.dart'
+IS_ = 'lib/services/import_service.dart'
+MN = 'lib/main.dart'
+DM = 'lib/screens/data_management.dart'
 
 # (гейт, файл, анкер, замена, что откатывает)
 #
@@ -367,6 +370,43 @@ MUTATIONS = [
      'return emptyList()\n'
      '        val tree = Uri.parse(treeUri)',
      'сделать SAF-обход зависимым от разрешения на хранилище'),
+
+    # ─── эра BO (+180) «Импорт из архива» ───────────────────────────
+    ('BO1', MN,
+     '  final importApplied = await ImportService.applyPending();',
+     '  final importApplied = null;',
+     'убрать обмен файла до открытия базы — импорт станет немым'),
+    ('BO2', IS_,
+     "    'cloud_sync_cursor_canmonitor': 'can_monitor_sessions',",
+     "    'cloud_sync_cursor_canmon': 'can_monitor_sessions',",
+     'разойтись с сервисом в имени курсора — лавина 04.07 вернётся'),
+    ('BO3', IS_,
+     '      if (!allowed.contains(k)) continue;',
+     '      if (false) continue;',
+     'снять проверку белого списка на входе — чужой архив подменит '
+     'привязку устройства'),
+    ('BO4', IS_,
+     '      await staged.rename(livePath);',
+     '      final live = File(livePath);\n'
+     '      if (await live.exists()) await live.delete();\n'
+     '      await staged.rename(livePath);',
+     'удалить базу до переименования — открыть окно без базы вовсе'),
+    ('BO5', IS_,
+     '    if (schemaVersion > appSchemaVersion) {',
+     '    if (false) {',
+     'принять архив со схемой новее нашей, которую Drift не опустит'),
+    ('BO6', ES,
+     '        ImportService.kPrefsEntry,',
+     "        'prefs_unused.json',",
+     'перестать писать настройки под именем, которое читает импорт'),
+    ('BO7', MK,
+     '        if (fallbackNoted || pubFails == 0) return',
+     '        if (fallbackNoted || where == "pub") return',
+     'вернуть охрану на `where` — маркер снова соврёт про отказ'),
+    ('BO8', DM,
+     '    exit(0);',
+     '    Navigator.of(context).pop();',
+     'убрать снятие процесса — отложенный импорт не применится никогда'),
 ]
 
 FOOTER = 'PASS '

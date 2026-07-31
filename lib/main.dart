@@ -7,6 +7,7 @@ import 'data/database.dart';
 import 'services/account_auth_service.dart';
 import 'services/app_diag_log.dart';
 import 'services/hal_telemetry_service.dart';
+import 'services/import_service.dart';
 import 'services/connection.dart';
 import 'services/cost_settings.dart';
 import 'services/cloud_sync_service.dart';
@@ -45,7 +46,33 @@ void main() async {
   final localeService = LocaleService();
   await localeService.load();
   await _requestPermissions();
+  // v0.1.81+180: ОБМЕН ФАЙЛА БАЗЫ ЗДЕСЬ, И ТОЛЬКО ЗДЕСЬ.
+  //
+  // Импорт из архива не подменяет базу под живым дескриптором Drift —
+  // он кладёт файл рядом и поднимает флаг, а замена происходит на
+  // следующем старте, в этой строке. Место выбрано по одному признаку:
+  // ниже стоит `AppDatabase()`, и после него менять файл уже нельзя.
+  // Позвать раньше тоже нельзя — нужен готовый биндинг для
+  // SharedPreferences и path_provider (он есть с первой строки main).
+  //
+  // Ошибка обмена не должна мешать запуску: приложение обязано
+  // подняться на прежней базе и сказать об этом в журнале, а не
+  // упасть в белый экран на устройстве без ADB.
+  final importApplied = await ImportService.applyPending();
+  if (importApplied != null) {
+    debugPrint(importApplied.ok
+        ? 'Import: database replaced, settings restored: '
+            '${importApplied.prefsRestored}'
+        : 'Import: FAILED — ${importApplied.error}');
+  }
   final db = AppDatabase();
+  // Бухгалтерию синхронизации пересобираем ПОСЛЕ открытия базы: до него
+  // максимальных id не существует. Внутри стоит собственный флаг, так
+  // что на обычном старте это один чтение prefs и выход.
+  final rebuilt = await ImportService.rebuildSyncBookkeeping(db);
+  if (rebuilt != null) {
+    debugPrint('Import: sync cursors rebuilt — $rebuilt');
+  }
   final svc = ConnectionService(db);
   runApp(BZ5App(db: db, svc: svc, localeService: localeService));
 }

@@ -11,6 +11,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../data/database.dart';
+import 'import_service.dart';
 
 /// v0.1.11: bundles all app data into one timestamped zip and hands it off
 /// to the system share sheet for the user to save (e.g. to a USB flash via
@@ -32,6 +33,16 @@ import '../data/database.dart';
 ///   sweep_results.csv        — sweep probe results
 ///   live_log_sessions.csv    — live-log session headers (v0.1.15+)
 ///   live_log_entries.csv     — live-log time-series entries (v0.1.15+)
+///   prefs.json               — travelling settings (v0.1.81+180)
+///
+/// v0.1.81+180: the archive stops being a dump and becomes a RESTORE
+/// POINT — see `import_service.dart`. Two additions serve that and
+/// nothing else: `prefs.json` (owner/car settings + the keys that
+/// describe this database, never device identity or sync bookkeeping)
+/// and a fixed-name copy of the zip. The copy exists because after an
+/// uninstall the app cannot know the timestamp of the last export, and
+/// listing public Downloads may return nothing on this firmware — a
+/// constant name is readable by direct path.
 class ExportService {
   final AppDatabase db;
   ExportService(this.db);
@@ -224,10 +235,33 @@ class ExportService {
       ));
     }
 
+    // v0.1.81+180: переезжающие настройки. Пишутся ВСЕГДА, не под
+    // флагом: они весят десятки байт, а их отсутствие обнаруживается
+    // только при восстановлении — то есть в единственный момент, когда
+    // исправить уже нечем.
+    onProgress?.call('settings');
+    var prefsCount = 0;
+    try {
+      final blob = await ImportService.collectPrefs();
+      final entries = blob['entries'];
+      prefsCount = entries is List ? entries.length : 0;
+      final prefsBytes =
+          utf8.encode(const JsonEncoder.withIndent('  ').convert(blob));
+      archive.addFile(ArchiveFile(
+        ImportService.kPrefsEntry,
+        prefsBytes.length,
+        prefsBytes,
+      ));
+    } catch (e) {
+      debugPrint('Export: settings skipped — $e');
+    }
+
     onProgress?.call('metadata');
     final metadata = {
       'app': 'BZ5 Companion',
       'schema_version': db.schemaVersion,
+      'prefs_count': prefsCount,
+      'prefs_format': ImportService.kPrefsFormat,
       'exported_at': DateTime.now().toIso8601String(),
       'counts': counts,
       'includes': {
@@ -275,6 +309,19 @@ class ExportService {
     final zipFile = File(zipPath);
     await zipFile.create(recursive: true);
     await zipFile.writeAsBytes(zipBytes, flush: true);
+
+    // v0.1.81+180: копия под постоянным именем — вход импорта. Пишется
+    // отдельными байтами, а не копированием файла: `copy()` на этой
+    // прошивке ходит через тот же слой, что и перечисление каталога, и
+    // отказать может там, где запись прямым путём работает (маркер
+    // 31.07 доказал именно запись). Отказ безобиден — архив с меткой
+    // времени уже на диске, и импорт найдёт его перечислением.
+    try {
+      final fixed = File(p.join(destDir.path, ImportService.kFixedName));
+      await fixed.writeAsBytes(zipBytes, flush: true);
+    } catch (e) {
+      debugPrint('Export: fixed-name copy skipped — $e');
+    }
 
     return _BuildResult(
       zipPath: zipPath,

@@ -7853,6 +7853,155 @@ if int(pv) >= 179:
 else:
     ok(f"Part BN skipped (build +{pv}, the journal inversion lands in +179)")
 
+# ═════ Part BO — v0.1.81+180 «Импорт из архива» ═════
+#
+# Установка поверх закрыта полем 31.07: прошивка отвечает «нельзя
+# устанавливать приложения не из магазина приложений» тостом без кнопок.
+# Значит цену удаления снимают с другой стороны — восстановлением из
+# архива. Три вещи здесь могут сломаться молча, и каждая проверяется.
+if int(pv) >= 180:
+    _bo_imp = _strip_comments_safe(
+        (root / 'lib/services/import_service.dart').read_text()
+        if (root / 'lib/services/import_service.dart').exists() else '')
+    _bo_exp = _strip_comments_safe(
+        (root / 'lib/services/export_service.dart').read_text())
+    _bo_main = _strip_comments_safe((root / 'lib/main.dart').read_text())
+    _bo_cloud = _strip_comments_safe(
+        (root / 'lib/services/cloud_sync_service.dart').read_text())
+    _bo_mk = _strip_comments_safe(
+        (root / ('android/app/src/main/kotlin/com/bz5companion/'
+                 'bz5_companion/AutostartMarker.kt')).read_text())
+
+    # BO1: ОБМЕН ФАЙЛА СТРОГО ДО ОТКРЫТИЯ БАЗЫ. Подмена под живым
+    # дескриптором Drift — тихая порча, которая ищется полевым визитом.
+    _bo_apply_at = _bo_main.find('ImportService.applyPending()')
+    _bo_db_at = _bo_main.find('AppDatabase()')
+    _bo_rebuild_at = _bo_main.find('ImportService.rebuildSyncBookkeeping(')
+    _bo1 = (_bo_apply_at != -1 and _bo_db_at != -1 and
+            _bo_rebuild_at != -1 and
+            _bo_apply_at < _bo_db_at < _bo_rebuild_at)
+    if _bo1:
+        ok('BO1 the swap runs before AppDatabase(), the cursor rebuild '
+           'after it')
+    else:
+        fail('BO1 import ordering in main() is wrong — swap must precede '
+             'the database, rebuild must follow it')
+
+    # BO2: ЛИТЕРАЛЫ КУРСОРОВ СОВПАДАЮТ С СЕРВИСОМ. import_service держит
+    # имена ключей литералами (приватную константу из другого файла
+    # компилятор не отдаст), поэтому расхождение может поймать только
+    # текст. Разойдись они — курсоры «пересобрались» бы мимо тех, что
+    # читает CloudSyncService, и лавина 04.07 повторилась бы молча.
+    _bo_cursor_keys = re.findall(r"'(cloud_sync_cursor_\w+)'", _bo_imp)
+    _bo_missing = [k for k in _bo_cursor_keys
+                   if f"'{k}'" not in _bo_cloud]
+    _bo_cloud_keys = set(re.findall(r"'(cloud_sync_cursor_\w+)'", _bo_cloud))
+    _bo_uncovered = sorted(_bo_cloud_keys - set(_bo_cursor_keys))
+    # Префикс карты uuid — такой же литерал и с такой же опасностью.
+    _bo_wm_ok = ("'cloud_sync_uuid_map_wm_'" in _bo_imp and
+                 "'cloud_sync_uuid_map_wm_'" in _bo_cloud)
+    _bo2 = (len(_bo_cursor_keys) >= 5 and
+            not _bo_missing and
+            not _bo_uncovered and
+            _bo_wm_ok)
+    if _bo2:
+        ok(f'BO2 all {len(_bo_cursor_keys)} push cursors are known to both '
+           'the importer and the sync service')
+    else:
+        fail(f'BO2 cursor literals diverge — unknown to service: '
+             f'{_bo_missing}, not rebuilt by import: {_bo_uncovered}')
+
+    # BO3: ИДЕНТИЧНОСТЬ И УЧЁТ НЕ ЕДУТ. Белый список проверяется и на
+    # входе: архив лежит на общем диске, и чужой prefs.json не должен
+    # уметь подменить device_id или базовый адрес.
+    _bo_forbidden = ['cloud_sync_device_id', 'cloud_sync_vehicle_id',
+                     'cloud_sync_base_url', 'cloud_sync_enabled',
+                     'account_email', 'account_refresh_token',
+                     'cloud_sync_client_token']
+    _bo_travel = _bo_imp.split('static const List<String> ownerKeys')[-1] \
+        .split('static List<String> get travellingKeys')[0]
+    _bo_leak = [k for k in _bo_forbidden if f"'{k}'" in _bo_travel]
+    _bo3 = (not _bo_leak and
+            'final allowed = travellingKeys.toSet();' in _bo_imp and
+            'if (!allowed.contains(k)) continue;' in _bo_imp)
+    if _bo3:
+        ok('BO3 device identity never travels, and the whitelist is '
+           'enforced on the way IN as well as out')
+    else:
+        fail(f'BO3 identity leak into the archive {_bo_leak} or the '
+             f'inbound whitelist is missing')
+
+    # BO4: СПУТНИКИ ПРЕЖНЕЙ БАЗЫ УДАЛЯЮТСЯ, А САМА БАЗА — НЕТ. rename
+    # атомарен и заменяет файл сам; удалить базу заранее означает окно,
+    # в котором её уже нет, а новой ещё нет.
+    _bo_swap = _bo_imp.split('final livePath =')[-1].split('var restored')[0]
+    _bo4 = ("'-wal', '-shm', '-journal'" in _bo_swap and
+            'staged.rename(livePath)' in _bo_swap and
+            'live.delete()' not in _bo_swap)
+    if _bo4:
+        ok('BO4 the swap deletes stale sidecars and replaces the database '
+           'by rename, never by delete-then-write')
+    else:
+        fail('BO4 the swap can leave a stale journal or open a window with '
+             'no database at all')
+
+    # BO5: СХЕМА НОВЕЕ НАШЕЙ — ОТКАЗ. Drift поднимет старую базу
+    # миграцией, опустить новую он не может ничем.
+    _bo5 = ("'schema-too-new'" in _bo_imp and
+            'if (schemaVersion > appSchemaVersion)' in _bo_imp and
+            '_looksLikeSqlite' in _bo_imp)
+    if _bo5:
+        ok('BO5 a newer schema and a non-sqlite payload are both refused '
+           'before anything is staged')
+    else:
+        fail('BO5 the importer can accept an archive it cannot open')
+
+    # BO6: ЭКСПОРТ ПИШЕТ НАСТРОЙКИ И ПОСТОЯННОЕ ИМЯ. Без первого
+    # восстановление теряет валюту и профили; без второго импорт зависит
+    # от перечисления каталога, которое на этой прошивке может вернуть
+    # пусто.
+    _bo6 = ('ImportService.collectPrefs()' in _bo_exp and
+            'ImportService.kPrefsEntry' in _bo_exp and
+            'ImportService.kFixedName' in _bo_exp)
+    if _bo6:
+        ok('BO6 the export writes prefs.json and the fixed-name copy the '
+           'importer reads by direct path')
+    else:
+        fail('BO6 the archive is still a dump, not a restore point')
+
+    # BO7: ОХРАНА ОТСТУПНОЙ СТРОКИ СТОИТ НА СЧЁТЧИКЕ ОТКАЗОВ. Поле 31.07:
+    # три строки «refused (fails=0)» при живом зеркале — условие стояло
+    # на `where`, которое при успехе равно "priv+pub".
+    _bo_note = _bo_mk.split('fun noteFallback(')[-1].split('}')[0]
+    _bo7 = ('pubFails == 0' in _bo_note and 'where == "pub"' not in _bo_note)
+    if _bo7:
+        ok('BO7 the fallback note fires only on a real public-write '
+           'refusal')
+    else:
+        fail('BO7 the marker can still claim a refusal that never happened')
+
+    # BO8: ПОСЛЕ ПОСТАНОВКИ В ОЧЕРЕДЬ ЕСТЬ ЧЕМ СНЯТЬ ПРОЦЕСС. Обмен стоит
+    # в main(), а на Android повторное открытие с живым процессом
+    # поднимает прежнюю активити и main() НЕ зовёт. На этом ГУ процесс
+    # живёт часами (поле 31.07: pid=4746 пережил 2.5 часа сна), поэтому
+    # без явного снятия импорт не применился бы молча и никогда — то
+    # есть весь патч работал бы только на телефоне.
+    _bo_dm = _strip_comments_safe(
+        (root / 'lib/screens/data_management.dart').read_text())
+    _bo8 = ("import 'dart:io';" in _bo_dm and
+            'void _closeApp()' in _bo_dm and
+            'exit(0)' in _bo_dm and
+            "S.of('dataimp.close_btn')" in _bo_dm and
+            'onPressed: _busy ? null : _closeApp' in _bo_dm)
+    if _bo8:
+        ok('BO8 a queued import can be applied — the owner has an explicit '
+           'way to end the process')
+    else:
+        fail('BO8 a queued import may never apply: the process outlives the '
+             'window and main() would not run again')
+else:
+    ok(f"Part BO skipped (build +{pv}, archive import lands in +180)")
+
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
 print(f"+35→+51 REGRESSION — build +{pv}")

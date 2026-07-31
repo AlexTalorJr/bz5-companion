@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -6,6 +8,7 @@ import '../l10n/strings.dart';
 import '../services/connection.dart';
 import '../services/locale_service.dart';
 import '../services/export_service.dart';
+import '../services/import_service.dart';
 
 /// v0.1.11: Data management screen — export all data to share sheet,
 /// or clear specific tables when storage starts filling up.
@@ -42,10 +45,24 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
   Map<String, int>? _counts;
   bool _loadingCounts = true;
 
+  // v0.1.81+180 — восстановление из архива.
+  bool _busy = false;
+  bool _pending = false;
+  bool _importSettings = true;
+  ImportPreview? _preview;
+  String? _importResult;
+
   @override
   void initState() {
     super.initState();
     _refreshCounts();
+    _refreshPending();
+  }
+
+  Future<void> _refreshPending() async {
+    final v = await ImportService.isPending();
+    if (!mounted) return;
+    setState(() => _pending = v);
   }
 
   Future<void> _refreshCounts() async {
@@ -227,6 +244,115 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
             ),
 
           const Divider(),
+          _section(S.of('dataimp.sec_restore')),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+            child: Text(
+              S.of('dataimp.intro'),
+              style: const TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+          ),
+          if (_pending) ...[
+            ListTile(
+              leading: const Icon(Icons.restart_alt, color: Colors.amberAccent),
+              title: Text(S.of('dataimp.pending_title')),
+              subtitle: Text(S.of('dataimp.pending_sub')),
+              trailing: TextButton(
+                onPressed: _busy ? null : _cancelPending,
+                child: Text(S.of('dataimp.cancel')),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+              child: FilledButton.icon(
+                icon: const Icon(Icons.power_settings_new),
+                label: Text(S.of('dataimp.close_btn')),
+                style: FilledButton.styleFrom(
+                  minimumSize: const Size.fromHeight(48),
+                ),
+                onPressed: _busy ? null : _closeApp,
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: Text(
+                S.of('dataimp.close_note'),
+                style: const TextStyle(fontSize: 11, color: Colors.grey),
+              ),
+            ),
+          ] else ...[
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+              child: OutlinedButton.icon(
+                icon: const Icon(Icons.folder_open),
+                label: Text(_busy
+                    ? S.of('dataimp.looking')
+                    : S.of('dataimp.find_btn')),
+                style: OutlinedButton.styleFrom(
+                  minimumSize: const Size.fromHeight(48),
+                ),
+                onPressed: _busy ? null : _findArchive,
+              ),
+            ),
+            if (_preview != null && _preview!.ok) ...[
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+                child: Text(
+                  S
+                      .of('dataimp.found_fmt')
+                      .replaceFirst('{size}', _preview!.humanSize)
+                      .replaceFirst('{at}', _preview!.exportedAt)
+                      .replaceFirst('{schema}', '${_preview!.schemaVersion}')
+                      .replaceFirst('{summary}', _preview!.countsSummary),
+                  style: const TextStyle(fontSize: 12),
+                ),
+              ),
+              CheckboxListTile(
+                dense: true,
+                value: _importSettings && _preview!.hasSettings,
+                onChanged: _preview!.hasSettings && !_busy
+                    ? (v) => setState(() => _importSettings = v ?? true)
+                    : null,
+                title: Text(_preview!.hasSettings
+                    ? S
+                        .of('dataimp.with_settings_fmt')
+                        .replaceFirst('{n}', '${_preview!.prefsCount}')
+                    : S.of('dataimp.no_settings')),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+                child: FilledButton.icon(
+                  icon: const Icon(Icons.restore),
+                  label: Text(S.of('dataimp.restore_btn')),
+                  style: FilledButton.styleFrom(
+                    minimumSize: const Size.fromHeight(48),
+                  ),
+                  onPressed: _busy ? null : _confirmAndStage,
+                ),
+              ),
+            ],
+            if (_preview != null && !_preview!.ok)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+                child: Text(
+                  S
+                      .of('dataimp.bad_fmt')
+                      .replaceFirst('{code}', '${_preview!.errorCode}')
+                      .replaceFirst('{detail}', '${_preview!.errorDetail}'),
+                  style: const TextStyle(
+                      fontSize: 12, color: Colors.orangeAccent),
+                ),
+              ),
+          ],
+          if (_importResult != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              child: Text(_importResult!,
+                  style: const TextStyle(
+                      fontSize: 12, color: Colors.greenAccent)),
+            ),
+
+          const Divider(),
           _section(S.of('dataexp.sec_cleanup')),
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
@@ -327,6 +453,102 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
                 color: Colors.grey,
                 fontWeight: FontWeight.w500)),
       );
+
+  /// Найти архив и ОСМОТРЕТЬ его. Ни одной правки на этом шаге —
+  /// владелец должен увидеть числа до того, как что-то произойдёт.
+  Future<void> _findArchive() async {
+    setState(() {
+      _busy = true;
+      _preview = null;
+      _importResult = null;
+    });
+    final schema = context.read<ConnectionService>().db.schemaVersion;
+    try {
+      final zip = await ImportService.findArchive();
+      if (zip == null) {
+        if (!mounted) return;
+        setState(() {
+          _preview = ImportPreview.bad('', 'not-found', '');
+        });
+        return;
+      }
+      final pv = await ImportService.inspect(zip, appSchemaVersion: schema);
+      if (!mounted) return;
+      setState(() => _preview = pv);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _preview = ImportPreview.bad('', 'error', '$e'));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// Подтверждение и постановка в очередь. Замена целиком, поэтому текст
+  /// диалога называет обе стороны сделки: что приедет и что исчезнет.
+  Future<void> _confirmAndStage() async {
+    final pv = _preview;
+    if (pv == null || !pv.ok) return;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(S.of('dataimp.confirm_q')),
+        content: Text(S
+            .of('dataimp.confirm_desc')
+            .replaceFirst('{summary}', pv.countsSummary)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: Text(S.of('common.cancel')),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: Text(S.of('dataimp.restore_btn')),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    setState(() => _busy = true);
+    final res = await ImportService.stage(
+      File(pv.path),
+      withSettings: _importSettings && pv.hasSettings,
+    );
+    if (!mounted) return;
+    setState(() {
+      _busy = false;
+      _pending = res.ok;
+      _importResult = res.ok
+          ? S.of('dataimp.staged')
+          : S.of('dataimp.stage_failed_fmt').replaceFirst('{e}', '${res.error}');
+    });
+  }
+
+  /// Снять процесс, чтобы обмен состоялся. НЕ удобство.
+  ///
+  /// Обмен файла базы стоит в `main()`, а на Android повторное открытие
+  /// приложения с ЖИВЫМ процессом поднимает прежнюю активити — `main()`
+  /// второй раз НЕ выполняется. На этом ГУ процесс живёт часами (поле
+  /// 31.07: pid=4746 пережил два с половиной часа сна блока), поэтому
+  /// просьба «закройте и откройте» не сработала бы, и импорт молча не
+  /// применялся бы никогда. `exit(0)` снимает процесс детерминированно.
+  ///
+  /// Потеря отложенных записей Drift здесь безобидна по построению: база
+  /// всё равно заменяется целиком на следующем старте.
+  void _closeApp() {
+    exit(0);
+  }
+
+  Future<void> _cancelPending() async {
+    setState(() => _busy = true);
+    await ImportService.cancelPending();
+    if (!mounted) return;
+    setState(() {
+      _busy = false;
+      _pending = false;
+      _importResult = null;
+      _preview = null;
+    });
+  }
 
   Future<void> _doExport(ConnectionService svc, {required bool toDownloads}) async {
     setState(() {

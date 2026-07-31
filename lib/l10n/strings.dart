@@ -1022,6 +1022,32 @@ class S {
     'dataexp.export_failed_fmt': 'Export failed: {e}',
     'common.delete': 'Delete',
 
+    // ── restore from archive (v0.1.81+180) ──
+    'dataimp.sec_restore': 'RESTORE FROM ARCHIVE',
+    'dataimp.intro': 'Reads an export archive back. Brings in what the '
+        'cloud never carries: raw samples, HAL samples and atlas bands '
+        'that were not yet frozen. Replaces the whole local database.',
+    'dataimp.find_btn': 'Find archive',
+    'dataimp.looking': 'Looking…',
+    'dataimp.found_fmt': 'Archive: {size}, exported {at}, schema {schema}\n'
+        '{summary}',
+    'dataimp.with_settings_fmt': 'Also restore settings ({n})',
+    'dataimp.no_settings': 'This archive carries no settings',
+    'dataimp.restore_btn': 'Restore',
+    'dataimp.confirm_q': 'Replace all local data?',
+    'dataimp.confirm_desc': 'Everything currently stored on this device is '
+        'replaced by the archive contents ({summary}). The swap happens on '
+        'the next app start. Device identity and cloud bookkeeping are not '
+        'restored.',
+    'dataimp.staged': 'Queued. Close the app to apply.',
+    'dataimp.stage_failed_fmt': 'Could not queue: {e}',
+    'dataimp.pending_title': 'Restore queued',
+    'dataimp.pending_sub': 'Applied on the next app start.',
+    'dataimp.cancel': 'Cancel',
+    'dataimp.close_btn': 'Close the app now',
+    'dataimp.close_note': 'Reopening is not enough on its own: the process outlives the window here, and the swap runs at process start. Closing from this button makes it happen.',
+    'dataimp.bad_fmt': 'Archive unusable: {code} ({detail})',
+
     // ── polling diagnostics ──
     'polld.title': 'Polling diagnostics',
     'polld.ok_reads': 'ok reads',
@@ -2183,6 +2209,32 @@ class S {
     'dataexp.error_fmt': 'Ошибка: {e}',
     'dataexp.export_failed_fmt': 'Экспорт не удался: {e}',
     'common.delete': 'Удалить',
+
+    // ── восстановление из архива (v0.1.81+180) ──
+    'dataimp.sec_restore': 'ВОССТАНОВЛЕНИЕ ИЗ АРХИВА',
+    'dataimp.intro': 'Читает архив экспорта обратно. Возвращает то, чего '
+        'облако не несёт вовсе: сырые сэмплы, HAL-сэмплы и незамороженные '
+        'полосы атласа. Локальная база заменяется целиком.',
+    'dataimp.find_btn': 'Найти архив',
+    'dataimp.looking': 'Ищу…',
+    'dataimp.found_fmt': 'Архив: {size}, выгружен {at}, схема {schema}\n'
+        '{summary}',
+    'dataimp.with_settings_fmt': 'Восстановить и настройки ({n})',
+    'dataimp.no_settings': 'В этом архиве настроек нет',
+    'dataimp.restore_btn': 'Восстановить',
+    'dataimp.confirm_q': 'Заменить все локальные данные?',
+    'dataimp.confirm_desc': 'Всё, что сейчас хранится на устройстве, '
+        'заменяется содержимым архива ({summary}). Замена произойдёт при '
+        'следующем запуске приложения. Привязка устройства и учёт облака '
+        'не восстанавливаются.',
+    'dataimp.staged': 'Запланировано. Закройте приложение для применения.',
+    'dataimp.stage_failed_fmt': 'Не удалось запланировать: {e}',
+    'dataimp.pending_title': 'Восстановление запланировано',
+    'dataimp.pending_sub': 'Применится при следующем запуске.',
+    'dataimp.cancel': 'Отменить',
+    'dataimp.close_btn': 'Закрыть приложение',
+    'dataimp.close_note': 'Просто открыть заново недостаточно: процесс здесь живёт дольше окна, а обмен происходит при старте процесса. Эта кнопка снимает его наверняка.',
+    'dataimp.bad_fmt': 'Архив не годен: {code} ({detail})',
 
     // ── polling diagnostics ──
     'polld.title': 'Диагностика опроса',
