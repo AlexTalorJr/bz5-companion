@@ -78,6 +78,13 @@ CH = 'lib/services/apk_install_channel.dart'
 IS_ = 'lib/services/import_service.dart'
 MN = 'lib/main.dart'
 DM = 'lib/screens/data_management.dart'
+HO = KT + 'hal/HalOut.kt'
+HW = KT + 'hal/HalStreamOwner.kt'
+DS = KT + 'hal/DecodedStreamSink.kt'
+NP = KT + 'BydNativePlugin.kt'
+DB = 'lib/data/database.dart'
+HT = 'lib/services/hal_telemetry_service.dart'
+BJ = 'lib/services/hal_bg_journal.dart'
 
 # (гейт, файл, анкер, замена, что откатывает)
 #
@@ -95,9 +102,13 @@ MUTATIONS = [
      '"resurrected: headless flags=$flags · ${ident()}"',
      '"resurrected: launch=attempted-no-throw · ${ident()}"',
      'вернуть маркеру ложное утверждение о попытке запуска'),
+    # v0.1.83+182: дизъюнкция путей наверх переехала в поле lastHeadless
+    # (надпись обновляется позже, чем startForeground), поэтому анкер
+    # мутации переехал за ней. Предмет тот же — мост не должен потерять
+    # различитель «поднялся сам».
     ('BF3', AS_,
-     'buildNotification(resurrected || bridged)',
-     'buildNotification(resurrected)',
+     'lastHeadless = resurrected || bridged',
+     'lastHeadless = resurrected',
      'отрезать путь моста от нотификации'),
     ('BF4', AS_,
      'buildNotification(headless: Boolean = false)',
@@ -209,10 +220,15 @@ MUTATIONS = [
      '                .putBoolean(KEY_OPT_OUT, !armed)',
      '',
      'перестать запоминать отказ — следующий запуск взведёт поверх'),
+    # v0.1.83+182: сбор за тумблером появился, и прежняя надпись «сбор
+    # начнётся при открытии» стала отрицанием работы, которая идёт.
+    # Предмет гейта тот же — надпись обязана описывать измеренное
+    # состояние; мутация возвращает ей обещание вместо измерения.
     ('BJ3', AS_,
-     '"автозапуск сработал — сбор начнётся при открытии"',
-     '"нажмите, чтобы записывать"',
-     'вернуть нотификации обещание записи, которой нет'),
+     '    private fun collectingText(): String {',
+     '    private fun collectingTextUnused(): String {',
+     'убрать измерение состояния сбора — надписи снова нечем быть '
+     'честной'),
     ('BJ4', MK,
      '        if (!pubDead) {',
      '        if (true) {',
@@ -407,6 +423,106 @@ MUTATIONS = [
      '    exit(0);',
      '    Navigator.of(context).pop();',
      'убрать снятие процесса — отложенный импорт не применится никогда'),
+
+    # ─── эра BP (+181) «Сбор в автостарте» ──────────────────────────
+    ('BP1', DS,
+     '    private var sink: HalOut? = out',
+     '    private var sink: io.flutter.plugin.common.EventChannel.EventSink? '
+     '= null',
+     'вернуть сник к EventChannel — второй адресат потребовал бы второй '
+     'копии извлечений из BigData'),
+    ('BP2', NP,
+     '                val status = HalStreamOwner.attachFlutter('
+     'ctx, sink, platformOverrideId)',
+     '                val streamSink = DecodedStreamSink(sink)\n'
+     '                val halEngine = 1\n'
+     '                val status = HalStreamOwner.attachFlutter('
+     'ctx, sink, platformOverrideId)',
+     'дать плагину строить свой движок — двойная подписка, которую патч '
+     'и снимает'),
+    ('BP3', HW,
+     '        if (engine != null) {\n'
+     '            streamSink?.setOut(out)\n'
+     '            return\n'
+     '        }',
+     '        if (engine != null) {\n'
+     '            stopAll()\n'
+     '        }',
+     'пересоздавать живой движок при передаче потока — дыра в данных и '
+     'два прокси разом'),
+    ('BP4', HW,
+     '                "BYDAutoPowerDevice_canDataCollect",',
+     '                "BYDAutoPowerDevice_disabled",',
+     'сломать пару Power+BigData в единственном месте сборки целей — '
+     'soc_precise, SOH и температура исчезнут молча'),
+    ('BP5', HO,
+     '        for (e in batch) {\n'
+     '            seen.incrementAndGet()',
+     '        if (full) {\n'
+     '            dropped.addAndGet(batch.size.toLong())\n'
+     '            return\n'
+     '        }\n'
+     '        for (e in batch) {\n'
+     '            seen.incrementAndGet()',
+     'поставить счётчики за потолок — работающий HAL прочитался бы как '
+     'молчащий'),
+    ('BP6', HO,
+     '        if (bytes + size > CAP_BYTES) {',
+     '        if (false) {',
+     'снять потолок журнала — файл растёт без объявленной границы'),
+    ('BP7', HT,
+     '      final ing = await HalBgJournal.ingest(bgDb);',
+     '      final ing = const HalBgIngestResult(present: false);',
+     'убрать втягивание журнала из init() до перенаправления потока'),
+    ('BP8', DB,
+     '              timestamp: Value(r.at),',
+     '              timestamp: Value(DateTime.now()),',
+     'ставить фоновым строкам время вставки — вся поездка в одно '
+     'мгновение'),
+    ('BP10', HW,
+     '        if (engine != null && outTag == OUT_FLUTTER) return lastStatus',
+     '        if (false) return lastStatus',
+     'снять охрану владельца потока — будильник моста при открытом '
+     'приложении заморозит приборы'),
+    ('BP9', DM,
+     "      'hal_samples': await db.countAllHalSamples(),",
+     '',
+     'убрать главное число импорта с экрана — сверять его снова станет '
+     'нечем'),
+
+    # ─── эра BQ (+182) «Журнал: владение, идемпотентность, границы» ──
+    ('BQ1', BJ,
+     '      final raw = await taken.readAsString();',
+     '      final raw = await live.readAsString();',
+     'читать живой путь вместо забранного — строки между чтением и '
+     'удалением исчезнут'),
+    ('BQ2', BJ,
+     '      await db.transaction(() async {',
+     '      await Future<void>(() async {',
+     'вернуть вставку без общей транзакции — отказ на середине '
+     'гарантирует дубли'),
+    ('BQ3', BJ,
+     '      if (await taken.exists()) {',
+     '      if (false) {',
+     'втягивать остаток упавшего захода второй раз — удвоение без '
+     'всякой сверки'),
+    ('BQ4', BJ,
+     '      if (hdr != fmt) {',
+     '      if (false) {',
+     'принять журнал чужого формата — мусор уедет в hal_samples молча'),
+    ('BQ5', HO,
+     '        ArrayBlockingQueue(QUEUE_CAPACITY),',
+     '        java.util.concurrent.LinkedBlockingQueue(),',
+     'снять границу очереди записи — рост памяти в foreground-сервисе'),
+    ('BQ6', HO,
+     '        var bytes = if (existed) f.length() else 0L',
+     '        var bytes = 0L',
+     'перестать спрашивать длину у файловой системы — потолок разойдётся '
+     'с действительностью'),
+    ('BQ7', AS_,
+     '        if (HalStreamOwner.activeOut() != HalStreamOwner.OUT_FLUTTER) {',
+     '        if (false) {',
+     'оставить подписку без владельца при смерти сервиса'),
 ]
 
 FOOTER = 'PASS '

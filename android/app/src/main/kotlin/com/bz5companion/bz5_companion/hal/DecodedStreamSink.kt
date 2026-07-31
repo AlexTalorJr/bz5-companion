@@ -1,7 +1,7 @@
 // === COMPANION-AUTHORED (not vendored) ===
 // This file is owned by bz5_companion. It implements the frozen
 // TelemetrySink interface (vendored from recon) and bridges the live HAL
-// telemetry stream into a Flutter EventChannel.
+// telemetry stream to whatever destination the process currently has.
 //
 // Contract notes carried from the recon handoff (v0.10.53):
 //   - LiveTelemetrySubscriber already de-dupes the framework's double
@@ -10,26 +10,40 @@
 //     a clean stream — no dedup needed here. (If we ever wrote our own
 //     Proxy/handler we'd have to handle onDataChanged-only ourselves.)
 //   - onRawEvent runs on the framework's BINDER thread. It must NOT block
-//     and must NOT touch the EventSink directly (EventSink.success is
+//     and must NOT touch the destination directly (EventSink.success is
 //     main-thread-only). We enqueue and drain on the main looper.
 //   - pack_current and every other value arrives already decoded by
 //     TelemetryDecoderTable (HAL gives finished units). We apply NO manual
 //     arithmetic here — no (raw-5018)*0.1021, no sign flip, no scale.
+//
+// v0.1.83+182 — ЭТОТ КЛАСС БОЛЬШЕ НЕ ЗНАЕТ ПРО FLUTTER.
+//
+// Патч 2 добавил вторую точку, куда должен уезжать расшифрованный поток
+// (журнал фонового сбора). Своя копия расшифровки на стороне сервиса
+// отвергнута: ценное здесь не вендоренная таблица, а НАДСТРОЙКА
+// companion — байтовые извлечения из BigData-кадров ниже, самая
+// чувствительная логика в проекте. Копия развелась бы с оригиналом
+// молча.
+//
+// Поэтому `EventChannel` ушёл за интерфейс `HalOut` (см. HalOut.kt), а
+// экземпляр этого класса стал ОДНИМ на процесс, со сменным адресатом.
+// Проверять это должен гейт, а не память: упоминание EventChannel в
+// этом файле — уже регресс.
 package com.bz5companion.bz5_companion.hal
 
 import android.os.Handler
 import android.os.Looper
-import io.flutter.plugin.common.EventChannel
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Bridges [TelemetrySink] (binder-thread, decoded) → a Flutter
- * EventChannel (main-thread, batched).
+ * Bridges [TelemetrySink] (binder-thread, decoded) → a [HalOut]
+ * destination (main-thread, batched).
  *
- * Lifecycle is owned by the plugin: construct with the active EventSink
- * when Dart starts listening, call [detach] when Dart cancels so late
- * binder callbacks become no-ops instead of touching a dead sink.
+ * Lifecycle is owned by [HalStreamOwner]: one instance per process, its
+ * destination swapped by [setOut] as Dart comes and goes, [detach]
+ * called only when the subscription itself ends — so late binder
+ * callbacks become no-ops instead of touching a dead destination.
  *
  * Batching: events arrive at up to ~50 Hz aggregate (speed ~8.7 Hz plus
  * the other 7 targets). Posting one main-looper message per event would
@@ -38,12 +52,12 @@ import java.util.concurrent.atomic.AtomicBoolean
  * post a drain when one isn't already pending.
  */
 class DecodedStreamSink(
-    eventSink: EventChannel.EventSink,
+    out: HalOut,
     private val overrides: Map<String, Decoder> = emptyMap(),
 ) : TelemetrySink {
 
     @Volatile
-    private var sink: EventChannel.EventSink? = eventSink
+    private var sink: HalOut? = out
 
     private val queue = ConcurrentLinkedQueue<Map<String, Any?>>()
     private val drainScheduled = AtomicBoolean(false)
@@ -112,7 +126,20 @@ class DecodedStreamSink(
     private val bigDataRawWhitelist: Set<Int> =
         setOf(0x02D3, 0x044B, 0x044C, 0x0478, 0x0681, 0x0682)
 
-    /** Detach from the Dart sink. Idempotent. Safe to call from any thread. */
+    /**
+     * v0.1.83+182. Сменить адресат, НЕ трогая подписку.
+     *
+     * Очередь сознательно НЕ чистится: то, что уже расшифровано и стоит
+     * в ней, уедет новому адресату, а не пропадёт. Событие в журнале
+     * вместо EventChannel (или наоборот) на границе передачи — цена
+     * несравнимо меньшая, чем дыра в данных, и, в отличие от дыры,
+     * видимая.
+     */
+    fun setOut(next: HalOut) {
+        sink = next
+    }
+
+    /** Отцепиться совсем — подписка кончилась. Идемпотентно, с любого потока. */
     fun detach() {
         sink = null
         queue.clear()
@@ -178,7 +205,7 @@ class DecodedStreamSink(
      * reads (e.g. u16LE×0.1), not the pre-decoded HAL contract.
      *
      *   0x044C → soc_precise  = u16LE[10] × 0.1        (fractional SOC, %)
-     *   0x044C → battery_temp_bigdata = b[7] − 40      (°C, CANDIDATE fallback)
+     *   0x044C → battery_temp_bigdata = b`[12]` − 40    (°C, CANDIDATE fallback)
      *   0x02D3 → soh          = b[10]                  (%, direct, TWÉRDO)
      */
     private fun emitBigDataSignals(bufData: ByteArray, subtype: Long, timestampMs: Long) {
@@ -197,8 +224,13 @@ class DecodedStreamSink(
                 queue.add(bigDataSignalMap("soc_precise", "%", soc, subtype, timestampMs))
                 queued = true
             }
-            // battery_temp_bigdata = b[7] − 40 (CANDIDATE; Dart treats it as
-            // a fallback behind the confirmed probe). Plausible pack range.
+            // battery_temp_bigdata = socPreciseTempByte − 40 (CANDIDATE;
+            // Dart treats it as a fallback behind the confirmed probe).
+            // v0.1.83+182: было «b`[7]`» в двух местах текста при чтении
+            // байта 12 в коде — шапка выше переход описывала верно, а
+            // эти две строки продолжали называть опровергнутый байт. Восьмой
+            // случай класса «текст не соответствует коду»; число теперь
+            // живёт только в константе, и разойтись им больше не с чем.
             val tC = (bufData[socPreciseTempByte].toInt() and 0xff) - 40
             if (tC in -40..90) {
                 queue.add(bigDataSignalMap(
@@ -314,8 +346,9 @@ class DecodedStreamSink(
             batch.add(item)
         }
         if (batch.isNotEmpty()) {
-            // EventSink.success on the main looper (we're on it here).
-            s.success(batch)
+            // Мы на главном лупере — контракт FlutterHalOut. Журнальный
+            // адресат тут же уводит запись на свой поток.
+            s.emit(batch)
         }
     }
 }

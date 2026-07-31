@@ -32,6 +32,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:drift/drift.dart' show Value;
 
 import '../data/database.dart';
+import 'hal_bg_journal.dart';
 import 'hal_telemetry_channel.dart';
 import 'native_car_channel.dart';
 
@@ -117,6 +118,13 @@ class HalTelemetryService extends ChangeNotifier
   // then simply skipped. [_currentTripId] lets rows be tagged with the
   // active OBD2 trip when one exists, without importing ConnectionService.
   final AppDatabase? _diagDb;
+
+  /// v0.1.83+182: итог последнего втягивания фонового журнала. Показывается
+  /// в разделе хранилища. Null означает «журнала не было», а не «ноль строк»
+  /// — различать обязательно: второе означало бы поездку без событий, то
+  /// есть отрицательный ответ на главное неизвестное.
+  HalBgIngestResult? _lastBgIngest;
+  HalBgIngestResult? get lastBgIngest => _lastBgIngest;
   final int? Function()? _currentTripId;
   // v0.1.29+106: reads ConnectionService.isBleConnected — true when an ELM327
   // dongle is physically connected RIGHT NOW. Trip ownership keys off this
@@ -2640,6 +2648,44 @@ class HalTelemetryService extends ChangeNotifier
     // read. Writes the recovered value to the cache + DB; the hydration
     // below is guarded so it can't clobber this fresher value.
     await _recoverPendingSohSession();
+    // v0.1.83+182: ВТЯНУТЬ ФОНОВЫЙ ЖУРНАЛ HAL — И СТРОГО ДО `_startStream`.
+    //
+    // Порядок здесь не косметика, а единственный правильный. Подписка одна
+    // на процесс (HalStreamOwner), и `_startStream` перенаправляет её выход
+    // из журнала в EventChannel. Позови втягивание ПОСЛЕ — и оно прочитает
+    // файл, который уже никому не нужен, зато пропустит всё, что фон
+    // дописал до перенаправления.
+    //
+    // ПРЕЖНЯЯ РЕДАКЦИЯ ЭТОГО КОММЕНТАРИЯ ЛГАЛА, и это стоит записать.
+    // Здесь стояло «усечение и перенаправление разделены, и потерянного
+    // окна не существует». Окно существовало: между чтением файла и его
+    // удалением фоновый писатель продолжал дописывать, и эти строки
+    // исчезали. Девятый случай класса «текст не соответствует коду» и
+    // первый, найденный в собственном патче. Лечение не в комментарии:
+    // втягивание забирает файл ПЕРЕИМЕНОВАНИЕМ (см.
+    // `HalBgJournal.consumingName`), после чего писатель заводит новый
+    // файл и догнать читателя не может. Теперь утверждение про
+    // отсутствие окна верно.
+    //
+    // Гейт на этот порядок стоит (BP7), потому что перестановка двух
+    // строк не ломает ни сборку, ни один отчёт — она теряет данные, и
+    // узналось бы это полевым визитом.
+    final bgDb = _diagDb;
+    if (_isHeadUnit && bgDb != null) {
+      final ing = await HalBgJournal.ingest(bgDb);
+      if (ing.present) {
+        debugPrint('HAL background $ing');
+        _lastBgIngest = ing;
+      }
+      // Писателю сообщаем ОТСЮДА: канал принадлежит этому слою (гейт Y4),
+      // а журнал — чистый перевод файла в таблицу. Без уведомления первая
+      // же переполненная поездка выключила бы фоновый сбор до конца жизни
+      // процесса: журнал при `full` до файловой системы не доходит и
+      // заметить, что файл забрали, не может.
+      if (ing.consumed) {
+        await HalTelemetryChannel.instance.noteJournalConsumed();
+      }
+    }
     // Start the stream unless the user pinned OBD2-only. On a phone the
     // platform returns null and we simply stay on OBD2 — no harm.
     if (_mode != HalSourceMode.obd2Only) {

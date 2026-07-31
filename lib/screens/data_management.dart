@@ -18,7 +18,8 @@ import '../services/import_service.dart';
 /// available). Direct write to /storage/emulated/0/Download/ works there.
 ///
 /// Sections:
-///   STORAGE — live counts of trips / snapshots / samples / sweep_runs / live_log_sessions
+///   STORAGE — live counts of trips / snapshots / samples / hal_samples /
+///             sweep_runs / live_log_sessions
 ///   EXPORT  — toggles + two buttons:
 ///             "Поделиться" → system share sheet (phone-friendly)
 ///             "Сохранить в Downloads" → straight to public Downloads folder
@@ -52,11 +53,27 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
   ImportPreview? _preview;
   String? _importResult;
 
+  // v0.1.83+182 — отчёт о восстановлении. Живёт до снятия владельцем.
+  ImportReport? _report;
+
   @override
   void initState() {
     super.initState();
     _refreshCounts();
     _refreshPending();
+    _refreshReport();
+  }
+
+  Future<void> _refreshReport() async {
+    final r = await ImportService.readReport();
+    if (!mounted) return;
+    setState(() => _report = r);
+  }
+
+  Future<void> _dismissReport() async {
+    await ImportService.clearReport();
+    if (!mounted) return;
+    setState(() => _report = null);
   }
 
   Future<void> _refreshPending() async {
@@ -72,6 +89,12 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
       'trips': (await db.getAllTrips()).length,
       'snapshots': await db.countAllSnapshots(),
       'samples': await db.countAllSamples(),
+      // v0.1.83+182: долг наблюдаемости, найденный полем 31.07. Метод
+      // `countAllHalSamples()` существовал в базе с +92 и не вызывался
+      // НИОТКУДА — а это те самые двадцать тысяч строк, ради которых
+      // импорт из архива и затевался: облако их не несёт, они умирают с
+      // очисткой. Сверить главное число импорта было буквально нечем.
+      'hal_samples': await db.countAllHalSamples(),
       'sweep_runs': await db.countAllSweepRuns(),
       'live_log_sessions': await db.countAllLiveLogSessions(),
     };
@@ -123,6 +146,14 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
               leading: const Icon(Icons.dns, size: 20),
               title: const Text('Raw samples'),
               trailing: Text('${_counts!['samples']}',
+                  style: const TextStyle(
+                      fontFeatures: [FontFeature.tabularFigures()])),
+            ),
+            ListTile(
+              dense: true,
+              leading: const Icon(Icons.sensors, size: 20),
+              title: const Text('HAL samples'),
+              trailing: Text('${_counts!['hal_samples']}',
                   style: const TextStyle(
                       fontFeatures: [FontFeature.tabularFigures()])),
             ),
@@ -437,6 +468,79 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
                     .replaceFirst('{a}', '$sessions')
                     .replaceFirst('{b}', '$entries');
               },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Карточка отчёта: обещание манифеста против факта, по таблице.
+  ///
+  /// Три состояния, и все три названы своими словами. Совпало — «полностью».
+  /// Разошлось — показывается пара чисел, и владелец видит, где именно.
+  /// Обещания нет (манифест не прочитался) — «обещание неизвестно», а НЕ
+  /// ноль: смешение «неизвестно» с «нулём» уже стоило окну №10 двух
+  /// сообщений и неверного разбора.
+  Widget _reportCard(ImportReport r) {
+    final rows = <Widget>[];
+    for (final t in ImportService.reportTables) {
+      final got = r.restored(t);
+      final want = r.promised(t);
+      final ok = want == null || got >= want;
+      rows.add(Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+        child: Row(
+          children: [
+            Icon(
+              want == null
+                  ? Icons.help_outline
+                  : (ok ? Icons.check : Icons.priority_high),
+              size: 16,
+              color: want == null
+                  ? Theme.of(context).disabledColor
+                  : (ok ? Colors.green : Theme.of(context).colorScheme.error),
+            ),
+            const SizedBox(width: 8),
+            Expanded(child: Text(t)),
+            Text(
+              want == null
+                  ? '$got / ${S.of('dataimp.rep_unknown')}'
+                  : '$got / $want',
+              style: const TextStyle(
+                  fontFeatures: [FontFeature.tabularFigures()]),
+            ),
+          ],
+        ),
+      ));
+    }
+    return Card(
+      margin: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          ListTile(
+            leading: Icon(
+              r.twoSided && r.complete ? Icons.task_alt : Icons.info_outline,
+            ),
+            title: Text(S.of('dataimp.rep_title')),
+            subtitle: Text(
+              r.twoSided
+                  ? (r.complete
+                      ? S.of('dataimp.rep_full')
+                      : S.of('dataimp.rep_short'))
+                  : S.of('dataimp.rep_onesided'),
+            ),
+          ),
+          ...rows,
+          Align(
+            alignment: Alignment.centerRight,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(8, 4, 8, 4),
+              child: TextButton(
+                onPressed: _dismissReport,
+                child: Text(S.of('dataimp.rep_dismiss')),
+              ),
             ),
           ),
         ],

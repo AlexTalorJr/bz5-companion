@@ -211,10 +211,22 @@ def check_plugin():
         ok("plugin: start requires a listening sink (HAL_NO_SINK guard)")
     else:
         fail("plugin: no HAL_NO_SINK guard")
-    if 'TargetRegistry.streamingTargets(appContext)' in s:
-        ok("plugin: uses streamingTargets() (8 targets, not take(64))")
+    # v0.1.83+182: ПРЕДМЕТ ПЕРЕЕХАЛ, И ГЕЙТ ПЕРЕЕХАЛ ЗА НИМ.
+    #
+    # Сборка набора целей ушла из плагина в HalStreamOwner — ровно затем,
+    # чтобы сервис автозапуска не держал свою копию. Гейт по-прежнему
+    # проверяет то же самое утверждение («восемь целей, а не take(64)»),
+    # но в том файле, где оно теперь живёт. Ослабить его до «где-нибудь в
+    # дереве» было бы нельзя: это тот самый класс, что мутационный
+    # харнесс поймал у BF5 — проверка, проходящая за счёт постороннего
+    # кода.
+    _own_p = (ROOT / 'android/app/src/main/kotlin/com/bz5companion/'
+              'bz5_companion/hal/HalStreamOwner.kt')
+    _own = _own_p.read_text() if _own_p.exists() else ''
+    if 'TargetRegistry.streamingTargets(ctx)' in _own:
+        ok("owner: uses streamingTargets() (8 targets, not take(64))")
     else:
-        fail("plugin: streamingTargets() not used")
+        fail("owner: streamingTargets() not used")
     # teardown on cancel + detach
     if 'stopHalStream()' in s and 'fun stopHalStream()' in s:
         ok("plugin: stopHalStream teardown present")

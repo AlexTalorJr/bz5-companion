@@ -3344,11 +3344,17 @@ if int(pv) >= 66:
                 fail("AA4 profile-device temp candidates missing")
     else:
         fail("AA4 CompanionDecoderOverrides.kt missing")
-    if 'DecodedStreamSink(sink, CompanionDecoderOverrides.map)' in _plug \
-            and 'extraStatisticFids' in _plug:
-        ok("AA4 plugin wires overrides into sink + subscription")
+    # v0.1.83+182: слой подмен и сборка целей переехали из плагина в
+    # HalStreamOwner (сервису автозапуска нужен тот же набор, а копия
+    # разошлась бы молча). Утверждение гейта то же, файл другой.
+    _aa4_own = (root / 'android/app/src/main/kotlin/com/bz5companion/'
+                'bz5_companion/hal/HalStreamOwner.kt')
+    _aa4_o = _aa4_own.read_text() if _aa4_own.exists() else ''
+    if 'DecodedStreamSink(out, CompanionDecoderOverrides.map)' in _aa4_o \
+            and 'extraStatisticFids' in _aa4_o:
+        ok("AA4 owner wires overrides into sink + subscription")
     else:
-        fail("AA4 plugin does not wire the override layer")
+        fail("AA4 owner does not wire the override layer")
 
     # AA5. AC permission fix (field-confirmed missing 2026-06-11: AcDevice
     #      getInstance SecurityException naming BYDAUTO_AC_COMMON).
@@ -6332,11 +6338,20 @@ if int(pv) >= 169:
     # опыта. Опыт закрыт (поле 28.07: ноль строк `resurrected:`),
     # путей наверх без владельца стало два, и нотификация теперь
     # получает их дизъюнкцию. Существо гейта — политика — не меняется.
+    # v0.1.83+182: дизъюнкция путей наверх переехала на строку выше — в
+    # поле `lastHeadless`, потому что надпись обновляется ПОЗЖЕ (сбор
+    # узнаёт своё состояние не сразу), и различитель «поднялся сам»
+    # обязан пережить обновление. Существо гейта — политика перезапуска —
+    # по-прежнему не меняется.
     if int(pv) >= 171:
+        _bf3_notif = ('startForeground(NOTIF_ID, '
+                      'buildNotification(resurrected || bridged))' in _bf) or \
+            ('lastHeadless = resurrected || bridged' in _bf and
+             'startForeground(NOTIF_ID, buildNotification(lastHeadless))'
+             in _bf)
         _bf3 = (_bf.count('return START_STICKY') == 1 and
                 'return START_NOT_STICKY' in _bf and
-                'startForeground(NOTIF_ID, '
-                'buildNotification(resurrected || bridged))' in _bf)
+                _bf3_notif)
         if _bf3:
             ok('BF3 (re-era +171) START_STICKY / ACTION_STOP policy '
                'unchanged; the notification takes both headless paths')
@@ -7106,13 +7121,28 @@ if int(pv) >= 173:
     # BJ3: нотификация не обещает того, чего нет. Сборщика у companion
     # нет — сбор живёт в BydNativePlugin внутри Flutter-движка внутри
     # активити, и нажатие всего лишь откроет приложение.
+    # v0.1.83+182: ПРЕДМЕТ ГЕЙТА ТОТ ЖЕ, УЛИКА ДРУГАЯ.
+    #
+    # Прежняя редакция пиннила дословно «сбор начнётся при открытии», и
+    # это было верно ровно до этого патча: сборщика у companion не
+    # существовало. Теперь он есть, и та же самая фраза стала обещанием
+    # наоборот — она отрицает работу, которая идёт. Утверждение гейта
+    # («надпись описывает состояние, а не обещает несуществующее»)
+    # остаётся, а проверяется оно теперь тем, что текст берётся из
+    # состояния подписки и различает «подписались» от «получаем».
     _bj3 = ('нажмите, чтобы записывать' not in _bj_sv and
-            'автозапуск сработал — сбор начнётся при открытии' in _bj_sv)
+            'сбор начнётся при открытии' not in _bj_sv and
+            'private fun collectingText()' in _bj_sv and
+            'HalStreamOwner.journalSeen()' in _bj_sv and
+            'сбор поднят, событий пока нет' in _bj_sv and
+            'HAL не отвечает, сбора нет' in _bj_sv and
+            'collectingText()}' in _bj_sv)
     if _bj3:
-        ok('BJ3 the headless notification describes the state instead '
-           'of promising a recording that cannot start')
+        ok('BJ3 the notification names the real collection state and '
+           'never conflates «registered» with «receiving»')
     else:
-        fail('BJ3 the notification still promises recording on tap')
+        fail('BJ3 the notification promises or denies work it does not '
+             'actually measure')
 
     # BJ4: мёртвый публичный путь не пробуется на каждую строку.
     # Запись синхронна и зовётся с главного потока — из onReceive
@@ -8001,6 +8031,458 @@ if int(pv) >= 180:
              'window and main() would not run again')
 else:
     ok(f"Part BO skipped (build +{pv}, archive import lands in +180)")
+
+# ═════ Part BP — v0.1.83+182 «Сбор в автостарте» ═════
+#
+# Патч 2. Тумблер существовал с +173, за ним стояла пустота: уведомление и
+# биение раз в пять минут. Здесь за ним появляется подписка HAL, живущая в
+# процессе, а не в активити.
+#
+# Шесть из девяти гейтов ниже стоят на вещах, которые ломаются МОЛЧА —
+# сборка проходит, отчёты зелёные, а данные теряются или их становится
+# вдвое. Именно поэтому они гейты, а не комментарии.
+if int(pv) >= 182:
+    _bp_kt = ('android/app/src/main/kotlin/com/bz5companion/bz5_companion/')
+    _bp_sink = _strip_comments_safe(
+        (root / (_bp_kt + 'hal/DecodedStreamSink.kt')).read_text())
+    _bp_out = _strip_comments_safe(
+        (root / (_bp_kt + 'hal/HalOut.kt')).read_text())
+    _bp_own = _strip_comments_safe(
+        (root / (_bp_kt + 'hal/HalStreamOwner.kt')).read_text())
+    _bp_plug = _strip_comments_safe(
+        (root / (_bp_kt + 'BydNativePlugin.kt')).read_text())
+    _bp_svc = _strip_comments_safe(
+        (root / (_bp_kt + 'AutostartService.kt')).read_text())
+    _bp_jrn = _strip_comments_safe(
+        (root / 'lib/services/hal_bg_journal.dart').read_text())
+    _bp_hal = _strip_comments_safe(
+        (root / 'lib/services/hal_telemetry_service.dart').read_text())
+    _bp_imp = _strip_comments_safe(
+        (root / 'lib/services/import_service.dart').read_text())
+    _bp_dm = _strip_comments_safe(
+        (root / 'lib/screens/data_management.dart').read_text())
+
+    # BP1: РАСШИФРОВКА В ОДНОМ ЭКЗЕМПЛЯРЕ. Своя копия байтовых извлечений
+    # из BigData (soc_precise, SOH, температура) развелась бы с оригиналом
+    # молча — это самая чувствительная логика в проекте. Признак того, что
+    # копии нет: сник не знает про EventChannel вовсе, выход за интерфейсом.
+    _bp1 = ('EventChannel' not in _bp_sink and
+            'out: HalOut' in _bp_sink and
+            'private var sink: HalOut?' in _bp_sink and
+            'fun setOut(next: HalOut)' in _bp_sink and
+            's.emit(batch)' in _bp_sink and
+            'interface HalOut' in _bp_out and
+            'class FlutterHalOut' in _bp_out and
+            'class JournalHalOut' in _bp_out)
+    if _bp1:
+        ok('BP1 decoding exists once: the sink knows nothing about '
+           'EventChannel and ships through the HalOut seam')
+    else:
+        fail('BP1 the decoded stream is coupled to Flutter again — a second '
+             'destination would need a second copy of the BigData extractions')
+
+    # BP2: ОДНА ПОДПИСКА НА ПРОЦЕСС. Охрана `active` в вендоренном движке —
+    # поле ЭКЗЕМПЛЯРА; два экземпляра зарегистрируют по прокси на одни
+    # устройства, ничего друг о друге не узнав, и сломают живой поток.
+    # Признак: плагин движка не конструирует и своих полей под него не
+    # держит.
+    _bp2 = ('DecodedStreamSink(' not in _bp_plug and
+            'halEngine' not in _bp_plug and
+            'HalStreamOwner.attachFlutter(' in _bp_plug and
+            'object HalStreamOwner' in _bp_own)
+    if _bp2:
+        ok('BP2 one subscription per process: the plugin attaches to the '
+           'owner instead of building an engine of its own')
+    else:
+        fail('BP2 the plugin can build a second engine — двойная подписка, '
+             'the risk this patch exists to remove')
+
+    # BP3: ПЕРЕДАЧА ПОТОКА НЕ ПЕРЕСОЗДАЁТ ПОДПИСКУ. stop()+start() на
+    # передаче дали бы окно, в которое проваливаются события, и мгновение с
+    # двумя прокси на устройстве. Признак: живой движок в ensureEngine
+    # возвращается сразу, а attachFlutter меняет только адресат.
+    # Область — РОВНО тело handleHalStreamStart, от объявления до
+    # объявления stopHalStream. Взять первое вхождение имени значило бы
+    # прочитать строку диспетчера и пол плагина следом (семья BM1).
+    _bp3_body = ''
+    if 'private fun handleHalStreamStart' in _bp_plug and \
+            'private fun stopHalStream' in _bp_plug:
+        _bp3_body = _bp_plug.split('private fun handleHalStreamStart')[1] \
+            .split('private fun stopHalStream')[0]
+    # ОБЛАСТЬ ПРО ЖИВОЙ ДВИЖОК — РОВНО ТЕЛО ensureEngine.
+    #
+    # Первая редакция этого гейта была СЛЕПОЙ, и мутационный харнесс это
+    # поймал: `streamSink?.setOut(...)` встречается ещё в attachFlutter и
+    # в detachFlutter, поэтому проверка по всему файлу проходила за счёт
+    # постороннего кода даже после того, как ранний возврат заменяли на
+    # stopAll(). Ровно та же болезнь, что у BF5 в окне №10 — и, как там,
+    # лечится сужением области, а не подгонкой анкера.
+    _bp3_ens = ''
+    if 'private fun ensureEngine(' in _bp_own:
+        _bp3_ens = _bp_own.split('private fun ensureEngine(')[1]
+    _bp3_guard = ''
+    if 'if (engine != null) {' in _bp3_ens:
+        _bp3_guard = _bp3_ens.split('if (engine != null) {')[1][:160]
+    _bp3 = (_bp3_guard != '' and
+            'streamSink?.setOut(out)' in _bp3_guard and
+            'return' in _bp3_guard and
+            'stopAll()' not in _bp3_guard and
+            'stopAll()' not in _bp3_ens.split('DiLinkProfiles.selectProfile')[0]
+            and _bp3_body != '' and
+            'HalStreamOwner.attachFlutter(' in _bp3_body and
+            'stopHalStream()' in _bp3_body.split('catch (t: Throwable)')[1] and
+            'stopHalStream()' not in
+            _bp3_body.split('catch (t: Throwable)')[0])
+    if _bp3:
+        ok('BP3 handing the stream to Dart swaps the destination, it does '
+           'not re-register a live engine')
+    else:
+        fail('BP3 attaching Dart can tear down and re-register the live '
+             'subscription — a gap in the data and two proxies at once')
+
+    # BP4: НАБОР ЦЕЛЕЙ СОБИРАЕТСЯ В ОДНОМ МЕСТЕ. Разойдись список на паре
+    # Power+BigData canDataCollect — GB32960-сбор в фоне не стартует, кадры
+    # 0x99000020 не идут, и soc_precise, SOH и температура тихо исчезают.
+    # Отчёты при этом остаются зелёными: события идут, счётчики растут.
+    _bp4 = ('fun buildTargets(' in _bp_own and
+            'BYDAutoPowerDevice_canDataCollect' in _bp_own and
+            'BYDAutoBigDataDevice_canDataCollect' in _bp_own and
+            'extraStatisticFids' in _bp_own and
+            'BYDAutoPowerDevice_canDataCollect' not in _bp_plug and
+            'streamingTargets' not in _bp_plug)
+    if _bp4:
+        ok('BP4 the target set is assembled in exactly one place, so the '
+           'background subscription cannot drift from the live one')
+    else:
+        fail('BP4 the target set exists twice — the background stream can '
+             'lose soc_precise/SOH/battery_temp without any gate noticing')
+
+    # BP5: СЧЁТЧИКИ СЧИТАЮТ ДО ПРИДУШИВАНИЯ, ДО ОТБРАСЫВАНИЯ СЫРЫХ КАДРОВ И
+    # ДО ПОТОЛКА. Это ответ на ГЛАВНОЕ НЕИЗВЕСТНОЕ окна — отдаёт ли HAL
+    # события фоновому процессу. Считай после — и работающий HAL при полном
+    # журнале выглядел бы молчащим, то есть ложно-отрицательный ответ на
+    # единственный вопрос, ради которого патч написан.
+    # JournalHalOut.emit, а не FlutterHalOut.emit: первый `override fun
+    # emit(` в файле принадлежит выходу во Flutter, и счётчиков там нет и
+    # быть не должно. Гейт, прочитавший его, был бы вакуумным.
+    _bp5_emit = _bp_out.split('class JournalHalOut')[1] \
+        .split('override fun emit(')[1].split('override fun')[0]
+    _bp5_seen = _bp5_emit.find('seen.incrementAndGet()')
+    _bp5_full = _bp5_emit.find('if (full)')
+    _bp5_exec = _bp5_emit.find('io.execute')
+    _bp5 = (_bp5_seen != -1 and _bp5_full != -1 and _bp5_exec != -1 and
+            _bp5_seen < _bp5_full < _bp5_exec and
+            'perTarget.getOrPut' in _bp5_emit and
+            'fun seenTotal()' in _bp_out)
+    if _bp5:
+        ok('BP5 the per-target counters run before the throttle, the raw '
+           'filter and the cap — a working HAL cannot read as silent')
+    else:
+        fail('BP5 the counters sit behind a filter: the answer to the main '
+             'unknown could come back falsely negative')
+
+    # BP6: ПОТОЛОК ЕСТЬ, И О НЁМ ГОВОРЯТ. Ротация из фонового контекста
+    # запрещена гейтом BL7 и остаётся запрещённой: сервис поднимается на
+    # каждом пробуждении ГУ, а переименование под возможным чтением — та же
+    # порода, что подмена базы под живым Drift. Поэтому журнал закрывается
+    # и пишет об этом строкой, а усечение делает сторона чтения.
+    # Ветка потолка проверяется по СТРОЕНИЮ, а не по экранированному
+    # литералу: обратные слэши внутри JSON-строки Kotlin не переживают ни
+    # одного слоя цитирования, и гейт, стоящий на них, красен от
+    # опечатки, а не от регресса.
+    _bp6_cap = ''
+    if 'if (bytes + size > CAP_BYTES)' in _bp_out:
+        _bp6_cap = _bp_out.split('if (bytes + size > CAP_BYTES)')[1][:600]
+    _bp6 = ('const val CAP_BYTES' in _bp_out and
+            _bp6_cap != '' and
+            'full = true' in _bp6_cap and
+            'appendText(' in _bp6_cap and
+            'full' in _bp6_cap and
+            'dropped.addAndGet' in _bp6_cap and
+            'rename' not in _bp_out and
+            'rotate' not in _bp_out.lower())
+    if _bp6:
+        ok('BP6 the journal has a cap it announces, and it never rotates '
+           'from the background context')
+    else:
+        fail('BP6 the journal can grow without a stated bound, or rotates '
+             'from a context BL7 forbids')
+
+    # BP7: ВТЯГИВАНИЕ СТРОГО ДО `_startStream()`, И УСЕЧЕНИЕ ПОСЛЕ ВСТАВКИ.
+    # Перестановка двух строк не ломает ни сборку, ни один отчёт — она
+    # теряет поездку, и узналось бы это полевым визитом.
+    # Область — РОВНО тело init(). `await _startStream();` встречается в
+    # файле не один раз (setMode тоже его зовёт), и `find` по всему файлу
+    # взял бы чужое вхождение и объявил порядок верным при неверном —
+    # ровно та семья ошибок, что мутационный харнесс нашёл у BM1.
+    _bp7_init = ''
+    if 'Future<void> init() async {' in _bp_hal and \
+            'Future<void> setSocSource(' in _bp_hal:
+        _bp7_init = _bp_hal.split('Future<void> init() async {')[1] \
+            .split('Future<void> setSocSource(')[0]
+    _bp7_ing = _bp7_init.find('HalBgJournal.ingest(')
+    _bp7_str = _bp7_init.find('await _startStream();')
+    _bp7_ins = _bp_jrn.find('insertBackgroundHalSamples(')
+    # Последнее удаление — то, что стоит после вставки. Ранние (остаток
+    # прошлого захода, пустой файл, чужая версия) к порядку отношения не
+    # имеют, поэтому rfind, а не find.
+    _bp7_trunc = _bp_jrn.rfind('await _drop(taken);')
+    _bp7 = (_bp7_init != '' and
+            _bp7_ing != -1 and _bp7_str != -1 and _bp7_ing < _bp7_str and
+            _bp7_ins != -1 and _bp7_trunc != -1 and _bp7_ins < _bp7_trunc and
+            'insertBackgroundHalSamples' in
+            _strip_comments_safe((root / 'lib/data/database.dart').read_text()))
+    if _bp7:
+        ok('BP7 the journal is ingested before the stream is redirected, '
+           'and truncated only after the rows are in')
+    else:
+        fail('BP7 the ingest/redirect or insert/truncate order can lose a '
+             'whole drive silently')
+
+    # BP8: ФОНОВЫЕ СТРОКИ НЕСУТ СВОЁ ВРЕМЯ. Готовый insertHalSignal ставит
+    # DateTime.now() — для живого потока это метка события, для журнала это
+    # значит уложить всю поездку в одно мгновение, и любой расчёт по времени
+    # получил бы вертикальную стену вместо ряда.
+    _bp8_db = _strip_comments_safe((root / 'lib/data/database.dart').read_text())
+    _bp8_body = _bp8_db.split('insertBackgroundHalSamples(')[1].split(
+        'Future<int> insertBigDataFrame')[0]
+    _bp8 = ('timestamp: Value(r.at)' in _bp8_body and
+            'DateTime.now()' not in _bp8_body and
+            'tripId: const Value<int?>(null)' in _bp8_body and
+            'typedef BgHalRow' in _bp8_db)
+    if _bp8:
+        ok('BP8 background rows carry the timestamp from the journal, not '
+           'the insert time, and claim no trip they never had')
+    else:
+        fail('BP8 background rows would stack at the insert instant or '
+             'invent a trip id — either destroys every time series')
+
+    # BP9: ОТЧЁТ О ВОССТАНОВЛЕНИИ ЧИТАЕТСЯ, И ГЛАВНОЕ ЧИСЛО ПОКАЗАНО.
+    # Два долга наблюдаемости 31.07 одним предметом: import_applied_at
+    # писался и не читался никем, а hal_samples — те 20 632 строки, ради
+    # которых импорт затевался — не показывались нигде.
+    _bp9 = ('kPromise' in _bp_imp and 'kReport' in _bp_imp and
+            'static Future<ImportReport?> readReport()' in _bp_imp and
+            'class ImportReport' in _bp_imp and
+            "counts[t]" in _bp_imp and
+            'ImportService.readReport()' in _bp_dm and
+            '_reportCard(' in _bp_dm and
+            'countAllHalSamples()' in _bp_dm and
+            "_counts!['hal_samples']" in _bp_dm)
+    if _bp9:
+        ok('BP9 the restore report is read, not just written, and '
+           'hal_samples — the number the import exists for — is on screen')
+    else:
+        fail('BP9 the import still cannot be verified from inside the app')
+    # BP10: ФОНОВЫЙ СТАРТ НЕ ОТБИРАЕТ ПОТОК У DART. Дефект, найденный
+    # первой ревизией, и он бы дошёл до машины. startForBackground зовётся
+    # на КАЖДОМ onStartCommand, включая срабатывание моста при открытом
+    # приложении (в поле 31.07 — четыре цикла за вечер). Без охраны
+    # ensureEngine делал бы setOut(journal) поверх живого адресата Dart:
+    # приборы на экране замирают, атлас не набирается, а журнал пишется
+    # исправно — ни один счётчик и ни один другой гейт не краснеет.
+    _bp10_sfb = ''
+    if 'fun startForBackground(' in _bp_own:
+        _bp10_sfb = _bp_own.split('fun startForBackground(')[1] \
+            .split('fun attachFlutter')[0]
+    _bp10_guard = 'if (engine != null && outTag == OUT_FLUTTER) return lastStatus'
+    _bp10 = (_bp10_sfb != '' and
+             _bp10_guard in _bp10_sfb and
+             _bp10_sfb.find(_bp10_guard) <
+             _bp10_sfb.find('ensureEngine(') and
+             'const val OUT_FLUTTER' in _bp_own)
+    if _bp10:
+        ok('BP10 the background start never takes the live stream away '
+           'from Dart')
+    else:
+        fail('BP10 a bridge alarm while the app is open would steal the '
+             'stream — instruments freeze, journal keeps writing, nothing '
+             'goes red')
+else:
+    ok(f"Part BP skipped (build +{pv}, autostart collection lands in +182)")
+
+# ═════ Part BQ — v0.1.83+182 «Журнал: владение, идемпотентность, границы» ═════
+#
+# Архитектурная ревизия патча 2 нашла три вещи, которые ЛОМАЮТ ДАННЫЕ, и две,
+# которые ломают ресурсы. Все пять здесь, каждая с гейтом, потому что все пять
+# невидимы: сборка проходит, отчёты зелёные, а строки теряются, удваиваются
+# или разбираются не тем разбором.
+#
+# Отдельно стоит BQ6. Гейт BP7 в прежней редакции стоял на комментарии,
+# утверждавшем «потерянного окна не существует», при коде, у которого окно
+# было. Гейты такого не ловят — они проверяют, что текст на месте, а не что
+# код делает то, что текст говорит. Здесь предмет проверки — МЕХАНИЗМ
+# (переименование), а не обещание.
+if int(pv) >= 182:
+    _bq_kt = 'android/app/src/main/kotlin/com/bz5companion/bz5_companion/'
+    _bq_out = _strip_comments_safe(
+        (root / (_bq_kt + 'hal/HalOut.kt')).read_text())
+    _bq_own = _strip_comments_safe(
+        (root / (_bq_kt + 'hal/HalStreamOwner.kt')).read_text())
+    _bq_svc = _strip_comments_safe(
+        (root / (_bq_kt + 'AutostartService.kt')).read_text())
+    _bq_plug = _strip_comments_safe(
+        (root / (_bq_kt + 'BydNativePlugin.kt')).read_text())
+    _bq_jrn = _strip_comments_safe(
+        (root / 'lib/services/hal_bg_journal.dart').read_text())
+    _bq_hal = _strip_comments_safe(
+        (root / 'lib/services/hal_telemetry_service.dart').read_text())
+    _bq_ch = _strip_comments_safe(
+        (root / 'lib/services/hal_telemetry_channel.dart').read_text())
+
+    # BQ1: ВЛАДЕНИЕ ПЕРЕДАЁТСЯ ПЕРЕИМЕНОВАНИЕМ, ЖИВОЙ ПУТЬ НЕ ЧИТАЕТСЯ.
+    # Читать живой файл и потом удалять значит терять всё, что писатель
+    # дописал между чтением и удалением. На этом ГУ процесс живёт часами,
+    # сервис пишет, а новый движок Flutter поднимается в том же процессе —
+    # путь обычный, а не краевой.
+    _bq1 = ('consumingName' in _bq_jrn and
+            'await live.rename(taken.path);' in _bq_jrn and
+            'await taken.readAsString();' in _bq_jrn and
+            'live.readAsString()' not in _bq_jrn and
+            _bq_jrn.find('await live.rename(taken.path);') <
+            _bq_jrn.find('await taken.readAsString();'))
+    if _bq1:
+        ok('BQ1 the journal is taken by rename before it is read — no '
+           'window where the writer appends into a file being consumed')
+    else:
+        fail('BQ1 the live journal path is read in place — lines appended '
+             'between read and delete vanish silently')
+
+    # BQ2: ОДНА ТРАНЗАКЦИЯ НА ВЕСЬ ФАЙЛ. Пачка на транзакцию не «рисковала»
+    # дублями, а гарантировала их: отказ на середине оставлял вставленные
+    # пачки И файл, следующий старт втягивал всё заново. У hal_samples нет
+    # ни client_uuid, ни сверки — механизм лавины 04.07.
+    _bq2_ing = ''
+    if 'static Future<HalBgIngestResult> ingest(' in _bq_jrn:
+        _bq2_ing = _bq_jrn.split('static Future<HalBgIngestResult> ingest(')[1] \
+            .split('static int? _header(')[0]
+    _bq2 = (_bq2_ing != '' and
+            'await db.transaction(() async {' in _bq2_ing and
+            _bq2_ing.find('await db.transaction(() async {') <
+            _bq2_ing.find('insertBackgroundHalSamples(') and
+            _bq2_ing.rfind('insertBackgroundHalSamples(') <
+            _bq2_ing.rfind('await _drop(taken);'))
+    if _bq2:
+        ok('BQ2 the whole file goes in one transaction — a mid-way failure '
+           'cannot leave half the rows inserted and the file still there')
+    else:
+        fail('BQ2 a partial insert would guarantee duplicates on the next '
+             'start — the 04.07 mechanism, with no uuid to catch it')
+
+    # BQ3: ОСТАТОК СЧИТАЕТСЯ ВТЯНУТЫМ И УДАЛЯЕТСЯ. Файл `.consuming` на
+    # старте означает падение прошлого захода, и вставилось ли что-нибудь —
+    # неизвестно. Втянуть снова значит удвоить без всякой сверки. Потерять
+    # одну поездку хуже, чем ничего, и несравнимо лучше, чем удвоить молча:
+    # второго не видно вообще ничем, включая отчёт о восстановлении.
+    _bq3_head = _bq2_ing.split('if (!await live.exists())')[0] if _bq2_ing else ''
+    _bq3 = (_bq3_head != '' and
+            'if (await taken.exists()) {' in _bq3_head and
+            'await _drop(taken);' in _bq3_head and
+            'abandoned:' in _bq3_head and
+            'insertBackgroundHalSamples' not in _bq3_head)
+    if _bq3:
+        ok('BQ3 a leftover .consuming file is counted, dropped and '
+           'reported — never ingested a second time')
+    else:
+        fail('BQ3 a crashed ingest would be replayed, duplicating exactly '
+             'the rows the whole feature exists to collect')
+
+    # BQ4: У ЖУРНАЛА ЕСТЬ ВЕРСИЯ ФОРМАТА, И ЧУЖАЯ ОТВЕРГАЕТСЯ ЦЕЛИКОМ.
+    # Файл — приватный протокол через границу языков с короткими ключами.
+    # Журнал от прежней сборки был бы разобран молча. В этом же коде задача
+    # решена один раз (kPrefsFormat), и решать её здесь иначе несимметрично.
+    # ОТСУТСТВИЕ заголовка — не «версия 1»: это неизвестная сборка.
+    _bq4 = ('const val FMT: Int = 1' in _bq_out and
+            'static const int fmt = 1;' in _bq_jrn and
+            'private fun header()' in _bq_out and
+            'if (!existed) {' in _bq_out and
+            'if (hdr != fmt) {' in _bq_jrn and
+            'rejectedFmt' in _bq_jrn and
+            "m['_'] != 'hdr'" in _bq_jrn)
+    if _bq4:
+        ok('BQ4 the journal declares its format version and a foreign or '
+           'missing header rejects the whole file')
+    else:
+        fail('BQ4 a journal from another build would be parsed by our '
+             'layout and land in hal_samples as noise')
+
+    # BQ5: ОЧЕРЕДЬ ЗАПИСИ ОГРАНИЧЕНА, ОТКАЗ СЧИТАЕТСЯ. newSingleThreadExecutor
+    # держит LinkedBlockingQueue БЕЗ границы, и каждая задача несёт копию
+    # пакета: застрявшая флеш-память в долгой поездке — рост памяти в
+    # foreground-сервисе. Потеря, названная числом, лучше памяти, названной
+    # ничем; счётчик уронов уже был.
+    # ОБЛАСТЬ — САМО ПОСТРОЕНИЕ ИСПОЛНИТЕЛЯ, а не файл. Проверка по файлу
+    # была СЛЕПОЙ, и мутационный харнесс это поймал: строка `import
+    # java.util.concurrent.ArrayBlockingQueue` содержит то же имя, поэтому
+    # подмена очереди на неограниченную оставляла гейт зелёным. Четвёртый
+    # раз за окно (BM1, BP3, BP5) — и в этом файле уже третий, где виноваты
+    # импорты. Проверять надо выражение, а не присутствие слова.
+    _bq5_exec = ''
+    if 'private val io = ThreadPoolExecutor(' in _bq_out:
+        _bq5_exec = _bq_out.split('private val io = ThreadPoolExecutor(')[1] \
+            .split(')\n')[0]
+    _bq5 = (_bq5_exec != '' and
+            'ArrayBlockingQueue(QUEUE_CAPACITY)' in _bq5_exec and
+            'threads' in _bq5_exec and
+            'ThreadFactory { r ->' in _bq_out and
+            'LinkedBlockingQueue' not in _bq5_exec and
+            'const val QUEUE_CAPACITY' in _bq_out and
+            # Анкер точный, а не окно после первого вхождения имени:
+            # первое вхождение — строка ИМПОРТА, и окно за ней содержит
+            # соседние импорты. Третий раз за окно та же семья (BM1, BP5).
+            'RejectedExecutionHandler { _, _ -> dropped.incrementAndGet() }'
+            in _bq_out and
+            'newSingleThreadExecutor' not in _bq_out)
+    if _bq5:
+        ok('BQ5 the write queue is bounded and a rejected batch is counted, '
+           'not silently held in memory')
+    else:
+        fail('BQ5 an unbounded queue can grow without limit in a foreground '
+             'service when the flash stalls')
+
+    # BQ6: ПОТОЛОК ВОССТАНАВЛИВАЕТСЯ ПО ЯВНОМУ УВЕДОМЛЕНИЮ, А ДЛИНА
+    # СПРАШИВАЕТСЯ У ФАЙЛОВОЙ СИСТЕМЫ. Помнить длину полем нельзя: читатель
+    # забирает файл, и запомненное число относится к файлу, которого нет —
+    # потолок срабатывал бы на мебибайты раньше до конца процесса. А `full`
+    # само не снимется: при нём emit до файловой системы не доходит и
+    # заметить пропажу не может, поэтому нужен протокол, а не догадка.
+    _bq6_app = ''
+    if 'private fun append(' in _bq_out:
+        _bq6_app = _bq_out.split('private fun append(')[1].split('private fun header()')[0]
+    _bq6 = (_bq6_app != '' and
+            'var bytes = if (existed) f.length() else 0L' in _bq6_app and
+            'fun onConsumed()' in _bq_out and
+            'full = false' in _bq_out.split('fun onConsumed()')[1][:200] and
+            'fun noteJournalConsumed()' in _bq_own and
+            '"halJournalConsumed"' in _bq_plug and
+            'halJournalConsumed' in _bq_ch and
+            'if (ing.consumed) {' in _bq_hal)
+    if _bq6:
+        ok('BQ6 the cap budget is restored by an explicit consume protocol '
+           'and the length is asked of the filesystem, never remembered')
+    else:
+        fail('BQ6 one full drive would switch background collection off for '
+             'the rest of a process that lives for hours')
+
+    # BQ7: onDestroy НЕ ОСТАВЛЯЕТ ПОДПИСКУ БЕЗ ВЛАДЕЛЬЦА — и не снимает её
+    # у Dart. Условие обязательно в обе стороны: сервис может быть
+    # остановлен системой при живом открытом приложении, и безусловный
+    # stopAll() погасил бы приборы на экране машины.
+    _bq7_od = ''
+    if 'override fun onDestroy()' in _bq_svc:
+        _bq7_od = _bq_svc.split('override fun onDestroy()')[1] \
+            .split('override fun onStartCommand')[0]
+    _bq7 = (_bq7_od != '' and
+            'HalStreamOwner.activeOut() != HalStreamOwner.OUT_FLUTTER' in _bq7_od
+            and 'HalStreamOwner.stopAll()' in _bq7_od)
+    if _bq7:
+        ok('BQ7 a destroyed service releases the subscription it owned, and '
+           'only the one it owned')
+    else:
+        fail('BQ7 the service either leaks a registered proxy or tears down '
+             'a stream Dart is still using')
+else:
+    ok(f"Part BQ skipped (build +{pv}, journal ownership lands in +182)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)

@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import com.bz5companion.bz5_companion.hal.HalStreamOwner
 
 /**
  * v0.1.56+155 — autostart net (вариант D, spec Друга 3 20.07).
@@ -113,6 +114,37 @@ import android.os.Looper
  * action returns START_NOT_STICKY; the null-intent resurrection path
  * NEVER hits the stop branch (the trap Друг 3 warned about). Мост
  * входит третьим действием и не задевает ни одну из двух веток.
+ *
+ * v0.1.83+182 — ШАГ 2: СЕРВИС НАКОНЕЦ СОБИРАЕТ.
+ *
+ * До этого патча за тумблером стояла пустота: уведомление и биение раз
+ * в пять минут. Надпись это признавала честно — «автозапуск сработал,
+ * сбор начнётся при открытии», — и признавать было что: сбор жил в
+ * BydNativePlugin внутри движка Flutter внутри активити.
+ *
+ * Возражение +169 («сделать сервис тяжёлым — не правка, а проект,
+ * потому что хранилище у companion на стороне Dart, и сервис в Drift
+ * писать не может») остаётся верным и здесь НЕ опровергается. Оно
+ * обходится: сервис пишет не в базу, а в журнал строк, а втягивает
+ * журнал в `hal_samples` уже Dart, при открытии приложения. База
+ * по-прежнему принадлежит одному хозяину.
+ *
+ * ГЛАВНОЕ НЕИЗВЕСТНОЕ, НА КОТОРОЕ ЭТОТ ПАТЧ ОТВЕЧАЕТ ОДНОЙ ПОЕЗДКОЙ:
+ * отдаёт ли BYD HAL события, когда активити не на переднем плане.
+ * Сервис поднимается — подтверждено четырежды строками `bridged`, — но
+ * подписка из фона на этой прошивке не проверялась НИКОГДА. Ответ даёт
+ * строка `hal-bg:` в маркере, и она устроена так, чтобы быть читаемой
+ * с фотографии экрана: счётчики по целям считаются до придушивания, до
+ * отбрасывания сырых кадров и до потолка журнала (см. JournalHalOut).
+ * Молчит HAL фону — все дальнейшие варианты сбора бессмысленны, и
+ * узнать это дешевле всего сейчас.
+ *
+ * ПОЧЕМУ ЗДЕСЬ НЕТ НИ СЛОВА ПРО ДВОЙНУЮ ПОДПИСКУ. Она невозможна:
+ * подписка одна на процесс и лежит в HalStreamOwner, а сервис и
+ * движок Flutter живут в ОДНОМ процессе (в манифесте у сервиса нет
+ * android:process). Поэтому рукопожатия с Dart тоже нет — на
+ * ACTION_ARM сервис не делает ничего, потому что делать нечего:
+ * halStreamStart со стороны Dart просто перенаправит тот же поток себе.
  */
 class AutostartService : Service() {
 
@@ -138,12 +170,29 @@ class AutostartService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    /** Как сервис поднялся в последний раз: без владельца или с ним.
+     *  Нужен обновлению надписи — оно приходит позже, а различитель
+     *  «поднялся сам» терять нельзя. */
+    @Volatile private var lastHeadless: Boolean = false
+
+    /** Владелец сказал «выключить». Отложенные обновления надписи после
+     *  этого обязаны молчать: `postDelayed` на 15 с переживает stopSelf и
+     *  без этой охраны воскресил бы уведомление у выключенного сервиса. */
+    @Volatile private var stopping: Boolean = false
+
     // ── +157 heartbeat: pure observation, no self-healing here ──
 
     private val hbHandler = Handler(Looper.getMainLooper())
     private val hbTick = object : Runnable {
         override fun run() {
             marker("beat: ${ident()}")
+            // v0.1.83+182: счётчики HAL тем же биением. ОТДЕЛЬНОЙ строкой,
+            // а не припиской к `beat`: `beat` читается граблением по всему
+            // журналу автозапуска с +157, и его формат менять нельзя, не
+            // обесценив прежние файлы. Строки нет, когда подписки нет —
+            // честность важнее полноты (нет данных ≠ нули).
+            HalStreamOwner.journalSnapshot()?.let { marker("hal-bg: $it") }
+            refreshNotification()
             hbHandler.postDelayed(this, HEARTBEAT_MS)
         }
     }
@@ -197,6 +246,25 @@ class AutostartService : Service() {
         // The ABSENCE of `destroy` before the next `born` is itself the
         // measurement.
         hbHandler.removeCallbacks(hbTick)
+        // Последний снимок счётчиков. Строка `destroy` в поле пока не
+        // появлялась ни разу (ГУ убивает процесс жёстко), поэтому
+        // рассчитывать на неё нельзя — но если она есть, числа в ней
+        // самые полные, какие будут.
+        HalStreamOwner.journalSnapshot()?.let { marker("hal-bg: $it") }
+        // v0.1.83+182: НЕ ОСТАВЛЯТЬ ПОДПИСКУ БЕЗ ВЛАДЕЛЬЦА.
+        //
+        // Прежняя редакция писала снимок и уходила, а зарегистрированные
+        // прокси у устройств BYD оставались висеть: сервиса, который держал
+        // процесс на переднем плане, больше нет, а подписка есть. Ломалось
+        // это не сразу и, скорее всего, никогда — процесс всё равно умрёт,
+        // — но ресурс без хозяина это ресурс без хозяина.
+        //
+        // Условие обязательно: если поток у Dart, снимать НЕЛЬЗЯ. Сервис
+        // может быть остановлен системой при живом открытом приложении, и
+        // безусловный stopAll() погасил бы приборы на экране машины.
+        if (HalStreamOwner.activeOut() != HalStreamOwner.OUT_FLUTTER) {
+            try { HalStreamOwner.stopAll() } catch (_: Throwable) {}
+        }
         marker("destroy: ${ident()}")
         super.onDestroy()
     }
@@ -205,6 +273,13 @@ class AutostartService : Service() {
         // Explicit stop only — a null intent is a STICKY resurrection
         // and must fall through to the relaunch path below.
         if (intent?.action == ACTION_STOP) {
+            // v0.1.83+182: явный отказ владельца снимает и подписку.
+            // Иначе выключенный автозапуск продолжал бы писать журнал —
+            // тумблер, который выключает уведомление и не выключает
+            // работу, это ровно тот класс лжи, что лечил +173.
+            HalStreamOwner.journalSnapshot()?.let { marker("hal-bg: $it") }
+            try { HalStreamOwner.stopAll() } catch (_: Throwable) {}
+            stopping = true
             marker("stop: explicit ACTION_STOP · ${ident()}")
             stopSelf()
             return START_NOT_STICKY
@@ -216,7 +291,24 @@ class AutostartService : Service() {
         // Владельца в нём нет ровно так же, как в воскрешении, поэтому
         // нотификация для обоих одна: «поднялся сам».
         val bridged = intent?.action == ACTION_BRIDGE
-        startForeground(NOTIF_ID, buildNotification(resurrected || bridged))
+        lastHeadless = resurrected || bridged
+        startForeground(NOTIF_ID, buildNotification(lastHeadless))
+
+        // v0.1.83+182: СБОР. Поднимается на всех трёх путях, включая ARM.
+        //
+        // Почему и на ARM тоже, хотя владелец в этот момент открывает
+        // приложение: между `arm` из MainActivity и `halStreamStart` из
+        // Dart проходит вся инициализация HalTelemetryService, и это
+        // секунды на холодном старте. Подписка одна на процесс, так что
+        // поднять её раньше — не вторая подписка, а та же самая, и Dart
+        // просто заберёт её себе. Заодно снимается зависимость от того,
+        // чем именно кончится инициализация Dart.
+        //
+        // На РАБОЧЕМ потоке: внутри отражение и обходы registerListener,
+        // а onStartCommand — главный поток с лимитом ANR. Ошибку
+        // записываем строкой: сервис обязан подняться даже если HAL
+        // недоступен (телефон, чужая прошивка), а не падать.
+        startCollectingAsync()
 
         if (resurrected) {
             // HEADLESS. Никакого startActivity: из фона он всё равно
@@ -305,14 +397,104 @@ class AutostartService : Service() {
                     // всего лишь откроет приложение. Пока это так,
                     // надпись обязана описывать состояние, а не звать
                     // к действию с несуществующим результатом.
-                    "автозапуск сработал — сбор начнётся при открытии"
+                    // v0.1.83+182: прежний текст «сбор начнётся при
+                    // открытии» был честен ровно до этого патча — сбора
+                    // за тумблером действительно не было. Теперь есть, и
+                    // надпись обязана называть его настоящее состояние, а
+                    // не факт срабатывания автозапуска.
+                    "автозапуск сработал · ${collectingText()}"
                 } else {
-                    "автостарт взведён"
+                    "автостарт взведён · ${collectingText()}"
                 }
             )
             .setContentIntent(open)
             .setOngoing(true)
             .build()
+    }
+
+    /**
+     * Переписать надпись уведомления под текущее состояние сбора.
+     *
+     * Существует потому, что `startForeground` зовётся ДО того, как
+     * подписка сделана: в тот момент честно сказать можно только
+     * «поднимаю». Дальше состояние узнаётся, и надпись обязана его
+     * догнать — иначе на экране машины навсегда останется обещание.
+     *
+     * Отказ NotificationManager проглатывается: надпись — удобство, а
+     * сбор от неё не зависит. Числа всё равно уедут в маркер.
+     */
+    private fun refreshNotification() {
+        if (stopping) return
+        try {
+            val nm = getSystemService(Context.NOTIFICATION_SERVICE)
+                as NotificationManager
+            nm.notify(NOTIF_ID, buildNotification(lastHeadless))
+        } catch (t: Throwable) {
+            // Молча — см. выше.
+        }
+    }
+
+    /**
+     * ЧТО НАПИСАНО НА ЭКРАНЕ МАШИНЫ ПРО СБОР. Четыре состояния, и ни одно
+     * не выдаёт себя за другое.
+     *
+     * Различать «подписались» и «получаем события» ОБЯЗАТЕЛЬНО.
+     * Вендоренный `SubscriptionStatus` предупреждает прямо: цель может
+     * зарегистрироваться и не отдать ни одного события (silent push
+     * wall). Разница между этими двумя и есть главное неизвестное окна —
+     * склей их в одну надпись, и мы прочитали бы с фотографии ответ,
+     * которого не получали.
+     */
+    private fun collectingText(): String {
+        val seen = HalStreamOwner.journalSeen()
+        return when {
+            seen == null -> "сбор не поднят"
+            seen > 0L -> "идёт сбор, событий $seen"
+            HalStreamOwner.status().targetsRegistered > 0 ->
+                "сбор поднят, событий пока нет"
+            else -> "HAL не отвечает, сбора нет"
+        }
+    }
+
+    /**
+     * Поднять подписку HAL на рабочем потоке и записать исход строкой.
+     *
+     * Строка `hal-start:` — это ответ на «дошли ли мы вообще до
+     * регистрации», а `hal-bg:` (биение) — на «пошли ли события».
+     * Различать их обязательно: ноль зарегистрированных целей и нуль
+     * событий при восьми зарегистрированных — разные диагнозы с
+     * разными следующими шагами.
+     */
+    private fun startCollectingAsync() {
+        Thread {
+            try {
+                val st = HalStreamOwner.startForBackground(applicationContext)
+                marker(
+                    "hal-start: attempted=${st.targetsAttempted}" +
+                        " registered=${st.targetsRegistered}" +
+                        " failed=${st.targetsFailed}" +
+                        " out=${HalStreamOwner.activeOut()}" +
+                        " engine=${HalStreamOwner.engineTag() ?: "-"}"
+                )
+                // Надпись на экране машины обязана догнать факт: до этой
+                // строки она говорила «поднимаю сбор», и это было верно
+                // ровно до сих пор. Плюс отложенная проверка через 15 с —
+                // поездка короче пяти минут иначе так и осталась бы с
+                // текстом «событий пока нет» при работающем потоке.
+                hbHandler.post { refreshNotification() }
+                hbHandler.postDelayed({ refreshNotification() }, 15_000L)
+                if (st.targetsFailed > 0) {
+                    // Причины по целям, а не общий вердикт: именно они
+                    // отличают «класс не найден» (не та прошивка) от
+                    // «отказано» (не выданы COMMON-разрешения).
+                    for ((k, v) in st.perTargetErrors) {
+                        marker("hal-fail: $k · $v")
+                    }
+                }
+            } catch (t: Throwable) {
+                marker("hal-start: threw ${t.javaClass.simpleName}: ${t.message}")
+            }
+        }.apply { name = "bz5-hal-bg-start"; isDaemon = true }.start()
     }
 
     /** versionName приложения; «?» если PackageManager отказал. */

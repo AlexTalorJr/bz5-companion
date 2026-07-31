@@ -90,6 +90,35 @@ class ImportService {
   static const String kAppliedFlag = 'import_applied';
   static const String kAppliedAt = 'import_applied_at';
 
+  /// v0.1.83+182 — ОТЧЁТ О ВОССТАНОВЛЕНИИ. Долг наблюдаемости, найденный
+  /// полем 31.07: `import_applied_at` писался и не читался НИКЕМ, а
+  /// единственным следом успеха были две строки `Import:` в журнале
+  /// приложения. Поле подтвердило импорт только потому, что владелец
+  /// заранее развёл значения настроек, — то есть различающим опытом, а не
+  /// показаниями приложения.
+  ///
+  /// Два ключа, и они разные по смыслу: ОБЕЩАНИЕ пишется при постановке в
+  /// очередь (из `metadata.json` архива), ФАКТ — после применения, из
+  /// живой базы. Сравнивать одно с другим и есть весь отчёт: числа сошлись
+  /// — восстановление полное, разошлись — видно, где и на сколько.
+  static const String kPromise = 'import_promise';
+  static const String kReport = 'import_report';
+
+  /// Таблицы, по которым отчёт сверяет обещание с фактом. Порядок — тот, в
+  /// котором они показываются владельцу.
+  ///
+  /// `hal_samples` СТОИТ ПЕРВЫМ, и это не алфавит. Именно ради них импорт и
+  /// затевался: облако несёт всё остальное, а сырьё умирает с очисткой. При
+  /// этом до +181 их не показывал ни один экран — «сверить главное число
+  /// нечем» и означало ровно это.
+  static const List<String> reportTables = <String>[
+    'hal_samples',
+    'trips',
+    'snapshots',
+    'sweep_runs',
+    'live_log_sessions',
+  ];
+
   /// НАСТРОЙКИ ВЛАДЕЛЬЦА И МАШИНЫ — едут в каждом архиве.
   ///
   /// Решение владельца 31.07: в облако (третья итерация) уедет только
@@ -389,8 +418,12 @@ class ImportService {
       final archive = ZipDecoder().decodeBytes(bytes);
       List<int>? db;
       String? prefsJson;
+      String? metaJson;
       for (final f in archive.files) {
         if (f.name == kDbEntry) db = f.content as List<int>;
+        if (f.name == kMetaEntry) {
+          metaJson = utf8.decode(f.content as List<int>);
+        }
         if (f.name == kPrefsEntry) {
           prefsJson = utf8.decode(f.content as List<int>);
         }
@@ -415,6 +448,31 @@ class ImportService {
       }
 
       final prefs = await SharedPreferences.getInstance();
+      // ОБЕЩАНИЕ. Читается здесь, а не при применении: после обмена файла
+      // архив может быть уже недоступен (общий диск, чужой uid после
+      // переустановки), а `metadata.json` в нём — единственное место, где
+      // записано, СКОЛЬКО строк обещано. Отказ разбора не мешает импорту:
+      // отчёт станет односторонним (только факт), и это лучше, чем сорвать
+      // восстановление из-за испорченного манифеста.
+      await prefs.remove(kPromise);
+      if (metaJson != null) {
+        try {
+          final meta = jsonDecode(metaJson);
+          final counts = (meta is Map) ? meta['counts'] : null;
+          if (counts is Map) {
+            final promise = <String, int>{};
+            for (final t in reportTables) {
+              final v = counts[t];
+              if (v is int) promise[t] = v;
+            }
+            if (promise.isNotEmpty) {
+              await prefs.setString(kPromise, jsonEncode(promise));
+            }
+          }
+        } catch (e) {
+          debugPrint('Import: manifest promise unreadable — $e');
+        }
+      }
       await prefs.setBool(kPendingFlag, true);
       return ImportStageResult(ok: true, stagedBytes: db.length);
     } catch (e) {
@@ -586,8 +644,97 @@ class ImportService {
       await prefs.setBool(uuidMapInitialDone, true);
     }
     out['_uuid_gaps'] = gaps;
+    // v0.1.83+182: ФАКТ, и сразу же отчёт. Считается здесь потому, что
+    // здесь единственное место, где одновременно доступны живая база и
+    // ещё не снятый флаг применения. Отказ подсчёта не должен помешать
+    // снятию флага — иначе бухгалтерия пересобиралась бы на каждом
+    // старте.
+    try {
+      await _writeReport(db, prefs);
+    } catch (e) {
+      debugPrint('Import: report failed — $e');
+    }
     await prefs.remove(kAppliedFlag);
     return out;
+  }
+
+  /// Сложить обещание и факт в один отчёт и запомнить его. Читается
+  /// экраном данных один раз, после чего снимается владельцем.
+  static Future<void> _writeReport(
+    AppDatabase db,
+    SharedPreferences prefs,
+  ) async {
+    Map<String, int> promise = const {};
+    final raw = prefs.getString(kPromise);
+    if (raw != null) {
+      try {
+        final m = jsonDecode(raw);
+        if (m is Map) {
+          promise = m.map((k, v) => MapEntry('$k', v is int ? v : 0));
+        }
+      } catch (_) {}
+    }
+    final actual = <String, int>{};
+    for (final t in reportTables) {
+      actual[t] = await _rowCount(db, t);
+    }
+    await prefs.setString(
+      kReport,
+      jsonEncode({
+        'at': DateTime.now().millisecondsSinceEpoch,
+        'promise': promise,
+        'actual': actual,
+      }),
+    );
+    await prefs.remove(kPromise);
+  }
+
+  /// Отчёт для показа, или null — импорта не было либо владелец его снял.
+  static Future<ImportReport?> readReport() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(kReport);
+    if (raw == null) return null;
+    try {
+      final m = jsonDecode(raw);
+      if (m is! Map) return null;
+      final at = m['at'];
+      final pr = m['promise'];
+      final ac = m['actual'];
+      return ImportReport(
+        at: at is int
+            ? DateTime.fromMillisecondsSinceEpoch(at)
+            : DateTime.now(),
+        promise: pr is Map
+            ? pr.map((k, v) => MapEntry('$k', v is int ? v : 0))
+            : const {},
+        actual: ac is Map
+            ? ac.map((k, v) => MapEntry('$k', v is int ? v : 0))
+            : const {},
+      );
+    } catch (e) {
+      debugPrint('Import: report unreadable — $e');
+      return null;
+    }
+  }
+
+  static Future<void> clearReport() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(kReport);
+  }
+
+  /// COUNT(*) по имени таблицы. Имена приходят только из [reportTables] —
+  /// константы этого файла, а не из данных, поэтому подстановка безопасна.
+  static Future<int> _rowCount(AppDatabase db, String table) async {
+    try {
+      final row = await db
+          .customSelect('SELECT COUNT(*) AS c FROM $table')
+          .getSingle();
+      final v = row.data['c'];
+      return v is int ? v : 0;
+    } catch (e) {
+      debugPrint('Import: count on $table failed — $e');
+      return 0;
+    }
   }
 
   static Future<int> _maxId(AppDatabase db, String table) async {
@@ -701,4 +848,36 @@ class ImportApplyResult {
     this.prefsRestored = 0,
     this.error,
   });
+}
+
+/// v0.1.83+182: отчёт о восстановлении. Обещание манифеста против факта
+/// живой базы, по таблице.
+///
+/// `promise` может быть пустым (манифест не прочитался) — тогда отчёт
+/// односторонний, и экран обязан сказать «обещание неизвестно», а не
+/// показать ноль. Ноль и «неизвестно» — разные вещи, и именно смешение
+/// этих двух и стоило окну №10 двух сообщений.
+class ImportReport {
+  final DateTime at;
+  final Map<String, int> promise;
+  final Map<String, int> actual;
+
+  const ImportReport({
+    required this.at,
+    required this.promise,
+    required this.actual,
+  });
+
+  /// Есть ли с чем сверять.
+  bool get twoSided => promise.isNotEmpty;
+
+  /// Совпало ли всё, что обещано. Таблицы без обещания не считаются.
+  bool get complete =>
+      twoSided &&
+      promise.entries.every((e) => (actual[e.key] ?? -1) >= e.value);
+
+  /// Обещание по таблице, или null, если его нет.
+  int? promised(String table) => promise[table];
+
+  int restored(String table) => actual[table] ?? 0;
 }

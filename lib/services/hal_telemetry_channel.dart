@@ -180,6 +180,21 @@ class HalTelemetryChannel {
     }
   }
 
+  /// v0.1.83+182: сообщить платформе, что файл фонового журнала забран.
+  ///
+  /// Не косметика. Журнал, дойдя до потолка, останавливает запись и сам
+  /// из этого состояния не выходит: его `emit` при `full` до файловой
+  /// системы не доходит и заметить пропажу файла не может. Без этого
+  /// вызова первая же переполненная поездка выключила бы фоновый сбор до
+  /// конца жизни процесса — а процесс на этом ГУ живёт часами.
+  Future<void> noteJournalConsumed() async {
+    try {
+      await _method.invokeMethod<bool>('halJournalConsumed');
+    } on PlatformException catch (e) {
+      debugPrint('HAL halJournalConsumed failed: ${e.code} ${e.message}');
+    }
+  }
+
   /// Stop the live subscription. Idempotent; safe even if not started.
   Future<void> stop() async {
     try {

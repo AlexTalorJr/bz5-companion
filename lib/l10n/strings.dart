@@ -1023,6 +1023,13 @@ class S {
     'common.delete': 'Delete',
 
     // ── restore from archive (v0.1.81+180) ──
+    'dataimp.rep_title': 'Restore report',
+    'dataimp.rep_full': 'Everything the manifest promised is back',
+    'dataimp.rep_short': 'Some tables came back short — see the pairs below',
+    'dataimp.rep_onesided': 'The manifest was unreadable, so only the '
+        'restored counts are known',
+    'dataimp.rep_unknown': 'unknown',
+    'dataimp.rep_dismiss': 'Got it',
     'dataimp.sec_restore': 'RESTORE FROM ARCHIVE',
     'dataimp.intro': 'Reads an export archive back. Brings in what the '
         'cloud never carries: raw samples, HAL samples and atlas bands '
@@ -2211,6 +2218,14 @@ class S {
     'common.delete': 'Удалить',
 
     // ── восстановление из архива (v0.1.81+180) ──
+    'dataimp.rep_title': 'Отчёт о восстановлении',
+    'dataimp.rep_full': 'Всё, что обещал манифест, на месте',
+    'dataimp.rep_short': 'Часть таблиц вернулась не полностью — пары чисел '
+        'ниже',
+    'dataimp.rep_onesided': 'Манифест не прочитался, поэтому известно только '
+        'восстановленное',
+    'dataimp.rep_unknown': 'неизвестно',
+    'dataimp.rep_dismiss': 'Понятно',
     'dataimp.sec_restore': 'ВОССТАНОВЛЕНИЕ ИЗ АРХИВА',
     'dataimp.intro': 'Читает архив экспорта обратно. Возвращает то, чего '
         'облако не несёт вовсе: сырые сэмплы, HAL-сэмплы и незамороженные '

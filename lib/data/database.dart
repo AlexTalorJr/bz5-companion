@@ -8,6 +8,19 @@ import 'uuid_v7.dart';
 
 part 'database.g.dart';
 
+/// v0.1.83+182: одна строка фонового журнала HAL для пакетной вставки.
+///
+/// Запись, а не класс, и объявлена ЗДЕСЬ, а не в `hal_bg_journal.dart`:
+/// иначе база импортировала бы сервис, который импортирует базу. Круговой
+/// импорт Dart переварит, но читаться дерево перестанет.
+typedef BgHalRow = ({
+  DateTime at,
+  String name,
+  String? targetKey,
+  String? subtype,
+  double? value,
+});
+
 /// Schema history:
 ///   v1 (pre-v0.1.9): Samples, Trips (basic), Snapshots (basic)
 ///   v2 (v0.1.9):     Trips +12 aggregate cols, Snapshots +7 cols
@@ -1388,6 +1401,48 @@ class AppDatabase extends _$AppDatabase {
       numericValue: Value(numeric),
       textValue: Value(text),
     ));
+  }
+
+  /// v0.1.83+182: пакетная вставка строк ФОНОВОГО журнала HAL.
+  ///
+  /// Отдельный метод, а не `insertHalSignal` в цикле, по двум причинам, и
+  /// обе обязательные.
+  ///
+  /// ВРЕМЯ. `insertHalSignal` ставит `DateTime.now()`. Для живого потока
+  /// это то же самое, что метка события, а для журнала — нет: вся поездка
+  /// легла бы в одно мгновение, и любой расчёт по времени получил бы
+  /// вертикальную стену вместо ряда. Здесь метка приходит из строки.
+  ///
+  /// СКОРОСТЬ. Двадцать тысяч отдельных вставок на этом ГУ — минуты на
+  /// открытии приложения. `batch` укладывает их в одну транзакцию.
+  ///
+  /// `tripId` не параметр и не забыт: у фоновых строк его нет и быть не
+  /// может (поездку создаёт машинерия Dart, а она не работала). Null —
+  /// это измерение, а не пропуск.
+  Future<int> insertBackgroundHalSamples(List<BgHalRow> rows) async {
+    if (rows.isEmpty) return 0;
+    // Форма companion — РОВНО та же, что у `insertHalSignal` ниже
+    // (обычный конструктор, каждое поле через Value), а не `.insert`.
+    // Причина не в стиле: `database.g.dart` генерируется на CI и в
+    // песочнице его нет, проверить подпись `.insert` здесь нечем. Эта
+    // форма в этом файле уже работает с +92, и ставить на неудостоверенную
+    // подпись там, где рядом лежит удостоверенная, значит платить сборкой
+    // на CI за экономию строки.
+    await batch((b) {
+      b.insertAll(
+        halSamples,
+        rows.map((r) => HalSamplesCompanion(
+              tripId: const Value<int?>(null),
+              timestamp: Value(r.at),
+              source: const Value('hal'),
+              targetKey: Value(r.targetKey),
+              subtype: Value(r.subtype),
+              name: Value(r.name),
+              numericValue: Value(r.value),
+            )),
+      );
+    });
+    return rows.length;
   }
 
   /// Insert one raw BigData CAN frame row (source='bigdata'). Whitelisted
