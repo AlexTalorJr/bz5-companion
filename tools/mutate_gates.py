@@ -85,6 +85,7 @@ NP = KT + 'BydNativePlugin.kt'
 DB = 'lib/data/database.dart'
 HT = 'lib/services/hal_telemetry_service.dart'
 BJ = 'lib/services/hal_bg_journal.dart'
+DBL = 'tools/dart_balance.py'
 
 # (гейт, файл, анкер, замена, что откатывает)
 #
@@ -523,6 +524,36 @@ MUTATIONS = [
      '        if (HalStreamOwner.activeOut() != HalStreamOwner.OUT_FLUTTER) {',
      '        if (false) {',
      'оставить подписку без владельца при смерти сервиса'),
+
+    # ─── эра BR (+183) «Строка журнала разбирается, и это видно» ─────
+    #
+    # Эра называется BR, и переменная BR выше — это BootReceiver.kt.
+    # Совпадение только в буквах: первое поле кортежа — идентификатор
+    # гейта, строка, и с алиасами файлов не пересекается.
+    ('BR1', BJ,
+     '  static BgHalRow? _parse(String line) {',
+     '  static BgHalRow? _parseUnused(String line) {',
+     'вернуть +182 дословно: вызов есть, объявления нет — падение '
+     'kernel_snapshot'),
+    ('BR2', BJ,
+     "      final subtype = i < 0 ? '' : key.substring(i + 3);",
+     '      final subtype = i < 0 ? null : key.substring(i + 3);',
+     'отдать null вместо пустого подтипа — одна цель расщепится на две '
+     'молча'),
+    ('BR3', BJ,
+     '        at: DateTime.fromMillisecondsSinceEpoch(ms),',
+     '        at: DateTime.now(),',
+     'ставить время втягивания вместо времени события — вся поездка в '
+     'одно мгновение'),
+    ('BR4', BJ,
+     '          if (line.startsWith(\'{"_":\')) continue;',
+     '          if (seenLines == 0 && line.contains(\'"_":"hdr"\')) continue;',
+     'вернуть частный случай только для первой строки — строка потолка '
+     'уедет в malformed'),
+    ('BR5', DBL,
+     "            fails.append(f'{f.name}:{name}')",
+     '            pass',
+     'печатать нерезолвящийся приватный вызов, но не краснеть от него'),
 ]
 
 FOOTER = 'PASS '

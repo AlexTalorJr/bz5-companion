@@ -169,6 +169,58 @@ def check_imports(f: Path, files):
     return bad
 
 
+# ── unresolved private call scan (v0.1.84+183) ─────────────────────
+#
+# Dart privacy is LIBRARY-scoped: a `_name` used in a file that owns no
+# `part` directive can only be declared in that same file. So a call to
+# `_foo(` with no declaration of `_foo` anywhere in the file is a build
+# break — nothing else can supply it. This is the Dart twin of the
+# kotlinc unresolved-reference baseline, and it exists because +182
+# shipped a call to `_parse` that was never written: 533 substring gates
+# and a bracket balance cannot see a missing method, and there is no Dart
+# compiler in the sandbox.
+#
+# Files that own a `part` (database.dart → database.g.dart) and part
+# files themselves are SKIPPED, not guessed at: their private symbols may
+# legitimately live in the generated half, which CI produces and the repo
+# does not carry. Skipping is the honest boundary; pretending to resolve
+# across it would fail on every codegen symbol.
+CALL_RE = re.compile(r'(?<![\w$.])(_[A-Za-z]\w*)\s*\(')
+# tokens that mean the thing in front of `_foo(` is NOT a return type
+CALL_CTX = {'await', 'return', 'new', 'throw', 'yield', 'if', 'while',
+            'for', 'switch', 'assert', 'else', 'case', 'in', 'is', 'as'}
+
+
+def check_privates(f: Path):
+    src = f.read_text(encoding='utf-8')
+    if re.search(r'^part\b', src, re.M):
+        return []
+    code = strip_code(src)
+    bad = []
+    for name in sorted(set(CALL_RE.findall(code))):
+        esc = re.escape(name)
+        found = False
+        # a declaration reads `<type> _foo(` — some token that is not a
+        # call-context keyword sits immediately before the name. Tuple
+        # return types end in ')', generics in '>', nullables in '?'.
+        for m in re.finditer(r'(?<![\w$.])' + esc + r'\s*\(', code):
+            tok = re.search(r'([\w>?\])]+)$', code[:m.start()].rstrip())
+            if tok and tok.group(1) not in CALL_CTX:
+                found = True
+                break
+        # class/enum/mixin/typedef name used as a constructor
+        if not found and re.search(
+                r'\b(?:class|enum|mixin|typedef|extension)\s+' + esc + r'\b',
+                code):
+            found = True
+        # field or local holding a function: `final _foo = (…) {…}`
+        if not found and re.search(r'(?<![\w$.])' + esc + r'\s*=', code):
+            found = True
+        if not found:
+            bad.append(name)
+    return bad
+
+
 def main():
     files = sorted(LIB.rglob('*.dart'))
     print(f'scanning {len(files)} files under lib/')
@@ -192,6 +244,15 @@ def main():
             miss += 1
             fails.append(f'{f.name}:{sym}')
     print(f'  imports: {miss} missing')
+
+    priv = 0
+    for f in files:
+        for name in check_privates(f):
+            print(f'    [FAIL] {f.relative_to(LIB)}: {name}() called but '
+                  f'never declared in this library')
+            priv += 1
+            fails.append(f'{f.name}:{name}')
+    print(f'  privates: {priv} unresolved')
 
     print('=' * 56)
     print('DART SCAN ' + ('FAIL' if fails else 'PASS'))

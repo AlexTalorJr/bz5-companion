@@ -8484,6 +8484,115 @@ if int(pv) >= 182:
 else:
     ok(f"Part BQ skipped (build +{pv}, journal ownership lands in +182)")
 
+# ═════ Part BR — v0.1.84+183 «Строка журнала разбирается, и это видно» ═════
+#
+# +182 не собрался: вызов `_parse` стоял, объявления не было. Гейты этого не
+# увидели, потому что все 533 — подстрочные, а `dart_balance` считал скобки и
+# импорты. BR5 закрывает класс ошибки целиком, остальные четыре — семантику
+# самого разбора, которая до сборки на CI не проверяется ничем.
+#
+# Область у BR2–BR4 — ТЕЛО МЕТОДА, а не файл. В HalOut.kt строки import подвели
+# подстрочные проверки трижды за одно окно (BM1, BP3, BP5, все семьи BF5), и
+# лечение всегда сужение области, никогда расширение анкера.
+if int(pv) >= 183:
+    _br_jrn = _strip_comments_safe(
+        (root / 'lib/services/hal_bg_journal.dart').read_text())
+    _br_hal = _strip_comments_safe(
+        (root / 'lib/services/hal_telemetry_service.dart').read_text())
+    _br_tool = (root / 'tools/dart_balance.py').read_text()
+
+    _br_body = ''
+    if 'static BgHalRow? _parse(' in _br_jrn:
+        _br_body = _br_jrn.split('static BgHalRow? _parse(')[1] \
+            .split('static int? _header(')[0]
+
+    # BR1: МЕТОД ОБЪЯВЛЕН, А НЕ ТОЛЬКО ВЫЗВАН. Дословная причина падения +182.
+    _br1 = (_br_body != '' and
+            '_parse(line);' in _br_jrn and
+            'return (' in _br_body and
+            'at: DateTime' in _br_body)
+    if _br1:
+        ok('BR1 the journal line parser is declared, not merely called — '
+           'the +182 build break cannot recur unnoticed')
+    else:
+        fail('BR1 _parse is called without a declaration — kernel_snapshot '
+             'fails and no substring gate sees it')
+
+    # BR2: РАЗБОР КЛЮЧА СОВПАДАЕТ С ЖИВЫМ ПУТЁМ БУКВА В БУКВУ. Фоновые строки
+    # лягут в ту же hal_samples, что и живые. Разойдись здесь на пустую строку
+    # против null или на смещение — и одна цель расщепится на две молча.
+    _br2_live = ''
+    if '_splitKey(String key) {' in _br_hal:
+        _br2_live = _br_hal.split('_splitKey(String key) {')[1].split('}')[0]
+    _br2 = (_br_body != '' and _br2_live != '' and
+            "'|0x'" in _br2_live and "'|0x'" in _br_body and
+            'i + 3' in _br2_live and
+            "i < 0 ? key : key.substring(0, i)" in _br_body and
+            "i < 0 ? '' : key.substring(i + 3)" in _br_body and
+            "subtype: subtype" in _br_body and
+            "targetKey: target" in _br_body)
+    if _br2:
+        ok('BR2 the background key split is the live one, offset for offset — '
+           'one target cannot become two')
+    else:
+        fail('BR2 background rows would carry a different target/subtype '
+             'shape than live rows in the same table')
+
+    # BR3: ВРЕМЯ ИЗ СТРОКИ, И НИГДЕ В ЭТОМ ФАЙЛЕ НЕТ DateTime.now(). Иначе вся
+    # поездка ложится в одно мгновение — вертикальная стена вместо ряда, и
+    # ровно та беда, ради которой пакетная вставка вообще отдельный метод.
+    _br3 = (_br_body != '' and
+            'DateTime.fromMillisecondsSinceEpoch(' in _br_body and
+            'DateTime.now()' not in _br_jrn and
+            'ms <= 0' in _br_body)
+    if _br3:
+        ok('BR3 the timestamp comes from the line and a non-positive one is '
+           'refused — no drive collapses into one instant, none lands in 1970')
+    else:
+        fail('BR3 journal rows would take the ingest time, flattening the '
+             'whole drive into a single moment')
+
+    # BR4: СЛУЖЕБНЫЕ СТРОКИ ПРОПУСКАЮТСЯ ДО СЧЁТЧИКА ПЛОХИХ, и пропуск общий.
+    # Строка потолка приходит В КОНЦЕ файла: частная ветка «только первая
+    # строка» из +182 её не ловила, и каждый полный журнал показывал бы
+    # malformed>0 — читается как «разбор сломан», хотя сломан отчёт.
+    _br4_loop = ''
+    if 'for (final line in lines) {' in _br_jrn:
+        _br4_loop = _br_jrn.split('for (final line in lines) {')[1] \
+            .split('chunk.add(row);')[0]
+    _br4 = (_br4_loop != '' and
+            'startsWith(\'{"_":\')' in _br4_loop and
+            'seenLines == 0' not in _br4_loop and
+            _br4_loop.find('startsWith(\'{"_":\')') <
+            _br4_loop.find('bad++'))
+    if _br4:
+        ok('BR4 writer control lines are skipped before the malformed '
+           'counter, wherever in the file they sit')
+    else:
+        fail('BR4 the cap line would be counted as malformed, reading as a '
+             'broken parser on every full journal')
+
+    # BR5: НЕРЕЗОЛВЯЩИЕСЯ ПРИВАТНЫЕ ВЫЗОВЫ ЛОВЯТСЯ НА ВСЁМ ДЕРЕВЕ. Приватность
+    # в Dart — на уровне библиотеки, поэтому `_foo(` в файле без `part` может
+    # быть объявлен только там же. Это дартовский двойник базовой линии
+    # kotlinc, и он проверен на дереве +182: одно срабатывание, оно же ошибка.
+    _br5 = ('def check_privates(' in _br_tool and
+            'CALL_RE' in _br_tool and
+            "re.search(r'^part\\b'" in _br_tool and
+            'check_privates(f)' in _br_tool and
+            'privates:' in _br_tool and
+            "fails.append(f'{f.name}:{name}')" in _br_tool and
+            _br_tool.find('def check_privates(') <
+            _br_tool.find('check_privates(f)'))
+    if _br5:
+        ok('BR5 the dart scan resolves private calls tree-wide — the class '
+           'of break that shipped in +182 is now caught before delivery')
+    else:
+        fail('BR5 nothing in the sandbox can see a called-but-undeclared '
+             'private method; only CI would, one drive too late')
+else:
+    ok(f"Part BR skipped (build +{pv}, the journal parser lands in +183)")
+
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
 print(f"+35→+51 REGRESSION — build +{pv}")

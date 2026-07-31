@@ -145,10 +145,19 @@ class HalBgJournal {
         final chunk = <BgHalRow>[];
         for (final line in lines) {
           if (line.isEmpty) continue;
-          if (seenLines == 0 && line.contains('"_":"hdr"')) {
-            seenLines++;
-            continue;
-          }
+          // ── СЛУЖЕБНЫЕ СТРОКИ ПИСАТЕЛЯ, а не измерения. ──
+          //
+          // Их две, и обе начинаются с `{"_":`: заголовок версии в начале
+          // файла и `{"_":"full"}` на потолке. Пропуск ОБЩИЙ, а не только
+          // для первой строки, как было в +182: строка потолка приходит В
+          // КОНЦЕ, и частная ветка её не ловила — она уезжала в
+          // `malformed`, где читалась бы как «разбор сломан» на каждом
+          // полном журнале. О самом потолке говорит писатель, `full=yes` в
+          // маркере автозапуска, поэтому здесь молча и без счётчика.
+          //
+          // Заодно `seenLines` перестал считать заголовок: потолок
+          // `maxLines` теперь про строки данных, чем он и назван.
+          if (line.startsWith('{"_":')) continue;
           if (++seenLines > maxLines) {
             capped = true;
             break;
@@ -194,6 +203,67 @@ class HalBgJournal {
     } catch (e) {
       debugPrint('HalBgJournal: ingest failed — $e');
       return HalBgIngestResult(present: present, error: '$e');
+    }
+  }
+
+  /// Одна строка журнала → строка для вставки, или null, если строка
+  /// негодна. В +182 этого метода не было вовсе: вызов стоял, объявления
+  /// нет, и сборка легла на `kernel_snapshot` — гейты подстрочные, а
+  /// компилятора Dart в песочнице нет. Гейт BR5 теперь закрывает именно
+  /// этот класс ошибки на всём дереве.
+  ///
+  /// ЧТО ЗДЕСЬ ОБЯЗАНО БЫТЬ ПРАВИЛЬНЫМ.
+  ///
+  /// РАЗБОР КЛЮЧА ПОВТОРЯЕТ `_splitKey` из `hal_telemetry_service.dart`
+  /// БУКВА В БУКВУ — то же `|0x`, то же смещение на три, та же пустая
+  /// строка при отсутствии. Это не вкусовое совпадение: фоновые строки
+  /// лягут в ту же `hal_samples`, что и живые, и любой запрос по цели или
+  /// подтипу обязан находить их наравне. Отсюда же `''`, а не null:
+  /// живой путь пишет пустую строку, и различие в этом месте расщепило бы
+  /// одну цель на две — молча и навсегда.
+  ///
+  /// ВРЕМЯ БЕРЁТСЯ ИЗ СТРОКИ. `ts` писателя — это
+  /// `System.currentTimeMillis()` (`TelemetrySink.kt`), настенные часы, то
+  /// есть та же шкала, что у `DateTime.now()` живого пути. Часы ГУ,
+  /// сбитые до синхронизации, испортили бы и живые строки — новой
+  /// политики здесь нет, и вводить её нечем.
+  ///
+  /// НЕПОЛОЖИТЕЛЬНЫЙ `ts` ОТВЕРГАЕТСЯ. Ноль — не «начало эпохи», а
+  /// отсутствие метки; уложить поездку в 1970 год значит испортить каждый
+  /// расчёт по времени, ради которого метка вообще берётся из строки.
+  ///
+  /// `v` НЕОБЯЗАТЕЛЕН: писатель опускает ключ, когда значения нет. Это не
+  /// порча строки — имя и время сами по себе измерение. А вот `v` вне
+  /// диапазона double строку убивает: `1e400` в JSON разбирается в
+  /// бесконечность, и она отравила бы любое среднее. Отвергнутая строка
+  /// видна числом в `malformed`, бесконечность в таблице — ничем.
+  static BgHalRow? _parse(String line) {
+    try {
+      final m = jsonDecode(line);
+      if (m is! Map) return null;
+      final ts = m['ts'];
+      if (ts is! num) return null;
+      final ms = ts.toInt();
+      if (ms <= 0) return null;
+      final name = m['n'];
+      if (name is! String || name.isEmpty) return null;
+      final k = m['k'];
+      final key = k is String ? k : '';
+      final i = key.indexOf('|0x');
+      final target = i < 0 ? key : key.substring(0, i);
+      final subtype = i < 0 ? '' : key.substring(i + 3);
+      final v = m['v'];
+      final value = v is num ? v.toDouble() : null;
+      if (value != null && (value.isNaN || value.isInfinite)) return null;
+      return (
+        at: DateTime.fromMillisecondsSinceEpoch(ms),
+        name: name,
+        targetKey: target,
+        subtype: subtype,
+        value: value,
+      );
+    } catch (_) {
+      return null;
     }
   }
 
