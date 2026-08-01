@@ -680,7 +680,12 @@ class BydNativePlugin : FlutterPlugin, ActivityAware, MethodChannel.MethodCallHa
         // so run off the main thread; marshal status back via result.
         Thread {
             try {
-                val status = HalStreamOwner.attachFlutter(ctx, sink, platformOverrideId)
+                // v0.1.86+185: адаптер под Flutter строит ТОТ, КТО ЗНАЕТ
+                // ПРО FLUTTER. Владелец потока принимает готовый `HalOut`
+                // и о EventChannel больше не слышал — пакет `hal` теперь
+                // собирается без Flutter вовсе.
+                val status = HalStreamOwner.attachFlutter(
+                    ctx, FlutterHalOut(sink), platformOverrideId)
                 BydLogger.i(
                     TAG,
                     "HAL stream attached to Flutter: $status " +
@@ -714,7 +719,15 @@ class BydNativePlugin : FlutterPlugin, ActivityAware, MethodChannel.MethodCallHa
      * поэтому там поведение бит-в-бит прежнее.
      */
     private fun stopHalStream() {
-        HalStreamOwner.detachFlutter(appContext)
+        // v0.1.86+185: РЕШЕНИЕ ПРИНИМАЕТСЯ ЗДЕСЬ, а не внутри владельца
+        // потока. `AutostartPrefs` живёт в этом же пакете, и читать его
+        // отсюда естественно; владельцу достаётся голое «продолжать или
+        // нет». На телефоне `AutostartArm` за гейтом `canUseHal` флаг не
+        // ставит никогда, поэтому там `false` и поведение бит-в-бит
+        // прежнее.
+        val keepCollecting = AutostartPrefs.isArmed(appContext) &&
+            !AutostartPrefs.optedOut(appContext)
+        HalStreamOwner.detachFlutter(keepCollecting, appContext)
     }
 
     /**

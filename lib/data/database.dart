@@ -88,6 +88,16 @@ class Trips extends Table {
   // power×time integration. Useful as a sanity check on the integrator.
   RealColumn get energyFromSocKwh => real().nullable()();
 
+  /// v0.1.86+185: ПРОИСХОЖДЕНИЕ ПОЕЗДКИ. Пусто — поездка построена живым
+  /// путём из OBD2, как все поездки до этого патча; правило честности
+  /// («агрегаты поездки чисто OBD2») для таких строк соблюдено буквально.
+  /// 'hal_bg' — поездка собрана постфактум из фонового журнала HAL, когда
+  /// приложение было закрыто. Колонка добавлена, а не переиспользована
+  /// под `notes`, именно чтобы HAL-поездка нигде не притворялась
+  /// донглом: прецедент — `soh_estimates.source`, где HAL так же
+  /// подписывается открыто.
+  TextColumn get source => text().nullable()();
+
   // v0.1.29+37: JSON blob for compact derived aggregates that should
   // survive a DB wipe / reinstall via cloud backup (samples are NOT
   // uploaded — server rejects them 403 samples_disabled — so anything
@@ -556,7 +566,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase.forTesting(QueryExecutor e) : super(e);
 
   @override
-  int get schemaVersion => 17;
+  int get schemaVersion => 18;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -708,6 +718,13 @@ class AppDatabase extends _$AppDatabase {
           if (from < 17) {
             await _createTableIfAbsent(m, atlasSnapshots);
             await _createTableIfAbsent(m, atlasReveals);
+          }
+          // v17 → v18 (v0.1.86+185): trips.source — происхождение поездки.
+          // Строго аддитивно и nullable: у всех существующих строк остаётся
+          // null, что и означает «OBD2, живой путь». Ни одна старая
+          // поездка не переписывается и не перечитывается.
+          if (from < 18) {
+            await _addColumnIfAbsent(m, trips, trips.source);
           }
           debugPrint('DB migrate: $from → $to complete');
         },
@@ -1663,6 +1680,184 @@ class AppDatabase extends _$AppDatabase {
       ..orderBy([(s) => OrderingTerm(expression: s.timestamp)]);
     if (limit != null) q.limit(limit);
     return q.get();
+  }
+
+  /// v0.1.86+185 — ФОНОВЫЙ СТРОИТЕЛЬ ПОЕЗДОК, три запроса.
+  ///
+  /// Строки журнала HAL, ещё не приписанные ни к одной поездке. Только
+  /// `source='hal'`: сырые кадры (`bigdata`) имени не несут и решению о
+  /// движении помочь не могут, а объём дают вчетверо.
+  /// v0.1.86+185: ПОТОЛОК ОБЯЗАТЕЛЕН. В первой редакции выборка была без предела и
+  /// материализовала в память всё, что накопилось с прошлого запуска. На
+  /// поле это девять тысяч строк и незаметно; но интервал «с прошлого
+  /// открытия приложения» ничем не ограничен, а ГУ просыпается само, и
+  /// месяц без открытия даёт сотни тысяч объектов на устройстве, где
+  /// столько памяти нет. Остаток разбирается следующим проходом — он и
+  /// так идёт при каждом открытии.
+  Future<List<HalSample>> getUnassignedHalSamples({
+    DateTime? after,
+    int limit = 50000,
+  }) {
+    final q = select(halSamples)
+      ..where((s) => s.tripId.isNull() & s.source.equals('hal'))
+      ..orderBy([(s) => OrderingTerm.asc(s.timestamp)])
+      ..limit(limit);
+    if (after != null) {
+      q.where((s) => s.timestamp.isBiggerThanValue(after));
+    }
+    return q.get();
+  }
+
+  /// Приписать строки окна к поездке. ШТАМП ОБЯЗАТЕЛЕН И ДЕЛАЕТ ДВА ДЕЛА
+  /// СРАЗУ: он же защита от повторной сборки (приписанная строка больше не
+  /// попадёт в [getUnassignedHalSamples]), он же вход для генератора
+  /// `trip_series` — тот уже умеет падать на `hal_samples` по `trip_id`,
+  /// поэтому графики у фоновой поездки появляются без единой новой строки
+  /// в облачном сервисе.
+  ///
+  /// Окно берётся по времени, а не по списку идентификаторов: сырые кадры
+  /// внутри поездки тоже должны получить штамп, иначе они останутся
+  /// висеть без владельца и переживут вайп поездки бесхозными.
+  Future<int> assignHalSamplesToTrip({
+    required int tripId,
+    required DateTime from,
+    required DateTime to,
+  }) {
+    return (update(halSamples)
+          ..where((s) =>
+              s.tripId.isNull() &
+              s.timestamp.isBiggerOrEqualValue(from) &
+              s.timestamp.isSmallerOrEqualValue(to)))
+        .write(HalSamplesCompanion(tripId: Value(tripId)));
+  }
+
+  /// v0.1.86+185 — ВСТАВКА ПОЕЗДКИ И ШТАМП ЕЁ СТРОК, ОДНОЙ ТРАНЗАКЦИЕЙ.
+  ///
+  /// В первой редакции этого патча это были два отдельных `await`, и между ними зияла дыра.
+  /// Умри процесс в этот миг или брось второй вызов исключение — поездка
+  /// записана, строки не приписаны, и при следующем открытии ТА ЖЕ
+  /// поездка строится заново, с новым `client_uuid`, и уезжает в облако
+  /// дублем. Клиентом такое уже не чинится.
+  ///
+  /// Окно было в миллисекунды, и соблазн назвать его невероятным велик.
+  /// Но выключение зажигания — это штатный способ завершения процесса на
+  /// этом ГУ, а не авария; и куда вероятнее смерти процесса второй путь в
+  /// ту же дыру — исключение на штампе, которое внешний `try/catch`
+  /// проглотит и вернёт результат, будто всё хорошо.
+  ///
+  /// Оба действия обязаны быть атомарны, и метод здесь именно один, а не
+  /// два рядом: разделить их снова означало бы вернуть дефект.
+  Future<int> insertTripWithStampedSamples({
+    required DateTime windowFrom,
+    required DateTime windowTo,
+    required DateTime startedAt,
+    required DateTime endedAt,
+    required String source,
+    double? startSoc,
+    double? endSoc,
+    double? startOdo,
+    double? endOdo,
+    int sampleCount = 0,
+    double? distanceKm,
+    double? energyUsedKwh,
+    double? avgConsumptionKwh100km,
+    double? minBatteryTempC,
+    double? maxBatteryTempC,
+    double? maxCellSpreadMv,
+    double? minSoc,
+    double? maxSoc,
+    double? peakSpeedKmh,
+    double? avgMovingSpeedKmh,
+    int? movingSeconds,
+    int? idleSeconds,
+    double? energyFromSocKwh,
+  }) {
+    return transaction(() async {
+      final tripId = await insertCompletedTrip(
+        startedAt: startedAt,
+        endedAt: endedAt,
+        source: source,
+        startSoc: startSoc,
+        endSoc: endSoc,
+        startOdo: startOdo,
+        endOdo: endOdo,
+        sampleCount: sampleCount,
+        distanceKm: distanceKm,
+        energyUsedKwh: energyUsedKwh,
+        avgConsumptionKwh100km: avgConsumptionKwh100km,
+        minBatteryTempC: minBatteryTempC,
+        maxBatteryTempC: maxBatteryTempC,
+        maxCellSpreadMv: maxCellSpreadMv,
+        minSoc: minSoc,
+        maxSoc: maxSoc,
+        peakSpeedKmh: peakSpeedKmh,
+        avgMovingSpeedKmh: avgMovingSpeedKmh,
+        movingSeconds: movingSeconds,
+        idleSeconds: idleSeconds,
+        energyFromSocKwh: energyFromSocKwh,
+      );
+      await assignHalSamplesToTrip(
+          tripId: tripId, from: windowFrom, to: windowTo);
+      return tripId;
+    });
+  }
+
+  /// Вставить готовую поездку одной строкой. НЕ `startTrip` + `endTrip`:
+  /// те ставят `DateTime.now()` в начало, а у фоновой поездки время своё,
+  /// из строк журнала, и оно на час старше момента сборки.
+  ///
+  /// ЗВАТЬ НАПРЯМУЮ НЕЛЬЗЯ — только через
+  /// [insertTripWithStampedSamples], которая держит транзакцию. Поездка
+  /// без штампа своих строк есть заготовка дубля; см. там же.
+  Future<int> insertCompletedTrip({
+    required DateTime startedAt,
+    required DateTime endedAt,
+    required String source,
+    double? startSoc,
+    double? endSoc,
+    double? startOdo,
+    double? endOdo,
+    int sampleCount = 0,
+    double? distanceKm,
+    double? energyUsedKwh,
+    double? avgConsumptionKwh100km,
+    double? minBatteryTempC,
+    double? maxBatteryTempC,
+    double? maxCellSpreadMv,
+    double? minSoc,
+    double? maxSoc,
+    double? peakSpeedKmh,
+    double? avgMovingSpeedKmh,
+    int? movingSeconds,
+    int? idleSeconds,
+    double? energyFromSocKwh,
+  }) {
+    return into(trips).insert(TripsCompanion(
+      startedAt: Value(startedAt),
+      endedAt: Value(endedAt),
+      source: Value(source),
+      startSoc: Value(startSoc),
+      endSoc: Value(endSoc),
+      startOdometer: Value(startOdo),
+      endOdometer: Value(endOdo),
+      sampleCount: Value(sampleCount),
+      distanceKm: Value(distanceKm),
+      energyUsedKwh: Value(energyUsedKwh),
+      avgConsumptionKwh100km: Value(avgConsumptionKwh100km),
+      minBatteryTempC: Value(minBatteryTempC),
+      maxBatteryTempC: Value(maxBatteryTempC),
+      maxCellSpreadMv: Value(maxCellSpreadMv),
+      minSoc: Value(minSoc),
+      maxSoc: Value(maxSoc),
+      peakSpeedKmh: Value(peakSpeedKmh),
+      avgMovingSpeedKmh: Value(avgMovingSpeedKmh),
+      movingSeconds: Value(movingSeconds),
+      idleSeconds: Value(idleSeconds),
+      energyFromSocKwh: Value(energyFromSocKwh),
+      // Облачная личность у фоновой поездки такая же, как у живой, —
+      // иначе она не уедет в синхронизацию.
+      clientUuid: Value(uuidV7()),
+    ));
   }
 
   Future<int> countAllHalSamples() async {

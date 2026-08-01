@@ -25,7 +25,6 @@ package com.bz5companion.bz5_companion.hal
 
 import android.content.Context
 import android.util.Log
-import io.flutter.plugin.common.EventChannel
 
 object HalStreamOwner {
 
@@ -199,10 +198,9 @@ object HalStreamOwner {
     @Synchronized
     fun attachFlutter(
         ctx: Context,
-        sink: EventChannel.EventSink,
+        out: HalOut,
         overrideId: String?,
     ): SubscriptionStatus {
-        val out = FlutterHalOut(sink)
         ensureEngine(ctx, overrideId, out)
         streamSink?.setOut(out)
         outTag = out.tag
@@ -210,19 +208,26 @@ object HalStreamOwner {
     }
 
     /**
-     * Flutter ушёл. Дальше два исхода, и различает их взвод автозапуска.
+     * Flutter ушёл. Дальше два исхода, и различает их ЗВОНЯЩИЙ.
      *
-     * Взведён — подписка ОСТАЁТСЯ и продолжает писать в журнал: сервис
-     * жив в этом же процессе, и именно для этого случая патч и написан.
-     * Не взведён (телефон — там `AutostartArm` за гейтом `canUseHal`
-     * флаг не ставит никогда) — подписка снимается целиком, поведение
+     * `keepCollecting = true` — подписка ОСТАЁТСЯ и продолжает писать в
+     * журнал: сервис жив в этом же процессе, и именно для этого случая
+     * всё написано. `false` — подписка снимается целиком, поведение
      * ровно прежнее.
+     *
+     * v0.1.86+185, ПЕРВЫЙ ПУНКТ АРХИТЕКТУРНОЙ РЕВИЗИИ. Раньше этот метод
+     * читал настройки сам и решал за звонящего, взведён автозапуск или
+     * нет. Политика («когда сбор должен продолжаться») протекла в
+     * механизм («как передать выход подписки»), и следствий было два, оба
+     * плохих: владелец потока стал зависеть от настроек автозапуска, а
+     * проверить передачу в отрыве от них стало нельзя. Теперь решение
+     * принимает плагин — он в корневом пакете, где `AutostartPrefs` и
+     * живёт, — а сюда приходит готовый ответ. Механизм делает, что
+     * сказано, и не спрашивает почему.
      */
     @Synchronized
-    fun detachFlutter(ctx: Context) {
-        val armed = AutostartPrefsBridge.isArmed(ctx) &&
-            !AutostartPrefsBridge.optedOut(ctx)
-        if (!armed || engine == null) {
+    fun detachFlutter(keepCollecting: Boolean, ctx: Context) {
+        if (!keepCollecting || engine == null) {
             stopAll()
             return
         }
@@ -279,16 +284,20 @@ object HalStreamOwner {
     }
 }
 
-/**
- * Тонкая переадресация к `AutostartPrefs`, который лежит в корневом
- * пакете. Нужна затем, чтобы пакет `hal` не импортировал корневой:
- * зависимость в эту сторону уже есть (плагин и сервис зовут `hal`), и
- * встречная сделала бы её круговой на уровне чтения, а не компилятора.
+/*
+ * v0.1.86+185, ВТОРОЙ ПУНКТ АРХИТЕКТУРНОЙ РЕВИЗИИ: здесь лежал
+ * `AutostartPrefsBridge`, и его больше нет.
+ *
+ * Его обоснование было ложным. Комментарий утверждал, что мост избавляет
+ * пакет `hal` от импорта корневого, — а тело звало
+ * `com.bz5companion.bz5_companion.AutostartPrefs` полным именем. Полное
+ * имя это тот же импорт, записанный иначе: зависимость никуда не делась,
+ * она стала невидимой для греппера и для читателя. Мост не убирал связь,
+ * он её прятал, и прятал именно от тех проверок, которые мы сами же и
+ * писали.
+ *
+ * Удалять его отдельным решением не пришлось: как только политика уехала
+ * к звонящему (см. `detachFlutter` выше), у моста не осталось ни одного
+ * вызова. Правильная развязка убивает подпорку сама — это и есть признак
+ * того, что развязка правильная.
  */
-private object AutostartPrefsBridge {
-    fun isArmed(ctx: Context): Boolean =
-        com.bz5companion.bz5_companion.AutostartPrefs.isArmed(ctx)
-
-    fun optedOut(ctx: Context): Boolean =
-        com.bz5companion.bz5_companion.AutostartPrefs.optedOut(ctx)
-}

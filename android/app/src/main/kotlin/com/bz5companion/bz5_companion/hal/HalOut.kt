@@ -16,7 +16,6 @@ package com.bz5companion.bz5_companion.hal
 
 import android.content.Context
 import android.util.Log
-import io.flutter.plugin.common.EventChannel
 import java.io.File
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ConcurrentHashMap
@@ -44,41 +43,6 @@ interface HalOut {
 
     /** Имя для маркера и журнала: «flutter» или «journal». */
     val tag: String
-}
-
-/**
- * Прежнее поведение, слово в слово: пакет уходит в EventChannel.
- *
- * `success` обязан зваться с главного потока, и он там и зовётся —
- * DecodedStreamSink сливает очередь через `mainHandler.post`. Класс
- * существует только затем, чтобы EventChannel перестал быть ЕДИНСТВЕННЫМ
- * мыслимым выходом расшифровки.
- */
-class FlutterHalOut(private val sink: EventChannel.EventSink) : HalOut {
-    /**
-     * Отправить пакет, проглотив отказ мёртвого EventSink.
-     *
-     * До +181 здесь стоял голый `sink.success(batch)` в `drain()`, и это
-     * была незамеченная гонка: между разрушением движка Flutter и сменой
-     * адресата проходят миллисекунды, а колбэки binder идут все эти
-     * миллисекунды. Исключение с ГЛАВНОГО лупера — это не потерянное
-     * событие, а падение приложения. Раньше окно было короче (адресат
-     * снимался тем же вызовом, что рушил Flutter); теперь смену делает
-     * владелец, поэтому окно стало шире, и охрана обязательна.
-     */
-    override fun emit(batch: List<Map<String, Any?>>) {
-        try {
-            sink.success(batch)
-        } catch (t: Throwable) {
-            Log.w("FlutterHalOut", "dead sink: ${t.javaClass.simpleName}")
-        }
-    }
-
-    override fun close() {
-        // Жизненным циклом EventSink владеет Flutter, не мы.
-    }
-
-    override val tag: String get() = "flutter"
 }
 
 /**
@@ -150,6 +114,66 @@ class JournalHalOut(private val ctx: Context) : HalOut {
          * что и живые, и разной плотностью различались бы в любом расчёте.
          */
         const val THROTTLE_MS: Long = 3_000L
+
+        /**
+         * v0.1.86+185 — ПОРОГ ПО ИМЕНИ, а не один на всех.
+         *
+         * Поле 01.08 показало, куда уходил бюджет журнала: за 45 минут
+         * `soh` дал 949 строк, а `soc_precise` — 94. Порог был общий, и
+         * сигнал, который не меняется за сессию, съедал вдесятеро больше
+         * места, чем тот, из которого считается расход. Журнал при этом
+         * упирался в потолок ровно теми строками, которые не нужны.
+         *
+         * Здесь только исключения; всё неперечисленное остаётся на
+         * `THROTTLE_MS`, то есть поведение по умолчанию прежнее.
+         *
+         * СЕКУНДА — тем, из чего строится поездка и расход. Плотнее
+         * секунды смысла нет: втянутые строки хранятся с точностью до
+         * секунды (`hal_samples.timestamp` — unix-секунды), и два кадра в
+         * одну секунду в базе неразличимы.
+         *
+         * МИНУТА — тем, что за поездку меняется на единицы или не
+         * меняется вовсе. `odometer` в минуту на скорости 115 км/ч это
+         * шаг под два километра, и для дистанции этого мало — поэтому он
+         * НЕ здесь, а в `MEDIUM` ниже.
+         */
+        val THROTTLE_FAST_MS: Map<String, Long> = mapOf(
+            "pack_current" to 1_000L,
+            "speed" to 1_000L,
+            "soc_precise" to 1_000L,
+            "motor_power" to 1_000L,
+        )
+
+        /** Десять секунд: меняется медленно, но участвует в расчёте. */
+        val THROTTLE_MEDIUM_MS: Map<String, Long> = mapOf(
+            "odometer" to 10_000L,
+            "pack_voltage" to 10_000L,
+            "cell_v_lowest" to 10_000L,
+            "cell_v_highest" to 10_000L,
+            "battery_temp_bigdata" to 10_000L,
+        )
+
+        /** Минута: за поездку не меняется или меняется на единицы. */
+        val THROTTLE_SLOW_MS: Map<String, Long> = mapOf(
+            "soh" to 60_000L,
+            "trip_a" to 60_000L,
+            "trip_b" to 60_000L,
+            "cell_idx_lowest" to 60_000L,
+            "cell_idx_highest" to 60_000L,
+            "insulation_resistance" to 60_000L,
+            "avg_consumption_50km" to 60_000L,
+        )
+
+        /**
+         * Порог для имени. Три карты, а не одна, только ради читаемости
+         * намерения — склеены они здесь, и склеены ОДИН РАЗ на класс, а
+         * не на кадр: `emit` зовётся десятки раз в секунду.
+         */
+        val THROTTLE_BY_NAME: Map<String, Long> =
+            THROTTLE_FAST_MS + THROTTLE_MEDIUM_MS + THROTTLE_SLOW_MS
+
+        fun throttleFor(name: String): Long =
+            THROTTLE_BY_NAME[name] ?: THROTTLE_MS
 
         /**
          * Граница очереди записи. Прежняя редакция брала
@@ -261,7 +285,7 @@ class JournalHalOut(private val ctx: Context) : HalOut {
             }
             val ts = (e["ts"] as? Number)?.toLong() ?: continue
             val prev = lastPerName[name]
-            if (prev != null && ts - prev < THROTTLE_MS) {
+            if (prev != null && ts - prev < throttleFor(name)) {
                 dropped.incrementAndGet()
                 continue
             }

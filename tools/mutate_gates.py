@@ -85,6 +85,11 @@ NP = KT + 'BydNativePlugin.kt'
 DB = 'lib/data/database.dart'
 HT = 'lib/services/hal_telemetry_service.dart'
 BJ = 'lib/services/hal_bg_journal.dart'
+TAG = 'lib/services/trip_aggregates.dart'
+BTB = 'lib/services/bg_trip_builder.dart'
+CONN = 'lib/services/connection.dart'
+FHO = ('android/app/src/main/kotlin/com/bz5companion/bz5_companion/'
+       'FlutterHalOut.kt')
 DBL = 'tools/dart_balance.py'
 
 # (гейт, файл, анкер, замена, что откатывает)
@@ -432,13 +437,16 @@ MUTATIONS = [
      '= null',
      'вернуть сник к EventChannel — второй адресат потребовал бы второй '
      'копии извлечений из BigData'),
+    # v0.1.86+185: анкер переписан под новую подпись `attachFlutter` —
+    # плагин передаёт готовый `FlutterHalOut`, а не голый EventSink.
+    # Предмет мутации прежний: плагин не смеет строить движок сам.
     ('BP2', NP,
-     '                val status = HalStreamOwner.attachFlutter('
-     'ctx, sink, platformOverrideId)',
+     '                val status = HalStreamOwner.attachFlutter(\n'
+     '                    ctx, FlutterHalOut(sink), platformOverrideId)',
      '                val streamSink = DecodedStreamSink(sink)\n'
      '                val halEngine = 1\n'
-     '                val status = HalStreamOwner.attachFlutter('
-     'ctx, sink, platformOverrideId)',
+     '                val status = HalStreamOwner.attachFlutter(\n'
+     '                    ctx, FlutterHalOut(sink), platformOverrideId)',
      'дать плагину строить свой движок — двойная подписка, которую патч '
      'и снимает'),
     ('BP3', HW,
@@ -554,6 +562,73 @@ MUTATIONS = [
      "            fails.append(f'{f.name}:{name}')",
      '            pass',
      'печатать нерезолвящийся приватный вызов, но не краснеть от него'),
+
+    # ─── эра BS (+185) «Поездка из фоновых строк» ────────────────────
+    ('BS1', TAG,
+     'TripDerived computeTripDerived({',
+     "import '../data/database.dart';\n\nTripDerived computeTripDerived({",
+     'втащить базу в чистый расчёт — зеркалом его больше не проверить'),
+    ('BS2', CONN,
+     '      final avgConsumption = derived.avgConsumptionKwh100km;',
+     '      final avgConsumption = (energyUsedKwh != null && '
+     'distanceKm != null)\n          ? (energyUsedKwh / distanceKm) * 100.0'
+     '\n          : null;',
+     'вернуть вторую копию формулы расхода в живой путь'),
+    ('BS3', BTB,
+     '    final derived = computeTripDerived(',
+     '    final derived = _ownMaths(',
+     'дать фоновому пути считать поездку по-своему'),
+    ('BS4', BTB,
+     "import '../data/database.dart';",
+     "import '../data/database.dart';\nimport 'hal_telemetry_service.dart';",
+     'дать строителю увидеть HAL-сервис — граница AA2 пробита'),
+    ('BS5', BTB,
+     '    await db.insertTripWithStampedSamples(',
+     '    await db.insertCompletedTrip(',
+     'не штамповать строки — поездки пересобираются при каждом открытии'),
+    ('BS6', DB,
+     '            await _addColumnIfAbsent(m, trips, trips.source);',
+     '            await m.deleteTable(\'trips\');',
+     'переписать таблицу поездок вместо аддитивной колонки'),
+    ('BS7', FHO,
+     'class FlutterHalOut(private val sink: EventChannel.EventSink) : HalOut {',
+     'class FlutterHalOutMoved(private val sink: EventChannel.EventSink) : '
+     'HalOut {',
+     'убрать адаптер из корневого пакета — граница пакета снова не мерится'),
+    ('BS8', HW,
+     '    fun detachFlutter(keepCollecting: Boolean, ctx: Context) {',
+     '    fun detachFlutter(keepCollecting: Boolean, ctx: Context) {\n'
+     '        val keep = AutostartPrefs.isArmed(ctx) && '
+     '!AutostartPrefs.optedOut(ctx)',
+     'вернуть чтение настроек внутрь механизма'),
+    ('BS9', HO,
+     '            if (prev != null && ts - prev < throttleFor(name)) {',
+     '            if (prev != null && ts - prev < THROTTLE_MS) {',
+     'вернуть общий порог — таблица есть, но её никто не спрашивает'),
+    ('BS10', BTB,
+     '      source: kSourceHalBg,',
+     '      source: null,',
+     'выпустить фоновую поездку без подписи — она сойдёт за донгловую'),
+    ('BS12', DB,
+     '    return transaction(() async {',
+     '    return Future.sync(() async {',
+     'снять транзакцию со вставки и штампа — дубль поездки в облаке'),
+    ('BS13', BTB,
+     '            truncated && i == clusters.length - 1 && i > 0;',
+     '            truncated && i == clusters.length - 1;',
+     'откладывать и единственный обрезанный кластер — знак не сдвинется '
+     'никогда'),
+    ('BS14', BTB,
+     '        rows.removeWhere((r) => r.timestamp.isAfter(at));',
+     '        return const BgTripBuildResult('
+     'scanned: 0, built: 0, discarded: 0);',
+     'выходить из сборки от одной строки впереди часов — навсегда'),
+    ('BS11', BTB,
+     '    const maxGapSec = 15;',
+     '    const unusedGapSec = 15;\n    final movingShortcut = '
+     'speedSamples * 3;',
+     'вернуть умножение на шаг прореживания — §2 сделает время в движении '
+     'втрое больше'),
 ]
 
 FOOTER = 'PASS '

@@ -8,6 +8,7 @@ import '../ble/elm327_ble.dart';
 import '../ble/elm327_client.dart';
 import '../data/ecu_registry.dart';
 import '../data/database.dart';
+import 'trip_aggregates.dart';
 
 enum ConnectionStatus { disconnected, scanning, connecting, connected, error }
 enum PollMode { driving, charging, full }
@@ -1502,32 +1503,26 @@ class ConnectionService extends ChangeNotifier {
     endSoc ??= await db.lastNumericSampleForTrip(tripId, '790', '0005');
     endOdo ??= await db.lastNumericSampleForTrip(tripId, '791', '0026');
 
-    double? distanceKm;
-    if (_tripStartOdo != null && endOdo != null && endOdo > _tripStartOdo!) {
-      distanceKm = endOdo - _tripStartOdo!;
-    }
-    double? energyUsedKwh;
-    if (_tripStartSoc != null && endSoc != null && _tripStartSoc! > endSoc) {
-      energyUsedKwh = (_tripStartSoc! - endSoc) * Bz5Model.batteryCapacityKwh / 100.0;
-    }
-    double? avgConsumption;
-    if (distanceKm != null && energyUsedKwh != null && distanceKm > 0.1) {
-      avgConsumption = (energyUsedKwh / distanceKm) * 100.0;
-    }
-
-    double? avgMovingSpeed;
-    if (_tripSpeedSamples > 0) {
-      avgMovingSpeed = _tripSpeedSum / _tripSpeedSamples;
-    }
-
-    double? energyFromSoc;
-    final endSocPrecise = socPrecisePct;
-    if (_tripStartSocPrecise != null &&
-        endSocPrecise != null &&
-        _tripStartSocPrecise! > endSocPrecise) {
-      energyFromSoc = (_tripStartSocPrecise! - endSocPrecise) *
-          Bz5Model.batteryCapacityKwh / 100.0;
-    }
+    // v0.1.86+185: расчёт переехал в `trip_aggregates.dart`. Он был здесь
+    // и в пути чистого завершения ниже двумя посимвольно равными копиями;
+    // фоновый строитель стал бы третьей. Теперь одна функция и три
+    // звонящих — разойтись им негде.
+    final derived = computeTripDerived(
+      startOdoKm: _tripStartOdo,
+      endOdoKm: endOdo,
+      startSocPct: _tripStartSoc,
+      endSocPct: endSoc,
+      startSocPrecisePct: _tripStartSocPrecise,
+      endSocPrecisePct: socPrecisePct,
+      speedSum: _tripSpeedSum,
+      speedSamples: _tripSpeedSamples,
+      batteryCapacityKwh: Bz5Model.batteryCapacityKwh,
+    );
+    final distanceKm = derived.distanceKm;
+    final energyUsedKwh = derived.energyUsedKwh;
+    final avgConsumption = derived.avgConsumptionKwh100km;
+    final avgMovingSpeed = derived.avgMovingSpeedKmh;
+    final energyFromSoc = derived.energyFromSocKwh;
 
     try {
       // v0.1.29+37: freeze the speed-distribution histogram onto the trip
@@ -1724,39 +1719,26 @@ class ConnectionService extends ChangeNotifier {
       final endOdo = _latestValues['791']?['0026']?.numeric ??
           await db.lastNumericSampleForTrip(_currentTripId!, '791', '0026');
 
-      // v0.1.9: compute final derived metrics from rolling state.
-      double? distanceKm;
-      if (_tripStartOdo != null && endOdo != null && endOdo > _tripStartOdo!) {
-        distanceKm = endOdo - _tripStartOdo!;
-      }
-      double? energyUsedKwh;
-      if (_tripStartSoc != null && endSoc != null && _tripStartSoc! > endSoc) {
-        energyUsedKwh = (_tripStartSoc! - endSoc) * Bz5Model.batteryCapacityKwh / 100.0;
-      }
-      double? avgConsumption;
-      if (distanceKm != null && energyUsedKwh != null && distanceKm > 0.1) {
-        avgConsumption = (energyUsedKwh / distanceKm) * 100.0;
-      }
-
-      // v0.1.21: speed-based aggregates.
-      double? avgMovingSpeed;
-      if (_tripSpeedSamples > 0) {
-        avgMovingSpeed = _tripSpeedSum / _tripSpeedSamples;
-      }
-
-      // v0.1.21: precise SOC-derived energy (cross-check against
-      // power-integrator energyUsedKwh). Uses high-precision 1FFD
-      // start vs end values to compute Δ%, then ×capacity.
-      double? energyFromSoc;
-      final endSocPrecise = socPrecisePct;
-      if (_tripStartSocPrecise != null &&
-          endSocPrecise != null &&
-          _tripStartSocPrecise! > endSocPrecise) {
-        energyFromSoc =
-            (_tripStartSocPrecise! - endSocPrecise) *
-                Bz5Model.batteryCapacityKwh /
-                100.0;
-      }
+      // v0.1.86+185: тот же `computeTripDerived`, что и на пути разрыва
+      // связи выше. Две копии этого расчёта прожили в файле с v0.1.9 и
+      // v0.1.21 соответственно; совпадали они по дисциплине, а не по
+      // устройству.
+      final derived = computeTripDerived(
+        startOdoKm: _tripStartOdo,
+        endOdoKm: endOdo,
+        startSocPct: _tripStartSoc,
+        endSocPct: endSoc,
+        startSocPrecisePct: _tripStartSocPrecise,
+        endSocPrecisePct: socPrecisePct,
+        speedSum: _tripSpeedSum,
+        speedSamples: _tripSpeedSamples,
+        batteryCapacityKwh: Bz5Model.batteryCapacityKwh,
+      );
+      final distanceKm = derived.distanceKm;
+      final energyUsedKwh = derived.energyUsedKwh;
+      final avgConsumption = derived.avgConsumptionKwh100km;
+      final avgMovingSpeed = derived.avgMovingSpeedKmh;
+      final energyFromSoc = derived.energyFromSocKwh;
 
       // v0.1.29+37: freeze speed-distribution histogram (see disconnect
       // path for rationale). Best-effort; never blocks finalization.

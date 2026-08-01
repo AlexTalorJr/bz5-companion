@@ -389,7 +389,7 @@ if int(pv) >= 37:
     # table (+104), from<12 soh_estimates.source (+105, splits UDS
     # id=1 / HAL id=2), from<13 trips.last_alive_ts (+106), from<14
     # client_uuid x5 (+117).
-    _d1_expected = 17 if int(pv) >= 158 else (16 if int(pv) >= 140 else (15 if int(pv) >= 130 else 14))  # +158: atlas (v17); +140: trip_series (v16)
+    _d1_expected = 18 if int(pv) >= 185 else (17 if int(pv) >= 158 else (16 if int(pv) >= 140 else (15 if int(pv) >= 130 else 14)))  # +185: trips.source (v18); +158: atlas (v17); +140: trip_series (v16)
     if f"int get schemaVersion => {_d1_expected};" in db_src:
         ok(f"D1 schemaVersion = {_d1_expected} (per-era)")
     else:
@@ -3886,7 +3886,7 @@ if int(pv) >= 140:
     _hw2 = (root / 'lib/screens/wide/history_wide.dart').read_text()
     # AM1: schema (16, or 17 from +158 — atlas era) + additive
     # migration + table registered.
-    _am1_ver = 17 if int(pv) >= 158 else 16
+    _am1_ver = 18 if int(pv) >= 185 else (17 if int(pv) >= 158 else 16)
     if f'int get schemaVersion => {_am1_ver};' in _db2 and \
        '_createTableIfAbsent(m, tripSeries)' in _db2 and \
        "@DataClassName('TripSeriesRow')" in _db2:
@@ -4904,8 +4904,13 @@ if int(pv) >= 151:
         else:
             fail('AX1 kBandHalfWidthKmh != 2 or dwell knob also turned')
         # AX2: schema v17 — both atlas tables behind idempotent guards.
-        if 'int get schemaVersion => 17;' in dbs and \
-           'if (from < 17) {' in dbs and \
+        # v0.1.86+185: пин номера схемы отсюда УБРАН. Предмет AX2 — таблицы
+        # атласа и идемпотентная миграция под них, а не то, какая версия
+        # схемы в дереве сегодня; номер принадлежит D1 и живёт там одной
+        # лестницей эр. Прибитый к 17 гвоздь превратил AX2 в блокировщик
+        # любой следующей миграции — ровно тот класс переспецифицированного
+        # гейта, который мы уже ловили: пиновать надо инвариант, а не счёт.
+        if 'if (from < 17) {' in dbs and \
            '_createTableIfAbsent(m, atlasSnapshots);' in dbs and \
            '_createTableIfAbsent(m, atlasReveals);' in dbs and \
            'class AtlasSnapshots extends Table' in dbs and \
@@ -8066,13 +8071,21 @@ if int(pv) >= 182:
     # из BigData (soc_precise, SOH, температура) развелась бы с оригиналом
     # молча — это самая чувствительная логика в проекте. Признак того, что
     # копии нет: сник не знает про EventChannel вовсе, выход за интерфейсом.
+    # v0.1.86+185: `class FlutterHalOut` ищется ТАМ, ГДЕ ОН ТЕПЕРЬ ЛЕЖИТ.
+    # До этого патча он жил в `hal/HalOut.kt` и тянул в пакет `io.flutter`; это
+    # и был третий пункт архитектурной ревизии — гейт мерил границу файла,
+    # а называл её границей расшифровки. Сама проверка не ослаблена: шов
+    # `HalOut` обязан существовать и иметь оба выхода, просто адаптер под
+    # Flutter считается по своему адресу. Границу ПАКЕТА мерит BS7.
+    _bp1_fho = _bp_out if int(pv) < 185 else _strip_comments_safe(
+        (root / (_bp_kt + 'FlutterHalOut.kt')).read_text())
     _bp1 = ('EventChannel' not in _bp_sink and
             'out: HalOut' in _bp_sink and
             'private var sink: HalOut?' in _bp_sink and
             'fun setOut(next: HalOut)' in _bp_sink and
             's.emit(batch)' in _bp_sink and
             'interface HalOut' in _bp_out and
-            'class FlutterHalOut' in _bp_out and
+            'class FlutterHalOut(' in _bp1_fho and
             'class JournalHalOut' in _bp_out)
     if _bp1:
         ok('BP1 decoding exists once: the sink knows nothing about '
@@ -8592,6 +8605,241 @@ if int(pv) >= 183:
              'private method; only CI would, one drive too late')
 else:
     ok(f"Part BR skipped (build +{pv}, the journal parser lands in +183)")
+
+# ═════ Part BS — v0.1.86+185 «Поездка из фоновых строк» ═════
+#
+# Патч делает три вещи, и каждая ломается молча. Поездка, посчитанная по
+# второй копии формулы, выглядит правдоподобно и врёт. Строитель, забывший
+# штамп, при каждом открытии строит те же поездки заново. Пакет, снова
+# потянувший Flutter, собирается — и разваливается только тогда, когда
+# журнал понадобится без Flutter, то есть в поездке.
+#
+# Область у гейтов — тело метода или конкретное выражение, никогда файл
+# целиком (урок семьи BF5: лечение всегда сужение, не расширение анкера).
+if int(pv) >= 185:
+    _bs_agg_raw = (root / 'lib/services/trip_aggregates.dart').read_text()
+    _bs_agg = _strip_comments_safe(_bs_agg_raw)
+    _bs_bld = _strip_comments_safe(
+        (root / 'lib/services/bg_trip_builder.dart').read_text())
+    _bs_conn = _strip_comments_safe(
+        (root / 'lib/services/connection.dart').read_text())
+    _bs_db = _strip_comments_safe(
+        (root / 'lib/data/database.dart').read_text())
+    _bs_kt = 'android/app/src/main/kotlin/com/bz5companion/bz5_companion/'
+    _bs_own = _strip_comments_safe(
+        (root / (_bs_kt + 'hal/HalStreamOwner.kt')).read_text())
+    _bs_out = _strip_comments_safe(
+        (root / (_bs_kt + 'hal/HalOut.kt')).read_text())
+    _bs_plug = _strip_comments_safe(
+        (root / (_bs_kt + 'BydNativePlugin.kt')).read_text())
+    _bs_hal_dir = (root / (_bs_kt + 'hal'))
+
+    # BS1: РАСЧЁТ ЧИСТ. Ни одного импорта — ни Flutter, ни drift, ни базы.
+    # Грязный расчёт нельзя проверить зеркалом, а зеркало здесь и есть
+    # единственная проверка без машины.
+    _bs1 = ('import ' not in _bs_agg and
+            'TripDerived computeTripDerived(' in _bs_agg and
+            'required double batteryCapacityKwh' in _bs_agg)
+    if _bs1:
+        ok('BS1 the trip maths is a pure function — no imports, no clock, '
+           'no database, so a mirror can check it without the car')
+    else:
+        fail('BS1 the trip maths took a dependency — it can no longer be '
+             'verified off-vehicle')
+
+    # BS2: ОДНА ПРАВДА. Оба живых места зовут функцию, и НИ ОДНО не считает
+    # само. Признак старой копии — присваивание формулы расхода.
+    _bs2 = (_bs_conn.count('computeTripDerived(') == 2 and
+            '(energyUsedKwh / distanceKm) * 100.0' not in _bs_conn and
+            'derived.avgConsumptionKwh100km' in _bs_conn)
+    if _bs2:
+        ok('BS2 both live finalize paths call the one function — the two '
+           'character-identical copies are gone')
+    else:
+        fail('BS2 a second copy of the trip maths survives in '
+             'connection.dart — the copies will drift and nobody will see it')
+
+    # BS3: ФОНОВЫЙ ПУТЬ — ТРЕТИЙ ЗВОНЯЩИЙ, а не четвёртая копия.
+    _bs3 = ('computeTripDerived(' in _bs_bld and
+            '(energyUsedKwh / distanceKm) * 100.0' not in _bs_bld)
+    if _bs3:
+        ok('BS3 the background builder calls the same function as the live '
+           'paths — one definition of what a trip is')
+    else:
+        fail('BS3 the background builder computes its own aggregates — two '
+             'definitions of a trip in one database')
+
+    # BS4: ГРАНИЦА AA2. Строитель знает базу и не знает ни живой сервис,
+    # ни HAL-сервис. Ради этого он и отдельный файл.
+    _bs4 = ('HalTelemetryService' not in _bs_bld and
+            'connection.dart' not in _bs_bld and
+            'hal_telemetry_service' not in _bs_bld)
+    if _bs4:
+        ok('BS4 the builder depends on the database alone — AA2 holds from '
+           'both sides')
+    else:
+        fail('BS4 the background builder reached into a service — AA2 is '
+             'breached and the import cycle is back')
+
+    # BS5: ШТАМП СТОИТ, И СТОИТ ПОСЛЕ ВСТАВКИ. Без него поездки строятся
+    # заново при каждом открытии, а `trip_series` для фоновой поездки не
+    # соберётся никогда — генератор ищет строки именно по `trip_id`.
+    _bs5_body = ''
+    if 'Future<bool> _buildOne(' in _bs_bld:
+        _bs5_body = _bs_bld.split('Future<bool> _buildOne(')[1]
+    _bs5 = (_bs5_body != '' and
+            'insertTripWithStampedSamples(' in _bs5_body)
+    if _bs5:
+        ok('BS5 built rows are stamped with their trip id, after the insert '
+           '— no rebuild on the next launch, and the charts find their data')
+    else:
+        fail('BS5 ingested rows are left unstamped — every launch rebuilds '
+             'the same trips and the series generator sees nothing')
+
+    # BS6: МИГРАЦИЯ АДДИТИВНА. Колонка nullable и добавляется охраной; ни
+    # одна существующая поездка не переписывается.
+    _bs6 = ('int get schemaVersion => 18;' in _bs_db and
+            'if (from < 18) {' in _bs_db and
+            '_addColumnIfAbsent(m, trips, trips.source);' in _bs_db and
+            'TextColumn get source => text().nullable()();' in _bs_db)
+    if _bs6:
+        ok('BS6 schema 18 adds trips.source additively — null still means '
+           'the OBD2 live path, and no old row is touched')
+    else:
+        fail('BS6 the trips.source migration is missing or not additive')
+
+    # BS7: ГРАНИЦА ПАКЕТА, А НЕ ФАЙЛА. Третий пункт архитектурной ревизии:
+    # BP1 мерил один файл и называл это развязкой расшифровки, пока
+    # `FlutterHalOut` лежал в `hal` и тянул туда Flutter. Здесь грепается
+    # ВЕСЬ каталог, по коду без комментариев.
+    _bs7_bad = []
+    for _f in sorted(_bs_hal_dir.glob('*.kt')):
+        _src = _strip_comments_safe(_f.read_text())
+        if 'io.flutter' in _src or 'AutostartPrefs' in _src:
+            _bs7_bad.append(_f.name)
+    _bs7 = (not _bs7_bad and
+            'class FlutterHalOut(' in _strip_comments_safe(
+                (root / (_bs_kt + 'FlutterHalOut.kt')).read_text()))
+    if _bs7:
+        ok('BS7 the hal package names neither Flutter nor the root prefs in '
+           'any file — the boundary is now where the gate measures it')
+    else:
+        fail('BS7 the hal package depends upward again: '
+             + (', '.join(_bs7_bad) or 'FlutterHalOut.kt is missing'))
+
+    # BS8: ПОЛИТИКА У ЗВОНЯЩЕГО. Механизм принимает решение параметром и
+    # настроек не читает; читает их плагин, в чьём пакете они и лежат.
+    _bs8_body = ''
+    if 'fun detachFlutter(' in _bs_own:
+        _bs8_body = _bs_own.split('fun detachFlutter(')[1].split('fun ')[0]
+    _bs8 = (_bs8_body != '' and
+            'keepCollecting: Boolean' in _bs_own and
+            'isArmed' not in _bs8_body and
+            'optedOut' not in _bs8_body and
+            'AutostartPrefs.isArmed(appContext)' in _bs_plug)
+    if _bs8:
+        ok('BS8 detachFlutter is told whether to keep collecting — the '
+           'policy read moved to the package that owns the setting')
+    else:
+        fail('BS8 the stream owner reads autostart settings again — policy '
+             'is back inside the mechanism')
+
+    # BS9: ПОРОГ БЕРЁТСЯ ПО ИМЕНИ, а общий остаётся значением по умолчанию.
+    # Проверяется ВЫРАЖЕНИЕ в цикле, а не наличие карты: карта, которую
+    # никто не спрашивает, — это комментарий.
+    _bs9 = ('ts - prev < throttleFor(name)' in _bs_out and
+            'THROTTLE_BY_NAME[name] ?: THROTTLE_MS' in _bs_out and
+            '"soh" to 60_000L' in _bs_out and
+            '"pack_current" to 1_000L' in _bs_out)
+    if _bs9:
+        ok('BS9 the journal throttles per signal name — soh no longer '
+           'outspends pack_current ten to one')
+    else:
+        fail('BS9 the per-name throttle is absent or unused; the journal '
+             'budget goes back to the signals that never change')
+
+    # BS10: ПРОИСХОЖДЕНИЕ ПРОСТАВЛЯЕТСЯ. Правило честности требует, чтобы
+    # HAL-поездка не притворялась донглом; молчаливая колонка этого не даёт.
+    _bs10 = ("const String kSourceHalBg = 'hal_bg';" in _bs_bld and
+             'source: kSourceHalBg,' in _bs_bld and
+             'source: Value(source),' in _bs_db)
+    if _bs10:
+        ok('BS10 a background trip signs itself hal_bg — it cannot pass for '
+           'a dongle-recorded one')
+    else:
+        fail('BS10 background trips land unmarked and mix with OBD2 trips')
+    # BS12: ВСТАВКА И ШТАМП АТОМАРНЫ. Врозь они оставляли поездку без
+    # приписанных строк, и следующий запуск строил её ВТОРОЙ РАЗ, с новым
+    # `client_uuid`, и отправлял дубль в облако — необратимо. Выключение
+    # зажигания на этом ГУ штатно, а исключение на штампе ещё вероятнее:
+    # внешний `try/catch` проглотил бы его и отчитался успехом.
+    _bs12_tx = ''
+    if 'Future<int> insertTripWithStampedSamples(' in _bs_db:
+        _bs12_tx = _bs_db.split('Future<int> insertTripWithStampedSamples(')[1] \
+            .split('Future<int> insertCompletedTrip(')[0]
+    _bs12 = (_bs12_tx != '' and
+             'transaction(() async {' in _bs12_tx and
+             'insertCompletedTrip(' in _bs12_tx and
+             'assignHalSamplesToTrip(' in _bs12_tx and
+             'assignHalSamplesToTrip(' not in _bs_bld)
+    if _bs12:
+        ok('BS12 the trip row and its stamp land in one transaction — an '
+           'ignition-off between them can no longer mint a duplicate trip')
+    else:
+        fail('BS12 insert and stamp are separable again — a death or a '
+             'throw between them duplicates the trip into the cloud')
+
+    # BS13: ВЫБОРКА С ПОТОЛКОМ, И ОБРЕЗАННЫЙ ХВОСТ ОТКЛАДЫВАЕТСЯ. Без
+    # потолка проход материализует всё накопленное с прошлого открытия —
+    # интервал ничем не ограничен, а ГУ просыпается сам. Без второй
+    # половины потолок резал бы поездку пополам по произвольной строке.
+    _bs13 = ('int limit = 50000,' in _bs_db and
+             '..limit(limit)' in _bs_db and
+             'kScanLimit' in _bs_bld and
+             'final truncated = rows.length >= kScanLimit;' in _bs_bld and
+             'truncated && i == clusters.length - 1 && i > 0' in _bs_bld)
+    if _bs13:
+        ok('BS13 the scan is bounded, a truncated tail is deferred, and a '
+           'lone truncated cluster is still built — no silent standstill')
+    else:
+        fail('BS13 the scan is unbounded or the truncated cluster is built '
+             'anyway — memory on the head unit, or half a trip')
+
+    # BS14: ПЕРЕКОС ЧАСОВ СЛЫШЕН. RTC ГУ до синхронизации отстаёт, и тогда
+    # «свежий хвост» съедает все кластеры разом. Отказ правильный, но
+    # молчаливая деградация в поле неотличима от поломки.
+    _bs14 = ('rows.removeWhere((r) => r.timestamp.isAfter(at));' in _bs_bld and
+             'clock behind data by' in _bs_bld and
+             'if (rows.length < 2)' in _bs_bld)
+    if _bs14:
+        ok('BS14 rows ahead of the head-unit clock are dropped, not fatal — '
+           'one bad timestamp cannot freeze the feature forever')
+    else:
+        fail('BS14 a lagging RTC silently builds nothing and explains '
+             'nothing')
+
+    # BS11: ВРЕМЯ В ДВИЖЕНИИ НЕ УМНОЖАЕТСЯ НА ШАГ ПРОРЕЖИВАНИЯ. Гейт
+    # поставлен по ошибке, найденной ревизией этого же патча: первая
+    # редакция считала `speedSamples * 3`, и §2 того же патча — пороги по
+    # имени, где у `speed` стала секунда — сделал бы это число втрое
+    # больше настоящего. Связь между двумя половинами патча была
+    # невидимой, и такие связи обязаны становиться гейтом, а не памятью.
+    _bs11_body = ''
+    if 'var movingSec = 0;' in _bs_bld:
+        _bs11_body = _bs_bld.split('var movingSec = 0;')[1] \
+            .split('final tripId =')[0]
+    _bs11 = (_bs11_body != '' and
+             'speedSamples * 3' not in _bs_bld and
+             'maxGapSec' in _bs11_body and
+             'movingSec +=' in _bs11_body)
+    if _bs11:
+        ok('BS11 moving time is summed from real intervals — changing a '
+           'throttle threshold can no longer inflate it')
+    else:
+        fail('BS11 moving time is derived from the throttle step; §2 makes '
+             'that number wrong the moment a threshold moves')
+else:
+    ok(f"Part BS skipped (build +{pv}, background trips land in +185)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)

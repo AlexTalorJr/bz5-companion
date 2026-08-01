@@ -32,6 +32,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:drift/drift.dart' show Value;
 
 import '../data/database.dart';
+import 'bg_trip_builder.dart';
 import 'hal_bg_journal.dart';
 import 'hal_telemetry_channel.dart';
 import 'native_car_channel.dart';
@@ -125,6 +126,12 @@ class HalTelemetryService extends ChangeNotifier
   /// есть отрицательный ответ на главное неизвестное.
   HalBgIngestResult? _lastBgIngest;
   HalBgIngestResult? get lastBgIngest => _lastBgIngest;
+
+  /// v0.1.86+185: отчёт последней сборки поездок из фоновых строк.
+  /// Живёт рядом с отчётом втягивания и по той же причине: считается
+  /// всегда, читается тем, кому надо.
+  BgTripBuildResult? _lastBgTrips;
+  BgTripBuildResult? get lastBgTrips => _lastBgTrips;
   final int? Function()? _currentTripId;
   // v0.1.29+106: reads ConnectionService.isBleConnected — true when an ELM327
   // dongle is physically connected RIGHT NOW. Trip ownership keys off this
@@ -2684,6 +2691,20 @@ class HalTelemetryService extends ChangeNotifier
       // заметить, что файл забрали, не может.
       if (ing.consumed) {
         await HalTelemetryChannel.instance.noteJournalConsumed();
+      }
+      // v0.1.86+185: СОБРАТЬ ПОЕЗДКИ ИЗ ВТЯНУТЫХ СТРОК — здесь и только
+      // здесь. Место выбрано за то, что строки уже в таблице, а живой
+      // поток ещё не пущен (`_startStream` ниже): собранная поездка
+      // закрыта прошлым и с текущей, которую вот-вот начнёт живой путь,
+      // пересечься не может.
+      //
+      // Строитель зовётся ОТСЮДА, но НЕ ЗНАЕТ ОБ ЭТОМ СЛОЕ: он принимает
+      // базу и возвращает отчёт. Обратной ссылки нет, инвариант AA2 не
+      // задет ни с одной стороны.
+      _lastBgTrips = await BgTripBuilder.run(bgDb);
+      if (_lastBgTrips!.built > 0) {
+        debugPrint('HAL background ${_lastBgTrips!}');
+        notifyListeners();
       }
     }
     // Start the stream unless the user pinned OBD2-only. On a phone the
