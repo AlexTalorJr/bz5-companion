@@ -432,7 +432,11 @@ class BgTripBuilder {
     try {
       for (final r in window) {
         final v = r.numericValue;
-        if (v != null) latest[r.name] = v;
+        // `HalSample.name` объявлена `text().nullable()` — ключом карты
+        // её брать нельзя без охраны. Строка без имени бесполезна и для
+        // переноса значения вперёд.
+        final n = r.name;
+        if (v != null && n != null) latest[n] = v;
         nextAt ??= r.timestamp;
         // Перенос последнего известного значения вперёд — так же видит мир
         // живой писатель, когда просыпается по таймеру: он берёт то, что

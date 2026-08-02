@@ -421,6 +421,123 @@ def check_literal_args(f: Path, sig):
     return bad
 
 
+# ─────────────────── арность записей и nullable-ключи ───────────────
+#
+# v0.1.92+191 — ПЯТЫЙ И ШЕСТОЙ КЛАССЫ, ОБА ИЗ ОДНОГО ПАДЕНИЯ CI.
+#
+# Сборка +189 упала четырьмя ошибками, и ни одну не видел ни один текст:
+#
+#   • подпись `Future<List<(int, String)>>` осталась парой, когда тело
+#     стало собирать тройку. Дальше по коду разбор `(id, uuid, at)`
+#     пошёл против объявленного, и одна забытая строка дала три ошибки;
+#   • `HalSample.name` объявлена `text().nullable()`, то есть `String?`,
+#     и была взята ключом карты `Map<String, double>`.
+#
+# Оба класса узкие и проверяемые без вывода типов. Первый — сравнение
+# арности записи в подписи и в типизированном литерале списка внутри
+# того же тела. Второй — обращение к полю, чья колонка объявлена
+# `.nullable()`, в позиции ключа карты.
+REC_RE = re.compile(r'List<\(([^()]*)\)>')
+LIT_LIST_RE = re.compile(r'<\(([^()]*)\)>\s*\[\]')
+
+
+def _arity(inner: str) -> int:
+    return len(_split_top(inner))
+
+
+def check_record_arity(f: Path):
+    """Подпись обещает запись одной арности, тело собирает другой."""
+    bad = []
+    code = strip_code(f.read_text())
+    for m in re.finditer(r'^\s*(?:static\s+)?[\w<>,\s?]*?'
+                         r'List<\(([^()]*)\)>>?\s+(\w+)\(', code,
+                         re.MULTILINE):
+        want = _arity(m.group(1))
+        # тело — до следующего объявления такого же уровня; берём с
+        # запасом и режем по балансу фигурных скобок
+        i = code.find('{', m.end())
+        if i < 0:
+            continue
+        depth, j = 0, i
+        while j < len(code):
+            if code[j] == '{':
+                depth += 1
+            elif code[j] == '}':
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        body = code[i:j]
+        for lit in LIT_LIST_RE.finditer(body):
+            got = _arity(lit.group(1))
+            if got != want:
+                ln = code[:i + lit.start()].count('\n') + 1
+                bad.append((ln, m.group(2), want, got))
+    return bad
+
+
+def nullable_columns(db: Path):
+    """Класс строки drift → имена колонок, объявленных `.nullable()`.
+
+    ПЕРВАЯ РЕДАКЦИЯ СОБИРАЛА ПРОСТО МНОЖЕСТВО ИМЁН и дала три ложных
+    срабатывания на `e.name`, где `e` — это `HalEvent` с НЕ-nullable
+    полем `name`. Скан сцепился на имени поля, ничего не зная о типе.
+    Шумный скан хуже отсутствующего: он учит не доверять отчёту. Поэтому
+    имена теперь привязаны к классу строки, а класс — выводится только
+    там, где он написан буквально.
+    """
+    out = {}
+    if not db.exists():
+        return out
+    src = db.read_text()
+    for tbl in re.finditer(r'class\s+(\w+)\s+extends\s+Table\s*\{', src):
+        name = tbl.group(1)
+        i = src.index('{', tbl.start())
+        depth, j = 0, i
+        while j < len(src):
+            if src[j] == '{':
+                depth += 1
+            elif src[j] == '}':
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        body = src[i:j]
+        cols = {m.group(1) for m in
+                re.finditer(r'get\s+(\w+)\s*=>[^;]*\.nullable\(\)', body)}
+        if cols:
+            # drift даёт классу строки имя таблицы без конечной `s`
+            out[name[:-1] if name.endswith('s') else name] = cols
+    return out
+
+
+def check_nullable_keys(f: Path, by_class):
+    """Поле nullable-колонки взято ключом карты.
+
+    Судим ТОЛЬКО когда тип переменной написан рядом буквально: в теле
+    есть `List<RowClass> имя` (параметром или локально) и цикл
+    `for (final v in имя)`. Всё остальное — не наше дело: гадать о типе
+    здесь означает вернуть те самые ложные срабатывания.
+    """
+    bad = []
+    code = strip_code(f.read_text())
+    known = {}
+    for m in re.finditer(r'List<(\w+)>\s+(\w+)', code):
+        if m.group(1) in by_class:
+            known[m.group(2)] = m.group(1)
+    var_type = {}
+    for m in re.finditer(r'for\s*\(\s*final\s+(\w+)\s+in\s+(\w+)\s*\)', code):
+        cls = known.get(m.group(2))
+        if cls:
+            var_type[m.group(1)] = cls
+    for m in re.finditer(r'\w+\[\s*(\w+)\.(\w+)\s*\]\s*=', code):
+        cls = var_type.get(m.group(1))
+        if cls and m.group(2) in by_class.get(cls, ()):
+            ln = code[:m.start()].count('\n') + 1
+            bad.append((ln, m.group(1), m.group(2)))
+    return bad
+
+
 def main():
     files = sorted(LIB.rglob('*.dart'))
     print(f'scanning {len(files)} files under lib/')
@@ -472,6 +589,25 @@ def main():
             lit += 1
             fails.append(f'{f.name}:arg:{ln}')
     print(f'  literal args: {lit} mismatched')
+
+    rec = 0
+    for f in files:
+        for ln, name, want, got in check_record_arity(f):
+            print(f'    [FAIL] {f.relative_to(LIB)}:{ln}: {name}() declares a '
+                  f'{want}-field record, the body builds {got}')
+            rec += 1
+            fails.append(f'{f.name}:rec:{ln}')
+    print(f'  record arity: {rec} mismatched')
+
+    nk = 0
+    nullable = nullable_columns(LIB / 'data' / 'database.dart')
+    for f in files:
+        for ln, obj, fld in check_nullable_keys(f, nullable):
+            print(f'    [FAIL] {f.relative_to(LIB)}:{ln}: {obj}.{fld} is a '
+                  f'nullable column and is used as a map key')
+            nk += 1
+            fails.append(f'{f.name}:nullkey:{ln}')
+    print(f'  nullable keys: {nk} unguarded')
 
     print('=' * 56)
     print('DART SCAN ' + ('FAIL' if fails else 'PASS'))

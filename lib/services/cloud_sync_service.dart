@@ -2249,7 +2249,11 @@ class CloudSyncService extends ChangeNotifier {
   Future<void> _syncUuidMapping() async {
     // Snapshot the per-entity pending rows lazily so entities already at
     // their watermark cost one cheap in-memory pass and zero HTTP.
-    Future<List<(int, String)>> pendingFor(String entity) async {
+    // v0.1.92+191: арность записи здесь и у `out` ниже обязана совпадать.
+    // Первая редакция +189 сменила `out` на тройку и забыла подпись —
+    // сборка упала тремя ошибками подряд, потому что дальше по коду
+    // разбор `(id, uuid, at)` пошёл против объявленной пары.
+    Future<List<(int, String, DateTime)>> pendingFor(String entity) async {
       List<(int, String?, DateTime)> raw;
       switch (entity) {
         case 'trips':
@@ -3988,7 +3992,7 @@ class CloudSyncService extends ChangeNotifier {
   /// Read app version from the static value baked into the build.
   /// We don't have package_info_plus as a dep — pubspec-version is
   /// hardcoded here. Update when bumping. Off-by-one tolerated.
-  Future<String> _readAppVersion() async => '0.1.91+190';
+  Future<String> _readAppVersion() async => '0.1.92+191';
 }
 
 // ─── Internal exceptions ────────────────────────────────────────────

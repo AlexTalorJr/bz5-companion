@@ -9469,6 +9469,31 @@ if int(pv) >= 190:
     else:
         fail('BX1 nothing checks literal arguments; a map passed where a '
              'String is declared stays green through every gate')
+    # BX2/BX3 (+191): ещё два класса из одного падения. Подпись обещала
+    # запись из двух полей, тело собирало три; и nullable-колонка была
+    # взята ключом карты. Оба скана проверены в обе стороны: ноль на
+    # чистом дереве, ровно одна находка на восстановленной ошибке.
+    if int(pv) >= 191:
+        _bx2 = ('def check_record_arity(' in _bx_tool and
+                'check_record_arity(f)' in _bx_tool and
+                "fails.append(f'{f.name}:rec:{ln}')" in _bx_tool)
+        if _bx2:
+            ok('BX2 the scan compares the declared record arity with what '
+               'the body builds — a forgotten signature is caught before CI')
+        else:
+            fail('BX2 nothing checks record arity; a stale signature stays '
+                 'green through every gate')
+
+        _bx3 = ('def check_nullable_keys(' in _bx_tool and
+                'by_class' in _bx_tool and
+                'for\\s*\\(\\s*final' in _bx_tool and
+                "fails.append(f'{f.name}:nullkey:{ln}')" in _bx_tool)
+        if _bx3:
+            ok('BX3 a nullable drift column used as a map key is caught, and '
+               'only where the row type is written literally — no guessing')
+        else:
+            fail('BX3 nullable columns can be used as map keys unnoticed, or '
+                 'the check guesses types and cries wolf')
 else:
     ok(f"Part BX skipped (build +{pv}, the literal-argument scan lands "
        f"in +190)")
