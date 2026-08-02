@@ -1782,7 +1782,11 @@ class HalTelemetryService extends ChangeNotifier
         // этим ключом из-под инварианта непрерывности одометра, потому
         // что её начало лежит раньше конца предыдущей записи. Слияние, а
         // не запись блоба целиком: писателей у `extra` трое.
-        await db.mergeTripExtra(id, {'joinedInProgress': true});
+        // JSON СТРОКОЙ, а не картой: `mergeTripExtra(int, String)`
+        // принимает уже сериализованный патч и сам его разбирает. Форма
+        // `{"v":1,...}` — та же, что у фонового строителя: версия блоба
+        // общая для всех писателей `extra`.
+        await db.mergeTripExtra(id, '{"v":1,"joinedInProgress":true}');
         debugPrint('HAL trip: подхвачен фоновый хвост '
             '${join.start.toIso8601String()} → ${join.end.toIso8601String()}, '
             '${join.distanceKm.toStringAsFixed(1)} км, строк $n');

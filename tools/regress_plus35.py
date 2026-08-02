@@ -9255,7 +9255,15 @@ if int(pv) >= 188:
     # BV5: ПРОИСХОЖДЕНИЕ УЕЗЖАЕТ, И СЛИЯНИЕМ. Начало подхваченной поездки
     # лежит раньше конца предыдущей записи — без ключа сервер позвонит
     # инвариантом непрерывности одометра на каждую такую поездку.
-    _bv5 = ("mergeTripExtra(id, {'joinedInProgress': true})" in _bv_hal)
+    # v0.1.91+190 — ГЕЙТ ПИННИЛ СЛОМАННЫЙ ВЫЗОВ. Первая редакция сверяла
+    # строку `mergeTripExtra(id, {'joinedInProgress': true})` дословно, а
+    # метод принимает JSON СТРОКОЙ. Сборка упала на CI, и гейт при этом
+    # был зелёным — он закреплял ошибку компиляции и защищал бы её от
+    # исправления. Предмет здесь — ПАТЧ, который уезжает в `extra`, и
+    # то, что он именно сливается; форма вызова предметом быть не должна.
+    _bv5 = ('joinedInProgress' in _bv_hal and
+            'mergeTripExtra(id,' in _bv_hal and
+            '"joinedInProgress":true' in _bv_hal)
     if _bv5:
         ok('BV5 a joined trip says so in extra, merged not overwritten — the '
            'odometer-continuity alert stays quiet')
@@ -9440,6 +9448,30 @@ if int(pv) >= 189:
              'reread every parked hour in the database')
 else:
     ok(f"Part BW skipped (build +{pv}, background snapshots land in +189)")
+
+# ═════ Part BX — v0.1.91+190 «Литерал не того рода ловится до CI» ═════
+#
+# Сборка +188 упала на `mergeTripExtra(int, String)`, позванном картой.
+# До падения зелёными были ВСЕ гейты и все три скана. Хуже: гейт BV5,
+# написанный в том же патче, пиннил сломанный вызов дословно. Четвёртый
+# класс ошибок, который текст не ловит, получает свой скан.
+if int(pv) >= 190:
+    _bx_tool = (root / 'tools/dart_balance.py').read_text()
+    _bx1 = ('def check_literal_args(' in _bx_tool and
+            'def build_signatures(' in _bx_tool and
+            'WRONG = {' in _bx_tool and
+            'check_literal_args(f, sig)' in _bx_tool and
+            "fails.append(f'{f.name}:arg:{ln}')" in _bx_tool)
+    if _bx1:
+        ok('BX1 the dart scan compares literal arguments against declared '
+           'parameter types — the call that broke the +188 build is caught '
+           'before CI')
+    else:
+        fail('BX1 nothing checks literal arguments; a map passed where a '
+             'String is declared stays green through every gate')
+else:
+    ok(f"Part BX skipped (build +{pv}, the literal-argument scan lands "
+       f"in +190)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)

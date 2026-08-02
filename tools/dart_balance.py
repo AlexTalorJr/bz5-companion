@@ -308,6 +308,119 @@ def check_await_scope(f: Path):
     return bad
 
 
+# ─────────────────────── литеральные аргументы ──────────────────────
+#
+# v0.1.91+190 — ЧЕТВЁРТЫЙ КЛАСС, КОТОРЫЙ ТЕКСТОВЫЕ ГЕЙТЫ НЕ ЛОВЯТ.
+#
+# Повод: `mergeTripExtra(int, String)` был позван картой вместо строки.
+# Сборка упала на CI, а до неё зелёными были ВСЕ гейты, баланс скобок,
+# скан импортов, скан приватных и скан области `await`. Хуже: гейт BV5,
+# написанный в том же патче, пиннил вызов ДОСЛОВНО — то есть закрепил
+# ошибку компиляции и защищал бы её от исправления.
+#
+# Полного вывода типов здесь не будет и не должно быть. Ловим узкое и
+# частое: аргумент записан ЛИТЕРАЛОМ, а объявленный тип параметра —
+# заведомо другого рода. Литерал видно без анализа: `{` это карта или
+# множество, `[` список, кавычка строка, цифра число. Сомнительное не
+# трогаем — ложное срабатывание здесь дороже пропуска, потому что оно
+# учит не доверять скану.
+LIT_KIND = {'{': 'map', '[': 'list', "'": 'string', '"': 'string'}
+
+# Пары «объявленный тип → какие литералы для него заведомо чужие».
+WRONG = {
+    'String': ('map', 'list'),
+    'int': ('map', 'list', 'string'),
+    'double': ('map', 'list', 'string'),
+    'bool': ('map', 'list', 'string'),
+    'DateTime': ('map', 'list', 'string'),
+}
+
+DECL_RE = re.compile(
+    r'(?:Future<[^>]*>|void|int|double|bool|String|DateTime)\s+'
+    r'(\w+)\(([^)]*)\)\s*(?:async\s*)?[{=]')
+
+
+def _split_top(s: str):
+    """Разбить по запятым верхнего уровня."""
+    out, depth, cur, quote = [], 0, '', None
+    for ch in s:
+        if quote:
+            cur += ch
+            if ch == quote:
+                quote = None
+            continue
+        if ch in "'\"":
+            quote = ch
+            cur += ch
+            continue
+        if ch in '([{<':
+            depth += 1
+        elif ch in ')]}>':
+            depth -= 1
+        if ch == ',' and depth == 0:
+            out.append(cur.strip())
+            cur = ''
+        else:
+            cur += ch
+    if cur.strip():
+        out.append(cur.strip())
+    return out
+
+
+def build_signatures(files):
+    """имя метода → список типов позиционных параметров (или None)."""
+    sig = {}
+    for f in files:
+        code = strip_code(f.read_text())
+        for m in DECL_RE.finditer(code):
+            name, params = m.group(1), m.group(2)
+            if '{' in params or '[' in params:
+                continue          # именованные/необязательные — пропускаем
+            types = []
+            ok = True
+            for prm in _split_top(params):
+                parts = prm.split()
+                if len(parts) < 2:
+                    ok = False
+                    break
+                types.append(parts[-2].rstrip('?'))
+            if not ok:
+                continue
+            if name in sig and sig[name] != types:
+                sig[name] = None   # перегрузка/тёзка — судить не беремся
+            else:
+                sig.setdefault(name, types)
+    return sig
+
+
+def check_literal_args(f: Path, sig):
+    bad = []
+    code = strip_code(f.read_text())
+    for m in re.finditer(r'\.(\w+)\(', code):
+        name = m.group(1)
+        types = sig.get(name)
+        if not types:
+            continue
+        i, depth = m.end(), 1
+        while i < len(code) and depth:
+            if code[i] in '([{':
+                depth += 1
+            elif code[i] in ')]}':
+                depth -= 1
+            i += 1
+        args = _split_top(code[m.end():i - 1])
+        if len(args) != len(types):
+            continue              # именованные/пропуски — не наше дело
+        for a, t in zip(args, types):
+            kind = LIT_KIND.get(a[:1] if a else '')
+            if kind is None and re.match(r'^\d', a or ''):
+                kind = 'number'
+            if kind and kind in WRONG.get(t, ()):
+                ln = code[:m.start()].count('\n') + 1
+                bad.append((ln, name, t, kind))
+    return bad
+
+
 def main():
     files = sorted(LIB.rglob('*.dart'))
     print(f'scanning {len(files)} files under lib/')
@@ -349,6 +462,16 @@ def main():
             aw += 1
             fails.append(f'{f.name}:await:{ln}')
     print(f'  await scope: {aw} misplaced')
+
+    lit = 0
+    sig = build_signatures(files)
+    for f in files:
+        for ln, name, t, kind in check_literal_args(f, sig):
+            print(f'    [FAIL] {f.relative_to(LIB)}:{ln}: {name}() expects '
+                  f'{t} here, a {kind} literal is passed')
+            lit += 1
+            fails.append(f'{f.name}:arg:{ln}')
+    print(f'  literal args: {lit} mismatched')
 
     print('=' * 56)
     print('DART SCAN ' + ('FAIL' if fails else 'PASS'))
