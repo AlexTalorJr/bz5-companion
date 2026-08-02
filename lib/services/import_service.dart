@@ -183,6 +183,10 @@ class ImportService {
     'hal_soh_pending_session',
     'cloud_tsgen_watermark',
     'trip_end_anchor_backfill_147',
+    // v0.1.90+189: знак фонового строителя описывает БАЗУ — он говорит,
+    // до какого места её строки уже разобраны. Уехав без него, архив
+    // заставил бы строителя перечитать всю историю стоянок заново.
+    'bg_trip_watermark_ms',
   ];
 
   static List<String> get travellingKeys =>
@@ -204,8 +208,50 @@ class ImportService {
   };
 
   /// Сущности с картой uuid → водяной знак. Список из `_uuidMapWm`
-  /// в cloud_sync_service.
-  static const List<String> uuidMapEntities = <String>['trips', 'snapshots'];
+  /// в cloud_sync_service — теперь ЦЕЛИКОМ, а не первые две.
+  ///
+  /// v0.1.90+189 — ПОЧЕМУ ЭТО БЫЛО НЕСУЩИМ, А НЕ КОСМЕТИКОЙ. Список
+  /// обслуживал два разных дела сразу, и оба делал наполовину:
+  ///
+  ///   1. переставлял водяные знаки после импорта — для трёх сущностей
+  ///      из пяти не переставлял, и клиент слал серверу пары «новый
+  ///      локальный id → uuid» по строкам, чьи id могли сдвинуться;
+  ///   2. считал строки без uuid, чтобы решить, можно ли объявить
+  ///      начальный проход законченным. В `sweep_runs`,
+  ///      `live_log_sessions` и `can_monitor_sessions` он НЕ ЗАГЛЯДЫВАЛ
+  ///      ВОВСЕ — а Друг 2 справкой 02.08 показал, что строки без uuid
+  ///      там существуют: девять штук в каноне.
+  ///
+  /// Второе опаснее. Объявив проход законченным при живых пропусках,
+  /// клиент запирает их навсегда: сериализатор пропускает строку без
+  /// uuid, отображение пропускает строку без uuid, а сканер её не
+  /// считал. Комментарий над сканером обещал ровно обратное — «соврать
+  /// здесь означает навсегда оставить строки без опознавания на стороне
+  /// сервера».
+  static const List<String> uuidMapEntities = <String>[
+    'trips',
+    'snapshots',
+    'sweeps',
+    'livelogs',
+    'canmonitor',
+  ];
+
+  /// Имя сущности в протоколе → имя таблицы в базе.
+  ///
+  /// ЛОВУШКА, ИЗ-ЗА КОТОРОЙ ОДНИМ СПИСКОМ НЕ ОБОЙТИСЬ: у трёх сущностей
+  /// из пяти имя в протоколе и имя таблицы РАЗНЫЕ (`sweeps` против
+  /// `sweep_runs`), а прежний код подставлял имя сущности прямо в
+  /// `SELECT ... FROM $t`. Расширь мы список, не заведя эту карту, —
+  /// сканер пропусков падал бы на несуществующей таблице, ловил
+  /// исключение и возвращал ноль. То есть выглядел бы как «пропусков
+  /// нет» ровно там, где они есть.
+  static const Map<String, String> uuidMapTables = <String, String>{
+    'trips': 'trips',
+    'snapshots': 'snapshots',
+    'sweeps': 'sweep_runs',
+    'livelogs': 'live_log_sessions',
+    'canmonitor': 'can_monitor_sessions',
+  };
 
   static const String uuidMapWmPrefix = 'cloud_sync_uuid_map_wm_';
   static const String uuidMapInitialDone = 'cloud_sync_uuid_map_initial_done';
@@ -774,7 +820,12 @@ class ImportService {
       out[e.value] = maxId;
     }
     for (final ent in uuidMapEntities) {
-      await prefs.setInt('$uuidMapWmPrefix$ent', await _maxId(db, ent));
+      // Ключ знака — имя СУЩНОСТИ, запрос — имя ТАБЛИЦЫ. Раньше это было
+      // одно и то же слово только потому, что список кончался на
+      // снапшотах.
+      final table = uuidMapTables[ent];
+      if (table == null) continue;
+      await prefs.setInt('$uuidMapWmPrefix$ent', await _maxId(db, table));
     }
     // Разовый проход, дописывающий uuid отсутствующим строкам, можно
     // объявить сделанным ТОЛЬКО если дописывать нечего. На реальных
@@ -914,7 +965,7 @@ class ImportService {
 
   static Future<int> _uuidGaps(AppDatabase db) async {
     var total = 0;
-    for (final t in uuidMapEntities) {
+    for (final t in uuidMapTables.values) {
       try {
         final row = await db
             .customSelect(

@@ -2250,39 +2250,39 @@ class CloudSyncService extends ChangeNotifier {
     // Snapshot the per-entity pending rows lazily so entities already at
     // their watermark cost one cheap in-memory pass and zero HTTP.
     Future<List<(int, String)>> pendingFor(String entity) async {
-      List<(int, String?)> raw;
+      List<(int, String?, DateTime)> raw;
       switch (entity) {
         case 'trips':
           raw = (await _db.getAllTrips())
-              .map((r) => (r.id, r.clientUuid))
+              .map((r) => (r.id, r.clientUuid, r.startedAt))
               .toList();
         case 'snapshots':
           raw = (await _db.getAllSnapshots())
-              .map((r) => (r.id, r.clientUuid))
+              .map((r) => (r.id, r.clientUuid, r.capturedAt))
               .toList();
         case 'sweeps':
           raw = (await _db.getAllSweepRuns())
-              .map((r) => (r.id, r.clientUuid))
+              .map((r) => (r.id, r.clientUuid, r.startedAt))
               .toList();
         case 'livelogs':
           raw = (await _db.getAllLiveLogSessions())
-              .map((r) => (r.id, r.clientUuid))
+              .map((r) => (r.id, r.clientUuid, r.startedAt))
               .toList();
         case 'canmonitor':
           raw = (await _db.getAllCanMonitorSessions())
-              .map((r) => (r.id, r.clientUuid))
+              .map((r) => (r.id, r.clientUuid, r.startedAt))
               .toList();
         default:
           raw = const [];
       }
       final wm = _uuidMapWm[entity] ?? 0;
-      final out = <(int, String)>[];
-      for (final (id, uuid) in raw) {
+      final out = <(int, String, DateTime)>[];
+      for (final (id, uuid, at) in raw) {
         // uuid == null shouldn't exist post-migration (backfill + insert
         // injection), but stay defensive — a null-uuid row is simply not
         // mappable; skipping it must NOT advance the watermark past it,
         // hence the sort + early-stop structure below.
-        if (id > wm && uuid != null) out.add((id, uuid));
+        if (id > wm && uuid != null) out.add((id, uuid, at));
       }
       out.sort((a, b) => a.$1.compareTo(b.$1));
       return out;
@@ -2297,8 +2297,23 @@ class CloudSyncService extends ChangeNotifier {
         final body = {
           'entity': entity,
           'items': [
-            for (final (id, uuid) in batch)
-              {'client_id': id, 'client_uuid': uuid},
+            // v0.1.90+189: время строки едет третьим полем — пояс поверх
+            // подтяжек, предложенный Другом 2 справкой 02.08. Сервер
+            // откажется привязывать uuid, если у найденной им строки
+            // время другое. Единый список ниже бьёт в корень, а это
+            // ловит остаток: цена ошибки здесь — ТИХАЯ потеря (пуш
+            // отбрасывается по `DO NOTHING`), а тихую потерю задним
+            // числом не увидит никто.
+            //
+            // Для снапшотов это `captured_at`, для остальных четырёх —
+            // `started_at`. Наружу оба уезжают под одним именем: смысл
+            // поля — «собственное время строки», а не имя колонки.
+            for (final (id, uuid, at) in batch)
+              {
+                'client_id': id,
+                'client_uuid': uuid,
+                'started_at': at.toUtc().toIso8601String(),
+              },
           ],
         };
         Map<String, dynamic> resp;
@@ -3973,7 +3988,7 @@ class CloudSyncService extends ChangeNotifier {
   /// Read app version from the static value baked into the build.
   /// We don't have package_info_plus as a dep — pubspec-version is
   /// hardcoded here. Update when bumping. Off-by-one tolerated.
-  Future<String> _readAppVersion() async => '0.1.89+188';
+  Future<String> _readAppVersion() async => '0.1.90+189';
 }
 
 // ─── Internal exceptions ────────────────────────────────────────────

@@ -1,3 +1,4 @@
+import 'package:drift/drift.dart' show Value;
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -324,7 +325,7 @@ class BgTripBuilder {
     }
     // Вставка и штамп ОДНОЙ ТРАНЗАКЦИЕЙ: врозь они оставляли поездку без
     // приписанных строк, и следующий запуск строил её второй раз.
-    await db.insertTripWithStampedSamples(
+    final tripId = await db.insertTripWithStampedSamples(
       // v0.1.87+186: происхождение уезжает В ОБЛАКО через `extra` — колонка
       // `trips.source` локальная, в отправку она не входит, и на сервере
       // фоновая поездка без этого ключа неотличима от донгловой. Друг 2
@@ -357,7 +358,98 @@ class BgTripBuilder {
       idleSeconds: totalSec > movingSec ? totalSec - movingSec : null,
       energyFromSocKwh: derived.energyFromSocKwh,
     );
+    await _writeSnapshots(db, window, tripId);
     return true;
+  }
+
+  /// v0.1.90+189 — СНАПШОТЫ ФОНОВОЙ ПОЕЗДКИ.
+  ///
+  /// ЗАЧЕМ. Экспорт 02.08 показал дыру, которой раньше не видели: за 45.8
+  /// км фоновой поездки записано НОЛЬ снапшотов. Писатель снапшотов живёт
+  /// в Dart и кормится только когда поток отдан Flutter, — приложение
+  /// закрыто, значит снапшотов нет по построению. Бьёт это в два места
+  /// сразу:
+  ///
+  ///   • Тренды считают пробег ПРОГУЛКОЙ ПО СНАПШОТАМ (K4, +148). Между
+  ///     01.08 17:21 и 02.08 15:05 снапшотов нет вовсе, пара получается с
+  ///     разрывом больше шести часов, а такие в дневные бары не идут. 45.8
+  ///     км реальной езды в дневном баре не появятся, хотя поездка есть.
+  ///   • Реконструкция Друга 2 из снапшотов фоновые отрезки покрыть не
+  ///     может: там нет исходного материала, а не мало его.
+  ///
+  /// ПОЧЕМУ ЗДЕСЬ, А НЕ В СЕРВИСЕ. Kotlin не трогаем и второго потока не
+  /// заводим: строитель уже держит окно строк в руках, и те же самые
+  /// измерения, из которых собрана поездка, дают снапшоты бесплатно.
+  ///
+  /// ПОЧЕМУ ОТДЕЛЬНОЙ ОПЕРАЦИЕЙ, А НЕ В ТОЙ ЖЕ ТРАНЗАКЦИИ. Поездка — факт,
+  /// снапшоты — наблюдение за ним. Провались запись снапшотов, поездка
+  /// обязана остаться; обратное — нет. Поэтому вставка идёт после
+  /// транзакции и её отказ ловится здесь.
+  ///
+  /// ЕДИНИЦЫ ПОВТОРЯЮТ ЖИВОГО ПИСАТЕЛЯ ДОСЛОВНО (`_maybeWriteHalSnapshot`
+  /// в `hal_telemetry_service`): вольты ячеек ×1000 в милливольтовые
+  /// колонки, разброс уже в мВ, напряжение пакета как есть, передача НЕ
+  /// пишется (кодировки `gear_enum` и OBD2-raw смешивать нельзя).
+  /// Расхождение единиц ловит гейт BW2, потому что компилятор такую пару
+  /// не проверит никогда.
+  static Future<void> _writeSnapshots(
+    AppDatabase db,
+    List<HalSample> window,
+    int tripId,
+  ) async {
+    // Тот же шаг, что у живого писателя. Другой означал бы, что плотность
+    // истории зависит от того, было ли открыто приложение.
+    const step = Duration(seconds: 60);
+    final latest = <String, double>{};
+    DateTime? nextAt;
+    var written = 0;
+
+    Future<void> flush(DateTime at) async {
+      final soc = latest['soc_precise'];
+      final packV = latest['pack_voltage'];
+      // То же правило прогрева, что у живого: пустых строк не пишем.
+      if (soc == null && packV == null) return;
+      final lo = latest['cell_v_lowest'];
+      final hi = latest['cell_v_highest'];
+      await db.insertSnapshot(SnapshotsCompanion(
+        capturedAt: Value(at),
+        soc: Value(soc),
+        soh: Value(latest['soh']),
+        batteryTempC: Value(latest['battery_temp_bigdata']),
+        cellVoltageMin:
+            Value(lo == null ? null : (lo * 1000).roundToDouble()),
+        cellVoltageMax:
+            Value(hi == null ? null : (hi * 1000).roundToDouble()),
+        cellSpread:
+            Value(lo == null || hi == null ? null : (hi - lo) * 1000.0),
+        odometer: Value(latest['odometer']),
+        tripId: Value(tripId),
+        packVoltageV: Value(packV),
+      ));
+      written++;
+    }
+
+    try {
+      for (final r in window) {
+        final v = r.numericValue;
+        if (v != null) latest[r.name] = v;
+        nextAt ??= r.timestamp;
+        // Перенос последнего известного значения вперёд — так же видит мир
+        // живой писатель, когда просыпается по таймеру: он берёт то, что
+        // пришло последним, а не то, что пришло ровно сейчас.
+        while (nextAt != null && !r.timestamp.isBefore(nextAt)) {
+          await flush(nextAt);
+          nextAt = nextAt.add(step);
+        }
+      }
+      if (written == 0 && window.isNotEmpty) {
+        // Поездка короче шага — одна строка всё равно ценнее нуля.
+        await flush(window.last.timestamp);
+      }
+      debugPrint('BgTrip: снапшотов записано $written для поездки $tripId');
+    } catch (e) {
+      debugPrint('BgTrip: снапшоты не записаны — $e');
+    }
   }
 }
 

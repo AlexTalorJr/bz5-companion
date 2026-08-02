@@ -9319,6 +9319,128 @@ else:
     ok(f"Part BV skipped (build +{pv}, joining the background tail lands "
        f"in +188)")
 
+# ═════ Part BW — v0.1.90+189 «Фон виден Трендам, а карта сущностей — целая» ═════
+#
+# Экспорт 02.08: за 45.8 км фоновой поездки ноль снапшотов. Тренды считают
+# пробег прогулкой по снапшотам, значит фоновые дни для них пусты, а
+# реконструкция из снапшотов фоновые отрезки покрыть не может — там нет
+# исходного материала. Плюс справка Друга 2 от 02.08: список сущностей
+# uuid-mapping обслуживал пять сущностей списком из двух, и сканер
+# пропусков не заглядывал в три таблицы из пяти.
+if int(pv) >= 189:
+    _bw_bld = _strip_comments_safe(
+        (root / 'lib/services/bg_trip_builder.dart').read_text())
+    _bw_imp = _strip_comments_safe(
+        (root / 'lib/services/import_service.dart').read_text())
+    _bw_cs = _strip_comments_safe(
+        (root / 'lib/services/cloud_sync_service.dart').read_text())
+
+    # BW1: ФОНОВАЯ ПОЕЗДКА ОСТАВЛЯЕТ СНАПШОТЫ, и на живом пути сборки.
+    # Не «функция есть», а «её зовёт сборка поездки и получает её id» —
+    # урок вакуумного гейта BU1.
+    _bw1 = ('_writeSnapshots(db, window, tripId)' in _bw_bld and
+            'final tripId = await db.insertTripWithStampedSamples('
+            in _bw_bld and
+            'db.insertSnapshot(' in _bw_bld)
+    if _bw1:
+        ok('BW1 a background trip leaves snapshots behind — the daily bars '
+           'and any later reconstruction have something to stand on')
+    else:
+        fail('BW1 background drives still write no snapshots; Trends stay '
+             'blind on exactly the days the app was closed')
+
+    # BW2: ЕДИНИЦЫ ПОВТОРЯЮТ ЖИВОГО ПИСАТЕЛЯ. Вольты ячеек ×1000 в
+    # милливольтовые колонки, разброс в мВ. Разойдись они — история
+    # фоновых поездок читалась бы в тысячу раз мимо, и молча.
+    _bw2 = ('(lo * 1000).roundToDouble()' in _bw_bld and
+            '(hi * 1000).roundToDouble()' in _bw_bld and
+            '(hi - lo) * 1000.0' in _bw_bld and
+            'gear:' not in _bw_bld)
+    if _bw2:
+        ok('BW2 synthesised snapshots use the live writer\'s units, and do '
+           'not invent a gear encoding')
+    else:
+        fail('BW2 the background snapshot units drift from the live ones')
+
+    # BW3: СНАПШОТЫ НЕ МОГУТ ОТМЕНИТЬ ПОЕЗДКУ. Поездка — факт, снапшоты —
+    # наблюдение за ним; отказ наблюдения не смеет откатить факт.
+    _bw3_body = ''
+    if 'static Future<void> _writeSnapshots(' in _bw_bld:
+        _bw3_body = _bw_bld.split('static Future<void> _writeSnapshots(')[1]
+    _bw3 = (_bw3_body != '' and
+            'catch (e)' in _bw3_body and
+            'transaction' not in _bw3_body)
+    if _bw3:
+        ok('BW3 a failed snapshot write cannot roll back the trip it '
+           'describes')
+    else:
+        fail('BW3 snapshots share the trip transaction; observation can undo '
+             'the fact')
+
+    # BW4: СПИСОК СУЩНОСТЕЙ ЦЕЛЫЙ И СОВПАДАЕТ С СЕРВИСОМ. Пять имён по обе
+    # стороны; расхождение ловится только текстом — приватную константу
+    # компилятор из другого файла не отдаст.
+    # Область сужена до ТЕЛА СПИСКА. Первая редакция искала имена по
+    # всему файлу и была слепа: те же слова стоят ключами в
+    # `uuidMapTables`, поэтому удаление имени из списка сущностей гейт не
+    # замечал. Мутация это и показала — BLIND, а не FAIL.
+    _bw4_list = ''
+    if 'static const List<String> uuidMapEntities = <String>[' in _bw_imp:
+        _bw4_list = _bw_imp.split(
+            'static const List<String> uuidMapEntities = <String>[')[1] \
+            .split(']')[0]
+    _bw4 = (_bw4_list != '' and
+            all(f"'{e}'" in _bw4_list for e in
+                ('trips', 'snapshots', 'sweeps', 'livelogs', 'canmonitor')) and
+            "'sweeps'," in _bw_cs and "'canmonitor'," in _bw_cs)
+    if _bw4:
+        ok('BW4 the uuid-mapping entity list is whole and matches the sync '
+           'service — no entity is left unmapped after an import')
+    else:
+        fail('BW4 the entity lists disagree; three of five entities go '
+             'unwatermarked and unscanned after a restore')
+
+    # BW5: ИМЯ СУЩНОСТИ ≠ ИМЯ ТАБЛИЦЫ, И ЭТО УЧТЕНО. Подставь имя
+    # сущности в SELECT — запрос упадёт на несуществующей таблице, отказ
+    # будет пойман, и сканер вернёт ноль. То есть соврёт «пропусков нет»
+    # ровно там, где они есть.
+    _bw5 = ("'sweeps': 'sweep_runs'" in _bw_imp and
+            "'livelogs': 'live_log_sessions'" in _bw_imp and
+            "'canmonitor': 'can_monitor_sessions'" in _bw_imp and
+            'for (final t in uuidMapTables.values)' in _bw_imp)
+    if _bw5:
+        ok('BW5 the gap scan queries table names, not protocol names — it '
+           'can no longer report zero because the query threw')
+    else:
+        fail('BW5 the gap scan uses entity names as table names and will '
+             'silently report no gaps')
+
+    # BW6: ВРЕМЯ СТРОКИ ЕДЕТ С ОТОБРАЖЕНИЕМ. Пояс поверх подтяжек: сервер
+    # откажется привязывать uuid к строке с другим временем. Цена
+    # промаха — тихая потеря по `DO NOTHING`.
+    _bw6 = ("'started_at': at.toUtc().toIso8601String()" in _bw_cs and
+            'final out = <(int, String, DateTime)>[];' in _bw_cs)
+    if _bw6:
+        ok('BW6 every mapping item carries the row\'s own time — a uuid can '
+           'no longer be bound to a different row in silence')
+    else:
+        fail('BW6 mapping items ship without a time; a wrong binding stays '
+             'undetectable and loses a push to DO NOTHING')
+
+    # BW7: ЗНАК СТРОИТЕЛЯ ПЕРЕЕЗЖАЕТ С АРХИВОМ. Он описывает БАЗУ — до
+    # какого места её строки разобраны. Без него импорт заставляет
+    # строителя перечитать всю историю стоянок заново.
+    _bw7 = ("'bg_trip_watermark_ms'," in _bw_imp and
+            _bw_imp.split('dbBoundKeys')[1].split(']')[0]
+            .count('bg_trip_watermark_ms') == 1)
+    if _bw7:
+        ok('BW7 the builder watermark travels with the archive it describes')
+    else:
+        fail('BW7 the builder watermark is left behind; a restore makes it '
+             'reread every parked hour in the database')
+else:
+    ok(f"Part BW skipped (build +{pv}, background snapshots land in +189)")
+
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
 print(f"+35→+51 REGRESSION — build +{pv}")

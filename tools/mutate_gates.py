@@ -92,6 +92,7 @@ FHO = ('android/app/src/main/kotlin/com/bz5companion/bz5_companion/'
        'FlutterHalOut.kt')
 UU = 'lib/data/uuid_v7.dart'
 DBL = 'tools/dart_balance.py'
+CS = 'lib/services/cloud_sync_service.dart'
 
 # (гейт, файл, анкер, замена, что откатывает)
 #
@@ -584,8 +585,8 @@ MUTATIONS = [
      "import '../data/database.dart';\nimport 'hal_telemetry_service.dart';",
      'дать строителю увидеть HAL-сервис — граница AA2 пробита'),
     ('BS5', BTB,
-     '    await db.insertTripWithStampedSamples(',
-     '    await db.insertCompletedTrip(',
+     '    final tripId = await db.insertTripWithStampedSamples(',
+     '    final tripId = await db.insertCompletedTrip(',
      'не штамповать строки — поездки пересобираются при каждом открытии'),
     ('BS6', DB,
      '            await _addColumnIfAbsent(m, trips, trips.source);',
@@ -753,6 +754,35 @@ MUTATIONS = [
      '      if (join != null) _adoptJoinedTail(join);',
      'вставлять строку, не проверив, жива ли ещё поездка после чтения '
      'хвоста'),
+    # ── эра BW (+189): фон виден Трендам, карта сущностей целая ──
+    ('BW1', BTB,
+     '    await _writeSnapshots(db, window, tripId);',
+     '    // снапшоты не пишем',
+     'вернуть фоновые поездки без снапшотов — Тренды снова слепнут'),
+    ('BW2', BTB,
+     '            Value(lo == null ? null : (lo * 1000).roundToDouble()),',
+     '            Value(lo),',
+     'развести единицы с живым писателем — история читалась бы в тысячу '
+     'раз мимо'),
+    ('BW4', IS_,
+     "    'canmonitor',\n  ];",
+     '  ];',
+     'снова обслуживать пять сущностей списком из четырёх'),
+    ('BW5', IS_,
+     '    for (final t in uuidMapTables.values) {',
+     '    for (final t in uuidMapEntities) {',
+     'подставлять имя сущности вместо имени таблицы — сканер соврёт '
+     '«пропусков нет»'),
+    ('BW6', CS,
+     "                'started_at': at.toUtc().toIso8601String(),",
+     '                //',
+     'снять время строки с отображения — тихая привязка к чужой строке'),
+    ('BW7', IS_,
+     "    'bg_trip_watermark_ms',\n  ];",
+     '  ];',
+     'оставить знак строителя дома — импорт заставит перечитать все '
+     'стоянки'),
+
     ('BV7', HT,
      '      if ((sp != null && sp > _halMovingKmh) || odoGrew) {',
      '      if (gear == null) {\n      if (sp != null && sp > _halMovingKmh) {',
