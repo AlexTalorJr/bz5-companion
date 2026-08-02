@@ -90,6 +90,7 @@ BTB = 'lib/services/bg_trip_builder.dart'
 CONN = 'lib/services/connection.dart'
 FHO = ('android/app/src/main/kotlin/com/bz5companion/bz5_companion/'
        'FlutterHalOut.kt')
+UU = 'lib/data/uuid_v7.dart'
 DBL = 'tools/dart_balance.py'
 
 # (гейт, файл, анкер, замена, что откатывает)
@@ -623,6 +624,38 @@ MUTATIONS = [
      '        return const BgTripBuildResult('
      'scanned: 0, built: 0, discarded: 0);',
      'выходить из сборки от одной строки впереди часов — навсегда'),
+    # ─── эра BT (+186) «Фоновая поездка узнаётся в облаке» ───────────
+    ('BT1', BTB,
+     '      extraJson: \'{"v":1,"source":"$kSourceHalBg"}\',',
+     '      extraJson: null,',
+     'отправить фоновую поездку без происхождения — ночной алерт на '
+     'каждую'),
+    ('BT2', DB,
+     '        await mergeTripExtra(id, extra);',
+     '        // extra пишется выше',
+     'вернуть перезапись блоба целиком — чужие ключи пропадут молча'),
+    ('BT3', DB,
+     '      clientUuid: Value(uuidV7Deterministic(',
+     '      clientUuid: Value(uuidV7(),',
+     'вернуть случайный uuid — пересборка даст дубль в облаке'),
+    ('BT4', UU,
+     '  b[6] = 0x70 | (b[6] & 0x0F); // версия 7\n  b[8] = 0x80 | '
+     '(b[8] & 0x3F); // вариант 10xx\n\n  final hex = StringBuffer();\n'
+     '  for (var i = 0; i < 16; i++) {\n    if (i == 4 || i == 6 || '
+     'i == 8 || i == 10) hex.write(\'-\');\n    hex.write(b[i].'
+     'toRadixString(16).padLeft(2, \'0\'));\n  }\n  return hex.toString();\n}\n',
+     '  b[8] = 0x80 | (b[8] & 0x3F);\n\n  final hex = StringBuffer();\n'
+     '  for (var i = 0; i < 16; i++) {\n    if (i == 4 || i == 6 || '
+     'i == 8 || i == 10) hex.write(\'-\');\n    hex.write(b[i].'
+     'toRadixString(16).padLeft(2, \'0\'));\n  }\n  return hex.toString();\n}\n',
+     'потерять версию 7 в детерминированном uuid — сервер сортирует по '
+     'нему'),
+
+    ('BT5', DBL,
+     "            fails.append(f'{f.name}:await:{ln}')",
+     '            pass',
+     'печатать await не в том теле, но не краснеть от него'),
+
     ('BS11', BTB,
      '    const maxGapSec = 15;',
      '    const unusedGapSec = 15;\n    final movingShortcut = '

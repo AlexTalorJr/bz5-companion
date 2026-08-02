@@ -503,8 +503,20 @@ if int(pv) >= 37:
         else:
             ok(f"D1 {marker} step is non-destructive")
 
-    # D2. extra written only when non-null (don't null existing on partial)
-    if "extra != null ? Value(extra) : const Value.absent()" in db_src:
+    # D2. Предмет прежний: частичное завершение поездки НЕ ДОЛЖНО обнулять
+    # уже записанный `extra`. С +186 это обеспечивается сильнее, чем
+    # guard'ом на companion: агрегатный путь блоб вообще не трогает, а
+    # ключи дописывает слиянием — то есть не может обнулить не только
+    # `extra` целиком, но и отдельный чужой ключ внутри него.
+    if int(pv) >= 186:
+        _d2 = ('extra != null ? Value(extra)' not in db_src and
+               'await mergeTripExtra(id, extra);' in db_src)
+        if _d2:
+            ok("D2 the aggregate path merges extra instead of writing it — "
+               "a partial finalize can null neither the blob nor a key")
+        else:
+            fail("D2 the aggregate path can overwrite trips.extra again")
+    elif "extra != null ? Value(extra) : const Value.absent()" in db_src:
         ok("D2 endTrip writes extra only when non-null (absent otherwise)")
     else:
         fail("D2 endTrip extra write not guarded with Value.absent()")
@@ -8840,6 +8852,102 @@ if int(pv) >= 185:
              'that number wrong the moment a threshold moves')
 else:
     ok(f"Part BS skipped (build +{pv}, background trips land in +185)")
+
+# ═════ Part BT — v0.1.87+186 «Фоновая поездка узнаётся в облаке» ═════
+#
+# Сервер (Друг 2, справка 02.08, head 0018) уже исключает из инварианта #8
+# поездку с `extra.source == "hal_bg"`. Клиент до этого патча такой ключ не
+# писал вовсе: колонка `trips.source` локальная и в отправку не входит.
+# Поставь мы +185 как есть — каждая фоновая поездка позвонила бы утренней
+# сводкой. Здесь это закрывается, и здесь же снимается риск дублей при
+# восстановлении из архива.
+if int(pv) >= 186:
+    _bt_db = _strip_comments_safe(
+        (root / 'lib/data/database.dart').read_text())
+    _bt_bld = _strip_comments_safe(
+        (root / 'lib/services/bg_trip_builder.dart').read_text())
+    _bt_uu = _strip_comments_safe(
+        (root / 'lib/data/uuid_v7.dart').read_text())
+
+    # BT1: ПРОИСХОЖДЕНИЕ УЕЗЖАЕТ В ОБЛАКО. Ключ и его значение — контракт с
+    # сервером; опечатка в любом из них не сломает ничего видимого и
+    # вернёт ночные алерты.
+    _bt1 = ('"source":"$kSourceHalBg"' in _bt_bld and
+            "const String kSourceHalBg = 'hal_bg';" in _bt_bld and
+            'extraJson:' in _bt_bld)
+    if _bt1:
+        ok('BT1 a background trip carries its provenance into extra — the '
+           'server can tell it from a dongle trip and #8 stays quiet')
+    else:
+        fail('BT1 background trips ship without extra.source — every one of '
+             'them rings the odometer-continuity alert')
+
+    # BT2: EXTRA СЛИВАЕТСЯ, А НЕ ПЕРЕЗАПИСЫВАЕТСЯ. Писателей у блоба трое:
+    # гистограмма в конце поездки, происхождение при вставке, а скоро и
+    # joinedInProgress в начале. Перезапись целиком — тихая потеря чужого
+    # ключа, и заметить её можно только по возврату ночных алертов.
+    _bt2_body = ''
+    if 'Future<void> mergeTripExtra(' in _bt_db:
+        _bt2_body = _bt_db.split('Future<void> mergeTripExtra(')[1] \
+            .split('Future<void> ')[0]
+    _bt2 = (_bt2_body != '' and
+            'merged.addAll' in _bt2_body and
+            'jsonDecode' in _bt2_body and
+            'extra: extra != null ? Value(extra)' not in _bt_db and
+            'await mergeTripExtra(id, extra);' in _bt_db)
+    if _bt2:
+        ok('BT2 extra is merged key-wise, and the aggregate path merges too '
+           '— no writer can silently drop another one\'s key')
+    else:
+        fail('BT2 something still overwrites trips.extra wholesale — the '
+             'provenance or the histogram will vanish without a trace')
+
+    # BT3: UUID ФОНОВОЙ ПОЕЗДКИ ДЕТЕРМИНИРОВАН. Пересборка того же выезда
+    # после восстановления из архива обязана дать тот же uuid, иначе на
+    # сервере появится второй экземпляр, который дедупликация по паре
+    # устройство/uuid не поймает.
+    _bt3 = ('String uuidV7Deterministic(' in _bt_uu and
+            'required String seed' in _bt_uu and
+            'uuidV7Deterministic(' in _bt_db and
+            'uuidV7()' not in _bt_db.split('insertCompletedTrip(')[1]
+            .split('Future<int> countAllHalSamples')[0])
+    if _bt3:
+        ok('BT3 a rebuilt background trip keeps its identity — restoring an '
+           'older archive can no longer mint a duplicate in the cloud')
+    else:
+        fail('BT3 the background trip uuid is random again; a rebuild after '
+             'an archive restore duplicates the drive on the server')
+
+    # BT4: ФОРМАТ UUID ОСТАЁТСЯ v7. Версия и вариант на своих местах, метка
+    # времени впереди — сервер сортирует по uuid и вправе ожидать порядка.
+    _bt4 = ('0x70 | (b[6] & 0x0F)' in _bt_uu and
+            '0x80 | (b[8] & 0x3F)' in _bt_uu and
+            _bt_uu.count('0x70 | (b[6] & 0x0F)') == 2)
+    if _bt4:
+        ok('BT4 the deterministic uuid is still a well-formed v7 — version, '
+           'variant and the timestamp prefix all where the server expects')
+    else:
+        fail('BT4 the deterministic uuid drifted from the v7 layout')
+    # BT5: ОБЛАСТЬ `await` ПРОВЕРЯЕТСЯ НА ВСЁМ ДЕРЕВЕ. Поставлен по ошибке,
+    # допущенной в этом же патче: правка ушла в ЧУЖОЙ метод — `await` в
+    # неасинхронном теле и ссылка на параметр, которого у метода нет. Оба
+    # промаха — жёсткие ошибки компиляции, а баланс скобок сошёлся и все
+    # подстрочные гейты были зелёными. Текстовый гейт не видит области
+    # видимости, значит области нужна своя проверка.
+    _bt5_tool = (root / 'tools/dart_balance.py').read_text()
+    _bt5 = ('def check_await_scope(' in _bt5_tool and
+            'def _opens_function(' in _bt5_tool and
+            'CTRL = ' in _bt5_tool and
+            'check_await_scope(f)' in _bt5_tool and
+            "fails.append(f'{f.name}:await:{ln}')" in _bt5_tool)
+    if _bt5:
+        ok('BT5 the dart scan checks await against its enclosing body — an '
+           'edit landing in the wrong method is caught before CI')
+    else:
+        fail('BT5 nothing checks await scope; a misplaced edit compiles '
+             'green through every text gate and dies on the build')
+else:
+    ok(f"Part BT skipped (build +{pv}, cloud-visible provenance lands in +186)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)

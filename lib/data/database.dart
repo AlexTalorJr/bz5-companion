@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:drift/drift.dart';
 import 'package:drift_flutter/drift_flutter.dart';
 import 'package:flutter/foundation.dart' show debugPrint;
@@ -999,7 +1001,7 @@ class AppDatabase extends _$AppDatabase {
     // close passes the stop time so a trip that ends because a charge began
     // is dated to when driving actually stopped, not when the close fired.
     DateTime? endedAt,
-  }) {
+  }) async {
     return (update(trips)..where((t) => t.id.equals(id))).write(
       TripsCompanion(
         endedAt: Value(endedAt ?? DateTime.now()),
@@ -1024,12 +1026,19 @@ class AppDatabase extends _$AppDatabase {
         movingSeconds: Value(movingSeconds),
         idleSeconds: Value(idleSeconds),
         energyFromSocKwh: Value(energyFromSocKwh),
-        // v0.1.29+37: only write extra when non-null, so a caller that
-        // didn't compute it (or recomputed nothing) leaves any existing
-        // value untouched rather than nulling it.
-        extra: extra != null ? Value(extra) : const Value.absent(),
+        // v0.1.87+186: `extra` ЗДЕСЬ БОЛЬШЕ НЕ ПИШЕТСЯ ЦЕЛИКОМ — см.
+        // слияние ниже. Перезапись блоба была безопасна, пока писатель был
+        // один; теперь их трое, и она стала тихой потерей чужого ключа.
       ),
     );
+    // Слияние — второй запрос, поэтому оба под транзакцией: процесс на
+    // этом ГУ умирает штатно, по зажиганию, и врозь они оставили бы
+    // поездку с агрегатами и без гистограммы.
+    if (extra != null) {
+      await transaction(() async {
+        await mergeTripExtra(id, extra);
+      });
+    }
   }
 
   /// v0.1.29+37: compute the speed-distribution histogram for a trip
@@ -1101,8 +1110,46 @@ class AppDatabase extends _$AppDatabase {
   /// synchronous snapshot point. No-op-safe: a null leaves the column alone.
   Future<void> updateTripExtra(int tripId, String? extraJson) async {
     if (extraJson == null) return;
+    await mergeTripExtra(tripId, extraJson);
+  }
+
+  /// v0.1.87+186 — СЛИЯНИЕ, А НЕ ПЕРЕЗАПИСЬ.
+  ///
+  /// `trips.extra` — общий блоб, и писателей у него теперь трое: живой
+  /// путь кладёт туда гистограмму скорости В КОНЦЕ поездки, фоновый
+  /// строитель — метку происхождения ПРИ ВСТАВКЕ, а патч живого старта
+  /// добавит `joinedInProgress` В НАЧАЛЕ. При перезаписи целиком конец
+  /// съедал бы начало, и метка «подхватили на ходу» исчезала бы ровно на
+  /// тех поездках, ради которых заводилась. Молча: сервер увидел бы
+  /// валидный JSON без ключа и счёл бы это отсутствием флага.
+  ///
+  /// Незнакомые ключи сохраняются. Блоб принадлежит контракту с сервером
+  /// (`CLIENT_API.md` §3.1), и клиент не вправе решать, какие из них лишние.
+  Future<void> mergeTripExtra(int tripId, String patchJson) async {
+    Map<String, dynamic> merged;
+    try {
+      final row = await (select(trips)..where((t) => t.id.equals(tripId)))
+          .getSingleOrNull();
+      final cur = row?.extra;
+      merged = <String, dynamic>{};
+      if (cur != null && cur.isNotEmpty) {
+        final decoded = jsonDecode(cur);
+        if (decoded is Map) merged.addAll(decoded.cast<String, dynamic>());
+      }
+      final patch = jsonDecode(patchJson);
+      if (patch is Map) merged.addAll(patch.cast<String, dynamic>());
+    } catch (e) {
+      // Битый существующий блоб не должен утащить за собой новые ключи —
+      // но и затирать его молча нельзя. Пишем патч и говорим об этом.
+      debugPrint('mergeTripExtra: existing extra unreadable ($e) — '
+          'writing patch alone');
+      await (update(trips)..where((t) => t.id.equals(tripId))).write(
+        TripsCompanion(extra: Value(patchJson)),
+      );
+      return;
+    }
     await (update(trips)..where((t) => t.id.equals(tripId))).write(
-      TripsCompanion(extra: Value(extraJson)),
+      TripsCompanion(extra: Value(jsonEncode(merged))),
     );
   }
 
@@ -1771,6 +1818,7 @@ class AppDatabase extends _$AppDatabase {
     int? movingSeconds,
     int? idleSeconds,
     double? energyFromSocKwh,
+    String? extraJson,
   }) {
     return transaction(() async {
       final tripId = await insertCompletedTrip(
@@ -1798,6 +1846,7 @@ class AppDatabase extends _$AppDatabase {
       );
       await assignHalSamplesToTrip(
           tripId: tripId, from: windowFrom, to: windowTo);
+      if (extraJson != null) await mergeTripExtra(tripId, extraJson);
       return tripId;
     });
   }
@@ -1854,9 +1903,15 @@ class AppDatabase extends _$AppDatabase {
       movingSeconds: Value(movingSeconds),
       idleSeconds: Value(idleSeconds),
       energyFromSocKwh: Value(energyFromSocKwh),
-      // Облачная личность у фоновой поездки такая же, как у живой, —
-      // иначе она не уедет в синхронизацию.
-      clientUuid: Value(uuidV7()),
+      // v0.1.87+186: облачная личность ДЕТЕРМИНИРОВАННАЯ — выводится из
+      // источника и границ окна. Пересборка того же выезда после
+      // восстановления из архива даёт тот же uuid, и сервер схлопывает
+      // повтор сам вместо того, чтобы завести второй экземпляр поездки.
+      clientUuid: Value(uuidV7Deterministic(
+        time: startedAt,
+        seed: '$source|${startedAt.millisecondsSinceEpoch}'
+            '|${endedAt.millisecondsSinceEpoch}',
+      )),
     ));
   }
 

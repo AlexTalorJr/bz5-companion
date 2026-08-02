@@ -221,6 +221,93 @@ def check_privates(f: Path):
     return bad
 
 
+# ── await outside an async body (v0.1.87+186) ──────────────────────
+#
+# Written because it happened, in this very patch: an edit landed in the
+# WRONG method — `await` in a body declared without `async`, plus a
+# reference to a parameter that method does not have. Both are hard
+# compile errors; the brace balance was perfect and every substring gate
+# was green. Text gates cannot see scope, so scope needs its own check.
+#
+# The scan is deliberately narrow: it tracks brace depth and, for each
+# `{`, decides whether that brace opens a FUNCTION body and whether the
+# body is async, by looking at what sits immediately before it. Plain
+# blocks (if/for/try) inherit the enclosing function's async-ness, which
+# is exactly Dart's rule. Anything it cannot classify inherits too — the
+# check is built to under-report rather than to block on a guess.
+CTRL = {'if', 'while', 'for', 'switch', 'catch', 'do', 'else', 'return'}
+
+
+def _opens_function(code: str, brace: int):
+    """(is_function_body, is_async) for the `{` at index `brace`.
+
+    Returns (False, _) for a plain block — those inherit the enclosing
+    async-ness, which is Dart's own rule. The discriminator is the token
+    before the parameter list: `if (...) {` and `foo(...) {` both end in
+    `)`, and only the second opens a body.
+    """
+    i = brace - 1
+    while i >= 0 and code[i] in ' \t\n':
+        i -= 1
+    is_async = False
+    for kw in ('async*', 'sync*', 'async'):
+        if code.endswith(kw, 0, i + 1):
+            is_async = True
+            i -= len(kw)
+            while i >= 0 and code[i] in ' \t\n':
+                i -= 1
+            break
+    if i < 0 or code[i] != ')':
+        return (False, False)
+    depth = 0
+    while i >= 0:
+        if code[i] == ')':
+            depth += 1
+        elif code[i] == '(':
+            depth -= 1
+            if depth == 0:
+                break
+        i -= 1
+    if i < 0:
+        return (False, False)
+    j = i - 1
+    while j >= 0 and code[j] in ' \t\n':
+        j -= 1
+    k = j
+    while k >= 0 and (code[k].isalnum() or code[k] == '_' or code[k] == '$'):
+        k -= 1
+    word = code[k + 1:j + 1]
+    if word in CTRL:
+        return (False, False)
+    return (True, is_async)
+
+
+def check_await_scope(f: Path):
+    code = strip_code(f.read_text(encoding='utf-8'))
+    stack = [True]
+    bad = []
+    line = 1
+    i = 0
+    while i < len(code):
+        c = code[i]
+        if c == '\n':
+            line += 1
+        elif c == '{':
+            isfn, isasync = _opens_function(code, i)
+            stack.append(isasync if isfn else stack[-1])
+        elif c == '}':
+            if len(stack) > 1:
+                stack.pop()
+        elif code.startswith('await ', i) and (i == 0 or
+                                               not (code[i - 1].isalnum() or
+                                                    code[i - 1] == '_')):
+            if not stack[-1]:
+                bad.append(line)
+            i += 5
+        i += 1
+    return bad
+
+
 def main():
     files = sorted(LIB.rglob('*.dart'))
     print(f'scanning {len(files)} files under lib/')
@@ -253,6 +340,15 @@ def main():
             priv += 1
             fails.append(f'{f.name}:{name}')
     print(f'  privates: {priv} unresolved')
+
+    aw = 0
+    for f in files:
+        for ln in check_await_scope(f):
+            print(f'    [FAIL] {f.relative_to(LIB)}:{ln}: await inside a '
+                  f'body that is not declared async')
+            aw += 1
+            fails.append(f'{f.name}:await:{ln}')
+    print(f'  await scope: {aw} misplaced')
 
     print('=' * 56)
     print('DART SCAN ' + ('FAIL' if fails else 'PASS'))
