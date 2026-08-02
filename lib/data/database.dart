@@ -819,9 +819,19 @@ class AppDatabase extends _$AppDatabase {
 
   // ─────────────────────────── Trips ─────────────────────────────
 
-  Future<int> startTrip({double? startSoc, double? startOdo}) {
+  /// v0.1.89+188: `startedAt` появился ради подхвата фонового хвоста.
+  /// Умолчание прежнее — `DateTime.now()`, поэтому все существующие
+  /// вызывающие (OBD2-трекер и живой путь без подхвата) не затронуты.
+  /// Когда живая поездка усыновляет уже проеханный отрезок, её началом
+  /// обязано быть время ПЕРВОГО движения, иначе длительность и стартовые
+  /// якоря будут описывать разные события.
+  Future<int> startTrip({
+    double? startSoc,
+    double? startOdo,
+    DateTime? startedAt,
+  }) {
     return into(trips).insert(TripsCompanion(
-      startedAt: Value(DateTime.now()),
+      startedAt: Value(startedAt ?? DateTime.now()),
       startSoc: Value(startSoc),
       startOdometer: Value(startOdo),
       // v0.1.29+117 (C1): every new trip is born with its cloud identity.
@@ -1753,6 +1763,33 @@ class AppDatabase extends _$AppDatabase {
       q.where((s) => s.timestamp.isBiggerThanValue(after));
     }
     return q.get();
+  }
+
+  /// v0.1.89+188 — ПРИПИСАТЬ ФОНОВЫЙ ХВОСТ К ЖИВОЙ ПОЕЗДКЕ.
+  ///
+  /// Отдельно от [insertTripWithStampedSamples] потому, что там поездка
+  /// СОЗДАЁТСЯ целиком и одной транзакцией, а здесь она уже открыта и
+  /// живёт: строки досыпаются к существующей строке `trips`.
+  ///
+  /// Условие `tripId IS NULL` — не оптимизация, а защита. Без него
+  /// повторный вызов (а он возможен: открытие строки — best-effort и
+  /// может повториться) перетащил бы к нам чужие приписанные строки, и
+  /// две поездки поделили бы одни и те же измерения.
+  ///
+  /// Возвращает число приписанных строк — оно идёт в `sample_count`
+  /// и в журнал, чтобы подхват был виден в поле, а не только на экране.
+  Future<int> stampHalSamplesInWindow({
+    required int tripId,
+    required DateTime from,
+    required DateTime to,
+  }) {
+    return (update(halSamples)
+          ..where((s) =>
+              s.tripId.isNull() &
+              s.source.equals('hal') &
+              s.timestamp.isBiggerOrEqualValue(from) &
+              s.timestamp.isSmallerOrEqualValue(to)))
+        .write(HalSamplesCompanion(tripId: Value(tripId)));
   }
 
   /// Приписать строки окна к поездке. ШТАМП ОБЯЗАТЕЛЕН И ДЕЛАЕТ ДВА ДЕЛА

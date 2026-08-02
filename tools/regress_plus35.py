@@ -9174,6 +9174,151 @@ else:
     ok(f"Part BU skipped (build +{pv}, readable-archive selection lands "
        f"in +187)")
 
+# ═════ Part BV — v0.1.89+188 «Живой старт подхватывает фон» ═════
+#
+# Поле 02.08, 21:29:10: владелец тронулся при закрытом приложении, сервис
+# собирал в журнал, в 21:30:10 приложение открылось — и живая поездка
+# началась с нуля на одометре 6676.8 при начале движения на 6676.3.
+# Полкилометра стали бы отдельной поездкой при следующем открытии: один
+# заезд, две записи. Плюс запасной путь старта глушился ЛЮБЫМ кадром
+# передачи, включая Park: за 93 минуты поля таких кадров было четыре.
+if int(pv) >= 188:
+    _bv_hal = _strip_comments_safe(
+        (root / 'lib/services/hal_telemetry_service.dart').read_text())
+    _bv_db = _strip_comments_safe(
+        (root / 'lib/data/database.dart').read_text())
+
+    # BV1: ПОДХВАТ СТОИТ НА ЖИВОМ ПУТИ. Не «функция существует», а «её
+    # зовёт открытие строки поездки, и зовёт ДО создания строки». Урок
+    # вакуумного гейта BU1 из прошлого патча: предмет обязан лежать на
+    # пути, по которому идёт исполнение.
+    _bv1_body = ''
+    if 'Future<void> _openHalTripRow() async' in _bv_hal:
+        _bv1_body = _bv_hal.split('Future<void> _openHalTripRow() async')[1] \
+            .split('\n  Future<_HalJoinTail?>')[0]
+    _bv1 = (_bv1_body != '' and
+            '_findJoinableTail(db)' in _bv1_body and
+            '_adoptJoinedTail(join)' in _bv1_body and
+            'db.startTrip(' in _bv1_body and
+            _bv1_body.index('_findJoinableTail(db)')
+            < _bv1_body.index('db.startTrip('))
+    if _bv1:
+        ok('BV1 the live start looks back before it opens the row — the '
+           'drive that began with the app closed is one trip, not two')
+    else:
+        fail('BV1 nothing joins the background tail on the live path; the '
+             '02.08 split into two trips comes back')
+
+    # BV2: НАЧАЛО СТРОКИ СДВИГАЕТСЯ НАЗАД. Строка, рождённая временем
+    # «сейчас» и исправленная секундой позже, успела бы уехать в облако с
+    # неверным стартом — поэтому `startedAt` идёт параметром в insert.
+    _bv2 = ('DateTime? startedAt,' in _bv_db and
+            'Value(startedAt ?? DateTime.now())' in _bv_db and
+            'startedAt: _halTripStartedAt,' in _bv_hal and
+            '_halTripStartedAt = j.start;' in _bv_hal)
+    if _bv2:
+        ok('BV2 a joined trip is born with the time of the first movement, '
+           'not the time the app happened to open')
+    else:
+        fail('BV2 the joined row keeps the app-open time; duration and the '
+             'start anchors would describe different events')
+
+    # BV3: ДИСТАНЦИЯ ИДЁТ В СУЩЕСТВУЮЩИЙ АККУМУЛЯТОР. Заведи подхват свой
+    # путь — на экране и в истории оказались бы два числа про одно и то
+    # же, и разошлись бы они молча.
+    _bv3 = ('_halTripDistAccumKm += j.distanceKm' in _bv_hal and
+            _bv_hal.count('_halTripDistAccumKm +=') == 2)
+    if _bv3:
+        ok('BV3 joined kilometres go into the one accumulator the live card '
+           'already reads — screen and history cannot disagree')
+    else:
+        fail('BV3 the joined distance travels its own path; the card and the '
+             'stored row will drift apart')
+
+    # BV4: ПРИПИСАННЫЕ СТРОКИ СНИМАЮТСЯ СО СТРОИТЕЛЯ. Без штампа фоновый
+    # строитель соберёт из тех же строк вторую поездку — ровно ту, ради
+    # устранения которой всё и делается.
+    _bv4_body = ''
+    if 'Future<int> stampHalSamplesInWindow(' in _bv_db:
+        _bv4_body = _bv_db.split('Future<int> stampHalSamplesInWindow(')[1] \
+            .split('\n  Future<')[0]
+    _bv4 = (_bv4_body != '' and
+            's.tripId.isNull()' in _bv4_body and
+            'stampHalSamplesInWindow(' in _bv_hal)
+    if _bv4:
+        ok('BV4 adopted rows are stamped, and only unassigned ones — the '
+           'builder can no longer mint a second trip from them')
+    else:
+        fail('BV4 adopted rows stay unassigned or the stamp can steal '
+             'another trip\'s rows')
+
+    # BV5: ПРОИСХОЖДЕНИЕ УЕЗЖАЕТ, И СЛИЯНИЕМ. Начало подхваченной поездки
+    # лежит раньше конца предыдущей записи — без ключа сервер позвонит
+    # инвариантом непрерывности одометра на каждую такую поездку.
+    _bv5 = ("mergeTripExtra(id, {'joinedInProgress': true})" in _bv_hal)
+    if _bv5:
+        ok('BV5 a joined trip says so in extra, merged not overwritten — the '
+           'odometer-continuity alert stays quiet')
+    else:
+        fail('BV5 joined trips ship without provenance and will ring the '
+             'server invariant every time')
+
+    # BV6: РАЗРЫВ ДВИЖЕНИЯ — ОДНО ОПРЕДЕЛЕНИЕ НА ПРОЕКТ. Заведи живой путь
+    # свою константу — первое же расхождение развело бы его с фоновым
+    # строителем, и заметить это было бы нечем.
+    # Предмет — ОТСУТСТВИЕ ВТОРОГО ОПРЕДЕЛЕНИЯ, а не отсутствие литерала:
+    # первая редакция гейта запрещала `Duration(minutes: 5)` целиком и
+    # краснела от `_kHalSlopeMaxSpan`, к разрыву поездок отношения не
+    # имеющей. Гейт, запрещающий больше своего предмета, — блокировщик.
+    _bv6 = ('BgTripBuilder.kMotionGap' in _bv_hal and
+            _bv_hal.count('BgTripBuilder.kMotionGap') == 2 and
+            '_kHalMotionGap' not in _bv_hal and
+            '_kHalJoinGap' not in _bv_hal and
+            '_kHalTripGap' not in _bv_hal)
+    if _bv6:
+        ok('BV6 the live path and the builder share one definition of what '
+           'breaks a trip apart')
+    else:
+        fail('BV6 the motion gap is defined twice; live and background will '
+             'disagree about what one trip is')
+
+    # BV7: ЗАПАСНОЙ ПУТЬ НЕ ГЛУШИТСЯ КАДРОМ ПЕРЕДАЧИ, и движение для него
+    # — скорость ИЛИ рост одометра. `speed` приходит ПО ИЗМЕНЕНИЮ, паузы в
+    # поле доходили до 88 секунд; на ровном ходу одного условия мало.
+    _bv7_body = ''
+    if 'void _updateHalTrip()' in _bv_hal:
+        _bv7_body = _bv_hal.split('void _updateHalTrip()')[1] \
+            .split('\n  void ')[0]
+    _bv7 = (_bv7_body != '' and
+            'if (gear == null) {' not in _bv7_body and
+            'odoGrew' in _bv7_body and
+            '_kHalOdoGrowthKm' in _bv7_body)
+    if _bv7:
+        ok('BV7 the speed fallback survives a Park frame and counts odometer '
+           'growth as motion — waking up on a motorway still starts a trip')
+    else:
+        fail('BV7 any gear frame still kills the fallback, or motion is '
+             'speed-only while speed arrives on change')
+    # BV8: ВСТАВКА НЕ ПЕРЕЖИВАЕТ ЗАКРЫТИЕ ПОЕЗДКИ. Поставлен ревизией
+    # этого же патча: поиск хвоста читает до 20 000 строк, и окно между
+    # решением и вставкой стало заметно длиннее прежнего. Закройся
+    # поездка внутри окна — в базу легла бы строка для мёртвой поездки.
+    _bv8_body = ''
+    if 'Future<void> _openHalTripRow() async' in _bv_hal:
+        _bv8_body = _bv_hal.split('Future<void> _openHalTripRow() async')[1] \
+            .split('db.startTrip(')[0]
+    _bv8 = (_bv8_body != '' and
+            'if (!_halTripActive) return;' in _bv8_body)
+    if _bv8:
+        ok('BV8 the row is not inserted for a trip that closed while the '
+           'tail was being read — no orphan is created by the lookback')
+    else:
+        fail('BV8 a trip closing during the tail read still gets a row; it '
+             'would hang open until orphan recovery')
+else:
+    ok(f"Part BV skipped (build +{pv}, joining the background tail lands "
+       f"in +188)")
+
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
 print(f"+35→+51 REGRESSION — build +{pv}")

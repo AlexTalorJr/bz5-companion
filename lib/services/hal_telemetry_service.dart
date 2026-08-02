@@ -107,6 +107,18 @@ abstract class HalTelemetrySource implements Listenable {
   double? halValue(String name);
 }
 
+/// v0.1.89+188 — фоновый хвост, найденный для подхвата.
+typedef _HalJoinTail = ({
+  DateTime start,
+  DateTime end,
+  double? startOdo,
+  double? startSoc,
+  double distanceKm,
+  double? peakSpeedKmh,
+  double? minTempC,
+  double? maxTempC,
+});
+
 class HalTelemetryService extends ChangeNotifier
     implements HalTelemetrySource {
   final _hal = HalTelemetryChannel.instance;
@@ -481,6 +493,20 @@ class HalTelemetryService extends ChangeNotifier
   // never double-start. Distance/duration then anchor from THIS moment
   // (app launch), which is the accepted behaviour for this edge case.
   static const Duration _kHalSpeedStartConfirm = Duration(milliseconds: 2500);
+
+  /// v0.1.89+188 — СКОЛЬКО НАЗАД ЗАГЛЯДЫВАТЬ ЗА ФОНОВЫМ ХВОСТОМ.
+  ///
+  /// Полчаса — не порог склейки, а потолок ЧТЕНИЯ: разрыв, режущий
+  /// поездки, один на весь проект и живёт в [BgTripBuilder.kMotionGap].
+  /// Дублировать его здесь значило бы завести второе определение того,
+  /// что такое «та же поездка», и первое же расхождение развело бы
+  /// живой путь с фоновым молча.
+  static const Duration _kHalJoinLookback = Duration(minutes: 30);
+
+  /// Насколько одометр должен вырасти, чтобы это считалось движением.
+  /// Он приходит с шагом 0.1 км, поэтому порог — один шаг: меньше
+  /// означало бы ловить округление, больше — терять первые сотни метров.
+  static const double _kHalOdoGrowthKm = 0.1;
   // v0.1.29+101: charge-onset close. A HAL trip that doesn't close promptly
   // when the car stops can swallow a charge that starts a few minutes later
   // (observed: trip #45 ended at 4% SOC but the row showed 18% because a DC
@@ -630,6 +656,12 @@ class HalTelemetryService extends ChangeNotifier
   // the start). See _kHalSpeedStartConfirm and the start block in
   // _updateHalTrip.
   DateTime? _halSpeedStartConfirmStart;
+
+  /// v0.1.89+188 — опорный одометр запасного пути. Держит последнее
+  /// НИЗШЕЕ виденное значение, пока поездки нет: рост относительно него и
+  /// есть движение. Сбрасывается на старте поездки, иначе следующий
+  /// старт сравнивался бы с одометром позапрошлой стоянки.
+  double? _halStartOdoWatch;
   // v0.1.29+101: rolling snapshot of the LAST moment the car was moving,
   // captured each tick while speed > _halMovingKmh. When a charge-onset
   // close fires, the trip is finalized AS OF this snapshot (variant A:
@@ -1511,24 +1543,44 @@ class HalTelemetryService extends ChangeNotifier
       // gear path takes over and we drop this clock. Funnels into the same
       // _startHalTrip(); the !_halTripActive guard above prevents any
       // double-start. Distance/duration anchor from here (app launch).
-      if (gear == null) {
-        final sp = halSpeedKmh;
-        if (sp != null && sp > _halMovingKmh) {
-          _halSpeedStartConfirmStart ??= DateTime.now();
-          if (DateTime.now().difference(_halSpeedStartConfirmStart!) >=
-              _kHalSpeedStartConfirm) {
-            _startHalTrip();
-            _halSpeedStartConfirmStart = null;
-          }
-        } else {
-          // Dropped below the moving threshold before confirming — reset.
+      // v0.1.89+188 — ЗАПАСНОЙ ПУТЬ БОЛЬШЕ НЕ ГЛУШИТСЯ КАДРОМ ПЕРЕДАЧИ.
+      //
+      // До этого патча он работал ТОЛЬКО пока `gear == null`: считалось,
+      // что раз кадр передачи пришёл, дальше стартом заведует путь по
+      // передаче. Поле 02.08 показало цену: за 93 минуты кадров передачи
+      // было четыре, и любой из них — включая Park на стоянке — снимал
+      // запасной путь на всю оставшуюся поездку. Проснуться на трассе с
+      // последним известным Park означало не завести поездку вовсе.
+      //
+      // Условие сужено ровно до смысла: путь по передаче стартует сам,
+      // когда передача НЕ Park, а этот остаётся на случай, когда мы уже
+      // едем, а рычаг с тех пор не трогали. Двойной старт невозможен —
+      // оба заходят в `_startHalTrip()` под охраной `!_halTripActive`.
+      //
+      // ДВИЖЕНИЕ = СКОРОСТЬ ИЛИ РОСТ ОДОМЕТРА. То же определение, что у
+      // фонового строителя, и по той же причине: `speed` приходит ПО
+      // ИЗМЕНЕНИЮ, и на ровном ходу пауза между кадрами доходила в поле
+      // до 88 секунд. Одометр в это время растёт исправно.
+      final sp = halSpeedKmh;
+      final odo = _heldValue('odometer', _coreHold);
+      final odoGrew = odo != null &&
+          _halStartOdoWatch != null &&
+          odo > _halStartOdoWatch! + _kHalOdoGrowthKm;
+      if (odo != null && (_halStartOdoWatch == null || odo < _halStartOdoWatch!)) {
+        _halStartOdoWatch = odo;
+      }
+      if ((sp != null && sp > _halMovingKmh) || odoGrew) {
+        _halSpeedStartConfirmStart ??= DateTime.now();
+        if (DateTime.now().difference(_halSpeedStartConfirmStart!) >=
+            _kHalSpeedStartConfirm) {
+          _startHalTrip();
           _halSpeedStartConfirmStart = null;
         }
       } else {
-        // A gear frame has arrived (gear != null but it's Park) — the gear
-        // path owns start/stop from now on; clear the speed clock.
+        // Ниже порога движения до подтверждения — сбросить часы.
         _halSpeedStartConfirmStart = null;
       }
+      if (odo != null) _halStartOdoWatch ??= odo;
       return;
     }
 
@@ -1659,6 +1711,7 @@ class HalTelemetryService extends ChangeNotifier
     _halTripStartedAt = DateTime.now();
     _halTripStartSoc = null;      // latched later, on first valid SOC frame
     _halSpeedStartConfirmStart = null; // v0.1.29+104: clear speed-start clock
+    _halStartOdoWatch = null;     // v0.1.89+188: опорный одометр живёт только между поездками
     _halLastAliveFlush = null;    // v0.1.29+106: flush promptly for the new trip
     _halTripStartTripA = _heldValue('trip_a', _coreHold); // may be null early
     // v0.1.29+103: reset the distance accumulator / last-seen on trip start.
@@ -1686,16 +1739,178 @@ class HalTelemetryService extends ChangeNotifier
     final db = _diagDb;
     if (db == null || _halTripDbId != null) return;
     try {
+      // v0.1.89+188 — СНАЧАЛА ОГЛЯНУТЬСЯ НАЗАД. Поле 02.08: в 21:29:10
+      // владелец тронулся при закрытом приложении, сервис писал в
+      // журнал, в 21:30:10 приложение открылось — и живая поездка
+      // началась с нуля на одометре 6676.8, тогда как ехать начали с
+      // 6676.3. Полкилометра стали бы отдельной поездкой при следующем
+      // открытии: один заезд, две записи в истории.
+      //
+      // Подхват идёт ДО `startTrip`, а не правкой уже открытой строки:
+      // строка, рождённая с временем «сейчас» и исправленная секундой
+      // позже, успела бы уехать в облако с неверным стартом.
+      final join = await _findJoinableTail(db);
+      // ОКНО МЕЖДУ РЕШЕНИЕМ И ВСТАВКОЙ СТАЛО ДЛИННЕЕ, и это надо было
+      // закрыть. Поиск хвоста читает до 20 000 строк, то есть между
+      // «поездка началась» и «строка вставлена» теперь проходит заметно
+      // больше времени, чем до этого патча. Закройся поездка в этом окне
+      // (потеря владения, воткнули донгл, умер поток) — вставка создала
+      // бы строку для уже мёртвой поездки, и висела бы она до
+      // восстановления сирот. Проверка стоит ПЕРЕД вставкой, а не после:
+      // после — это уже сирота.
+      if (!_halTripActive) return;
+      if (join != null) _adoptJoinedTail(join);
       final id = await db.startTrip(
         startSoc: _halTripStartSoc,
         startOdo: _halTripStartOdo,
+        startedAt: _halTripStartedAt,
       );
       // Only adopt the id if a trip is still live (a close may have raced).
-      if (_halTripActive) {
-        _halTripDbId = id;
+      if (!_halTripActive) return;
+      _halTripDbId = id;
+      if (join != null) {
+        // Штамп снимает строки с фонового строителя: приписанная строка
+        // больше не попадёт в его выборку. Вторая поездка на тот же
+        // отрезок становится невозможной по построению, а не
+        // маловероятной.
+        final n = await db.stampHalSamplesInWindow(
+          tripId: id,
+          from: join.start,
+          to: join.end,
+        );
+        // Происхождение — контракт с сервером: Друг 2 вывел поездку с
+        // этим ключом из-под инварианта непрерывности одометра, потому
+        // что её начало лежит раньше конца предыдущей записи. Слияние, а
+        // не запись блоба целиком: писателей у `extra` трое.
+        await db.mergeTripExtra(id, {'joinedInProgress': true});
+        debugPrint('HAL trip: подхвачен фоновый хвост '
+            '${join.start.toIso8601String()} → ${join.end.toIso8601String()}, '
+            '${join.distanceKm.toStringAsFixed(1)} км, строк $n');
       }
     } catch (_) {
       // best-effort — no DB row, history just won't include this drive
+    }
+  }
+
+  /// v0.1.89+188 — ПОСЛЕДНИЙ КЛАСТЕР ДВИЖЕНИЯ, ЕЩЁ НИКОМУ НЕ ПРИПИСАННЫЙ.
+  ///
+  /// Ищет ровно то, что живой старт пропустил: строки, записанные
+  /// сервисом в фоне, у которых нет поездки, и последнее движение по
+  /// которым было меньше [BgTripBuilder.kMotionGap] назад. Разрыв берётся
+  /// у строителя, а не заводится здесь: определение «та же поездка»
+  /// обязано быть одно на проект, иначе живой путь и фоновый разойдутся
+  /// молча.
+  ///
+  /// ПОРОГА НА ДЛИНУ НЕТ, и это сознательно. У строителя он есть (0.3 км,
+  /// перекат не поездка), но там решается, ЗАВОДИТЬ ЛИ поездку. Здесь она
+  /// уже заводится, и решается другое — приписать ей проеханное или
+  /// выбросить. Двести метров, которые строитель отбросил бы, при
+  /// подхвате достаются владельцу.
+  Future<_HalJoinTail?> _findJoinableTail(AppDatabase db) async {
+    final now = DateTime.now();
+    final rows = await db.getUnassignedHalSamples(
+      after: now.subtract(_kHalJoinLookback),
+      limit: 20000,
+    );
+    if (rows.length < 2) return null;
+
+    // Движение = скорость > 0 ИЛИ рост одометра. То же определение, что
+    // у строителя, и по той же причине: `speed` приходит по изменению.
+    final motion = <DateTime>[];
+    double? lastOdo;
+    for (final r in rows) {
+      final v = r.numericValue;
+      if (v == null) continue;
+      if (r.name == 'speed') {
+        if (v > 0) motion.add(r.timestamp);
+      } else if (r.name == 'odometer') {
+        if (lastOdo != null && v > lastOdo) motion.add(r.timestamp);
+        lastOdo = v;
+      }
+    }
+    if (motion.length < 2) return null;
+    motion.sort();
+    final end = motion.last;
+    if (now.difference(end) >= BgTripBuilder.kMotionGap) return null;
+    var start = end;
+    for (var i = motion.length - 1; i > 0; i--) {
+      if (motion[i].difference(motion[i - 1]) >= BgTripBuilder.kMotionGap) {
+        break;
+      }
+      start = motion[i - 1];
+    }
+    if (!start.isBefore(end)) return null;
+
+    // Опорные значения кластера. Берутся из тех же строк — второго
+    // источника у прошлого не существует.
+    double? firstOdo;
+    double? lastOdoIn;
+    double? firstSoc;
+    double? peakSpeed;
+    double? minTemp;
+    double? maxTemp;
+    for (final r in rows) {
+      if (r.timestamp.isBefore(start) || r.timestamp.isAfter(end)) continue;
+      final v = r.numericValue;
+      if (v == null) continue;
+      if (r.name == 'odometer') {
+        firstOdo ??= v;
+        lastOdoIn = v;
+      } else if (r.name == 'soc_precise') {
+        firstSoc ??= v;
+      } else if (r.name == 'speed') {
+        if (peakSpeed == null || v > peakSpeed) peakSpeed = v;
+      } else if (r.name == 'battery_temp_bigdata') {
+        if (minTemp == null || v < minTemp) minTemp = v;
+        if (maxTemp == null || v > maxTemp) maxTemp = v;
+      }
+    }
+    final dist = (firstOdo != null && lastOdoIn != null && lastOdoIn > firstOdo)
+        ? lastOdoIn - firstOdo
+        : 0.0;
+    return (
+      start: start,
+      end: end,
+      startOdo: firstOdo,
+      startSoc: firstSoc,
+      distanceKm: dist,
+      peakSpeedKmh: peakSpeed,
+      minTempC: minTemp,
+      maxTempC: maxTemp,
+    );
+  }
+
+  /// Перенести найденный хвост в ЖИВЫЕ счётчики.
+  ///
+  /// ДИСТАНЦИЯ КЛАДЁТСЯ В СУЩЕСТВУЮЩИЙ АККУМУЛЯТОР, а не заводит второй
+  /// путь. `_halTripDistAccumKm` появился в +103 ровно под «километры,
+  /// проеханные до текущего якоря», и подхваченный хвост — это он и есть.
+  /// Отсюда важное следствие: карточка показывает подхват СРАЗУ, и
+  /// записанная при закрытии дистанция совпадает с тем, что владелец
+  /// видел в дороге. Второго числа про одно и то же не заводим.
+  ///
+  /// Пики и температуры переносятся по той же причине: не перенеси мы их,
+  /// карточка показала бы пик скорости только живой половины — то есть
+  /// число, которое врёт вниз и выглядит правдоподобно.
+  void _adoptJoinedTail(_HalJoinTail j) {
+    _halTripStartedAt = j.start;
+    // `??=`, а не присваивание: живой старт мог успеть защёлкнуть свои
+    // якоря из свежих кадров, и они точнее прошлых. Подхват достраивает
+    // недостающее, а не переписывает уже известное.
+    _halTripStartOdo ??= j.startOdo;
+    _halTripStartSoc ??= j.startSoc;
+    if (j.distanceKm > 0) _halTripDistAccumKm += j.distanceKm;
+    final ps = j.peakSpeedKmh;
+    if (ps != null && (_halPeakSpeedKmh == null || ps > _halPeakSpeedKmh!)) {
+      _halPeakSpeedKmh = ps;
+    }
+    final mn = j.minTempC;
+    if (mn != null && (_halTripMinTempC == null || mn < _halTripMinTempC!)) {
+      _halTripMinTempC = mn;
+    }
+    final mx = j.maxTempC;
+    if (mx != null && (_halTripMaxTempC == null || mx > _halTripMaxTempC!)) {
+      _halTripMaxTempC = mx;
     }
   }
 

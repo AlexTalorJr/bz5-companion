@@ -719,6 +719,44 @@ MUTATIONS = [
      '      final staged = File(p.join(support.path, kStagedName));',
      '      final staged = File(p.join(support.path, _pendingDbName));',
      'перестать убирать принятую копию — она вечно будет первой в списке'),
+
+    # ── эра BV (+188): живой старт подхватывает фон ──
+    ('BV1', HT,
+     '      final join = await _findJoinableTail(db);',
+     '      final _HalJoinTail? join = null;',
+     'снять подхват с живого пути — один заезд снова станет двумя '
+     'поездками'),
+    ('BV2', DB,
+     '      startedAt: Value(startedAt ?? DateTime.now()),',
+     '      startedAt: Value(DateTime.now()),',
+     'рождать подхваченную поездку временем открытия приложения'),
+    ('BV3', HT,
+     '    if (j.distanceKm > 0) _halTripDistAccumKm += j.distanceKm;',
+     '    final joinedKm = j.distanceKm;',
+     'увести подхваченные километры мимо аккумулятора — экран и история '
+     'разойдутся'),
+    ('BV4', DB,
+     '              s.tripId.isNull() &\n              s.source.equals(\'hal\') &',
+     '              s.source.equals(\'hal\') &',
+     'штамповать без проверки на свободную строку — можно увести чужие'),
+    ('BV5', HT,
+     "        await db.mergeTripExtra(id, {'joinedInProgress': true});",
+     '        // происхождение не пишем',
+     'отправить подхваченную поездку без происхождения — ночной алерт'),
+    ('BV6', HT,
+     '    if (now.difference(end) >= BgTripBuilder.kMotionGap) return null;',
+     '    if (now.difference(end) >= const Duration(minutes: 5)) return null;',
+     'завести второе определение разрыва движения'),
+    ('BV8', HT,
+     '      if (!_halTripActive) return;\n      if (join != null) '
+     '_adoptJoinedTail(join);',
+     '      if (join != null) _adoptJoinedTail(join);',
+     'вставлять строку, не проверив, жива ли ещё поездка после чтения '
+     'хвоста'),
+    ('BV7', HT,
+     '      if ((sp != null && sp > _halMovingKmh) || odoGrew) {',
+     '      if (gear == null) {\n      if (sp != null && sp > _halMovingKmh) {',
+     'вернуть глушение запасного пути кадром передачи'),
 ]
 
 FOOTER = 'PASS '
