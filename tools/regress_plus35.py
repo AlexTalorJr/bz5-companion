@@ -8949,6 +8949,231 @@ if int(pv) >= 186:
 else:
     ok(f"Part BT skipped (build +{pv}, cloud-visible provenance lands in +186)")
 
+# ═════ Part BU — v0.1.88+187 «Архив читается, а не только находится» ═════
+#
+# Поле 02.08 отдало отказ, которого прежний код не предусматривал:
+# `PathAccessException … Permission denied, errno = 13` на постоянном имени
+# в публичных Downloads. Удаление меняет uid, файл переживает удаление, а
+# владение им — нет. Прежний поиск возвращал файл по `exists()` (на чужом
+# файле `stat` разрешён, `open` нет) и до перечисления не доходил НИКОГДА,
+# поэтому нечитаемый архив прежней установки заслонял собой свежий,
+# написанный нами же. Здесь это закрывается, и здесь же ставится путь,
+# который от uid не зависит вовсе, — файл по гранту.
+if int(pv) >= 187:
+    _bu_imp = _strip_comments_safe(
+        (root / 'lib/services/import_service.dart').read_text())
+    _bu_exp = _strip_comments_safe(
+        (root / 'lib/services/export_service.dart').read_text())
+    _bu_dm = _strip_comments_safe(
+        (root / 'lib/screens/data_management.dart').read_text())
+    _bu_mf = (root / 'android/app/src/main/AndroidManifest.xml').read_text()
+    _bu_apk = (root
+               / 'android/app/src/main/kotlin/com/bz5companion'
+                 '/bz5_companion/ApkInstall.kt').read_text()
+
+    # BU1: ВЫБОР ПО ЧИТАЕМОСТИ, А НЕ ПО НАЛИЧИЮ. Предмет патча. Возврат
+    # по `exists()` — ровно тот дефект, что стоил поля; проверяем, что
+    # решение принимает проба открытия и что ранний возврат не вернулся.
+    _bu1_body = ''
+    if 'static Future<ArchiveSearch> searchArchive()' in _bu_imp:
+        _bu1_body = _bu_imp.split(
+            'static Future<ArchiveSearch> searchArchive()')[1] \
+            .split('\n  }')[0]
+    _bu1 = (_bu1_body != '' and
+            'findArchiveCandidates()' in _bu1_body and
+            'c.readable' in _bu1_body and
+            'exists()' not in _bu1_body and
+            'static Future<String?> _openFailure(' in _bu_imp and
+            'PathAccessException' in _bu_imp and
+            'searchArchive()' in _bu_dm)
+    if _bu1:
+        ok('BU1 the archive is chosen by whether it opens, and the screen '
+           'calls that chooser — the 02.08 shadowing cannot come back')
+    else:
+        fail('BU1 archive discovery still trusts exists(), or the live path '
+             'no longer goes through the chooser this gate guards')
+
+    # BU2: ИМЯ СЛОТА СОВПАДАЕТ ПО ОБЕ СТОРОНЫ. Литералы в Dart и в Kotlin,
+    # компилятор такую пару не сверит никогда, а расхождение означает, что
+    # принятый по гранту архив ложится туда, где импорт его не ищет, —
+    # молча, и выглядит это как «файл не принялся».
+    _bu2 = ("static const String kStagedName = 'imported_archive.zip';"
+            in _bu_imp and
+            'const val ARCHIVE = "imported_archive.zip"' in _bu_apk and
+            'File(context.filesDir, ARCHIVE)' in _bu_apk)
+    if _bu2:
+        ok('BU2 the staged-archive filename matches on both sides — the '
+           'granted file lands where the import actually looks')
+    else:
+        fail('BU2 Dart and Kotlin disagree about the staged archive name; '
+             'an accepted file would vanish silently')
+
+    # BU3: СВОЙ КАТАЛОГ СРЕДИ КАНДИДАТОВ, И ПЕРВЫМ. Единственное место,
+    # читаемость которого не зависит от uid прежней установки. Уйди оно из
+    # списка — приём по гранту перестанет иметь смысл.
+    _bu3_body = ''
+    if 'static Future<List<Directory>> _candidateDirs()' in _bu_imp:
+        _bu3_body = _bu_imp.split(
+            'static Future<List<Directory>> _candidateDirs()')[1] \
+            .split('\n  }')[0]
+    _bu3 = (_bu3_body != '' and
+            'getApplicationSupportDirectory()' in _bu3_body and
+            _bu3_body.index('getApplicationSupportDirectory()')
+            < _bu3_body.index('/storage/emulated/0/Download'))
+    if _bu3:
+        ok('BU3 the app-private dir is a candidate and comes first — the '
+           'granted archive is reachable regardless of uid')
+    else:
+        fail('BU3 the staged archive is not searched for; accepting a file '
+             'by grant leads nowhere')
+
+    # BU4: ГРАНТ ЗАБИРАЕТСЯ СРАЗУ. Uri из выбора файла живёт до закрытия
+    # выбора. Отложенное чтение по нему упало бы тем же Permission denied,
+    # от которого патч и уходит, — поэтому копия обязана стоять между
+    # выбором и осмотром.
+    _bu4_body = ''
+    if 'Future<void> _pickArchive() async' in _bu_dm:
+        _bu4_body = _bu_dm.split('Future<void> _pickArchive() async')[1] \
+            .split('\n  Future<')[0]
+    _bu4 = (_bu4_body != '' and
+            'pickContent' in _bu4_body and
+            'stageArchive(' in _bu4_body and
+            _bu4_body.index('stageArchive(') < _bu4_body.index(
+                'ImportService.inspect'))
+    if _bu4:
+        ok('BU4 a picked file is copied before it is inspected — the '
+           'temporary grant is spent while it is still alive')
+    else:
+        fail('BU4 the picked uri is read after the grant may be gone; the '
+             'restore would fail with the very error it works around')
+
+    # BU5: ЗАЯВЛЕН ПРИЁМ ZIP. Прямо проверяет версию владельца о том, что
+    # кнопки «Поделиться» в проводнике нет из-за отсутствия получателя.
+    _bu5 = ('android:mimeType="application/zip"' in _bu_mf and
+            'android:mimeType="application/x-zip-compressed"' in _bu_mf and
+            'fun stageArchive(' in _bu_apk)
+    if _bu5:
+        ok('BU5 the app is offered as a receiver for zip — if the file '
+           'manager hides its share button, it is no longer our fault')
+    else:
+        fail('BU5 nothing accepts a zip by share; the one path that does not '
+             'depend on uid is unavailable')
+
+    # BU6: ПРОБЫ ТОЛЬКО ЧИТАЮТ. Урок BI3: проба, которая что-то запускает,
+    # перестаёт быть безопасной, и звать её при каждом отказе нельзя.
+    _bu6_body = ''
+    if 'fun storageProbe(' in _bu_apk:
+        _bu6_body = _bu_apk.split('fun storageProbe(')[1] \
+            .split('\n    }')[0]
+    _bu6 = (_bu6_body != '' and
+            'startActivity' not in _bu6_body and
+            'delete()' not in _bu6_body and
+            'mediastore_rows' in _bu6_body and
+            'listing_total' in _bu6_body and
+            'read_storage_granted' in _bu6_body)
+    if _bu6:
+        ok('BU6 the storage probe only reads — three answers, no side '
+           'effects, safe to run on every refusal')
+    else:
+        fail('BU6 the storage probe acts instead of measuring')
+
+    # BU7: ЛОЖНОЕ ОБЕЩАНИЕ СНЯТО. Комментарий у копии под постоянным именем
+    # утверждал «отказ безобиден, импорт найдёт архив перечислением» при
+    # коде, который до перечисления не доходил. Одиннадцатый случай класса
+    # «текст не соответствует коду»; гейт стоит на ТЕКСТЕ именно потому,
+    # что предмет здесь — обещание.
+    _bu_exp_raw = (root / 'lib/services/export_service.dart').read_text()
+    _bu7 = ('Отказ безобиден' not in _bu_exp_raw and
+            'fixed-name copy FAILED' in _bu_exp)
+    if _bu7:
+        ok('BU7 the export no longer claims a safety it does not have, and '
+           'a failed fixed-name copy is audible')
+    else:
+        fail('BU7 the false "harmless" claim is back on the fixed-name copy')
+
+    # BU8: КЛЮЧИ ЛОКАЛИ — ЛИТЕРАЛЫ. Первая редакция строки кандидата
+    # собирала ключ выражением, и харнесс такой ключ не видит. Гейт стоит
+    # на приёме, а не на конкретной опечатке.
+    _bu8 = ("S.of('dataimp.cand_denied')" in _bu_dm and
+            "S.of('dataimp.cand_bad')" in _bu_dm and
+            "dataimp.cand_$" not in _bu_dm and
+            "S.of('dataimp.pick_btn')" in _bu_dm)
+    if _bu8:
+        ok('BU8 the candidate line uses literal l10n keys — a built key is '
+           'invisible to every check we have')
+    else:
+        fail('BU8 an l10n key is assembled at runtime; the harness cannot '
+             'see it and a typo reaches the screen')
+    # BU9: ЭКРАН НЕ ВЫБИРАЕТ САМ. Поставлен по дефекту первой редакции
+    # этого же патча: список уходил наружу, выбор делал виджет, а гейт
+    # BU1 сторожил функцию сервиса, которую после переписывания экрана
+    # не звал НИКТО. Мутация такое не ловит по построению — она
+    # доказывает, что гейт реагирует на свой предмет, но не то, что
+    # предмет лежит на живом пути. Ловится только проверкой, что
+    # решение принимается в ОДНОМ месте.
+    _bu9 = ('searchArchive()' in _bu_dm and
+            'findArchiveCandidates()' not in _bu_dm and
+            'where((c) => c.readable)' not in _bu_dm and
+            'candidates.first' not in _bu_dm)
+    if _bu9:
+        ok('BU9 the screen shows candidates but does not pick one — the '
+           'choice lives in a single place, and the gate guards that place')
+    else:
+        fail('BU9 the screen chooses an archive on its own; BU1 now watches '
+             'code that does not run')
+
+    # BU10: ОБЕ СТУПЕНИ ВЫБОРА ФАЙЛА. Рядом лежит второй путь, и экран
+    # установки использует его с +176. Одна ступень в восстановлении —
+    # выброшенный шанс на визите, который у нас один.
+    _bu10_body = ''
+    if 'Future<void> _pickArchive() async' in _bu_dm:
+        _bu10_body = _bu_dm.split('Future<void> _pickArchive() async')[1] \
+            .split('\n  Future<')[0]
+    _bu10 = (_bu10_body != '' and
+             'ApkInstallChannel.pickContent' in _bu10_body and
+             'ApkInstallChannel.pick)' in _bu10_body and
+             '_pickWithTimeout(' in _bu10_body)
+    if _bu10:
+        ok('BU10 both file-picking rungs are wired and neither can hang the '
+           'screen for ever')
+    else:
+        fail('BU10 restore uses fewer picker rungs than install does, or a '
+             'lost platform reply can lock the section')
+
+    # BU11: У ПУТИ ВЫБОРА ЕСТЬ ДОЛГОВЕЧНЫЙ СЛЕД. Журнал приложения живёт
+    # в памяти процесса; маркер — файл, и он доезжал целым тогда, когда
+    # экспорт приходил обрезанным. Путь проверяется в поле за один визит.
+    _bu11 = ('"stage-archive: ok=' in _bu_apk and
+             'AutostartMarker.write(' in _bu_apk.split(
+                 'fun stageArchive(')[1].split('fun storageProbe(')[0])
+    if _bu11:
+        ok('BU11 accepting an archive leaves a line in the marker — the one '
+           'channel that has always arrived intact')
+    else:
+        fail('BU11 the picker path leaves no durable trace; a failed visit '
+             'would tell us nothing')
+
+    # BU12: ПРИНЯТАЯ КОПИЯ УБИРАЕТСЯ ПОСЛЕ ПРИМЕНЕНИЯ. Иначе она вечно
+    # предлагается первой в списке кандидатов, будучи сколь угодно
+    # старой, и занимает столько же, сколько экспорт.
+    _bu12_body = ''
+    if 'static Future<Map<String, int>?> rebuildSyncBookkeeping(' in _bu_imp:
+        _bu12_body = _bu_imp.split(
+            'static Future<Map<String, int>?> rebuildSyncBookkeeping(')[1] \
+            .split('\n  }')[0]
+    _bu12 = (_bu12_body != '' and
+             'kStagedName' in _bu12_body and
+             'delete()' in _bu12_body)
+    if _bu12:
+        ok('BU12 the granted copy is dropped once the import has applied — '
+           'it cannot shadow later archives or grow without bound')
+    else:
+        fail('BU12 the staged archive is kept for ever and will be offered '
+             'first at every future search')
+else:
+    ok(f"Part BU skipped (build +{pv}, readable-archive selection lands "
+       f"in +187)")
+
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
 print(f"+35→+51 REGRESSION — build +{pv}")

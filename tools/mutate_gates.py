@@ -662,6 +662,63 @@ MUTATIONS = [
      'speedSamples * 3;',
      'вернуть умножение на шаг прореживания — §2 сделает время в движении '
      'втрое больше'),
+
+    # ── эра BU (+187): архив читается, а не только находится ──
+    ('BU1', IS_,
+     '      if (c.readable) {\n        chosen = c;\n        break;\n      }',
+     '      if (c.path.isNotEmpty) {\n        chosen = c;\n        break;'
+     '\n      }',
+     'вернуть выбор по наличию — чужой нечитаемый файл снова заслонит '
+     'свежий'),
+    ('BU2', AI,
+     '    const val ARCHIVE = "imported_archive.zip"',
+     '    const val ARCHIVE = "staged_archive.zip"',
+     'развести имя слота между Dart и Kotlin — принятый архив ляжет мимо '
+     'импорта'),
+    ('BU3', IS_,
+     '      out.add(await getApplicationSupportDirectory());',
+     '      // свой каталог больше не кандидат',
+     'убрать свой каталог из кандидатов — приём по гранту ведёт в никуда'),
+    ('BU4', DM,
+     '      final staged = await ApkInstallChannel.stageArchive(uri);',
+     '      final staged = <String, dynamic>{};',
+     'читать выбранный uri после того, как грант мог погаснуть'),
+    ('BU5', MF,
+     '                <data android:mimeType="application/zip" />',
+     '                <data android:mimeType="application/pdf" />',
+     'снять заявку на приём zip — единственный путь мимо uid закрывается'),
+    ('BU6', AI,
+     '            val dir = File("/storage/emulated/0/Download")',
+     '            startActivity(Intent())\n'
+     '            val dir = File("/storage/emulated/0/Download")',
+     'дать пробе побочное действие — звать её при каждом отказе станет '
+     'нельзя'),
+    ('BU7', ES,
+     "      debugPrint('Export: fixed-name copy FAILED — $e. '",
+     "      debugPrint('Отказ безобиден — $e. '",
+     'вернуть ложное обещание про безобидный отказ'),
+    ('BU8', DM,
+     "      tail = S.of('dataimp.cand_denied');",
+     "      tail = S.of('dataimp.cand_' + 'denied');",
+     'снова собирать ключ локали выражением — харнесс его не увидит'),
+    ('BU9', DM,
+     '      final found = await ImportService.searchArchive();',
+     '      final found = await ImportService.findArchiveCandidates();',
+     'вернуть выбор в экран — гейт BU1 снова станет вакуумным'),
+    ('BU10', DM,
+     '        picked = await _pickWithTimeout(ApkInstallChannel.pick);',
+     '        picked = <String, dynamic>{};',
+     'снять вторую ступень выбора файла — восстановление станет менее '
+     'живучим, чем установка'),
+    ('BU11', AI,
+     '                "stage-archive: ok=${out["ok"]} bytes='
+     '${out["bytes"] ?: 0}" +',
+     '                "" +',
+     'лишить приём архива долговечного следа — визит ничего не расскажет'),
+    ('BU12', IS_,
+     '      final staged = File(p.join(support.path, kStagedName));',
+     '      final staged = File(p.join(support.path, _pendingDbName));',
+     'перестать убирать принятую копию — она вечно будет первой в списке'),
 ]
 
 FOOTER = 'PASS '

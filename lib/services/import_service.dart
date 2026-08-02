@@ -79,6 +79,30 @@ class ImportService {
   /// путём и не зависит ни от перечисления, ни от выбора файла.
   static const String kFixedName = 'bz5_export_latest.zip';
 
+  /// v0.1.88+187 — ПОСТОЯННОЕ ИМЯ ОКАЗАЛОСЬ НЕДОСТАТОЧНЫМ, И ВОТ ПОЧЕМУ.
+  ///
+  /// Поле 02.08 отдало отказ, которого этот файл не предусматривал:
+  ///
+  ///     PathAccessException: Cannot open file, path =
+  ///     '/storage/emulated/0/Download/bz5_export_latest.zip'
+  ///     (OS Error: Permission denied, errno = 13)
+  ///
+  /// Удаление приложения меняет uid (маркер 31.07 — `user 10163`, маркер
+  /// 02.08 — `user 10330`). Файл переживает удаление, ВЛАДЕНИЕ им — нет,
+  /// а под scoped storage чужой не-медийный файл в Downloads по прямому
+  /// пути не открывается ничем: `READ_EXTERNAL_STORAGE` при `targetSdk`
+  /// 35 даёт только медиа, а экрана выдачи `MANAGE_EXTERNAL_STORAGE` на
+  /// этой прошивке нет (0 резолверов, замер 30.07).
+  ///
+  /// Отсюда вывод, который стоит записать прямо: НИ ОДИН файл в публичных
+  /// Downloads не переживает переустановку в смысле ЧИТАЕМОСТИ. Каждая
+  /// установка читает только то, что написала сама, а её собственные
+  /// файлы становятся чужими для следующей. Поэтому постоянное имя
+  /// остаётся первой ступенью (вдруг прошивка мягче), но опорой быть
+  /// перестаёт — опорой становится файл, полученный ПО ГРАНТУ: через
+  /// выбор файла или «поделиться». Грант к uid не привязан.
+  static const String kStagedName = 'imported_archive.zip';
+
   static const String _pendingDbName = 'bz5_import_pending.sqlite';
   static const String _pendingPrefsName = 'bz5_import_pending_prefs.json';
 
@@ -231,8 +255,20 @@ class ImportService {
   // ─────────────────────────── поиск архива ──────────────────────────
 
   /// Каталоги, где может лежать архив, в порядке предпочтения.
+  ///
+  /// v0.1.88+187: первым идёт СВОЙ каталог. Туда кладёт файл нативная
+  /// сторона, получив его по гранту (выбор файла или «поделиться»), и
+  /// это единственное место, читаемость которого не зависит от того,
+  /// какой uid был у прошлой установки.
   static Future<List<Directory>> _candidateDirs() async {
     final out = <Directory>[];
+    try {
+      // Соответствует `context.filesDir` на стороне Kotlin — туда пишет
+      // `ApkInstall.stageArchive`. Пара «Dart support dir ↔ Kotlin
+      // filesDir» задана path_provider на Android и здесь не выводится
+      // из общих соображений, а взята как контракт плагина.
+      out.add(await getApplicationSupportDirectory());
+    } catch (_) {}
     final pub = Directory('/storage/emulated/0/Download');
     try {
       if (await pub.exists()) out.add(pub);
@@ -250,20 +286,94 @@ class ImportService {
     return out;
   }
 
-  /// Найти архив: сначала постоянное имя, потом — самый свежий
-  /// `bz5_export_*.zip`. Перечисление каталога вторично именно потому,
-  /// что оно может быть недоступно.
-  static Future<File?> findArchive() async {
-    final dirs = await _candidateDirs();
-    for (final d in dirs) {
-      final fixed = File(p.join(d.path, kFixedName));
+  /// ЧИТАЕМ ЛИ ФАЙЛ НА САМОМ ДЕЛЕ.
+  ///
+  /// v0.1.88+187 — сердце патча. До него поиск возвращал файл по
+  /// `exists()`, а `exists()` на чужом файле отвечает ПРАВДУ: `stat`
+  /// разрешён, `open` — нет. Отсюда полевой отказ 02.08: нечитаемый
+  /// `bz5_export_latest.zip` от прежней установки возвращался первым, и
+  /// перечисление каталога, которое нашло бы наш собственный свежий
+  /// архив, не выполнялось НИКОГДА — до него не доходило управление.
+  ///
+  /// Читаем один байт, а не весь файл: цена ошибки здесь — выбор не того
+  /// кандидата, а не порча, и держать десятки мегабайт в памяти ради
+  /// ответа «пускают ли» незачем.
+  static Future<String?> _openFailure(File f) async {
+    RandomAccessFile? h;
+    try {
+      h = await f.open();
+      final len = await f.length();
+      if (len <= 0) return 'empty';
+      await h.read(1);
+      return null;
+    } catch (e) {
+      return e is PathAccessException
+          ? 'denied'
+          : e.runtimeType.toString();
+    } finally {
       try {
-        if (await fixed.exists()) return fixed;
+        await h?.close();
       } catch (_) {}
     }
-    File? newest;
-    DateTime? newestAt;
+  }
+
+  /// Все кандидаты, каждый со своим приговором.
+  ///
+  /// Список, а не первый подходящий, потому что владельцу нужно видеть
+  /// РАЗНИЦУ между «файла нет» и «файл есть, но не пускают»: это два
+  /// разных действия с его стороны, а прежний экран показывал их одной
+  /// красной строкой.
+  static Future<List<ArchiveCandidate>> _findArchiveCandidates() async {
+    final dirs = await _candidateDirs();
+    final seen = <String>{};
+    final out = <ArchiveCandidate>[];
+
+    Future<void> consider(File f, String origin) async {
+      final path = f.path;
+      if (!seen.add(path)) return;
+      final reason = await _openFailure(f);
+      var size = 0;
+      if (reason == null) {
+        try {
+          size = await f.length();
+        } catch (_) {}
+      }
+      out.add(ArchiveCandidate(
+        path: path,
+        origin: origin,
+        readable: reason == null,
+        reason: reason,
+        sizeBytes: size,
+      ));
+    }
+
+    // Ступень 1 — имена, известные без перечисления.
+    //
+    // Источник у принятой копии свой (`staged`), и это не косметика:
+    // файл остаётся в нашем каталоге и после импорта, поэтому в
+    // следующий раз он появится в списке наравне со свежими. Владелец
+    // должен видеть, что это принятая когда-то копия, а не найденный
+    // сейчас архив; дату он всё равно увидит в сухом отчёте до
+    // подтверждения, но узнать её лучше раньше.
+    final names = <String>[kStagedName, kFixedName];
     for (final d in dirs) {
+      for (final n in names) {
+        final f = File(p.join(d.path, n));
+        try {
+          if (!await f.exists()) continue;
+        } catch (_) {
+          continue;
+        }
+        await consider(f, n == kStagedName ? 'staged' : 'fixed');
+      }
+    }
+
+    // Ступень 2 — перечисление. Может вернуть пусто или бросить: под
+    // scoped storage чужие файлы в перечислении не показываются вовсе.
+    // Это не ошибка и не повод молчать — просто ступень, которой на
+    // этой прошивке может не быть.
+    for (final d in dirs) {
+      final found = <File>[];
       try {
         for (final e in d.listSync()) {
           if (e is! File) continue;
@@ -271,15 +381,47 @@ class ImportService {
           if (!name.startsWith('bz5_export_') || !name.endsWith('.zip')) {
             continue;
           }
-          final at = e.statSync().modified;
-          if (newestAt == null || at.isAfter(newestAt)) {
-            newest = e;
-            newestAt = at;
-          }
+          found.add(e);
         }
-      } catch (_) {}
+      } catch (_) {
+        continue;
+      }
+      found.sort((a, b) {
+        try {
+          return b.statSync().modified.compareTo(a.statSync().modified);
+        } catch (_) {
+          return 0;
+        }
+      });
+      for (final f in found) {
+        await consider(f, 'listing');
+      }
     }
-    return newest;
+    return out;
+  }
+
+  /// ПОИСК И ВЫБОР — ОДНОЙ ОПЕРАЦИЕЙ, И ЭТО ВАЖНО.
+  ///
+  /// Первая редакция +187 отдавала наружу список, а выбирать давала
+  /// экрану. Ревизия показала, чем это плохо: решение «какой архив
+  /// брать» оказалось размазано между сервисом и виджетом, `findArchive`
+  /// осталась без единого вызова, а гейт BU1 сторожил мёртвую функцию —
+  /// то есть был вакуумным, и мутация этого не видит по построению
+  /// (она доказывает, что гейт реагирует на свой предмет, но не то, что
+  /// предмет лежит на живом пути).
+  ///
+  /// Теперь наружу уходит и список, и выбор, сделанный ЗДЕСЬ. У экрана
+  /// не остаётся ни повода, ни возможности выбирать самому.
+  static Future<ArchiveSearch> searchArchive() async {
+    final all = await _findArchiveCandidates();
+    ArchiveCandidate? chosen;
+    for (final c in all) {
+      if (c.readable) {
+        chosen = c;
+        break;
+      }
+    }
+    return ArchiveSearch(candidates: all, chosen: chosen);
   }
 
   // ─────────────────────────── осмотр архива ────────────────────────
@@ -639,6 +781,27 @@ class ImportService {
     // данных 31.07 пропусков ноль, но архив может быть старым — и тогда
     // соврать здесь означает навсегда оставить строки без опознавания
     // на стороне сервера.
+    // v0.1.88+187 — ПРИНЯТАЯ КОПИЯ БОЛЬШЕ НЕ НУЖНА, И ХРАНИТЬ ЕЁ ВРЕДНО.
+    //
+    // Две причины, и вторая важнее. Копия весит столько же, сколько
+    // экспорт (на 02.08 это 21 МБ), и на ГУ это заметно. Но главное —
+    // она осталась бы в списке кандидатов НАВСЕГДА и при каждом
+    // следующем поиске предлагалась бы первой, будучи месячной
+    // давности. Сухой отчёт с датой перед подтверждением это поймал бы,
+    // но полагаться на внимательность там, где хватает удаления, не
+    // стоит.
+    //
+    // Удаляется ТОЛЬКО после успешно применённого импорта: отмена и
+    // неудача обязаны оставить файл на месте, иначе повторная попытка
+    // потребует снова искать его в проводнике.
+    try {
+      final support = await getApplicationSupportDirectory();
+      final staged = File(p.join(support.path, kStagedName));
+      if (await staged.exists()) await staged.delete();
+    } catch (e) {
+      debugPrint('Import: staged archive cleanup skipped — $e');
+    }
+
     final gaps = await _uuidGaps(db);
     if (gaps == 0) {
       await prefs.setBool(uuidMapInitialDone, true);
@@ -766,6 +929,63 @@ class ImportService {
       }
     }
     return total;
+  }
+}
+
+/// v0.1.88+187 — ИТОГ ПОИСКА: что нашлось и что из этого выбрано.
+///
+/// Пара, а не два вызова, потому что выбор обязан быть сделан там же,
+/// где собран список: разойдись они — и «показали одно, восстановили
+/// другое» станет возможным молча.
+class ArchiveSearch {
+  final List<ArchiveCandidate> candidates;
+
+  /// Первый читаемый. null — читаемых нет вовсе.
+  final ArchiveCandidate? chosen;
+
+  const ArchiveSearch({required this.candidates, this.chosen});
+
+  bool get hasReadable => chosen != null;
+
+  /// Ничего не нашлось совсем — против «нашлось, но не пускают».
+  bool get isEmpty => candidates.isEmpty;
+}
+
+/// v0.1.88+187 — ОДИН КАНДИДАТ И ПРИГОВОР ПО НЕМУ.
+///
+/// Существует ради различения, которого не было: «файла нет» и «файл
+/// есть, открыть не дают» требуют от владельца разных действий, а
+/// прежний экран сводил оба к одной оранжевой строке. `denied` теперь
+/// читается как «этот архив написан прежней установкой» и ведёт к
+/// кнопке выбора файла, а не к недоумению.
+class ArchiveCandidate {
+  final String path;
+
+  /// `fixed` — найден по известному имени, `listing` — перечислением.
+  final String origin;
+  final bool readable;
+
+  /// null, когда читается. Иначе `denied`, `empty` или имя типа
+  /// исключения.
+  final String? reason;
+  final int sizeBytes;
+
+  const ArchiveCandidate({
+    required this.path,
+    required this.origin,
+    required this.readable,
+    required this.reason,
+    required this.sizeBytes,
+  });
+
+  String get fileName => p.basename(path);
+
+  String get humanSize {
+    if (sizeBytes <= 0) return '—';
+    if (sizeBytes < 1024 * 1024) {
+      return '${(sizeBytes / 1024).toStringAsFixed(0)} KB';
+    }
+    return '${(sizeBytes / (1024 * 1024)).toStringAsFixed(1)} MB';
   }
 }
 

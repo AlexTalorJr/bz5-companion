@@ -123,6 +123,22 @@ class MainActivity : FlutterActivity() {
                         offMain(result) { ApkInstall.stage(this, uri) }
                     }
                 }
+                // v0.1.88+187: тот же выбранный файл, но в слот архива.
+                // Копирование в рабочем потоке — архив это десятки
+                // мегабайт, и главный поток на них держать нельзя.
+                "stageArchive" -> {
+                    val uri = call.argument<String>("uri")
+                    if (uri == null) {
+                        result.success(mapOf<String, Any?>(
+                            "ok" to false, "error" to "no uri"
+                        ))
+                    } else {
+                        offMain(result) { ApkInstall.stageArchive(this, uri) }
+                    }
+                }
+                // v0.1.88+187: только чтение, ничего не запускает.
+                "storageProbe" ->
+                    offMain(result) { ApkInstall.storageProbe(this) }
                 "launch" -> {
                     // v0.1.77+176: попытка идёт через
                     // startActivityForResult, и resultCode придёт в

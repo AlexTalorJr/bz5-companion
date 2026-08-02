@@ -7,6 +7,7 @@ import '../data/database.dart';
 import '../l10n/strings.dart';
 import '../services/connection.dart';
 import '../services/locale_service.dart';
+import '../services/apk_install_channel.dart';
 import '../services/export_service.dart';
 import '../services/import_service.dart';
 
@@ -55,6 +56,14 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
 
   // v0.1.83+182 — отчёт о восстановлении. Живёт до снятия владельцем.
   ImportReport? _report;
+
+  // v0.1.88+187 — что именно нашлось и почему не открылось. Список, а
+  // не первый подходящий: «файла нет» и «не пускают» требуют от
+  // владельца РАЗНЫХ действий, а прежний экран сводил их в одну строку.
+  List<ArchiveCandidate> _candidates = const [];
+
+  // Итог трёх проб хранилища одной строкой. Пусто, пока не спрашивали.
+  String? _probeLine;
 
   @override
   void initState() {
@@ -325,6 +334,51 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
                 onPressed: _busy ? null : _findArchive,
               ),
             ),
+            // v0.1.88+187 — второй путь, и на этой прошивке он главный.
+            // Файл, показанный владельцем, приходит с грантом, а грант
+            // не зависит от того, какой uid был у прежней установки.
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+              child: OutlinedButton.icon(
+                icon: const Icon(Icons.attach_file),
+                label: Text(S.of('dataimp.pick_btn')),
+                style: OutlinedButton.styleFrom(
+                  minimumSize: const Size.fromHeight(48),
+                ),
+                onPressed: _busy ? null : _pickArchive,
+              ),
+            ),
+            // Список кандидатов с приговором по каждому. Показывается
+            // всегда, когда поиск отработал: при удаче он объясняет
+            // ВЫБОР, при неудаче — ОТКАЗ, и это одинаково важно.
+            if (_candidates.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    for (final c in _candidates)
+                      Text(
+                        _candidateLine(c),
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: c.readable
+                              ? Colors.greenAccent
+                              : Colors.orangeAccent,
+                        ),
+                      ),
+                    if (!_candidates.any((c) => c.readable))
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Text(
+                          S.of('dataimp.denied_hint'),
+                          style: const TextStyle(
+                              fontSize: 11, color: Colors.grey),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
             if (_preview != null && _preview!.ok) ...[
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
@@ -372,6 +426,25 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
                       .replaceFirst('{detail}', '${_preview!.errorDetail}'),
                   style: const TextStyle(
                       fontSize: 12, color: Colors.orangeAccent),
+                ),
+              ),
+            // v0.1.88+187 — проба хранилища. Стоит здесь, а не в
+            // «Расширенном», потому что нужна ровно в тот момент, когда
+            // восстановление отказало, и уходить за ней на другой экран
+            // владельцу незачем.
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+              child: TextButton(
+                onPressed: _busy ? null : _runStorageProbe,
+                child: Text(S.of('dataimp.probe_btn')),
+              ),
+            ),
+            if (_probeLine != null)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                child: Text(
+                  _probeLine!,
+                  style: const TextStyle(fontSize: 10, color: Colors.grey),
                 ),
               ),
           ],
@@ -565,23 +638,158 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
       _busy = true;
       _preview = null;
       _importResult = null;
+      _candidates = const [];
     });
     final schema = context.read<ConnectionService>().db.schemaVersion;
     try {
-      final zip = await ImportService.findArchive();
-      if (zip == null) {
+      // v0.1.88+187: и список, и выбор делает СЕРВИС. Экран только
+      // показывает. Своя логика выбора здесь была бы вторым местом,
+      // где решается один вопрос, и первая редакция патча ровно на
+      // этом и попалась — гейт остался сторожить неиспользуемую
+      // функцию в сервисе, пока выбирал виджет.
+      final found = await ImportService.searchArchive();
+      if (mounted) setState(() => _candidates = found.candidates);
+      final chosen = found.chosen;
+      if (chosen == null) {
         if (!mounted) return;
         setState(() {
-          _preview = ImportPreview.bad('', 'not-found', '');
+          _preview = ImportPreview.bad(
+              '', found.isEmpty ? 'not-found' : 'unreadable', '');
         });
         return;
       }
-      final pv = await ImportService.inspect(zip, appSchemaVersion: schema);
+      final pv = await ImportService.inspect(File(chosen.path),
+          appSchemaVersion: schema);
       if (!mounted) return;
       setState(() => _preview = pv);
     } catch (e) {
       if (!mounted) return;
       setState(() => _preview = ImportPreview.bad('', 'error', '$e'));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// v0.1.88+187 — ВЗЯТЬ ФАЙЛ ПО ГРАНТУ.
+  ///
+  /// Единственный путь, который не зависит от uid прежней установки:
+  /// владелец показывает файл сам, система выдаёт временный доступ, мы
+  /// немедленно копируем байты к себе. Дальше архив лежит в нашем
+  /// каталоге и читается всегда.
+  ///
+  /// Копия делается СРАЗУ, а не в момент «Восстановить»: грант живёт до
+  /// закрытия выбора, и отложенное чтение по тому же uri провалилось бы
+  /// тем же `Permission denied`, от которого мы здесь и уходим.
+  Future<void> _pickArchive() async {
+    setState(() {
+      _busy = true;
+      _preview = null;
+      _importResult = null;
+      _candidates = const [];
+    });
+    final schema = context.read<ConnectionService>().db.schemaVersion;
+    try {
+      // ДВЕ СТУПЕНИ, а не одна. Рядом уже лежит второй путь — SAF
+      // (`pick`, ACTION_OPEN_DOCUMENT), и экран установки использует
+      // оба подряд с +176. Ограничься восстановление одним — оно
+      // оказалось бы менее живучим, чем установка, без единой причины,
+      // а визит у нас один. На этой прошивке оба действия ведут себя
+      // непредсказуемо: GET_CONTENT и OPEN_DOCUMENT резолвятся в
+      // РАЗНЫЕ активити, и какая из них покажет zip — неизвестно.
+      //
+      // ТАЙМАУТ обязателен. Ответ приходит из `onActivityResult`, а
+      // слот ожидания живёт в активити: умри она, пока открыт выбор,
+      // Future не завершится никогда и раздел останется заблокирован
+      // до перезапуска приложения.
+      var picked = await _pickWithTimeout(ApkInstallChannel.pickContent);
+      var uri = picked['uri'];
+      if (picked['ok'] != true || uri is! String) {
+        picked = await _pickWithTimeout(ApkInstallChannel.pick);
+        uri = picked['uri'];
+      }
+      if (picked['ok'] != true || uri is! String) {
+        if (!mounted) return;
+        setState(() => _preview = ImportPreview.bad(
+            '', 'pick-cancelled', '${picked['error'] ?? ''}'));
+        return;
+      }
+      final staged = await ApkInstallChannel.stageArchive(uri);
+      final path = staged['path'];
+      if (staged['ok'] != true || path is! String) {
+        if (!mounted) return;
+        setState(() => _preview = ImportPreview.bad(
+            '', 'stage-failed', '${staged['error'] ?? ''}'));
+        return;
+      }
+      final pv =
+          await ImportService.inspect(File(path), appSchemaVersion: schema);
+      if (!mounted) return;
+      setState(() => _preview = pv);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _preview = ImportPreview.bad('', 'error', '$e'));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// v0.1.88+187 — выбор файла с потолком ожидания.
+  ///
+  /// Пять минут — не UX-число, а страховка от потерянного ответа.
+  /// Владелец может искать файл долго, поэтому потолок высокий; смысл
+  /// не в том, чтобы поторопить, а в том, чтобы экран не остался
+  /// заблокированным навсегда, если ответа не будет вообще.
+  Future<Map<String, dynamic>> _pickWithTimeout(
+    Future<Map<String, dynamic>> Function() call,
+  ) async {
+    try {
+      return await call().timeout(const Duration(minutes: 5));
+    } catch (e) {
+      return <String, dynamic>{'ok': false, 'error': 'timeout: $e'};
+    }
+  }
+
+  /// v0.1.88+187 — строка одного кандидата.
+  ///
+  /// Ключи локали здесь ЛИТЕРАЛЫ и стоят в разных ветках сознательно.
+  /// Первая редакция собирала ключ выражением
+  /// `'dataimp.cand_${… ? 'denied' : 'bad'}'` — красиво и ровно на один
+  /// класс проверок слепо: харнесс ищет ключи по литералам, собранный
+  /// ключ он не видит, и опечатка доехала бы до экрана владельца.
+  String _candidateLine(ArchiveCandidate c) {
+    final mark = c.readable ? '✓' : '✗';
+    final String tail;
+    if (c.readable) {
+      tail = c.humanSize;
+    } else if (c.reason == 'denied') {
+      tail = S.of('dataimp.cand_denied');
+    } else {
+      tail = S.of('dataimp.cand_bad');
+    }
+    return '$mark ${c.fileName} · ${c.origin} · $tail';
+  }
+
+  /// v0.1.88+187 — три пробы одной строкой. Ничего не меняет.
+  Future<void> _runStorageProbe() async {
+    setState(() => _busy = true);
+    try {
+      final p = await ApkInstallChannel.storageProbe();
+      final line = 'listing=${p['listing_total'] ?? '?'}'
+          '/${p['listing_zips'] ?? '?'}'
+          ' · mediastore=${p['mediastore_rows'] ?? '?'}'
+          ' (readable ${p['mediastore_readable'] ?? 0})'
+          ' · get_content=${(p['get_content_zip'] as List?)?.length ?? 0}'
+          '/${(p['get_content_any'] as List?)?.length ?? 0}'
+          ' · send_zip=${(p['send_zip_receivers'] as List?)?.length ?? 0}'
+          ' · read_perm=${p['read_storage_granted'] ?? '?'}'
+          ' · manage=${p['manage_storage_granted'] ?? '?'}'
+          ' · staged=${p['staged_archive_bytes'] ?? 0}';
+      debugPrint('StorageProbe: $line');
+      if (!mounted) return;
+      setState(() => _probeLine = line);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _probeLine = 'probe failed: $e');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -621,6 +829,9 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
     setState(() {
       _busy = false;
       _pending = res.ok;
+      // Список кандидатов относился к прошлому поиску; после
+      // постановки в очередь он вводит в заблуждение.
+      if (res.ok) _candidates = const [];
       _importResult = res.ok
           ? S.of('dataimp.staged')
           : S.of('dataimp.stage_failed_fmt').replaceFirst('{e}', '${res.error}');

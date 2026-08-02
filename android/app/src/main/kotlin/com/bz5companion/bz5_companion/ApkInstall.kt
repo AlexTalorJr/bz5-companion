@@ -42,6 +42,19 @@ import java.io.File
  * Ничего не скачивает. Сеть добавится отдельно и только если
  * выяснится, что до установщика дело доходит.
  *
+ * ── v0.1.88+187 — В ФАЙЛЕ ЖИВЁТ ЕЩЁ ОДНА ТЕМА ──────────────────────
+ *
+ * `stageArchive` и `storageProbe` к установке APK отношения не
+ * имеют: это приём архива для ВОССТАНОВЛЕНИЯ и замер доступа к
+ * хранилищу. Связность нарушена сознательно и вынужденно —
+ * правило проекта запрещает создавать новые `.kt` через
+ * `git format-patch` (восемь silent class-drop в recon, причина
+ * не установлена). Механика у них общая с установкой: тот же
+ * выбор файла, тот же `contentResolver`, те же резолверы, —
+ * поэтому цена соседства невелика. Но умалчивать об этом в шапке
+ * нельзя: файл, который называется «установка», а содержит
+ * восстановление, следующий читатель обойдёт стороной.
+ *
  * ── v0.1.77+176 — ЧТО СКАЗАЛО ПОЛЕ И ЧТО ИЗ ЭТОГО СЛЕДУЕТ ──────────
  *
  * Пять прогонов 29.07 дали одинаковый ответ: системный установщик на
@@ -189,6 +202,24 @@ object ApkInstall {
     private const val ACT_GET_CONTENT = "android.intent.action.GET_CONTENT"
 
     private const val MIME = ApkFileProvider.MIME
+
+    /**
+     * v0.1.88+187 — куда ложится архив, полученный ПО ГРАНТУ.
+     *
+     * `filesDir`, а не `cacheDir`, и это не вкусовщина: кэш система
+     * вправе очистить в любой момент, а между «файл принят» и «владелец
+     * нажал восстановить» проходит столько времени, сколько он захочет.
+     * Тот же риск уже записан в хвостах про скачанный APK в 30 МБ,
+     * который лежит в `cacheDir`, — повторять его на данных нельзя.
+     *
+     * Имя совпадает с `ImportService.kStagedName` на стороне Dart.
+     * Литерал по обе стороны, а не общая константа: разные языки, и
+     * расхождение ловит текстовый гейт (BU2), потому что компилятор
+     * такую пару не проверит никогда.
+     */
+    const val ARCHIVE = "imported_archive.zip"
+
+    private const val ZIP_MIME = "application/zip"
 
     // ── часть 1: проба ────────────────────────────────────────────
 
@@ -500,7 +531,191 @@ object ApkInstall {
         return out
     }
 
-    private fun displayName(context: Context, uri: Uri): String = try {
+    /**
+     * v0.1.88+187 — ТО ЖЕ САМОЕ, НО ДЛЯ АРХИВА И В ДРУГОЙ СЛОТ.
+     *
+     * Отдельная функция, а не параметр у `stage`: слот APK живёт в кэше
+     * и переиспользуется установщиком, слот архива живёт в `filesDir` и
+     * ждёт решения владельца. Смешать их значило бы, что скачивание
+     * сборки затирает принятый архив — молча и ровно в тот момент,
+     * когда владелец собрался восстанавливаться.
+     *
+     * Копия делается ПОТОМУ ЧТО ГРАНТ ВРЕМЕННЫЙ. Uri, пришедший из
+     * выбора файла или из «поделиться», живёт до конца активити; читать
+     * по нему через десять минут, когда владелец нажмёт «Восстановить»,
+     * уже нельзя. Байты надо забрать сразу и к себе — тогда uid, чужие
+     * файлы и scoped storage перестают иметь значение вообще.
+     */
+    fun stageArchive(context: Context, uriStr: String): Map<String, Any?> {
+        val out = LinkedHashMap<String, Any?>()
+        val dst = File(context.filesDir, ARCHIVE)
+        try {
+            val uri = Uri.parse(uriStr)
+            out["source_name"] = displayName(context, uri)
+            val input = context.contentResolver.openInputStream(uri)
+            if (input == null) {
+                out["ok"] = false
+                out["error"] = "openInputStream returned null"
+                return out
+            }
+            input.use { ins -> dst.outputStream().use { ins.copyTo(it) } }
+            out["ok"] = true
+            out["bytes"] = dst.length()
+            out["path"] = dst.absolutePath
+        } catch (t: Throwable) {
+            out["ok"] = false
+            out["error"] = "${t.javaClass.simpleName}: ${t.message}"
+        }
+        // СЛЕД ОБЯЗАН ОСТАТЬСЯ, И ИМЕННО В МАРКЕРЕ. Журнал приложения
+        // живёт в памяти процесса и уезжает только вместе с ним; маркер
+        // — файл, и он доехал целым оба раза, когда экспортный ZIP
+        // приходил обрезанным. Этот путь проверяется в поле за один
+        // визит, и остаться без его показаний нельзя.
+        try {
+            AutostartMarker.write(
+                context,
+                "stage-archive: ok=${out["ok"]} bytes=${out["bytes"] ?: 0}" +
+                    " name=${out["source_name"] ?: "?"}" +
+                    " err=${out["error"] ?: "-"}"
+            )
+        } catch (_: Throwable) {
+            // Маркер — наблюдение, а не механизм: его отказ не смеет
+            // отменить уже принятый архив.
+        }
+        return out
+    }
+
+    /**
+     * v0.1.88+187 — ТРИ ПРОБЫ ХРАНИЛИЩА. ТОЛЬКО ЧТЕНИЕ.
+     *
+     * Ставятся потому, что спор «нет прав» против «scoped storage не
+     * пускает к чужому» словами не решается, а решается замером. Каждая
+     * проба отвечает на свой вопрос и ни одна ничего не меняет:
+     *
+     *   `listing`  — показывает ли перечисление публичных Downloads
+     *                чужие файлы вообще. Если да, выбор по читаемости
+     *                находит свежий архив сам, без файлменеджера.
+     *   `mediastore` — видит ли `MediaStore.Downloads` файл по имени и
+     *                отдаёт ли поток. Владение в MediaStore числится по
+     *                ИМЕНИ ПАКЕТА, а пакет при переустановке не
+     *                меняется; осиротеет ли запись при удалении —
+     *                неизвестно, поэтому проба, а не утверждение.
+     *   `get_content` / `send` — кому система отдаст выбор файла и кто
+     *                готов принять zip. Второе прямо проверяет версию
+     *                владельца о том, что кнопки «Поделиться» в
+     *                проводнике нет из-за отсутствия получателя.
+     *
+     * Плюс состояние разрешения: без него «отказано» и «не выдано»
+     * неразличимы, а это два разных диагноза с разной ценой.
+     */
+    fun storageProbe(context: Context): Map<String, Any?> {
+        val out = LinkedHashMap<String, Any?>()
+        out["sdk"] = Build.VERSION.SDK_INT
+        out["read_storage_granted"] = try {
+            context.checkSelfPermission(
+                android.Manifest.permission.READ_EXTERNAL_STORAGE
+            ) == PackageManager.PERMISSION_GRANTED
+        } catch (t: Throwable) {
+            false
+        }
+        out["manage_storage_granted"] = try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                Environment.isExternalStorageManager()
+            } else {
+                false
+            }
+        } catch (t: Throwable) {
+            false
+        }
+
+        // ── проба 1: перечисление ──
+        try {
+            val dir = File("/storage/emulated/0/Download")
+            val all = dir.list()
+            out["listing_total"] = all?.size ?: -1
+            out["listing_zips"] = all?.count {
+                it.startsWith("bz5_export_") && it.endsWith(".zip")
+            } ?: -1
+        } catch (t: Throwable) {
+            out["listing_total"] = -1
+            out["listing_error"] = "${t.javaClass.simpleName}: ${t.message}"
+        }
+
+        // ── проба 2: MediaStore ──
+        try {
+            val uri = android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI
+            val cur = context.contentResolver.query(
+                uri,
+                arrayOf(
+                    android.provider.MediaStore.MediaColumns._ID,
+                    android.provider.MediaStore.MediaColumns.DISPLAY_NAME,
+                    android.provider.MediaStore.MediaColumns.SIZE,
+                ),
+                "${android.provider.MediaStore.MediaColumns.DISPLAY_NAME}" +
+                    " LIKE ?",
+                arrayOf("bz5_export_%"),
+                null,
+            )
+            if (cur == null) {
+                out["mediastore_rows"] = -1
+                out["mediastore_error"] = "query returned null"
+            } else {
+                cur.use { c ->
+                    out["mediastore_rows"] = c.count
+                    val names = ArrayList<String>()
+                    var readable = 0
+                    while (c.moveToNext() && names.size < 8) {
+                        val id = c.getLong(0)
+                        names.add(c.getString(1) ?: "?")
+                        val row = android.content.ContentUris
+                            .withAppendedId(uri, id)
+                        try {
+                            context.contentResolver.openInputStream(row)
+                                ?.use { it.read() }
+                            readable++
+                        } catch (_: Throwable) {
+                            // Отказ здесь — это и есть ответ пробы.
+                        }
+                    }
+                    out["mediastore_names"] = names
+                    out["mediastore_readable"] = readable
+                }
+            }
+        } catch (t: Throwable) {
+            out["mediastore_rows"] = -1
+            out["mediastore_error"] = "${t.javaClass.simpleName}: ${t.message}"
+        }
+
+        // ── проба 3: кто отдаёт и кто принимает ──
+        out["get_content_zip"] = resolvers(
+            context,
+            Intent(ACT_GET_CONTENT)
+                .addCategory(Intent.CATEGORY_OPENABLE)
+                .setType(ZIP_MIME)
+        )
+        out["get_content_any"] = resolvers(
+            context,
+            Intent(ACT_GET_CONTENT)
+                .addCategory(Intent.CATEGORY_OPENABLE)
+                .setType("*/*")
+        )
+        out["send_zip_receivers"] = resolvers(
+            context,
+            Intent(Intent.ACTION_SEND).setType(ZIP_MIME)
+        )
+        out["staged_archive_bytes"] = try {
+            val f = File(context.filesDir, ARCHIVE)
+            if (f.exists()) f.length() else 0L
+        } catch (t: Throwable) {
+            -1L
+        }
+        return out
+    }
+
+    /** v0.1.88+187: перестала быть приватной — `StageActivity` живёт
+     *  в этом же файле, но это ОТДЕЛЬНЫЙ верхнеуровневый класс, а
+     *  `private` у члена объекта до него не достаёт. */
+    fun displayName(context: Context, uri: Uri): String = try {
         context.contentResolver.query(
             uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null
         )?.use { c ->
@@ -953,9 +1168,27 @@ class StageActivity : android.app.Activity() {
         // записи, оставив в кэше огрызок под именем staged_update.apk.
         // Такой огрызок установщик возьмёт и отвергнет, а отказ
         // прочитается как «путь не работает».
+        // v0.1.88+187 — РАЗВИЛКА ПО СОДЕРЖИМОМУ, А НЕ ПО НАМЕРЕНИЮ.
+        //
+        // Активити принимает теперь два разных груза: APK для установки
+        // и архив для восстановления. Различать их по mime-типу интента
+        // нельзя — проводники этой прошивки проставляют
+        // `application/octet-stream` чему угодно, и на этом фильтре APK
+        // и zip неразличимы. Различаем по имени файла, а его отдаёт
+        // провайдер источника, а не отправитель.
+        //
+        // Умолчание — APK: так вела себя активити с +176, и менять
+        // поведение по умолчанию из-за нового груза значит ломать
+        // работающий путь ради ещё не проверенного.
+        val srcName = ApkInstall.displayName(this, uri).lowercase()
+        val isArchive = srcName.endsWith(".zip")
         val main = android.os.Handler(android.os.Looper.getMainLooper())
         Thread {
-            val res = ApkInstall.stage(this, uri.toString())
+            val res = if (isArchive) {
+                ApkInstall.stageArchive(this, uri.toString())
+            } else {
+                ApkInstall.stage(this, uri.toString())
+            }
             // Итог виден в журнале автозапуска: своего UI у активити
             // нет, а приложение в этот момент может быть не запущено
             // вовсе, и сказать владельцу результат больше негде. Журнал
@@ -963,7 +1196,8 @@ class StageActivity : android.app.Activity() {
             // целым оба раза, когда экспортный ZIP приезжал обрезанным.
             AutostartMarker.write(
                 this,
-                "stage-share: ok=${res["ok"]} bytes=${res["bytes"] ?: 0}" +
+                "stage-share: slot=${if (isArchive) "archive" else "apk"}" +
+                    " ok=${res["ok"]} bytes=${res["bytes"] ?: 0}" +
                     " name=${res["source_name"] ?: "?"}" +
                     " err=${res["error"] ?: "-"}"
             )

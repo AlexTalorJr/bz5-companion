@@ -40,6 +40,22 @@ class ApkInstallChannel {
   static Future<Map<String, dynamic>> stage(String uri) =>
       _call('stage', {'uri': uri});
 
+  /// v0.1.88+187 — тот же выбранный файл, но в слот АРХИВА
+  /// (`filesDir/imported_archive.zip`, читается импортом).
+  /// `{ok, bytes, source_name, path}`.
+  ///
+  /// Отдельно от `stage` намеренно: слот APK лежит в кэше и его
+  /// переиспользует скачивание сборки. Общий слот означал бы, что
+  /// проверка обновления затирает принятый архив.
+  static Future<Map<String, dynamic>> stageArchive(String uri) =>
+      _call('stageArchive', {'uri': uri});
+
+  /// v0.1.88+187 — три пробы хранилища, только чтение. Отвечает на
+  /// вопрос, какая ступень доступа к файлу на этой прошивке живая:
+  /// перечисление, MediaStore, выбор файла, приём «поделиться».
+  static Future<Map<String, dynamic>> storageProbe() =>
+      _call('storageProbe');
+
   /// Отдать подготовленный файл установщику. `{ok, action, steps}`.
   /// resultCode приезжает не сюда, а в журнал автозапуска: ответ
   /// установщика — главный неизвестный факт темы, и терять его из-за

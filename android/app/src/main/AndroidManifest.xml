@@ -322,6 +322,27 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="application/octet-stream" />
             </intent-filter>
+            <!--
+                v0.1.88+187 — приём АРХИВА, а не только APK.
+
+                Поле 02.08: у штатного проводника ГУ кнопки «Поделиться»
+                для zip не видно. Версий две, и они различимы. Либо
+                проводник её не умеет вовсе, либо он её прячет, потому
+                что принять zip на этой прошивке некому: до этого патча
+                мы объявляли только apk-мимотип и octet-stream.
+                Объявление стоит четыре строки и различает версии за
+                один визит — если кнопка появится, дело было в нас.
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/zip" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/x-zip-compressed" />
+            </intent-filter>
         </activity>
         <provider
             android:name=".ApkFileProvider"

@@ -1054,6 +1054,13 @@ class S {
     'dataimp.close_btn': 'Close the app now',
     'dataimp.close_note': 'Reopening is not enough on its own: the process outlives the window here, and the swap runs at process start. Closing from this button makes it happen.',
     'dataimp.bad_fmt': 'Archive unusable: {code} ({detail})',
+    'dataimp.pick_btn': 'Choose the file myself',
+    'dataimp.cand_denied': 'no access (written by an earlier install)',
+    'dataimp.cand_bad': 'unreadable',
+    'dataimp.denied_hint': 'Uninstalling changes the app id, and files left '
+        'by the previous install stop opening. Use "Choose the file myself" '
+        'and point at the archive — that grant does not depend on the id.',
+    'dataimp.probe_btn': 'Storage probe',
 
     // ── polling diagnostics ──
     'polld.title': 'Polling diagnostics',
@@ -2250,6 +2257,13 @@ class S {
     'dataimp.close_btn': 'Закрыть приложение',
     'dataimp.close_note': 'Просто открыть заново недостаточно: процесс здесь живёт дольше окна, а обмен происходит при старте процесса. Эта кнопка снимает его наверняка.',
     'dataimp.bad_fmt': 'Архив не годен: {code} ({detail})',
+    'dataimp.pick_btn': 'Выбрать файл самому',
+    'dataimp.cand_denied': 'нет доступа (написан прежней установкой)',
+    'dataimp.cand_bad': 'не читается',
+    'dataimp.denied_hint': 'Удаление меняет идентификатор приложения, и файлы '
+        'от прежней установки перестают открываться. Нажмите «Выбрать файл '
+        'самому» и укажите архив — этот доступ от идентификатора не зависит.',
+    'dataimp.probe_btn': 'Проба хранилища',
 
     // ── polling diagnostics ──
     'polld.title': 'Диагностика опроса',
