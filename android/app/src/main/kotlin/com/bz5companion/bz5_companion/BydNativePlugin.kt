@@ -727,6 +727,26 @@ class BydNativePlugin : FlutterPlugin, ActivityAware, MethodChannel.MethodCallHa
         // прежнее.
         val keepCollecting = AutostartPrefs.isArmed(appContext) &&
             !AutostartPrefs.optedOut(appContext)
+        // v0.1.93+192 — СЛЕД ВМЕСТО ЗАХОДА К МАШИНЕ.
+        //
+        // Поле 03.08 показало, что владелец сворачивает приложение и
+        // кладёт поверх браузер, а поездка при этом идёт верно: активити
+        // не уничтожается, движок остаётся прикреплён, и сюда управление
+        // НЕ ПРИХОДИТ. Каждая строка `out=journal` в маркере за тот день
+        // шла следом за новым `born`, то есть за новым процессом.
+        //
+        // Значит ветка `keepCollecting` может не срабатывать в обычном
+        // обращении вообще. Проверять это специальными заходами к машине
+        // дорого и бессмысленно: дешевле оставить строку и увидеть её,
+        // если шов однажды сработает сам.
+        try {
+            AutostartMarker.write(
+                appContext,
+                "detach-flutter: keepCollecting=$keepCollecting"
+            )
+        } catch (_: Throwable) {
+            // Наблюдение не смеет мешать отсоединению.
+        }
         HalStreamOwner.detachFlutter(keepCollecting, appContext)
     }
 

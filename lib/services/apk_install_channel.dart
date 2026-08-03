@@ -50,6 +50,14 @@ class ApkInstallChannel {
   static Future<Map<String, dynamic>> stageArchive(String uri) =>
       _call('stageArchive', {'uri': uri});
 
+  /// v0.1.93+192 — попросить разрешение на чтение хранилища.
+  ///
+  /// Возвращает `{ok, granted_before, requested}`. Настоящее состояние
+  /// после ответа владельца покажет проба: системный колбэк приходит не
+  /// сюда, и обещать здесь результат значило бы соврать.
+  static Future<Map<String, dynamic>> requestStoragePermission() =>
+      _call('requestStoragePermission');
+
   /// v0.1.88+187 — три пробы хранилища, только чтение. Отвечает на
   /// вопрос, какая ступень доступа к файлу на этой прошивке живая:
   /// перечисление, MediaStore, выбор файла, приём «поделиться».

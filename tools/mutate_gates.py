@@ -93,6 +93,8 @@ FHO = ('android/app/src/main/kotlin/com/bz5companion/bz5_companion/'
 UU = 'lib/data/uuid_v7.dart'
 DBL = 'tools/dart_balance.py'
 CS = 'lib/services/cloud_sync_service.dart'
+BNP = ('android/app/src/main/kotlin/com/bz5companion/bz5_companion/'
+       'BydNativePlugin.kt')
 
 # (гейт, файл, анкер, замена, что откатывает)
 #
@@ -712,8 +714,7 @@ MUTATIONS = [
      'снять вторую ступень выбора файла — восстановление станет менее '
      'живучим, чем установка'),
     ('BU11', AI,
-     '                "stage-archive: ok=${out["ok"]} bytes='
-     '${out["bytes"] ?: 0}" +',
+     '                "stage-archive: ok=${out["ok"]}" +',
      '                "" +',
      'лишить приём архива долговечного следа — визит ничего не расскажет'),
     ('BU12', IS_,
@@ -752,6 +753,36 @@ MUTATIONS = [
      "            fails.append(f'{f.name}:nullkey:{ln}')",
      '            pass',
      'печатать nullable-ключ карты, но не краснеть от него'),
+    # ── эра BY (+192): обрыв виден там, где случился ──
+    ('BY1', AI,
+     '            if (srcBytes > 0 && written != srcBytes) {',
+     '            if (false) {',
+     'перестать сверять байты с источником — обрыв снова станет успехом'),
+    ('BY2', ES,
+     '      if (len != expectLen) {',
+     '      if (false) {',
+     'не сверять длину записанного файла с ожидаемой'),
+    ('BY3', DM,
+     "                '${S.of('dataexp.write_warn_fmt').replaceFirst('{detail}', warn)}';",
+     "                '';",
+     'проверять запись, но не показывать жалобу владельцу'),
+    ('BY4', IS_,
+     "      if (!hasZipTail(tail)) return 'truncated';",
+     '      // хвост не проверяем',
+     'снова считать открываемость пригодностью'),
+    ('BY5', HT,
+     '    _halTripStartOdo = j.startOdo ?? _halTripStartOdo;',
+     '    _halTripStartOdo ??= j.startOdo;',
+     'вернуть якорь живого старта подхваченной поездке'),
+    ('BY6', MA,
+     '                "requestStoragePermission" -> {',
+     '                "neverAskedForStorage" -> {',
+     'снять запрос разрешения — read_perm=false останется без объяснения'),
+    ('BY7', BNP,
+     '                "detach-flutter: keepCollecting=$keepCollecting"',
+     '                ""',
+     'лишить отсоединение следа — подтверждать придётся заходом к машине'),
+
     ('BX1', DBL,
      "            fails.append(f'{f.name}:arg:{ln}')",
      '            pass',

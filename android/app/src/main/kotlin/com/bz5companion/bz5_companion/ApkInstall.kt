@@ -552,6 +552,20 @@ object ApkInstall {
         try {
             val uri = Uri.parse(uriStr)
             out["source_name"] = displayName(context, uri)
+            // v0.1.93+192 — РАЗМЕР ИСТОЧНИКА СПРАШИВАЕТСЯ ДО КОПИРОВАНИЯ.
+            //
+            // Поле 03.08 отдало один экспорт в трёх разных размерах: целый
+            // на диске 4 585 082, обрезанный на диске 4 096 000, принятый
+            // в слот 3 190 784. Третий не совпал НИ С ОДНИМ, то есть часть
+            // потерялась по дороге, — и понять этого было нельзя, потому
+            // что источник никто не мерил. `copyTo` читает до конца
+            // потока, и преждевременный конец выглядит РОВНО как успех:
+            // ни исключения, ни короткого чтения, `ok=true` и число байт,
+            // которое не сравнивается ни с чем.
+            //
+            // Одно чтение колонки превращает загадку в строку отчёта.
+            val srcBytes = sourceSize(context, uri)
+            out["source_bytes"] = srcBytes
             val input = context.contentResolver.openInputStream(uri)
             if (input == null) {
                 out["ok"] = false
@@ -559,9 +573,20 @@ object ApkInstall {
                 return out
             }
             input.use { ins -> dst.outputStream().use { ins.copyTo(it) } }
-            out["ok"] = true
-            out["bytes"] = dst.length()
+            val written = dst.length()
+            out["bytes"] = written
             out["path"] = dst.absolutePath
+            // Провайдер вправе не знать размера (`-1`) — тогда судить не о
+            // чем и приём считается удавшимся: отказ по незнанию хуже
+            // приёма с оговоркой. Но если размер известен и не сошёлся,
+            // это ОБРЫВ, и молчать про него нельзя.
+            if (srcBytes > 0 && written != srcBytes) {
+                out["ok"] = false
+                out["error"] = "truncated: source=$srcBytes written=$written " +
+                    "lost=${srcBytes - written}"
+            } else {
+                out["ok"] = true
+            }
         } catch (t: Throwable) {
             out["ok"] = false
             out["error"] = "${t.javaClass.simpleName}: ${t.message}"
@@ -574,7 +599,9 @@ object ApkInstall {
         try {
             AutostartMarker.write(
                 context,
-                "stage-archive: ok=${out["ok"]} bytes=${out["bytes"] ?: 0}" +
+                "stage-archive: ok=${out["ok"]}" +
+                    " source=${out["source_bytes"] ?: -1}" +
+                    " written=${out["bytes"] ?: 0}" +
                     " name=${out["source_name"] ?: "?"}" +
                     " err=${out["error"] ?: "-"}"
             )
@@ -710,6 +737,41 @@ object ApkInstall {
             -1L
         }
         return out
+    }
+
+    /**
+     * v0.1.93+192 — выдано ли разрешение на чтение хранилища.
+     *
+     * Живёт здесь, а не в активити, ровно по той же форме, что уже стоит
+     * в `storageProbe` и собрана на CI. Причина не стилистическая: у
+     * функции получатель — параметр `Context`, и локальный `kotlinc` без
+     * Android SDK до члена не доходит вовсе, тогда как вызов от `this` в
+     * активити он объявляет нерешённым. Сборке всё равно, а сверке
+     * базовой линии — нет, и двусмысленность в ней дороже одной функции.
+     */
+    fun hasReadStoragePermission(context: Context): Boolean = try {
+        context.checkSelfPermission(
+            android.Manifest.permission.READ_EXTERNAL_STORAGE
+        ) == PackageManager.PERMISSION_GRANTED
+    } catch (t: Throwable) {
+        false
+    }
+
+    /**
+     * v0.1.93+192 — размер источника по гранту, или `-1`.
+     *
+     * `OpenableColumns.SIZE` заполняет провайдер, и он вправе оставить
+     * колонку пустой. Отсюда `-1` как «не знаю», а не `0`: ноль — это
+     * законный размер пустого файла, и путать их нельзя.
+     */
+    fun sourceSize(context: Context, uri: Uri): Long = try {
+        context.contentResolver.query(
+            uri, arrayOf(OpenableColumns.SIZE), null, null, null
+        )?.use { c ->
+            if (c.moveToFirst() && !c.isNull(0)) c.getLong(0) else -1L
+        } ?: -1L
+    } catch (t: Throwable) {
+        -1L
     }
 
     /** v0.1.88+187: перестала быть приватной — `StageActivity` живёт

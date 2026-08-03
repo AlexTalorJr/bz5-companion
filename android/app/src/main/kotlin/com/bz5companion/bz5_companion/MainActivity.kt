@@ -2,6 +2,7 @@ package com.bz5companion.bz5_companion
 
 import android.app.Activity
 import android.content.Intent
+import androidx.core.app.ActivityCompat
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -16,6 +17,12 @@ import io.flutter.plugin.common.MethodChannel
  * so registering it unconditionally is safe.
  */
 class MainActivity : FlutterActivity() {
+    private companion object {
+        /** v0.1.93+192: свой код запроса, чтобы не пересечься с
+         *  BYDAUTO-разрешениями и с выбором файла. */
+        const val REQ_STORAGE_PERM = 0x5A11
+    }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         flutterEngine.plugins.add(BydNativePlugin())
@@ -139,6 +146,51 @@ class MainActivity : FlutterActivity() {
                 // v0.1.88+187: только чтение, ничего не запускает.
                 "storageProbe" ->
                     offMain(result) { ApkInstall.storageProbe(this) }
+                // v0.1.93+192 — ЗАПРОС РАЗРЕШЕНИЯ НА ХРАНИЛИЩЕ.
+                //
+                // Обещан был ещё в +187 и не сделан: тогда появился только
+                // ПОКАЗ состояния, а замер требует ещё и запроса. Поле
+                // 03.08 отдало `read_perm=false`, и это оставило версию
+                // владельца («дело в правах») строго непроверенной.
+                //
+                // Отдельно от `requestRuntimePermissions`, потому что тот
+                // просит только разрешения BYDAUTO: `BydPermissions.
+                // DANGEROUS` собирается из карты BYDAUTO-прав, и
+                // `READ_EXTERNAL_STORAGE` в неё не входит.
+                //
+                // Ответ придёт в системный колбэк, не сюда, поэтому здесь
+                // возвращается только «спросили или уже было». Настоящее
+                // состояние покажет проба следующим нажатием — так честнее,
+                // чем обещать результат, которого мы ещё не знаем.
+                "requestStoragePermission" -> {
+                    val perm = android.Manifest.permission.READ_EXTERNAL_STORAGE
+                    // Проверка вынесена в `ApkInstall`: там получатель —
+                    // параметр `Context`, и сверка базовой линии остаётся
+                    // без новых имён. `ActivityCompat.requestPermissions`
+                    // уже стоит в `BydNativePlugin` и собран на CI.
+                    val had = ApkInstall.hasReadStoragePermission(this)
+                    if (!had) {
+                        try {
+                            // ActivityCompat, а не голый Activity: так уже
+                            // делает BydNativePlugin, и на минимальном API
+                            // это единственный корректный путь.
+                            ActivityCompat.requestPermissions(
+                                this, arrayOf(perm), REQ_STORAGE_PERM
+                            )
+                        } catch (t: Throwable) {
+                            AutostartMarker.write(
+                                this,
+                                "storage-perm: request failed — " +
+                                    "${t.javaClass.simpleName}"
+                            )
+                        }
+                    }
+                    result.success(mapOf<String, Any?>(
+                        "ok" to true,
+                        "granted_before" to had,
+                        "requested" to !had,
+                    ))
+                }
                 "launch" -> {
                     // v0.1.77+176: попытка идёт через
                     // startActivityForResult, и resultCode придёт в

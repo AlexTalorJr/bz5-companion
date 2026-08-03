@@ -126,6 +126,7 @@ class ExportService {
       sizeBytes: built.sizeBytes,
       counts: built.counts,
       destinationKind: ExportDestinationKind.downloads,
+      writeWarning: built.writeWarning,
       sharedSuccessfully: false,
     );
   }
@@ -337,7 +338,24 @@ class ExportService {
           'Восстановление будет искать архив перечислением и по гранту.');
     }
 
+    // v0.1.93+192 — ЭКСПОРТ ПЕРЕЧИТЫВАЕТ ТО, ЧТО НАПИСАЛ.
+    //
+    // Поле 03.08: один и тот же экспорт оказался на диске в двух видах —
+    // 4 585 082 байта целым и 4 096 000 обрезанным, ровно на границе
+    // блока. `writeAsBytes` при этом не пожаловался ни разу. Пока запись
+    // не сверяется с тем, что хотели записать, обрыв неотличим от успеха,
+    // и узнаётся он через сутки по трём файлам на трёх носителях.
+    //
+    // Проверяются оба: длина и наличие конца архива. Дороже это одного
+    // чтения хвоста, а взамен владелец узнаёт про негодный файл СРАЗУ,
+    // пока машина ещё под рукой.
+    final writeWarning = await _verifyWritten(zipBytes.length, [
+      File(zipPath),
+      File(p.join(destDir.path, ImportService.kFixedName)),
+    ]);
+
     return _BuildResult(
+      writeWarning: writeWarning,
       zipPath: zipPath,
       sizeBytes: zipBytes.length,
       counts: counts,
@@ -630,16 +648,56 @@ class ExportService {
 
 enum ExportDestinationKind { share, downloads }
 
+/// v0.1.93+192 — ПЕРЕЧИТАТЬ НАПИСАННОЕ.
+///
+/// Возвращает null, когда всё сошлось, иначе человеческую жалобу. Свободная
+/// функция, а не метод: ей нужны только байты и пути, и держать её в классе
+/// значило бы намекать на доступ к состоянию, которого она не касается.
+Future<String?> _verifyWritten(int expectLen, List<File> files) async {
+  for (final f in files) {
+    try {
+      if (!await f.exists()) continue;
+      final len = await f.length();
+      if (len != expectLen) {
+        return '${p.basename(f.path)}: записано $len из $expectLen байт';
+      }
+      final h = await f.open();
+      try {
+        final tailLen = len < 65536 ? len : 65536;
+        await h.setPosition(len - tailLen);
+        final tail = await h.read(tailLen);
+        // Одно определение «дописанного файла» на проект: скан живёт в
+        // `ImportService`, потому что там же им проверяются кандидаты.
+        // Своя копия здесь означала бы, что запись и чтение могут
+        // разойтись в понимании одного и того же признака.
+        if (!ImportService.hasZipTail(tail)) {
+          return '${p.basename(f.path)}: конец архива не найден';
+        }
+      } finally {
+        await h.close();
+      }
+    } catch (e) {
+      return '${p.basename(f.path)}: проверка не удалась — $e';
+    }
+  }
+  return null;
+}
+
 class _BuildResult {
   final String zipPath;
   final int sizeBytes;
   final Map<String, int> counts;
   final String timestamp;
+
+  /// v0.1.93+192 — жалоба самопроверки записи, или null.
+  final String? writeWarning;
+
   _BuildResult({
     required this.zipPath,
     required this.sizeBytes,
     required this.counts,
     required this.timestamp,
+    this.writeWarning,
   });
 }
 
@@ -649,12 +707,21 @@ class ExportResult {
   final Map<String, int> counts;
   final ExportDestinationKind destinationKind;
   final bool sharedSuccessfully;
+
+  /// v0.1.93+192 — жалоба самопроверки записи, или null.
+  ///
+  /// Необязательное поле с умолчанием намеренно: два существующих места
+  /// сборки результата остаются нетронутыми, а значит правка не может
+  /// сломать путь «Поделиться», к которому отношения не имеет.
+  final String? writeWarning;
+
   ExportResult({
     required this.zipPath,
     required this.sizeBytes,
     required this.counts,
     required this.destinationKind,
     required this.sharedSuccessfully,
+    this.writeWarning,
   });
 
   String get humanSize {

@@ -9498,6 +9498,130 @@ else:
     ok(f"Part BX skipped (build +{pv}, the literal-argument scan lands "
        f"in +190)")
 
+# ═════ Part BY — v0.1.93+192 «Обрыв виден там, где он случился» ═════
+#
+# Поле 03.08 отдало один экспорт в трёх размерах: 4 585 082 целым,
+# 4 096 000 обрезанным на диске, 3 190 784 принятым в слот. Третий не
+# совпал ни с одним, то есть потеря была ПО ДОРОГЕ, и понять этого было
+# нельзя: источник никто не мерил, `copyTo` читает до конца потока, а
+# преждевременный конец выглядит ровно как успех. Плюс подхваченная
+# поездка получила стартовый одометр от живого старта (6700.8) вместо
+# начала кластера (6699.8) — строка вышла внутренне противоречивой.
+if int(pv) >= 192:
+    _by_apk = (root / 'android/app/src/main/kotlin/com/bz5companion'
+                      '/bz5_companion/ApkInstall.kt').read_text()
+    _by_plug = (root / 'android/app/src/main/kotlin/com/bz5companion'
+                       '/bz5_companion/BydNativePlugin.kt').read_text()
+    _by_main = (root / 'android/app/src/main/kotlin/com/bz5companion'
+                       '/bz5_companion/MainActivity.kt').read_text()
+    _by_hal = _strip_comments_safe(
+        (root / 'lib/services/hal_telemetry_service.dart').read_text())
+    _by_imp = _strip_comments_safe(
+        (root / 'lib/services/import_service.dart').read_text())
+    _by_exp = _strip_comments_safe(
+        (root / 'lib/services/export_service.dart').read_text())
+    _by_dm = _strip_comments_safe(
+        (root / 'lib/screens/data_management.dart').read_text())
+
+    # BY1: ПРИЁМ СВЕРЯЕТ БАЙТЫ С ИСТОЧНИКОМ. Инструмент, отвечающий на
+    # вопрос «где ломается». Без него обрыв неотличим от успеха.
+    _by1_body = ''
+    if 'fun stageArchive(' in _by_apk:
+        _by1_body = _by_apk.split('fun stageArchive(')[1] \
+            .split('fun storageProbe(')[0]
+    _by1 = (_by1_body != '' and
+            'sourceSize(context, uri)' in _by1_body and
+            'written != srcBytes' in _by1_body and
+            'truncated: source=' in _by1_body and
+            'OpenableColumns.SIZE' in _by_apk)
+    if _by1:
+        ok('BY1 the intake measures the source and refuses a short copy — a '
+           'truncated hand-over can no longer report success')
+    else:
+        fail('BY1 the intake still trusts copyTo; a premature end of stream '
+             'is indistinguishable from a complete file')
+
+    # BY2: ЭКСПОРТ ПЕРЕЧИТЫВАЕТ НАПИСАННОЕ. Длина и конец архива. Поле
+    # 03.08 получило обрезанный файл без единой жалобы.
+    # Признак конца архива определён ОДИН раз: первая редакция патча
+    # держала две копии скана, и сверить их было нечем.
+    _by2 = ('Future<String?> _verifyWritten(' in _by_exp and
+            'len != expectLen' in _by_exp and
+            'ImportService.hasZipTail(tail)' in _by_exp and
+            '0x50' not in _by_exp and
+            'writeWarning: writeWarning' in _by_exp and
+            'writeWarning: built.writeWarning' in _by_exp)
+    if _by2:
+        ok('BY2 the export rereads what it wrote and carries the complaint '
+           'out to the owner')
+    else:
+        fail('BY2 a truncated export still looks like a successful one')
+
+    # BY3: ЖАЛОБА ДОЕЗЖАЕТ ДО ЭКРАНА. Проверка, которую никто не видит,
+    # не отличается от отсутствующей.
+    _by3 = ("dataexp.write_warn_fmt" in _by_dm and
+            'result.writeWarning' in _by_dm)
+    if _by3:
+        ok('BY3 the write complaint reaches the screen while the car is '
+           'still at hand')
+    else:
+        fail('BY3 the export verifies itself and tells nobody')
+
+    # BY4: ОТКРЫВАЕТСЯ ≠ ПРИГОДЕН. Обрезанный архив открывался и получал
+    # зелёную галочку рядом с отказом осмотра.
+    _by4_body = ''
+    if 'static Future<String?> _openFailure(' in _by_imp:
+        _by4_body = _by_imp.split('static Future<String?> _openFailure(')[1] \
+            .split('\n  static ')[0]
+    _by4 = (_by4_body != '' and
+            "hasZipTail(tail)" in _by4_body and
+            "'truncated'" in _by4_body and
+            'static bool hasZipTail(' in _by_imp)
+    if _by4:
+        ok('BY4 a file that opens but has no archive end is marked truncated '
+           'and never chosen over a whole one')
+    else:
+        fail('BY4 readability still passes for usability; a truncated file '
+             'can be picked while a complete one sits next to it')
+
+    # BY5: ЯКОРЯ ПОДХВАТА — ИЗ КЛАСТЕРА. `??=` здесь был ошибкой, и поле
+    # опровергло её за один заезд: 6700.8 против 6699.8 при distance 2.5.
+    _by5 = ('_halTripStartOdo = j.startOdo ?? _halTripStartOdo;' in _by_hal and
+            '_halTripStartSoc = j.startSoc ?? _halTripStartSoc;' in _by_hal and
+            '_halTripStartOdo ??= j.startOdo;' not in _by_hal)
+    if _by5:
+        ok('BY5 a joined trip takes its anchors from the cluster it adopted, '
+           'so start_odometer and distance describe the same drive')
+    else:
+        fail('BY5 the joined trip keeps the live-latched anchor; the row '
+             'contradicts itself again')
+
+    # BY6: ЗАПРОС РАЗРЕШЕНИЯ СУЩЕСТВУЕТ. Обещан в +187 и не сделан;
+    # `read_perm=false` в поле оставил версию владельца непроверенной.
+    _by6 = ('"requestStoragePermission" ->' in _by_main and
+            'ActivityCompat.requestPermissions(' in _by_main and
+            'requestStoragePermission()' in _by_dm and
+            'hasReadStoragePermission(' in _by_apk)
+    if _by6:
+        ok('BY6 the storage permission is actually asked for, so read_perm '
+           'stops being an unexplained false')
+    else:
+        fail('BY6 the permission is reported but never requested; the '
+             'measurement promised in +187 is still missing')
+
+    # BY7: СЛЕД ОТСОЕДИНЕНИЯ ВМЕСТО ЗАХОДА К МАШИНЕ. Владелец сворачивает
+    # приложение и активити не уничтожается — шов может не срабатывать
+    # вовсе, и гонять за этим к машине дороже, чем оставить строку.
+    _by7 = ('"detach-flutter: keepCollecting=$keepCollecting"' in _by_plug)
+    if _by7:
+        ok('BY7 detachFlutter leaves a line, so a seam that may never fire '
+           'costs no more trips to the car')
+    else:
+        fail('BY7 detachFlutter is still silent; confirming it needs another '
+             'physical visit')
+else:
+    ok(f"Part BY skipped (build +{pv}, truncation visibility lands in +192)")
+
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
 print(f"+35→+51 REGRESSION — build +{pv}")

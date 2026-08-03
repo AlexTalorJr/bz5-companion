@@ -420,10 +420,7 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
                 child: Text(
-                  S
-                      .of('dataimp.bad_fmt')
-                      .replaceFirst('{code}', '${_preview!.errorCode}')
-                      .replaceFirst('{detail}', '${_preview!.errorDetail}'),
+                  _reasonLine(_preview!),
                   style: const TextStyle(
                       fontSize: 12, color: Colors.orangeAccent),
                 ),
@@ -642,6 +639,14 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
     });
     final schema = context.read<ConnectionService>().db.schemaVersion;
     try {
+      // v0.1.93+192 — СПРОСИТЬ РАЗРЕШЕНИЕ, А НЕ РАССУЖДАТЬ О НЁМ.
+      //
+      // Обещано было ещё в +187 и не сделано: тогда появился только показ
+      // состояния. Поле 03.08 отдало `read_perm=false`, и версия владельца
+      // «дело в правах» осталась строго непроверенной. Запрос стоит здесь,
+      // на явном действии владельца, а не в пробе: проба обязана мерить и
+      // ничего не менять.
+      await ApkInstallChannel.requestStoragePermission();
       // v0.1.88+187: и список, и выбор делает СЕРВИС. Экран только
       // показывает. Своя логика выбора здесь была бы вторым местом,
       // где решается один вопрос, и первая редакция патча ровно на
@@ -746,6 +751,32 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
       return await call().timeout(const Duration(minutes: 5));
     } catch (e) {
       return <String, dynamic>{'ok': false, 'error': 'timeout: $e'};
+    }
+  }
+
+  /// v0.1.93+192 — человеческая причина вместо кода и исключения.
+  ///
+  /// Поле 03.08 показало на экране `FormatException: Could not find End of
+  /// Central Directory Record`. Формально верно и практически бесполезно:
+  /// владельцу нужно знать, что делать, а делать надо разное — взять файл
+  /// заново, выбрать другой, или указать его вручную.
+  String _reasonLine(ImportPreview pv) {
+    switch (pv.errorCode) {
+      case 'truncated':
+        return S.of('dataimp.bad_truncated');
+      case 'unreadable':
+        return S.of('dataimp.bad_denied');
+      case 'not-found':
+        return S.of('dataimp.bad_notfound');
+      case 'pick-cancelled':
+        return S.of('dataimp.bad_cancelled');
+      case 'stage-failed':
+        return S.of('dataimp.bad_stage');
+      default:
+        return S
+            .of('dataimp.bad_fmt')
+            .replaceFirst('{code}', '${pv.errorCode}')
+            .replaceFirst('{detail}', '${pv.errorDetail}');
     }
   }
 
@@ -907,6 +938,15 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
               .replaceFirst('{size}', result.humanSize)
               .replaceFirst('{summary}', summary)
               .replaceFirst('{path}', result.zipPath);
+          // v0.1.93+192 — жалоба самопроверки дописывается к той же
+          // строке, а не заводит второе место показа: владелец смотрит
+          // сюда после экспорта, и негодный файл обязан быть виден
+          // ЗДЕСЬ, пока машина под рукой.
+          final warn = result.writeWarning;
+          if (warn != null) {
+            _lastResult = '$_lastResult\n'
+                '${S.of('dataexp.write_warn_fmt').replaceFirst('{detail}', warn)}';
+          }
         } else {
           _lastResult = result.sharedSuccessfully
               ? S

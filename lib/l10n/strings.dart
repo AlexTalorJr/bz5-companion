@@ -1061,6 +1061,16 @@ class S {
         'by the previous install stop opening. Use "Choose the file myself" '
         'and point at the archive — that grant does not depend on the id.',
     'dataimp.probe_btn': 'Storage probe',
+    'dataimp.bad_truncated': 'The archive arrived incomplete — the end of '
+        'the zip is missing. Copy it again and hand it over once more.',
+    'dataimp.bad_denied': 'No access to this file. It was written by an '
+        'earlier install; use "Choose the file myself".',
+    'dataimp.bad_notfound': 'No archive found. Export one, or point at a '
+        'file yourself.',
+    'dataimp.bad_cancelled': 'No file was chosen.',
+    'dataimp.bad_stage': 'The file could not be copied in. Try handing it '
+        'over from the file manager instead.',
+    'dataexp.write_warn_fmt': 'Written file failed its own check: {detail}',
 
     // ── polling diagnostics ──
     'polld.title': 'Polling diagnostics',
@@ -2264,6 +2274,17 @@ class S {
         'от прежней установки перестают открываться. Нажмите «Выбрать файл '
         'самому» и укажите архив — этот доступ от идентификатора не зависит.',
     'dataimp.probe_btn': 'Проба хранилища',
+    'dataimp.bad_truncated': 'Архив передан не целиком — конца zip нет. '
+        'Скопируйте файл заново и отдайте ещё раз.',
+    'dataimp.bad_denied': 'К этому файлу нет доступа: его написала прежняя '
+        'установка. Нажмите «Выбрать файл самому».',
+    'dataimp.bad_notfound': 'Архив не найден. Сделайте экспорт или укажите '
+        'файл сами.',
+    'dataimp.bad_cancelled': 'Файл не выбран.',
+    'dataimp.bad_stage': 'Файл не удалось принять. Попробуйте отдать его '
+        'из проводника через «Поделиться».',
+    'dataexp.write_warn_fmt': 'Записанный файл не прошёл самопроверку: '
+        '{detail}',
 
     // ── polling diagnostics ──
     'polld.title': 'Диагностика опроса',
