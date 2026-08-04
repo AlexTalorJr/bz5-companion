@@ -95,6 +95,12 @@ DBL = 'tools/dart_balance.py'
 CS = 'lib/services/cloud_sync_service.dart'
 BNP = ('android/app/src/main/kotlin/com/bz5companion/bz5_companion/'
        'BydNativePlugin.kt')
+CP = 'lib/services/cell_pair.dart'
+PH = 'lib/services/power_history_service.dart'
+DVT = 'lib/screens/driver_view_tall.dart'
+DVW = 'lib/screens/wide/driver_view_wide.dart'
+BC = 'lib/widgets/band_card.dart'
+HM = 'lib/screens/home.dart'
 
 # (гейт, файл, анкер, замена, что откатывает)
 #
@@ -696,9 +702,13 @@ MUTATIONS = [
      '            val dir = File("/storage/emulated/0/Download")',
      'дать пробе побочное действие — звать её при каждом отказе станет '
      'нельзя'),
+    # ОБНОВЛЕНО (+193): прежний анкер стоял на строке отказа копии под
+    # постоянным именем, а копии больше нет — мутация осела бы на пустоте и
+    # честно дала SETUP-FAIL. Предмет BU7 перенесён вместе с гейтом: ложное
+    # обещание не смеет вернуться в файл экспорта.
     ('BU7', ES,
-     "      debugPrint('Export: fixed-name copy FAILED — $e. '",
-     "      debugPrint('Отказ безобиден — $e. '",
+     '    // ── КОПИЮ ПОД ПОСТОЯННЫМ ИМЕНЕМ БОЛЬШЕ НЕ ПИШЕМ ──',
+     '    // Отказ безобиден: импорт найдёт архив перечислением.',
      'вернуть ложное обещание про безобидный отказ'),
     ('BU8', DM,
      "      tail = S.of('dataimp.cand_denied');",
@@ -802,9 +812,12 @@ MUTATIONS = [
      '    await _writeSnapshots(db, window, tripId);',
      '    // снапшоты не пишем',
      'вернуть фоновые поездки без снапшотов — Тренды снова слепнут'),
-    ('BW2', BTB,
-     '            Value(lo == null ? null : (lo * 1000).roundToDouble()),',
-     '            Value(lo),',
+    # ОБНОВЛЕНО (+193): перевод вольтов в милливольты переехал в общий
+    # помощник, поэтому и мутировать надо ЕГО — там единственное место, где
+    # единицы ещё можно развести с живым писателем.
+    ('BW2', CP,
+     '    minMv: loVolts * 1000.0,',
+     '    minMv: loVolts,',
      'развести единицы с живым писателем — история читалась бы в тысячу '
      'раз мимо'),
     ('BW4', IS_,
@@ -830,7 +843,106 @@ MUTATIONS = [
      '      if ((sp != null && sp > _halMovingKmh) || odoGrew) {',
      '      if (gear == null) {\n      if (sp != null && sp > _halMovingKmh) {',
      'вернуть глушение запасного пути кадром передачи'),
+
+    # ─── эра BZ (+193) ──────────────────────────────────────────────
+    ('BZ1', ST,
+     "      if (context.watch<HalTelemetryService>().canUseHal)\n"
+     "        SwitchListTile(\n"
+     "          secondary: const Icon(Icons.play_circle_outline,\n"
+     "              color: Colors.lightBlueAccent),\n"
+     "          title: Text(S.of('settings.autostart.title')),",
+     "      if (false)\n"
+     "        SwitchListTile(\n"
+     "          secondary: const Icon(Icons.play_circle_outline,\n"
+     "              color: Colors.lightBlueAccent),\n"
+     "          title: Text('settings.autostart.title'),",
+     'убрать тумблер из основного списка — он снова достижим только '
+     'через 15 тапов'),
+
+    ('BZ2', ARM,
+     'enum AutostartState { undecided, on, offByOwner }',
+     '// enum снят',
+     'снять тройное состояние — «не решали» опять неотличимо от '
+     '«выключено»'),
+
+    ('BZ3', ARM,
+     "      await _ch\n          .invokeMethod<bool>('armSkipped')\n"
+     "          .catchError((_) => false);\n      return;",
+     '      return;',
+     'вернуть молчаливый пропуск — отказ владельца снова читается как '
+     'поломка'),
+
+    ('BZ4', HT,
+     '          cellSpread: Value(triple?.spreadMv),',
+     '          cellSpread: Value(halCellSpreadMv),',
+     'вернуть живому писателю показное значение — презентационный ноль '
+     'уедет в базу'),
+
+    # Второй анкер того же гейта: BZ4 обязан держать ОБА писателя, а не
+    # один. Первая редакция мутации была подписана «BZ4b» — имени, которого
+    # среди гейтов нет, и харнесс честно назвал это слепотой.
+    ('BZ4', BTB,
+     "      final triple = cellTriple(\n"
+     "        loVolts: latest['cell_v_lowest'],",
+     "      final triple = _noRule(\n"
+     "        loVolts: latest['cell_v_lowest'],",
+     'обойти общее правило в синтезе снапшотов'),
+
+    ('BZ5', CP,
+     'const int kCellPairWindowJournalMs = 1000;',
+     'const int kCellPairWindowJournalMs = 3000;',
+     'взять для журнала живое окно — три секунды дрейфа снова станут '
+     '«парой»'),
+
+    ('BZ6', HO,
+     '                    lastPerName[partner] = ts - throttleFor(partner)',
+     '                    // встречная запись снята',
+     'снять встречную запись пары — источник опять отдаёт противофазу'),
+
+    ('BZ7', DB,
+     "              'UPDATE snapshots SET cell_spread = NULL, '",
+     "              'UPDATE snapshots SET cell_spread = 0, '",
+     'заменить чистку тройки обнулением разброса — выдуманные границы '
+     'останутся в базе'),
+
+    ('BZ8', DVT,
+     '                    samples: hist.tail(slots),',
+     '                    samples: const <double?>[],',
+     'отвязать экран от сервиса — гейт обязан заметить мёртвый путь '
+     '(урок BU1)'),
+
+    ('BZ9', PH,
+     '    _timer = Timer.periodic(tick, (_) => _sample());',
+     '    // таймер не заводим',
+     'остановить такт сервиса — история снова живёт только пока смотрят'),
+
+    ('BZ9', PH,
+     '    final look = _windowHint < _filled ? _windowHint : _filled;',
+     '    final look = _filled;',
+     'считать масштаб по всему кольцу — один разгон прижмёт шкалу на '
+     'четверть часа'),
+
+    ('BZ10', DVW,
+     '      final leftPx = (i * pitchPx).roundToDouble();',
+     '      final leftPx = i * pitchPx;',
+     'снять округление до пикселя — однопиксельные столбики размажутся '
+     'сглаживанием'),
+
+    ('BZ11', BC,
+     '                overflow: TextOverflow.ellipsis,',
+     '                //',
+     'вернуть молчаливый обрез «около N км» — число врало в десять раз'),
+
+    # Второй анкер BZ11: постоянное имя не должно вернуться и в сверку.
+    ('BZ11', ES,
+     '    final writeWarning = await _verifyWritten(zipBytes.length, [\n'
+     '      File(zipPath),\n    ]);',
+     '    final writeWarning = await _verifyWritten(zipBytes.length, [\n'
+     '      File(zipPath),\n'
+     '      File(p.join(destDir.path, ImportService.kFixedName)),\n    ]);',
+     'вернуть в сверку файл, записать который мы не смогли'),
 ]
+
 
 FOOTER = 'PASS '
 

@@ -196,6 +196,13 @@ class S {
     'settings.autostart.title': 'Autostart',
     'settings.autostart.sub':
         'Raise the app by itself when the head unit wakes',
+    // v0.1.94+193 — the real three states. «Not decided» is not «off»:
+    // the next launch on the head unit arms it, and the owner has said
+    // nothing either way.
+    'settings.autostart.state_undecided':
+        'Not decided — will arm on the next launch',
+    'settings.autostart.state_on': 'On — rises when the head unit wakes',
+    'settings.autostart.state_off': 'Turned off by you',
     // v0.1.75+174 — autostart marker → diag dump (Advanced, HU only).
     'settings.marker.title': 'Autostart log',
     'settings.marker.sub': 'Write the autostart marker into the diag dump',
@@ -644,6 +651,10 @@ class S {
         'No 0–100 runs yet. Only runs that reach a real 100 are counted',
     'measure.z100_sec': 's',
     'measure.band': 'Band',
+    // v0.1.94+193 — the band's real window, derived from
+    // kBandHalfWidthKmh. Six km/h out of every ten belong to no band, and
+    // without this line a stalled bar reads as a broken instrument.
+    'measure.band_window': '{lo}–{hi} km/h',
     'measure.cold_pack': 'cold battery',
     'measure.temp_passport': 'Battery temperature: min / avg / max',
     'measure.sleep_note':
@@ -1404,6 +1415,12 @@ class S {
     'settings.autostart.title': 'Автозапуск',
     'settings.autostart.sub':
         'Поднимать приложение самостоятельно при пробуждении ГУ',
+    // v0.1.94+193 — настоящие три состояния. «Не решали» ≠ «выключено»:
+    // следующий запуск на ГУ взведёт сам, а владелец ничего не выбирал.
+    'settings.autostart.state_undecided':
+        'Не решали — взведётся при следующем запуске',
+    'settings.autostart.state_on': 'Включён — поднимается при пробуждении ГУ',
+    'settings.autostart.state_off': 'Выключен вами',
     // v0.1.75+174 — журнал автозапуска → диаг-дамп (Расширенные, ГУ).
     'settings.marker.title': 'Журнал автозапуска',
     'settings.marker.sub': 'Записать маркер автозапуска в диаг-дамп',
@@ -1855,6 +1872,10 @@ class S {
             'до 100',
     'measure.z100_sec': 'с',
     'measure.band': 'Полоса',
+    // v0.1.94+193 — настоящее окно полосы, выведенное из
+    // kBandHalfWidthKmh. Шесть км/ч из десяти не принадлежат никакой
+    // полосе, и без этой строки замерший бар читается как сбой прибора.
+    'measure.band_window': '{lo}–{hi} км/ч',
     'measure.cold_pack': 'холодная батарея',
     'measure.temp_passport': 'Температура батареи: мин / сред / макс',
     'measure.sleep_note':

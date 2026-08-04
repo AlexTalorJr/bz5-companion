@@ -538,6 +538,67 @@ def check_nullable_keys(f: Path, by_class):
     return bad
 
 
+def provider_owned_classes():
+    """Кого уничтожает провайдер — и, значит, кто ОБЯЗАН убирать за собой.
+
+    Разница не косметическая. `ChangeNotifierProvider<X>(create: ...)` владеет
+    объектом и зовёт ему `dispose`, а `.value(value: ...)` — не владеет:
+    объект создан до `runApp` и живёт всё время работы приложения. Требовать
+    `dispose` от второго бессмысленно (его никто не позовёт), а от первого
+    обязательно.
+
+    Гейт стоит на ЖИВОМ пути: список читается из фактического дерева
+    провайдеров в main.dart. Зарегистрируй кто-нибудь долгожителя через
+    `create:` — скан начнёт требовать уборку с него, и правильно сделает.
+    """
+    src = strip_code((LIB / 'main.dart').read_text(encoding='utf-8'))
+    owned = set()
+    for m in re.finditer(r'ChangeNotifierProvider<(\w+)>(\s*\.value)?', src):
+        if not m.group(2):
+            owned.add(m.group(1))
+    return owned
+
+
+def check_timer_dispose(path, owned):
+    """Седьмой скан (+193): периодический таймер обязан сниматься в dispose.
+
+    ПОВОД. +193 заводит `PowerHistoryService` — первый у нас уведомитель,
+    который сам держит `Timer.periodic`. Забыть `cancel()` компилятор не
+    мешает, подстрочные гейты не видят, а мутация не ловит ПО ПОСТРОЕНИЮ:
+    она доказывает реакцию гейта на свой предмет, но не то, что предмет
+    лежит на живом пути.
+
+    Симптом же из самых дорогих: при hot restart или пересоздании провайдера
+    таймеров становится два, кольцо прокручивается вдвое быстрее, и окно
+    графика молча перестаёт равняться заявленному времени. Ни один счётчик
+    при этом не краснеет.
+
+    Проверяются только классы, которыми провайдер ВЛАДЕЕТ (см.
+    provider_owned_classes) — остальным dispose никто не позовёт.
+    """
+    src = strip_code(path.read_text(encoding='utf-8'))
+    out = []
+    marks = [(m.start(), m.group(1)) for m in
+             re.finditer(r'\nclass\s+(\w+)', src)]
+    for i, (pos, name) in enumerate(marks):
+        if name not in owned:
+            continue
+        end = marks[i + 1][0] if i + 1 < len(marks) else len(src)
+        body = src[pos:end]
+        if 'Timer.periodic' not in body:
+            continue
+        m = re.search(r'void\s+dispose\s*\(', body)
+        if not m:
+            out.append((name, 'нет dispose'))
+            continue
+        tail = body[m.start():]
+        stop = re.search(r'\n  [A-Za-z@]', tail[1:])
+        scope = tail[:stop.start()] if stop else tail
+        if 'cancel' not in scope:
+            out.append((name, 'dispose не снимает таймер'))
+    return out
+
+
 def main():
     files = sorted(LIB.rglob('*.dart'))
     print(f'scanning {len(files)} files under lib/')
@@ -608,6 +669,16 @@ def main():
             nk += 1
             fails.append(f'{f.name}:nullkey:{ln}')
     print(f'  nullable keys: {nk} unguarded')
+
+    td = 0
+    owned = provider_owned_classes()
+    for f in files:
+        for cls, why in check_timer_dispose(f, owned):
+            print(f'    [FAIL] {f.relative_to(LIB)}: {cls} держит '
+                  f'Timer.periodic — {why}')
+            td += 1
+            fails.append(f'{f.name}:timer:{cls}')
+    print(f'  timer dispose: {td} leaking')
 
     print('=' * 56)
     print('DART SCAN ' + ('FAIL' if fails else 'PASS'))

@@ -130,9 +130,30 @@ class BandCard extends StatelessWidget {
 
   Widget _leftBlock() {
     final m = model;
-    final stage = m.matured
-        ? S.of('measure.stage_matured')
-        : S.of('measure.stage_maturing');
+    // ── ОКНО ПОЛОСЫ НАЗВАНО ВСЛУХ, И БЕЗ НОВОЙ СТРОКИ ──
+    //
+    // v0.1.94+193. Полоса 50 принимает 48…52 настоящих километра в час при
+    // шаге полос в десять — то есть шесть километров из десяти не
+    // принадлежат никакой полосе. Диагностика: 10 999 тиков из 16 387 легли
+    // «вне». Владелец видел замерший бар и читал это как сбой прибора, а
+    // прибор был прав.
+    //
+    // Границы ВЫВОДЯТСЯ из `kBandHalfWidthKmh`, а не написаны цифрами:
+    // литерал разошёлся бы с константой при первой же её правке.
+    //
+    // Кладётся в строку стадии, а не отдельной строкой, и это не косметика.
+    // Слот карточки — 82 + 10 = 92 dp, восемь карточек в колонке 736
+    // (гейт BD6). Четвёртая строка в левом блоке растит его примерно до 92,
+    // и в колонку встала бы одна карточка меньше — цена, которой можно не
+    // платить: окно и стадия описывают одно и то же, просто с разных сторон.
+    final window = S
+        .of('measure.band_window')
+        .replaceFirst('{lo}', '${m.band - kBandHalfWidthKmh}')
+        .replaceFirst('{hi}', '${m.band + kBandHalfWidthKmh}');
+    final stage = '$window · ' +
+        (m.matured
+            ? S.of('measure.stage_matured')
+            : S.of('measure.stage_maturing'));
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -142,7 +163,14 @@ class BandCard extends StatelessWidget {
                 fontWeight: FontWeight.w500,
                 color: AtlasTokens.t85)),
         const SizedBox(height: 2),
+        // Одна строка ЖЁСТКО. Без этого длинная подпись обернулась бы во
+        // вторую, левый блок вырос бы, и слот 82 + 10 поехал бы ровно так,
+        // как если бы окно стояло отдельной строкой, — то есть смысл
+        // объединения потерялся бы молча. Замер: самая длинная подпись
+        // («140–144 km/h · maturing») занимает около 152 px в слоте 200.
         Text(stage,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
             style: TextStyle(
                 fontSize: bz3 ? 11 : 12, color: AtlasTokens.t40)),
         // Atlas line (решение 26.07 п.3, расширено на обе стадии): the
@@ -225,14 +253,26 @@ class BandCard extends StatelessWidget {
         Text(S.of('measure.kwh100'),
             style: TextStyle(
                 fontSize: bz3 ? 13 : 16, color: AtlasTokens.t50)),
+        // v0.1.94+193 — «ОКОЛО N КМ» БОЛЬШЕ НЕ СРЕЗАЕТСЯ.
+        //
+        // Строка стояла голым `Text` в `Row` с жёстким отступом в 24, и на
+        // 786 км конец уходил за край: владелец видел «около 78», то есть
+        // число врало в ДЕСЯТЬ РАЗ. Молчаливый обрез числа опаснее
+        // отсутствия числа, поэтому теперь строка гибкая, а обрыв, если он
+        // всё же случится, виден многоточием — той же честностью, что и
+        // обрыв архива в +192.
         if (!bz3 && cons != null && cons > 0.5) ...[
-          const SizedBox(width: 24),
-          Text(
-              S
-                  .of('measure.range_est')
-                  .replaceFirst('{km}', '${atlasRangeKm(cons)}'),
-              style:
-                  const TextStyle(fontSize: 16, color: AtlasTokens.t60)),
+          const SizedBox(width: 16),
+          Flexible(
+            child: Text(
+                S
+                    .of('measure.range_est')
+                    .replaceFirst('{km}', '${atlasRangeKm(cons)}'),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style:
+                    const TextStyle(fontSize: 16, color: AtlasTokens.t60)),
+          ),
         ],
       ],
     );

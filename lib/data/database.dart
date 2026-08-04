@@ -568,7 +568,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase.forTesting(QueryExecutor e) : super(e);
 
   @override
-  int get schemaVersion => 18;
+  int get schemaVersion => 19;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -727,6 +727,31 @@ class AppDatabase extends _$AppDatabase {
           // поездка не переписывается и не перечитывается.
           if (from < 18) {
             await _addColumnIfAbsent(m, trips, trips.source);
+          }
+          // v18 → v19 (v0.1.94+193): вычистить выдуманные тройки ячеек.
+          //
+          // Поле 04.08: девять строк с ОТРИЦАТЕЛЬНЫМ разбросом — пять у
+          // фоновой поездки #155 (до −68 мВ) и четыре сиротских от 6–23
+          // июня, написанных живым писателем ещё до охраны знака (+131).
+          // Отрицательная разность означает, что минимум и максимум взяты
+          // из разных мгновений, поэтому лгут все три поля, а не одно:
+          // границы такие же ложные, как их разность.
+          //
+          // Единственная миграция в этом файле, которая правит ДАННЫЕ, а не
+          // форму. Идемпотентна по построению: после первого прохода строк,
+          // удовлетворяющих условию, не остаётся. Ничего не удаляется —
+          // остальные поля строки (SOC, температура, одометр) целы, и
+          // снапшот остаётся полноценной точкой истории.
+          if (from < 19) {
+            // Голый `customStatement`, как в шаге 13→14 выше: onUpgrade
+            // исполняется в области самой базы, и второй способ обращения
+            // к тому же методу был бы расхождением без причины.
+            await customStatement(
+              'UPDATE snapshots SET cell_spread = NULL, '
+              'cell_voltage_min = NULL, cell_voltage_max = NULL '
+              'WHERE cell_spread < 0',
+            );
+            debugPrint('DB migrate: v19 — выдуманные тройки ячеек вычищены');
           }
           debugPrint('DB migrate: $from → $to complete');
         },

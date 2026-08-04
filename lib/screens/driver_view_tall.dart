@@ -41,13 +41,13 @@
 // HalExtrasPanel) blocks fill with real HAL data. No shared-widget gate is
 // widened — BZ5 behaviour is identical.
 
-import 'dart:async';
 import 'dart:ui' show FontFeature;
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../l10n/strings.dart';
+import '../services/power_history_service.dart';
 import '../services/connection.dart';
 import '../services/hal_telemetry_service.dart';
 import '../services/soc_resolver.dart';
@@ -128,7 +128,8 @@ class _TallDriverContent extends StatelessWidget {
         const SizedBox(height: 12),
 
         // ── Power / regen card — the screen signature (big kW + center-zero
-        // bar + 60 s sparkline). Fixed height so the card's internal
+        // bar + a bar chart whose window follows the pane width,
+        // v0.1.94+193). Fixed height so the card's internal
         // Expanded()s resolve inside this scrollable (unbounded) column.
         const SizedBox(height: 190, child: _PowerCardTall()),
 
@@ -324,72 +325,31 @@ class _PowerCardTall extends StatefulWidget {
 }
 
 class _PowerCardTallState extends State<_PowerCardTall> {
-  static const _sampleEvery = Duration(milliseconds: 500);
-  static const _historyLen = 120; // × 500 ms = 60 s window
-
-  static const _dischargeFloorKw = 10.0;
-  static const _dischargeCeilKw = 200.0;
-  static const _regenFloorKw = 10.0;
-  static const _regenCeilKw = 100.0;
-  static const _scaleEase = 0.15;
-
-  double _dischargeScale = _dischargeFloorKw;
-  double _regenScale = _regenFloorKw;
-
-  final List<double?> _hist =
-      List<double?>.filled(_historyLen, null, growable: false);
-  int _head = 0;
-  Timer? _timer;
-
-  @override
-  void initState() {
-    super.initState();
-    _timer = Timer.periodic(_sampleEvery, (_) => _sample());
-  }
-
-  @override
-  void dispose() {
-    _timer?.cancel();
-    super.dispose();
-  }
-
-  void _sample() {
-    if (!mounted) return;
-    final hal = context.read<HalTelemetryService>();
-    final svc = context.read<ConnectionService>();
-    final p = hal.useHalForPower ? hal.halPowerKw : svc.instantPowerKw;
-    _hist[_head] = p;
-    _head = (_head + 1) % _historyLen;
-    _recomputeScales();
-    setState(() {});
-  }
-
-  void _recomputeScales() {
-    double maxDis = 0, maxReg = 0;
-    for (final s in _hist) {
-      if (s == null) continue;
-      if (s > maxDis) maxDis = s;
-      if (-s > maxReg) maxReg = -s;
-    }
-    final disTarget =
-        (maxDis * 1.2).clamp(_dischargeFloorKw, _dischargeCeilKw);
-    final regTarget = (maxReg * 1.2).clamp(_regenFloorKw, _regenCeilKw);
-    _dischargeScale += (disTarget - _dischargeScale) * _scaleEase;
-    _regenScale += (regTarget - _regenScale) * _scaleEase;
-  }
-
-  List<double?> get _ordered => [
-        ..._hist.sublist(_head),
-        ..._hist.sublist(0, _head),
-      ];
+  // v0.1.94+193 — КОЛЬЦО И ТАЙМЕР ЗДЕСЬ БОЛЬШЕ НЕ ЖИВУТ.
+  //
+  // Раньше в этом классе стояли `_hist` на 120 отсчётов, `Timer.periodic`
+  // на 500 мс и обе половины масштаба. Всё это уничтожалось вместе с
+  // состоянием карточки, то есть при каждом уходе с экрана «Вождение»
+  // история обнулялась, а шкала после возвращения полминуты подбиралась
+  // заново. Теперь буфер, такт и масштабы принадлежат
+  // `PowerHistoryService` (выше навигатора, тикает всегда), а карточка
+  // остаётся тем, чем и должна быть, — отображением.
+  //
+  // Длину окна задаёт ШИРИНА полосы, а не константа: слотов ровно столько,
+  // сколько влезает по два физических пикселя, поэтому 720 dp и 2175 dp
+  // показывают разное время, а не одну и ту же минуту.
 
   @override
   Widget build(BuildContext context) {
     final svc = context.watch<ConnectionService>();
     final hal = context.watch<HalTelemetryService>();
+    // Крупное число и цвет потока остаются СОБЫТИЙНЫМИ: тянуть их из
+    // сервиса значило бы обновлять главную цифру раз в секунду вместо
+    // «сразу», а это заметная потеря на приборе.
     final powerKw = hal.useHalForPower ? hal.halPowerKw : svc.instantPowerKw;
     final flowDir =
         hal.useHalForPower ? hal.halFlowDir : svc.powerFlowDirection;
+    final hist = context.watch<PowerHistoryService>();
 
     final Color powerColor = flowDir == -1
         ? Colors.greenAccent
@@ -459,22 +419,30 @@ class _PowerCardTallState extends State<_PowerCardTall> {
                 size: const Size.fromHeight(8),
                 painter: _PowerBarPainterTall(
                   kw: powerKw,
-                  dischargeFull: _dischargeScale,
-                  regenFull: _regenScale,
+                  dischargeFull: hist.dischargeScale,
+                  regenFull: hist.regenScale,
                 ),
               ),
             ),
             const SizedBox(height: 8),
             Expanded(
               flex: 5,
-              child: CustomPaint(
-                size: Size.infinite,
-                painter: _PowerBarsPainterTall(
-                  samples: _ordered,
-                  dischargeFull: _dischargeScale,
-                  regenFull: _regenScale,
-                ),
-              ),
+              // LayoutBuilder, потому что число слотов считается от
+              // ФАКТИЧЕСКОЙ ширины полосы, а не от размера экрана: полоса
+              // живёт внутри карточки с отступами, и разница видна.
+              child: LayoutBuilder(builder: (ctx, box) {
+                final dpr = MediaQuery.of(ctx).devicePixelRatio;
+                final slots = powerSlotsFor(box.maxWidth, dpr);
+                return CustomPaint(
+                  size: Size.infinite,
+                  painter: _PowerBarsPainterTall(
+                    samples: hist.tail(slots),
+                    dischargeFull: hist.dischargeScale,
+                    regenFull: hist.regenScale,
+                    dpr: dpr,
+                  ),
+                );
+              }),
             ),
           ],
         ),
@@ -543,10 +511,12 @@ class _PowerBarsPainterTall extends CustomPainter {
   final List<double?> samples;
   final double dischargeFull;
   final double regenFull;
+  final double dpr;
   _PowerBarsPainterTall(
       {required this.samples,
       required this.dischargeFull,
-      required this.regenFull});
+      required this.regenFull,
+      required this.dpr});
 
   double _y(double kw, Size size) {
     final span = dischargeFull + regenFull;
@@ -562,8 +532,18 @@ class _PowerBarsPainterTall extends CustomPainter {
       ..strokeWidth = 1;
     canvas.drawLine(Offset(0, zeroY), Offset(size.width, zeroY), zeroPaint);
 
-    final pitch = size.width / samples.length;
-    final barW = (pitch * 0.7).clamp(1.5, 6.0);
+    // ── СТОЛБИКИ КЛАДУТСЯ НА ФИЗИЧЕСКУЮ СЕТКУ ПИКСЕЛЕЙ ──
+    //
+    // v0.1.94+193. Прежний зажим `clamp(1.5, 6.0)` и был блокировщиком: при
+    // шаге 1.33 dp (720 dp, dpr 1.5) он требовал ширины не меньше 1.5 dp,
+    // то есть столбик выходил ШИРЕ шага и столбики налезали друг на друга.
+    // Ниже шаг и ширина считаются в пикселях и округляются до целого:
+    // однопиксельный столбик, не лежащий на границе пикселя, сглаживание
+    // размазывает по двум соседним в половину яркости, и плотный график
+    // выцветает вместо того, чтобы стать подробнее.
+    final scale = dpr <= 0 ? 1.0 : dpr;
+    final pitchPx = size.width * scale / samples.length;
+    final barPx = powerBarWidthFor(scale) * scale;
 
     final discharge = Paint()
       ..style = PaintingStyle.fill
@@ -576,11 +556,12 @@ class _PowerBarsPainterTall extends CustomPainter {
       final s = samples[i];
       if (s == null) continue;
       final yVal = _y(s, size);
-      final cx = i * pitch + pitch / 2;
+      final leftPx = (i * pitchPx).roundToDouble();
       final top = s >= 0 ? yVal : zeroY;
       final bot = s >= 0 ? zeroY : yVal;
       final h = (bot - top).clamp(1.0, size.height);
-      final rect = Rect.fromLTWH(cx - barW / 2, top, barW, h);
+      final rect =
+          Rect.fromLTWH(leftPx / scale, top, barPx / scale, h);
       canvas.drawRRect(
         RRect.fromRectAndRadius(rect, const Radius.circular(1)),
         s >= 0 ? discharge : regen,

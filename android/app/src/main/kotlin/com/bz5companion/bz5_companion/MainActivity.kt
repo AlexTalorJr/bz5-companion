@@ -42,6 +42,12 @@ class MainActivity : FlutterActivity() {
             "bz5/autostart",
         ).setMethodCallHandler { call, result ->
             when (call.method) {
+                // v0.1.94+193: у попытки взвода появился ИСХОД в журнале.
+                // Раньше след оставлял только успех — строкой `armed:` из
+                // сервиса, — а отказ prefs или отказ старта сервиса уходили
+                // в `result.success(false)`, которого в маркере не видно.
+                // Три исхода, три разных диагноза: взвели / владелец
+                // отказался / попытка провалилась.
                 "arm" -> {
                     try {
                         AutostartPrefs.setArmed(this, true)
@@ -52,10 +58,31 @@ class MainActivity : FlutterActivity() {
                         } else {
                             startService(i)
                         }
+                        AutostartMarker.write(
+                            this,
+                            "arm: result=armed · ${AutostartMarker.ident()}"
+                        )
                         result.success(true)
                     } catch (t: Throwable) {
+                        AutostartMarker.write(
+                            this,
+                            "arm: result=failed" +
+                                " ${t.javaClass.simpleName}: ${t.message}" +
+                                " · ${AutostartMarker.ident()}"
+                        )
                         result.success(false)
                     }
+                }
+                // Отказ владельца. Прежний Dart молча возвращался, и в
+                // журнале выключенный автозапуск выглядел ровно как
+                // сломанный: строк нет ни тех, ни других.
+                "armSkipped" -> {
+                    AutostartMarker.write(
+                        this,
+                        "arm: result=skipped-opt-out" +
+                            " · ${AutostartMarker.ident()}"
+                    )
+                    result.success(true)
                 }
                 "disarm" -> {
                     try {

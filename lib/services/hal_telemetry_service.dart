@@ -33,6 +33,7 @@ import 'package:drift/drift.dart' show Value;
 
 import '../data/database.dart';
 import 'bg_trip_builder.dart';
+import 'cell_pair.dart';
 import 'hal_bg_journal.dart';
 import 'hal_telemetry_channel.dart';
 import 'native_car_channel.dart';
@@ -1357,23 +1358,43 @@ class HalTelemetryService extends ChangeNotifier
   /// trip's max (the +130 Trends spread card) while the UDS path — whose
   /// min/max come from ONE poll and are immune by construction — never
   /// saw anything like it.
-  static const _cellPairWindow = Duration(seconds: 3);
+  // v0.1.94+193: само окно переехало в `cell_pair.dart`
+  // (`kCellPairWindowLiveMs`) вместе с правилом — три писателя обязаны
+  // мерить одной линейкой. Полевая улика выше сохранена: она объясняет,
+  // ЗАЧЕМ окно, и остаётся верной.
 
   /// Cell spread in mV from the HAL min/max pair, or null if either is
   /// absent. (max − min) V × 1000 → mV, matching the OBD2 cell-spread unit.
   /// v0.1.32+131: null too when the pair is mismatched in time (see
-  /// [_cellPairWindow]) — feeds BOTH consumers (the live Balance tile and
+  /// `kCellPairWindowLiveMs`) — feeds BOTH consumers (the live Balance tile and
   /// the per-trip max accumulator) through this single gate.
+  /// v0.1.94+193 — правило переехало в общий помощник, а решений стало
+  /// два, и они РАЗНЫЕ по назначению.
+  ///
+  /// Согласованная тройка для ЗАПИСИ: либо целиком, либо ничего. До этого
+  /// патча живой писатель брал min и max непроверенной парой (`:3155`), а
+  /// охраняли только разброс — то есть в базу уезжали границы из разных
+  /// мгновений при пустой разности. Ошибка та же, лишь без признака.
+  CellTriple? get halCellTripleForRecord => cellTriple(
+        loVolts: halCellVLowest,
+        hiVolts: halCellVHighest,
+        loAtMs: _lastGood['cell_v_lowest']?.at.millisecondsSinceEpoch,
+        hiAtMs: _lastGood['cell_v_highest']?.at.millisecondsSinceEpoch,
+        windowMs: kCellPairWindowLiveMs,
+      );
+
+  /// Разброс для ПОКАЗА. Здесь политика владельца (04.08): прочерк на
+  /// живом приборе заставляет нижнюю строку прыгать, поэтому при
+  /// непригодной паре показывается ноль, а не пустота. В базу этот ноль не
+  /// уезжает — запись идёт через [halCellTripleForRecord], который в том же
+  /// случае молчит.
+  ///
+  /// Различение сохранено: данных нет вовсе → `null`, и карточка прячется,
+  /// как и раньше (нет HAL — нет карточки, а не прочерк). Ноль означает
+  /// «поток жив, но одномоментной пары в этот момент нет».
   double? get halCellSpreadMv {
-    final lo = halCellVLowest;
-    final hi = halCellVHighest;
-    if (lo == null || hi == null) return null;
-    final loAt = _lastGood['cell_v_lowest']?.at;
-    final hiAt = _lastGood['cell_v_highest']?.at;
-    if (loAt == null || hiAt == null) return null;
-    if (hiAt.difference(loAt).abs() > _cellPairWindow) return null;
-    final mv = (hi - lo) * 1000.0;
-    return mv < 0 ? 0 : mv;
+    if (halCellVLowest == null || halCellVHighest == null) return null;
+    return halCellTripleForRecord?.spreadMv ?? 0;
   }
 
   bool get useHalForCellSpread =>
@@ -2624,7 +2645,12 @@ class HalTelemetryService extends ChangeNotifier
           ? t
           : (t > _halTripMaxTempC! ? t : _halTripMaxTempC);
     }
-    final spread = halCellSpreadMv;
+    // v0.1.94+193: максимум накапливается по ДОВЕРЕННОЙ тройке, не по
+    // показному значению. Показное при непригодной паре равно нулю (чтобы
+    // нижняя строка не прыгала), и ноль максимум не портит, но опираться на
+    // презентационную политику в записи нельзя: поменяется политика —
+    // молча поедет агрегат.
+    final spread = halCellTripleForRecord?.spreadMv;
     if (spread != null) {
       _halTripMaxCellSpreadMv = _halTripMaxCellSpreadMv == null
           ? spread
@@ -3152,8 +3178,9 @@ class HalTelemetryService extends ChangeNotifier
     final soc = halSocPct;
     final packV = halPackVoltage;
     if (soc == null && packV == null) return; // warm-up: no empty rows
-    final cellLo = halCellVLowest;
-    final cellHi = halCellVHighest;
+    // v0.1.94+193: тройка берётся ОДНИМ решением. Прежняя редакция брала
+    // границы непроверенной парой, а охраняла только разность.
+    final triple = halCellTripleForRecord;
     _lastHalSnapshotAt = now;
     unawaited(() async {
       try {
@@ -3162,11 +3189,11 @@ class HalTelemetryService extends ChangeNotifier
           soc: Value(soc),
           soh: Value(halSoh),
           batteryTempC: Value(halBatteryTempC),
-          cellVoltageMin:
-              Value(cellLo == null ? null : (cellLo * 1000).roundToDouble()),
-          cellVoltageMax:
-              Value(cellHi == null ? null : (cellHi * 1000).roundToDouble()),
-          cellSpread: Value(halCellSpreadMv),
+          cellVoltageMin: Value(
+              triple == null ? null : triple.minMv.roundToDouble()),
+          cellVoltageMax: Value(
+              triple == null ? null : triple.maxMv.roundToDouble()),
+          cellSpread: Value(triple?.spreadMv),
           odometer: Value(halOdometerKm),
           tripId: Value(_halTripDbId),
           packVoltageV: Value(packV),

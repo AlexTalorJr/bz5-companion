@@ -389,7 +389,7 @@ if int(pv) >= 37:
     # table (+104), from<12 soh_estimates.source (+105, splits UDS
     # id=1 / HAL id=2), from<13 trips.last_alive_ts (+106), from<14
     # client_uuid x5 (+117).
-    _d1_expected = 18 if int(pv) >= 185 else (17 if int(pv) >= 158 else (16 if int(pv) >= 140 else (15 if int(pv) >= 130 else 14)))  # +185: trips.source (v18); +158: atlas (v17); +140: trip_series (v16)
+    _d1_expected = 19 if int(pv) >= 193 else (18 if int(pv) >= 185 else (17 if int(pv) >= 158 else (16 if int(pv) >= 140 else (15 if int(pv) >= 130 else 14))))  # +193: выдуманные тройки ячеек вычищены (v19); +185: trips.source (v18); +158: atlas (v17); +140: trip_series (v16)
     if f"int get schemaVersion => {_d1_expected};" in db_src:
         ok(f"D1 schemaVersion = {_d1_expected} (per-era)")
     else:
@@ -3397,9 +3397,20 @@ if int(pv) >= 67:
         fail("AB1 power card components missing")
     # +70: scales auto-zoom (variant B) instead of fixed 200/100.
     if int(pv) >= 70:
-        if '_recomputeScales' in _dvw and '_dischargeCeilKw = 200.0' in _dvw \
-                and '_regenCeilKw = 100.0' in _dvw \
-                and '_scaleEase' in _dvw:
+        # ERA-AWARE (+193). Существо прежнее — подвод шкалы к максимуму окна
+        # с зажимом 200/100, — но машинерия ПЕРЕЕХАЛА из состояния карточки
+        # в PowerHistoryService. Иначе быть не могло: масштабы считаются от
+        # ТИКА, а такт теперь принадлежит сервису; оставь их на экране, и при
+        # возврате шкала поехала бы от пола, хотя история уже есть.
+        _ab1_src = _dvw
+        if int(pv) >= 193:
+            _ab1_src = (root / 'lib/services/power_history_service.dart') \
+                .read_text()
+        _ab1_ease = '_scaleEase' in _ab1_src
+        _ab1_ceil = ('dischargeCeilKw = 200.0' in _ab1_src and
+                     'regenCeilKw = 100.0' in _ab1_src)
+        _ab1_recompute = '_recomputeScales' in _ab1_src
+        if _ab1_recompute and _ab1_ceil and _ab1_ease:
             ok("AB1 power auto-zoom scales (ease to window max, capped 200/100)")
         else:
             fail("AB1 auto-zoom scale machinery missing")
@@ -3898,7 +3909,7 @@ if int(pv) >= 140:
     _hw2 = (root / 'lib/screens/wide/history_wide.dart').read_text()
     # AM1: schema (16, or 17 from +158 — atlas era) + additive
     # migration + table registered.
-    _am1_ver = 18 if int(pv) >= 185 else (17 if int(pv) >= 158 else 16)
+    _am1_ver = 19 if int(pv) >= 193 else (18 if int(pv) >= 185 else (17 if int(pv) >= 158 else 16))
     if f'int get schemaVersion => {_am1_ver};' in _db2 and \
        '_createTableIfAbsent(m, tripSeries)' in _db2 and \
        "@DataClassName('TripSeriesRow')" in _db2:
@@ -7105,10 +7116,16 @@ if int(pv) >= 173:
     # поле, наверх такое не выносят), и только там, где он что-то
     # делает: на телефоне автозапуск не взводится никогда.
     _bj_adv = _bj_st.split('Widget _advancedCard(')[-1].split('\n  Widget ')[0]
-    _bj1 = ('SwitchListTile(' in _bj_adv and
-            "S.of('settings.autostart.title')" in _bj_adv and
-            'onChanged: _setAutostart' in _bj_adv and
-            'canUseHal' in _bj_adv and
+    # ERA-AWARE (+193). Существо прежнее: выключатель СУЩЕСТВУЕТ, показан
+    # только там, где что-то делает, и зовёт обе стороны. Изменилось МЕСТО —
+    # он больше не в «Расширенном», потому что механизм, поднимающий
+    # приложение на каждом пробуждении ГУ, обязан выключаться без 15 тапов.
+    # Позицию сторожит BZ1; здесь — только наличие и проводка.
+    _bj1_scope = _bj_st if int(pv) >= 193 else _bj_adv
+    _bj1 = ('SwitchListTile(' in _bj1_scope and
+            "S.of('settings.autostart.title')" in _bj1_scope and
+            'onChanged: _setAutostart' in _bj1_scope and
+            'canUseHal' in _bj1_scope and
             'AutostartArm.enable()' in _bj_st and
             'AutostartArm.disable()' in _bj_st)
     if _bj1:
@@ -7126,7 +7143,14 @@ if int(pv) >= 173:
             '.putBoolean(KEY_OPT_OUT, !armed)' in _bj_pf and
             _bj_pf.count('.commit()') == 1 and
             "_optOut ??= await _flag('optedOut')" in _bj_arm and
-            'if (_optOut == true) return;' in _bj_arm and
+            # ERA-AWARE (+193): ветка отказа осталась, но перестала быть
+            # МОЛЧАЛИВОЙ. Прежний голый `return` делал выключенный
+            # автозапуск неотличимым от сломанного, и эта неразличимость
+            # стоила разбора чужого журнала.
+            ('if (_optOut == true) {' in _bj_arm and
+             "invokeMethod<bool>('armSkipped')" in _bj_arm
+             if int(pv) >= 193
+             else 'if (_optOut == true) return;' in _bj_arm) and
             '"optedOut" -> result.success(AutostartPrefs.optedOut(this))'
             in _bj_ma)
     if _bj2:
@@ -7264,8 +7288,13 @@ if int(pv) >= 174:
             "invokeMethod<String>('marker')" in _bk_arm and
             'AutostartArm.marker()' in _bk_st and
             'DiagDumpFile.instance.append' in _bk_st and
-            "S.of('settings.marker.title')" in _bk_adv and
-            'onTap: _dumpMarker' in _bk_adv)
+            # ERA-AWARE (+193): плитка переехала в основной список вместе с
+            # выключателем — это прибор ОДНОГО механизма, и разлучать их
+            # значило бы оставить кнопку без её измерителя.
+            "S.of('settings.marker.title')" in
+            (_bk_st if int(pv) >= 193 else _bk_adv) and
+            'onTap: _dumpMarker' in
+            (_bk_st if int(pv) >= 193 else _bk_adv))
     if _bk1:
         ok('BK1 the marker travels through the diag dump, not only '
            'inside the fragile export ZIP')
@@ -8007,12 +8036,21 @@ if int(pv) >= 180:
     # восстановление теряет валюту и профили; без второго импорт зависит
     # от перечисления каталога, которое на этой прошивке может вернуть
     # пусто.
+    # ERA-AWARE (+193). Настройки в архиве — существо гейта, оно цело. А
+    # копия под постоянным именем СНЯТА сознательно: на этой прошивке файл
+    # прежней установки принадлежит прежнему uid, дописать и перезаписать
+    # его нельзя, и путаницы это принесло дважды. Поле 04.08: жалоба
+    # «экспорт негоден» указывала на старый файл от 03.08, а свежий архив
+    # был цел. Узнавать имя при восстановлении мы продолжаем — это проверяет
+    # BZ11; писать перестали.
     _bo6 = ('ImportService.collectPrefs()' in _bo_exp and
             'ImportService.kPrefsEntry' in _bo_exp and
-            'ImportService.kFixedName' in _bo_exp)
+            ('ImportService.kFixedName' not in _bo_exp if int(pv) >= 193
+             else 'ImportService.kFixedName' in _bo_exp))
     if _bo6:
-        ok('BO6 the export writes prefs.json and the fixed-name copy the '
-           'importer reads by direct path')
+        ok('BO6 the export writes prefs.json' +
+           (', and no longer writes a fixed name it cannot overwrite'
+            if int(pv) >= 193 else ' and the fixed-name copy'))
     else:
         fail('BO6 the archive is still a dump, not a restore point')
 
@@ -8710,7 +8748,8 @@ if int(pv) >= 185:
 
     # BS6: МИГРАЦИЯ АДДИТИВНА. Колонка nullable и добавляется охраной; ни
     # одна существующая поездка не переписывается.
-    _bs6 = ('int get schemaVersion => 18;' in _bs_db and
+    _bs6_ver = 19 if int(pv) >= 193 else 18
+    _bs6 = (f'int get schemaVersion => {_bs6_ver};' in _bs_db and
             'if (from < 18) {' in _bs_db and
             '_addColumnIfAbsent(m, trips, trips.source);' in _bs_db and
             'TextColumn get source => text().nullable()();' in _bs_db)
@@ -9083,11 +9122,21 @@ if int(pv) >= 187:
     # «текст не соответствует коду»; гейт стоит на ТЕКСТЕ именно потому,
     # что предмет здесь — обещание.
     _bu_exp_raw = (root / 'lib/services/export_service.dart').read_text()
-    _bu7 = ('Отказ безобиден' not in _bu_exp_raw and
-            'fixed-name copy FAILED' in _bu_exp)
+    # ERA-AWARE (+193). Обещание было про копию под постоянным именем, а
+    # копии больше нет — предмет гейта исчез вместе с ней, и требовать
+    # строку об её отказе значило бы сторожить пустоту (тот же вакуум, что
+    # BU1 в №14). Существо переносится: ложное обещание не вернулось И имя
+    # не пишется вовсе, поэтому и отказывать нечему.
+    if int(pv) >= 193:
+        _bu7 = ('Отказ безобиден' not in _bu_exp_raw and
+                'kFixedName' not in _bu_exp)
+    else:
+        _bu7 = ('Отказ безобиден' not in _bu_exp_raw and
+                'fixed-name copy FAILED' in _bu_exp)
     if _bu7:
-        ok('BU7 the export no longer claims a safety it does not have, and '
-           'a failed fixed-name copy is audible')
+        ok('BU7 the export no longer claims a safety it does not have' +
+           (', and no longer writes the name whose failure it explained'
+            if int(pv) >= 193 else ', and a failed fixed-name copy is audible'))
     else:
         fail('BU7 the false "harmless" claim is back on the fixed-name copy')
 
@@ -9360,10 +9409,26 @@ if int(pv) >= 189:
     # BW2: ЕДИНИЦЫ ПОВТОРЯЮТ ЖИВОГО ПИСАТЕЛЯ. Вольты ячеек ×1000 в
     # милливольтовые колонки, разброс в мВ. Разойдись они — история
     # фоновых поездок читалась бы в тысячу раз мимо, и молча.
-    _bw2 = ('(lo * 1000).roundToDouble()' in _bw_bld and
-            '(hi * 1000).roundToDouble()' in _bw_bld and
-            '(hi - lo) * 1000.0' in _bw_bld and
-            'gear:' not in _bw_bld)
+    # ERA-AWARE (+193). Существо прежнее и стало СТРОЖЕ: единицы обязаны
+    # совпадать с живым писателем. Только теперь перевод вольтов в
+    # милливольты живёт в общем помощнике `cell_pair.dart`, которого зовут
+    # оба, — то есть разойтись им больше нечем в принципе. Прежние литералы
+    # здесь исчезли не от небрежности: они переехали в единственное место.
+    if int(pv) >= 193:
+        _bw2_pair = _strip_comments_safe(
+            (root / 'lib/services/cell_pair.dart').read_text())
+        _bw2 = ('cellTriple(' in _bw_bld and
+                'triple.minMv.roundToDouble()' in _bw_bld and
+                'triple.maxMv.roundToDouble()' in _bw_bld and
+                'minMv: loVolts * 1000.0' in _bw2_pair and
+                'maxMv: hiVolts * 1000.0' in _bw2_pair and
+                '(hiVolts - loVolts) * 1000.0' in _bw2_pair and
+                'gear:' not in _bw_bld)
+    else:
+        _bw2 = ('(lo * 1000).roundToDouble()' in _bw_bld and
+                '(hi * 1000).roundToDouble()' in _bw_bld and
+                '(hi - lo) * 1000.0' in _bw_bld and
+                'gear:' not in _bw_bld)
     if _bw2:
         ok('BW2 synthesised snapshots use the live writer\'s units, and do '
            'not invent a gear encoding')
@@ -9621,6 +9686,282 @@ if int(pv) >= 192:
              'physical visit')
 else:
     ok(f"Part BY skipped (build +{pv}, truncation visibility lands in +192)")
+
+# ══════════════════════════ ЭРА BZ (+193) ══════════════════════════
+#
+# Что закрывает эта эра, одной фразой на пункт:
+#   1. автозапуск виден и слышен: тумблер снаружи, пропуск оставляет строку;
+#   2. тройка ячеек — дельта одного мгновения, и правило ОДНО на трёх
+#      писателей, а источник пары починен встречной записью;
+#   3. история мощности принадлежит сервису выше навигатора, и ЭКРАН ЕГО
+#      ЧИТАЕТ — гейт стоит на живом пути, а не на существовании класса;
+#   4/5. «около N км» не срезается молча, окно полосы названо вслух и
+#      выведено из константы;
+#   6. постоянное имя экспорта больше не пишется, и сверка не проверяет
+#      файл, записать который мы не смогли;
+#   7. геометрия экрана замерена, а не выведена.
+if int(pv) >= 193:
+    _bz_set = (root / 'lib/screens/settings.dart').read_text()
+    _bz_arm = (root / 'lib/services/autostart_arm.dart').read_text()
+    _bz_mainact = (root / 'android/app/src/main/kotlin/com/bz5companion'
+                          '/bz5_companion/MainActivity.kt').read_text()
+    _bz_halout = (root / 'android/app/src/main/kotlin/com/bz5companion'
+                         '/bz5_companion/hal/HalOut.kt').read_text()
+    _bz_pair = _strip_comments_safe(
+        (root / 'lib/services/cell_pair.dart').read_text())
+    _bz_hal = _strip_comments_safe(
+        (root / 'lib/services/hal_telemetry_service.dart').read_text())
+    _bz_bg = _strip_comments_safe(
+        (root / 'lib/services/bg_trip_builder.dart').read_text())
+    _bz_db = _strip_comments_safe(
+        (root / 'lib/data/database.dart').read_text())
+    _bz_ph = _strip_comments_safe(
+        (root / 'lib/services/power_history_service.dart').read_text())
+    _bz_main = _strip_comments_safe((root / 'lib/main.dart').read_text())
+    _bz_tall = _strip_comments_safe(
+        (root / 'lib/screens/driver_view_tall.dart').read_text())
+    _bz_wide = _strip_comments_safe(
+        (root / 'lib/screens/wide/driver_view_wide.dart').read_text())
+    _bz_band = _strip_comments_safe(
+        (root / 'lib/widgets/band_card.dart').read_text())
+    _bz_exp = _strip_comments_safe(
+        (root / 'lib/services/export_service.dart').read_text())
+    _bz_home = _strip_comments_safe((root / 'lib/screens/home.dart').read_text())
+    _bz_l10n = (root / 'lib/l10n/strings.dart').read_text()
+
+    # BZ1: ТУМБЛЕР АВТОЗАПУСКА СНАРУЖИ. Он был спрятан ДВАЖДЫ — за 15-тапным
+    # замком «Расширенного» и за свёрнутым ExpansionTile внутри него.
+    # Механизм, поднимающий приложение на каждом пробуждении ГУ, обязан
+    # выключаться без пароля. Гейт держит порядок блоков: строка тумблера
+    # должна стоять ВЫШЕ начала расширенной карточки.
+    _bz_adv_at = _bz_set.find('Widget _advancedCard(')
+    _bz_sw_at = _bz_set.find("S.of('settings.autostart.title')")
+    _bz_mk_at = _bz_set.find("S.of('settings.marker.title')")
+    _bz1 = (_bz_sw_at > 0 and _bz_mk_at > 0 and _bz_adv_at > 0 and
+            _bz_sw_at < _bz_adv_at and _bz_mk_at < _bz_adv_at)
+    if _bz1:
+        ok('BZ1 the autostart switch and its log live in the main list, not '
+           'behind a 15-tap lock and a collapsed tile')
+    else:
+        fail('BZ1 autostart is hidden again — the only way to stop it is '
+             'uninstalling the app')
+
+    # BZ2: ПОДПИСЬ ПОКАЗЫВАЕТ НАСТОЯЩЕЕ ТРОЙНОЕ СОСТОЯНИЕ, прочитанное с
+    # НАТИВНОЙ стороны — той же, что читает BootReceiver. Dart-кэш `_armed`
+    # для показа не годится: он говорит лишь «звали ли мы arm в этом
+    # запуске», а не «взведено ли». Три ключа обязаны быть в ОБЕИХ картах.
+    _bz2 = ('enum AutostartState' in _bz_arm and
+            "await _flag('isArmed')" in _bz_arm and
+            "await _flag('optedOut')" in _bz_arm and
+            '_autostartSubtitle()' in _bz_set and
+            "AutostartArm.state()" in _bz_set and
+            _bz_l10n.count("'settings.autostart.state_undecided'") == 2 and
+            _bz_l10n.count("'settings.autostart.state_on'") == 2 and
+            _bz_l10n.count("'settings.autostart.state_off'") == 2)
+    if _bz2:
+        ok('BZ2 the switch caption tells «not decided» from «turned off», '
+           'read natively in both locales')
+    else:
+        fail('BZ2 «not decided» is indistinguishable from «off» again')
+
+    # BZ3: ПРОПУСК ОСТАВЛЯЕТ СТРОКУ. Прежний Dart возвращался молча, и
+    # выключенный автозапуск читался в журнале ровно как сломанный: строк
+    # нет ни тех, ни других. Именно эта неразличимость и стоила разбора
+    # ЧУЖОГО журнала. Три исхода — три разных диагноза.
+    _bz3 = ("invokeMethod<bool>('armSkipped')" in _bz_arm and
+            '"armSkipped" ->' in _bz_mainact and
+            'arm: result=skipped-opt-out' in _bz_mainact and
+            'arm: result=armed' in _bz_mainact and
+            'arm: result=failed' in _bz_mainact)
+    if _bz3:
+        ok('BZ3 every arm attempt leaves a line — armed, skipped or failed')
+    else:
+        fail('BZ3 a skipped arm is silent again, and reads as a broken one')
+
+    # BZ4: ТРОЙКА ЯЧЕЕК — ОДНО ПРАВИЛО НА ТРЁХ ПИСАТЕЛЕЙ, И ГЕЙТ СТОИТ НА
+    # ЖИВОМ ПУТИ. Проверяется не существование помощника, а то, что его
+    # ЗОВУТ все три места: живой писатель снапшотов, синтез фоновых
+    # снапшотов и агрегат поездки. Урок BU1 из №14: гейт, сторожащий
+    # функцию, которую никто не звал, зелен и бесполезен, и мутация такого
+    # не ловит по построению.
+    #
+    # Плюс неделимость: тройка пишется целиком или не пишется вовсе.
+    # Прежний живой писатель охранял только разность, а границы писал
+    # непроверенной парой — та же ошибка без признака.
+    _bz4 = ('CellTriple? cellTriple(' in _bz_pair and
+            'if (spread < 0) return null;' in _bz_pair and
+            'halCellTripleForRecord' in _bz_hal and
+            'cellSpread: Value(triple?.spreadMv)' in _bz_hal and
+            'triple.minMv.roundToDouble()' in _bz_hal and
+            'halCellTripleForRecord?.spreadMv' in _bz_hal and
+            _bz_bg.count('cellTriple(') == 2 and
+            'kCellPairWindowJournalMs' in _bz_bg and
+            'cellSpread: Value(triple?.spreadMv)' in _bz_bg and
+            'latestAt[n] = r.timestamp.millisecondsSinceEpoch' in _bz_bg)
+    if _bz4:
+        ok('BZ4 all three cell writers go through one rule, and the triple is '
+           'written whole or not at all')
+    else:
+        fail('BZ4 a cell writer bypasses the pairing rule — a fabricated '
+             'spread can reach the record again')
+
+    # BZ5: ОКНА РАЗНЫЕ, И ЭТО НАМЕРЕНИЕ, А НЕ РАССОГЛАСОВАНИЕ. Живой поток
+    # 48 Гц — три секунды там означают миллисекунды. В журнале сигналы
+    # придушены по 10 с и идут в противофазе, поэтому окно жёсткое. Замер
+    # на поле 04.08: при 3 с отрицательных остаётся три из пяти и агрегат
+    # держится 190 мВ, при 1 с — ноль и 9.0 мВ.
+    _bz5 = ('kCellPairWindowLiveMs = 3000' in _bz_pair and
+            'kCellPairWindowJournalMs = 1000' in _bz_pair and
+            'windowMs: kCellPairWindowLiveMs' in _bz_hal)
+    if _bz5:
+        ok('BZ5 the live window stays 3 s (48 Hz) and the journal window is '
+           'hard 1 s — measured, not copied')
+    else:
+        fail('BZ5 the journal reuses the live window, and a 3 s drift is a '
+             'fabricated spread')
+
+    # BZ6: ИСТОЧНИК ПАРЫ ПОЧИНЕН. Правило при чтении не возвращает
+    # одномоментность — её убивает придушивание по 10 с на каждое имя
+    # порознь. Встречная запись возвращает: когда пишется одно имя, второе
+    # становится должным. И только ВПЕРЁД, иначе пара зациклится и оба
+    # начнут писать на каждом кадре.
+    _bz6 = ('PAIRED_WITH' in _bz_halout and
+            '"cell_v_lowest" to "cell_v_highest"' in _bz_halout and
+            '"cell_v_highest" to "cell_v_lowest"' in _bz_halout and
+            'PAIR_GRACE_MS' in _bz_halout and
+            'ts - pPrev > PAIR_GRACE_MS' in _bz_halout and
+            'lastPerName[partner] = ts - throttleFor(partner)' in _bz_halout)
+    if _bz6:
+        ok('BZ6 the journal writes the cell pair together, so the delta is '
+           'a delta of one instant at the source')
+    else:
+        fail('BZ6 the cell pair drifts at the source again — no read-side '
+             'rule can repair that')
+
+    # BZ7: МИГРАЦИЯ ЧИСТИТ ВСЕ ТРИ ПОЛЯ. Отрицательная разность означает,
+    # что границы взяты из разных мгновений, поэтому лгут все три, а не
+    # одно. Девять строк по полю: пять у фоновой #155 и четыре сиротских от
+    # 6–23 июня (живой писатель до охраны знака +131).
+    _bz7 = ('int get schemaVersion => 19;' in _bz_db and
+            'if (from < 19)' in _bz_db and
+            'cell_spread = NULL' in _bz_db and
+            'cell_voltage_min = NULL' in _bz_db and
+            'cell_voltage_max = NULL' in _bz_db and
+            'WHERE cell_spread < 0' in _bz_db)
+    if _bz7:
+        ok('BZ7 migration 19 clears the whole fabricated triple, not just its '
+           'sign')
+    else:
+        fail('BZ7 fabricated cell rows survive, or only the spread is cleared')
+
+    # BZ8: ЭКРАН ЧИТАЕТ СЕРВИС — И ЭТО ГЛАВНЫЙ ГЕЙТ ПУНКТА 3.
+    #
+    # Гейт стоит на ЖИВОМ пути в обоих близнецах: `watch` сервиса, запрос
+    # хвоста по числу слотов, и ОТСУТСТВИЕ локального кольца и таймера
+    # там же. Проверять существование сервиса было бы ровно BU1: класс
+    # есть, а экран его не зовёт, и мутация этого не покажет.
+    _bz8 = all(
+        ('context.watch<PowerHistoryService>()' in src and
+         'hist.tail(slots)' in src and
+         'powerSlotsFor(box.maxWidth, dpr)' in src and
+         'Timer.periodic' not in src and
+         '_ordered' not in src)
+        for src in (_bz_tall, _bz_wide))
+    if _bz8:
+        ok('BZ8 both driver twins read the history service and keep no ring '
+           'of their own')
+    else:
+        fail('BZ8 a driver screen still owns its buffer, or does not read the '
+             'service — the history dies on leaving the screen')
+
+    # BZ9: СЕРВИС ВЛАДЕЕТ ТАКТОМ И МАСШТАБАМИ, НИКОГО НЕ ИМПОРТИРУЯ.
+    #
+    # Таймер тикает ВСЕГДА, иначе буфер снова обнулялся бы при уходе с
+    # экрана — лечили бы болезнь и оставляли её же. Масштабы переехали
+    # вместе с кольцом: они функция буфера И числа тиков, и на экране
+    # обнулялись бы вместе с ним.
+    #
+    # Ни `hal_telemetry`, ни `connection` в сервисе не упоминаются: он
+    # кормится колбэком. Это строже AA2 — там запрещено взаимное знание
+    # двух, а здесь нет и одностороннего.
+    # Плюс: масштаб осей считается по ВИДИМОМУ окну. Кольцо больше окна
+    # (1024 против 301…540), и счёт по всему кольцу вернул бы болезнь,
+    # которую лечил +70: один разгон в 150 кВт прижимал бы шкалу почти на
+    # четверть часа, и городская езда снова стала бы прямой линией. Раньше
+    # это не было видно только потому, что кольцо БЫЛО окном.
+    _bz9 = ('class PowerHistoryService extends ChangeNotifier' in _bz_ph and
+            'Timer.periodic(tick' in _bz_ph and
+            '_windowHint' in _bz_ph and
+            '_windowHint < _filled ? _windowHint : _filled' in _bz_ph and
+            '_timer?.cancel()' in _bz_ph and
+            'double? Function() _read' in _bz_ph and
+            'hal_telemetry' not in _bz_ph and
+            'connection.dart' not in _bz_ph and
+            'dischargeScale' in _bz_ph and
+            'ChangeNotifierProvider<PowerHistoryService>' in _bz_main)
+    if _bz9:
+        ok('BZ9 the power history is a third service fed by a callback, above '
+           'the navigator, ticking always')
+    else:
+        fail('BZ9 the history service imports a peer service or stops ticking '
+             'when nobody watches')
+
+    # BZ10: ШАГ СТОЛБИКА ЦЕЛЫЙ В ПИКСЕЛЯХ, А ЗАЖИМ СНЯТ. Прежний
+    # `clamp(1.5, 6.0)` и был блокировщиком: при шаге 1.33 dp он требовал
+    # 1.5 dp, столбик выходил шире шага и столбики налезали. Однопиксельный
+    # столбик не на границе пикселя размазывается сглаживанием по двум в
+    # половину яркости — плотный график выцвел бы вместо подробности.
+    _bz10 = all(
+        ('clamp(1.5, 6.0)' not in src and
+         '(i * pitchPx).roundToDouble()' in src and
+         'powerBarWidthFor(scale)' in src)
+        for src in (_bz_tall, _bz_wide)) and 'powerSlotsFor' in _bz_ph
+    if _bz10:
+        ok('BZ10 bars sit on the physical pixel grid and the width clamp that '
+           'made them overlap is gone')
+    else:
+        fail('BZ10 the bar width is clamped above the pitch again, or bars '
+             'fall off the pixel grid')
+
+    # BZ11: ЧЕТЫРЕ МЕЛОЧИ, КАЖДАЯ ИЗ КОТОРЫХ ВРАЛА ВЛАДЕЛЬЦУ.
+    #
+    #   * «около 786 км» показывалось как «около 78» — молчаливый обрез
+    #     числа в десять раз опаснее отсутствия числа;
+    #   * окно полосы выводится ИЗ КОНСТАНТЫ, а не написано цифрами, иначе
+    #     подпись разойдётся с ней при первой же правке;
+    #   * постоянное имя экспорта больше не пишется, но перечисление его
+    #     по-прежнему узнаёт (перестать узнавать — смена контракта);
+    #   * сверка проверяет только то, что мы писали, — иначе жалуется на
+    #     чужую длину, как 04.08;
+    #   * геометрия экрана замерена: dpr у BZ5 до сих пор ВЫВЕДЕН, а от него
+    #     зависит окно графика.
+    # ГЕЙТ СУЖЕН ДО ОКРЕСТНОСТИ СВОЕЙ СТРОКИ, и это находка мутации.
+    # Первая редакция искала `TextOverflow.ellipsis` по всему файлу. Как
+    # только охрана в одну строку появилась и у подписи стадии, гейт стал
+    # проходить за счёт ЧУЖОЙ строки: свой предмет — обрез «около N км» —
+    # можно было снять, и он остался бы зелёным. Ровно семья BF5, где
+    # проверка по всему файлу проходила за счёт постороннего кода.
+    _bz11_at = _bz_band.find("measure.range_est")
+    _bz11_near = (_bz_band[max(0, _bz11_at - 400):_bz11_at + 400]
+                  if _bz11_at > 0 else '')
+    _bz11 = ('TextOverflow.ellipsis' in _bz11_near and
+             'Flexible(' in _bz11_near and
+             "measure.band_window" in _bz_band and
+             'kBandHalfWidthKmh' in _bz_band and
+             _bz_l10n.count("'measure.band_window'") == 2 and
+             'kFixedName' not in _bz_exp and
+             'kFixedName' in (root / 'lib/services/import_service.dart')
+             .read_text() and
+             "debugPrint('Screen: " in _bz_home)
+    if _bz11:
+        ok('BZ11 the range line cannot truncate silently, the band window is '
+           'derived, the fixed name is read but never written, and the screen '
+           'geometry is measured')
+    else:
+        fail('BZ11 one of the four small lies is back')
+else:
+    ok(f"Part BZ skipped (build +{pv}, the cell delta and the power history "
+       f"land in +193)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)

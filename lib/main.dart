@@ -4,6 +4,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
 
 import 'data/database.dart';
+import 'services/power_history_service.dart';
 import 'services/account_auth_service.dart';
 import 'services/app_diag_log.dart';
 import 'services/hal_telemetry_service.dart';
@@ -264,6 +265,26 @@ class _BZ5AppState extends State<BZ5App> with WidgetsBindingObserver {
             );
             sp.init();
             return sp;
+          },
+        ),
+        // v0.1.94+193: история мощности для графика на экране «Вождение».
+        // Живёт ЗДЕСЬ, выше навигатора, потому что раньше кольцо лежало в
+        // состоянии карточки и обнулялось при каждом уходе с экрана.
+        //
+        // Создаётся последним: ему нужны оба источника, а получает он их
+        // ОДНИМ колбэком — то же выражение, что стоит на самих экранах.
+        // Сервис не импортирует ни HalTelemetryService, ни
+        // ConnectionService, поэтому новых связей между ними не возникает
+        // (AA2 цел; там запрещено взаимное знание двух, а здесь и знания
+        // никакого нет — есть значение).
+        ChangeNotifierProvider<PowerHistoryService>(
+          create: (ctx) {
+            final hal = ctx.read<HalTelemetryService>();
+            return PowerHistoryService(
+              read: () => hal.useHalForPower
+                  ? hal.halPowerKw
+                  : widget.svc.instantPowerKw,
+            );
           },
         ),
       ],

@@ -27,8 +27,29 @@ import 'wide/head_unit_scaffold.dart';
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
 
+  /// v0.1.94+193 — ГЕОМЕТРИЯ ЭКРАНА, ЗАМЕРЕННАЯ, А НЕ ВЫВЕДЕННАЯ.
+  ///
+  /// Одна строка при первой сборке, уезжает журналом приложения в
+  /// диаг-дамп. Нужна затем, что плотность окна графика мощности считается
+  /// от `devicePixelRatio`, а у BZ5 это число до сих пор ВЫВЕДЕНО из
+  /// отношения 1920/2175, а не измерено. У BZ3 оно точное (1080/720 = 1.5).
+  /// Ошибись вывод — и окно графика молча окажется другим.
+  ///
+  /// Печатается один раз на процесс: `build` зовут на каждом повороте и
+  /// изменении размера, а строка нужна одна.
+  static bool _metricsLogged = false;
+
+  static void _logScreenMetrics(BuildContext context) {
+    if (_metricsLogged) return;
+    _metricsLogged = true;
+    final mq = MediaQuery.of(context);
+    debugPrint('Screen: ${mq.size.width.round()}x${mq.size.height.round()}'
+        ' dp, dpr ${mq.devicePixelRatio}');
+  }
+
   @override
   Widget build(BuildContext context) {
+    _logScreenMetrics(context);
     if (LayoutBreakpoints.useHeadUnitLayout(context)) {
       return const HeadUnitScaffold();
     }

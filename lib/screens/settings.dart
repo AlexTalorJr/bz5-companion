@@ -56,6 +56,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
   // здесь только отражение, поэтому читаем через канал, а не из
   // SharedPreferences Dart-стороны: две копии разошлись бы.
   bool _autostartOn = false;
+  // v0.1.94+193: настоящее тройное состояние, а не одно «включено».
+  // «Не решали» ≠ «выключено вами»: первое означает, что владелец не
+  // высказывался и следующий запуск на ГУ взведёт автозапуск сам, второе —
+  // что взводить нельзя. Читается с нативной стороны обоими флагами.
+  AutostartState _autostartState = AutostartState.undecided;
 
   @override
   void initState() {
@@ -71,8 +76,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _advancedUnlocked = prefs.getBool('advanced_unlocked') ?? false;
     });
     final on = await AutostartArm.isArmed();
+    final st = await AutostartArm.state();
     if (!mounted) return;
-    setState(() => _autostartOn = on);
+    setState(() {
+      _autostartOn = on;
+      _autostartState = st;
+    });
   }
 
   /// v0.1.75+174: журнал автозапуска в диаг-дамп.
@@ -126,8 +135,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
     // запись prefs не удалась, переключатель обязан вернуться назад,
     // иначе он покажет состояние, которого нет.
     final on = await AutostartArm.isArmed();
+    final st = await AutostartArm.state();
     if (!mounted) return;
-    setState(() => _autostartOn = on);
+    setState(() {
+      _autostartOn = on;
+      _autostartState = st;
+    });
+  }
+
+  /// Подпись выключателя. Показывает то, что есть на нативной стороне, —
+  /// включая «не решали», которое до +193 было неотличимо от «выключено».
+  String _autostartSubtitle() {
+    switch (_autostartState) {
+      case AutostartState.on:
+        return S.of('settings.autostart.state_on');
+      case AutostartState.offByOwner:
+        return S.of('settings.autostart.state_off');
+      case AutostartState.undecided:
+        return S.of('settings.autostart.state_undecided');
+    }
   }
 
   Future<void> _setAutoConnect(bool v) async {
@@ -617,6 +643,37 @@ class _SettingsScreenState extends State<SettingsScreen> {
   List<Widget> _appGroup(BuildContext context, LocaleService locale) {
     return [
       _SectionLabel(S.of('settings.section.app')),
+      // v0.1.94+193 — АВТОЗАПУСК ВЫШЕЛ НАРУЖУ.
+      //
+      // До этого патча выключатель жил в «Расширенном» и был спрятан
+      // ДВАЖДЫ: за 15-тапным замком и за свёрнутым ExpansionTile. Механизм,
+      // который поднимает приложение на каждом пробуждении ГУ, обязан
+      // выключаться без пароля — иначе единственный доступный способ его
+      // прекратить это удаление приложения.
+      //
+      // Только на ГУ: на телефоне автозапуск не взводится никогда, и
+      // переключатель, который заведомо ничего не делает, — та же
+      // нечестность, что вкладка «Замеры» на телефоне.
+      if (context.watch<HalTelemetryService>().canUseHal)
+        SwitchListTile(
+          secondary: const Icon(Icons.play_circle_outline,
+              color: Colors.lightBlueAccent),
+          title: Text(S.of('settings.autostart.title')),
+          subtitle: Text(_autostartSubtitle()),
+          value: _autostartOn,
+          onChanged: _setAutostart,
+        ),
+      // Журнал — прибор этого же выключателя: включил, дождался
+      // пробуждения ГУ, выгрузил журнал, увидел, сработал ли мост.
+      if (context.watch<HalTelemetryService>().canUseHal)
+        ListTile(
+          leading: const Icon(Icons.receipt_long,
+              color: Colors.lightBlueAccent),
+          title: Text(S.of('settings.marker.title')),
+          subtitle: Text(S.of('settings.marker.sub')),
+          trailing: const Icon(Icons.save_alt, color: Colors.grey),
+          onTap: _dumpMarker,
+        ),
       // Язык / Language — compact entry with the current language on
       // the row; the two radios live in a dialog (the +58/+59 setMode
       // contract is unchanged: exactly two explicit modes).
@@ -878,27 +935,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
         // не взводится никогда, и переключатель, который заведомо
         // ничего не делает, — та же нечестность, что и вкладка
         // «Замеры» на телефоне.
-        if (context.watch<HalTelemetryService>().canUseHal)
-          SwitchListTile(
-            secondary:
-                const Icon(Icons.play_circle_outline, color: Colors.grey),
-            title: Text(S.of('settings.autostart.title')),
-            subtitle: Text(S.of('settings.autostart.sub')),
-            value: _autostartOn,
-            onChanged: _setAutostart,
-          ),
         // v0.1.75+174: журнал автозапуска в диаг-дамп. Рядом с
         // выключателем, потому что это его же прибор: включил, дождался
         // пробуждения ГУ, выгрузил журнал — и видно, сработал ли мост.
         // Только на ГУ: на телефоне журнал пуст по построению.
-        if (context.watch<HalTelemetryService>().canUseHal)
-          ListTile(
-            leading: const Icon(Icons.receipt_long, color: Colors.grey),
-            title: Text(S.of('settings.marker.title')),
-            subtitle: Text(S.of('settings.marker.sub')),
-            trailing: const Icon(Icons.save_alt, color: Colors.grey),
-            onTap: _dumpMarker,
-          ),
         // v0.1.73+172: путь установки. Здесь, а не на верхнем уровне
         // (решение владельца 29.07) — это инструмент, а не функция для
         // ежедневного пользования, и живёт он за тем же 15-тапным

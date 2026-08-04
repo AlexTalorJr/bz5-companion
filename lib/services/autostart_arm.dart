@@ -26,9 +26,30 @@
 // Отсюда третье состояние на нативной стороне (см. AutostartPrefs):
 // «не решали» ≠ «выключено».
 
+// v0.1.94+193 — ПРОПУСК ПЕРЕСТАЛ БЫТЬ МОЛЧАЛИВЫМ.
+//
+// Поле 03–04.08 закрыло вопрос, ради которого этот файл читали: наш
+// маркер несёт `autostart=on` 24 строками и ни одной `off`, мост
+// планирует будильник на каждом системном действии и доводит до
+// `bridged:`. Механизм исправен. Улика «autostart=off · SKIPPED_DISABLED»
+// пришла из ЧУЖОГО журнала: companion пишет `bz5_companion_autostart_log`
+// (+ номер сборки в публичном зеркале), а строка того класса живёт в
+// файле с другим именем и другим форматом времени.
+//
+// Чинить, стало быть, нечего — но узнать это стоило разбора экспорта, а
+// не одного взгляда на экран. Поэтому патч добавляет ровно то, чего не
+// хватало для взгляда: КАЖДАЯ попытка взвода оставляет строку, включая
+// ту, которая раньше уходила молчаливым `return`. Отказ владельца больше
+// не выглядит как неработающий механизм.
+
 import 'package:flutter/services.dart';
 
 import 'hal_telemetry_service.dart';
+
+/// Тройное состояние автозапуска. «Не решали» — это ОТСУТСТВИЕ решения, а
+/// не третье значение флага: на нативной стороне оно кодируется парой
+/// `armed=false, opt_out=false` (см. AutostartPrefs).
+enum AutostartState { undecided, on, offByOwner }
 
 class AutostartArm {
   AutostartArm._();
@@ -57,9 +78,29 @@ class AutostartArm {
 
   static Future<void> _armIfAllowed() async {
     _optOut ??= await _flag('optedOut');
-    if (_optOut == true) return;
+    if (_optOut == true) {
+      // v0.1.94+193: раньше здесь стоял голый `return`, и отказ владельца
+      // был неотличим от неработающего взвода — ровно та неразличимость,
+      // которая стоила окна разбора чужого журнала. Строку пишет натив: у
+      // маркера один писатель на процесс, и вторую лестницу записи
+      // заводить нельзя (см. AutostartMarker).
+      await _ch
+          .invokeMethod<bool>('armSkipped')
+          .catchError((_) => false);
+      return;
+    }
     _armed = true;
     await _ch.invokeMethod<bool>('arm').catchError((_) => false);
+  }
+
+  /// Настоящее тройное состояние, прочитанное с нативной стороны — той
+  /// самой, что читает BootReceiver. Dart-кэш `_armed` для показа не
+  /// годится: он говорит лишь «звали ли мы `arm` в этом запуске».
+  static Future<AutostartState> state() async {
+    if (await _flag('isArmed')) return AutostartState.on;
+    return await _flag('optedOut')
+        ? AutostartState.offByOwner
+        : AutostartState.undecided;
   }
 
   /// Журнал автозапуска целиком (хвост до 64 КБ) — чтобы уехал

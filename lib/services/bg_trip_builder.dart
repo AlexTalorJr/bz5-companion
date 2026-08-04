@@ -2,6 +2,7 @@ import 'package:drift/drift.dart' show Value;
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'cell_pair.dart';
 import '../data/database.dart';
 import 'trip_aggregates.dart';
 
@@ -287,21 +288,45 @@ class BgTripBuilder {
     final dist = derived.distanceKm;
     if (dist == null || dist < kMinDistanceKm) return false;
 
-    // Разброс ячеек: пара «выше/ниже» приходит разными кадрами, поэтому
-    // считаем по последним известным значениям обоих, а не по одному
-    // кадру — иначе разброс не посчитается никогда.
+    // ── РАЗБРОС ЯЧЕЕК: МАКСИМУМ ТОЛЬКО ПО ОДНОМОМЕНТНЫМ ПАРАМ ──
+    //
+    // v0.1.94+193, и это исправление ХУДШЕГО из трёх мест одной ошибки.
+    // Прежняя редакция брала «последние известные значения обоих», и
+    // обоснование в комментарии звучало разумно: иначе разброс не
+    // посчитается никогда. Беда в том, что дальше берётся МАКСИМУМ, а
+    // значит из всех рассинхронов отбирался САМЫЙ БОЛЬШОЙ — по построению.
+    //
+    // Поле 04.08: у фоновой #155 сюда легло 190 мВ при живой поездке того
+    // же дня в 4…9 мВ. Именно это число показывает карточка разбаланса в
+    // Трендах, то есть самая заметная из трёх лжей была не в снапшотах.
+    // Зеркало на реальных данных: с правилом парности 190.0 → 9.0 мВ, что
+    // совпадает с живой поездкой.
     double? spreadMv;
     double? hi;
     double? lo;
+    int? hiAt;
+    int? loAt;
     for (final r in window) {
       final v = r.numericValue;
       if (v == null) continue;
-      if (r.name == 'cell_v_highest') hi = v;
-      if (r.name == 'cell_v_lowest') lo = v;
-      if (hi != null && lo != null) {
-        final d = (hi - lo) * 1000.0;
-        if (spreadMv == null || d > spreadMv) spreadMv = d;
+      final ms = r.timestamp.millisecondsSinceEpoch;
+      if (r.name == 'cell_v_highest') {
+        hi = v;
+        hiAt = ms;
       }
+      if (r.name == 'cell_v_lowest') {
+        lo = v;
+        loAt = ms;
+      }
+      final t = cellTriple(
+        loVolts: lo,
+        hiVolts: hi,
+        loAtMs: loAt,
+        hiAtMs: hiAt,
+        windowMs: kCellPairWindowJournalMs,
+      );
+      if (t == null) continue;
+      if (spreadMv == null || t.spreadMv > spreadMv) spreadMv = t.spreadMv;
     }
 
     final totalSec = to.difference(from).inSeconds;
@@ -401,6 +426,10 @@ class BgTripBuilder {
     // истории зависит от того, было ли открыто приложение.
     const step = Duration(seconds: 60);
     final latest = <String, double>{};
+    // v0.1.94+193: у каждого значения появилось ВРЕМЯ его обновления.
+    // Без него правило одномоментности неисполнимо: карта переноса вперёд
+    // знала, ЧТО последнее, но не знала, КОГДА оно последнее.
+    final latestAt = <String, int>{};
     DateTime? nextAt;
     var written = 0;
 
@@ -409,19 +438,27 @@ class BgTripBuilder {
       final packV = latest['pack_voltage'];
       // То же правило прогрева, что у живого: пустых строк не пишем.
       if (soc == null && packV == null) return;
-      final lo = latest['cell_v_lowest'];
-      final hi = latest['cell_v_highest'];
+      // Тройка ячеек — одним решением, тем же, что у живого писателя и у
+      // агрегата выше. Окно журнальное: здесь сигналы придушены по 10 с и
+      // идут в противофазе, поэтому «недалеко друг от друга» означает
+      // настоящий дрейф напряжений, а не задержку доставки.
+      final triple = cellTriple(
+        loVolts: latest['cell_v_lowest'],
+        hiVolts: latest['cell_v_highest'],
+        loAtMs: latestAt['cell_v_lowest'],
+        hiAtMs: latestAt['cell_v_highest'],
+        windowMs: kCellPairWindowJournalMs,
+      );
       await db.insertSnapshot(SnapshotsCompanion(
         capturedAt: Value(at),
         soc: Value(soc),
         soh: Value(latest['soh']),
         batteryTempC: Value(latest['battery_temp_bigdata']),
         cellVoltageMin:
-            Value(lo == null ? null : (lo * 1000).roundToDouble()),
+            Value(triple == null ? null : triple.minMv.roundToDouble()),
         cellVoltageMax:
-            Value(hi == null ? null : (hi * 1000).roundToDouble()),
-        cellSpread:
-            Value(lo == null || hi == null ? null : (hi - lo) * 1000.0),
+            Value(triple == null ? null : triple.maxMv.roundToDouble()),
+        cellSpread: Value(triple?.spreadMv),
         odometer: Value(latest['odometer']),
         tripId: Value(tripId),
         packVoltageV: Value(packV),
@@ -436,7 +473,10 @@ class BgTripBuilder {
         // её брать нельзя без охраны. Строка без имени бесполезна и для
         // переноса значения вперёд.
         final n = r.name;
-        if (v != null && n != null) latest[n] = v;
+        if (v != null && n != null) {
+          latest[n] = v;
+          latestAt[n] = r.timestamp.millisecondsSinceEpoch;
+        }
         nextAt ??= r.timestamp;
         // Перенос последнего известного значения вперёд — так же видит мир
         // живой писатель, когда просыпается по таймеру: он берёт то, что

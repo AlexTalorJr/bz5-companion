@@ -1,9 +1,9 @@
-import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../l10n/strings.dart';
+import '../../services/power_history_service.dart';
 import '../../services/connection.dart';
 import '../../services/cost_settings.dart';
 import '../../services/hal_telemetry_service.dart';
@@ -38,6 +38,9 @@ class DriverViewWideScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final svc = context.watch<ConnectionService>();
     final hal = context.watch<HalTelemetryService>();
+    // Крупное число и цвет потока остаются событийными — раз в секунду
+    // главная цифра на приборе обновляться не должна.
+    final hist = context.watch<PowerHistoryService>();
     // v0.1.29+60: language switch re-renders this tab (const home
     // subtree blocks MaterialApp-level rebuilds — see LocaleService).
     context.watch<LocaleService>();
@@ -181,7 +184,8 @@ class _GearAndSocStack extends StatelessWidget {
 /// v0.1.29+67: Tesla-style live power card — big kW number, a center-zero
 /// horizontal bar (right = discharge up to +200 kW, left = regen down to
 /// −100 kW, scales chosen by the owner against the confirmed 223 kW
-/// electrical peak), and a ~60 s sparkline.
+/// electrical peak), and a bar chart whose window follows the pane
+/// width (v0.1.94+193 — it was a fixed 60 s on every form factor).
 ///
 /// DISPLAY-ONLY: samples the resolved power (HAL preferred, OBD2
 /// fallback — same resolver as everywhere) on a 500 ms timer into a local
@@ -197,82 +201,17 @@ class _PowerCard extends StatefulWidget {
 }
 
 class _PowerCardState extends State<_PowerCard> {
-  static const _sampleEvery = Duration(milliseconds: 500);
-  static const _historyLen = 120; // × 500 ms = 60 s window
-
-  // v0.1.29+70: auto-zoom scales (owner-chosen "variant B"). A fixed
-  // ±200/100 kW scale made city driving (±2-30 kW) a flat line. Instead
-  // each side of the scale tracks the max |power| seen in the visible
-  // window × 1.2 headroom, with a floor so it doesn't twitch on parked
-  // noise and a ceiling at the physical limits. The scale eases toward
-  // its target rather than snapping, so the graph never jumps.
-  static const _dischargeFloorKw = 10.0;
-  static const _dischargeCeilKw = 200.0; // confirmed electrical peak ~223
-  static const _regenFloorKw = 10.0;
-  static const _regenCeilKw = 100.0;
-  static const _scaleEase = 0.15; // per-tick approach to the target
-
-  double _dischargeScale = _dischargeFloorKw;
-  double _regenScale = _regenFloorKw;
-
-  // Ring buffer of the last [_historyLen] samples; null = no data at
-  // that tick (BLE+HAL both stale) → rendered as a gap.
-  final List<double?> _hist =
-      List<double?>.filled(_historyLen, null, growable: false);
-  int _head = 0; // next write position
-  Timer? _timer;
-
-  @override
-  void initState() {
-    super.initState();
-    _timer = Timer.periodic(_sampleEvery, (_) => _sample());
-  }
-
-  @override
-  void dispose() {
-    _timer?.cancel();
-    super.dispose();
-  }
-
-  void _sample() {
-    if (!mounted) return;
-    final svc = context.read<ConnectionService>();
-    final hal = context.read<HalTelemetryService>();
-    final p = hal.useHalForPower ? hal.halPowerKw : svc.instantPowerKw;
-    // v0.1.29+73: the sparkline is now drawn as discrete vertical bars
-    // (see _PowerBarsPainter), so a missing sample is simply a missing
-    // bar — invisible against its neighbours. No carry-forward needed;
-    // we record the true value (or null) each tick.
-    _hist[_head] = p;
-    _head = (_head + 1) % _historyLen;
-    _recomputeScales();
-    // The card also rebuilds via watch() below; this setState keeps the
-    // sparkline scrolling even when both providers are quiet.
-    setState(() {});
-  }
-
-  /// Ease both half-scales toward (window max × 1.2), clamped to
-  /// [floor, ceil]. Discharge and regen scale independently so a long
-  /// coast doesn't shrink the discharge axis and vice-versa.
-  void _recomputeScales() {
-    double maxDis = 0, maxReg = 0;
-    for (final s in _hist) {
-      if (s == null) continue;
-      if (s > maxDis) maxDis = s;
-      if (-s > maxReg) maxReg = -s;
-    }
-    final disTarget =
-        (maxDis * 1.2).clamp(_dischargeFloorKw, _dischargeCeilKw);
-    final regTarget = (maxReg * 1.2).clamp(_regenFloorKw, _regenCeilKw);
-    _dischargeScale += (disTarget - _dischargeScale) * _scaleEase;
-    _regenScale += (regTarget - _regenScale) * _scaleEase;
-  }
-
-  /// Oldest-first copy of the ring for painting.
-  List<double?> get _ordered => [
-        ..._hist.sublist(_head),
-        ..._hist.sublist(0, _head),
-      ];
+  // v0.1.94+193 — КОЛЬЦО, ТАКТ И МАСШТАБЫ ПЕРЕЕХАЛИ В СЕРВИС.
+  //
+  // Здесь стояла вторая копия того же буфера, что и на вертикальном
+  // экране: `_hist` на 120 отсчётов, `Timer.periodic` на 500 мс и обе
+  // половины шкалы. Копия жила в состоянии карточки и умирала с ней —
+  // уход с экрана «Вождение» обнулял историю. Теперь этим владеет
+  // `PowerHistoryService`, один на приложение, выше навигатора.
+  //
+  // Окно графика больше не константа в 60 секунд: слотов столько, сколько
+  // влезает по два физических пикселя, поэтому широкая полоса ГУ показывает
+  // минуты, а не ту же минуту, что узкая.
 
   @override
   Widget build(BuildContext context) {
@@ -293,7 +232,7 @@ class _PowerCardState extends State<_PowerCard> {
     // Current scale readout so the auto-zoom stays honest — the driver
     // can always see what full-deflection means right now.
     final String scaleLabel =
-        '+${_dischargeScale.round()} / −${_regenScale.round()} kW';
+        '+${hist.dischargeScale.round()} / −${hist.regenScale.round()} kW';
 
     return Card(
       child: Padding(
@@ -355,22 +294,29 @@ class _PowerCardState extends State<_PowerCard> {
                 size: const Size.fromHeight(8),
                 painter: _PowerBarPainter(
                   kw: powerKw,
-                  dischargeFull: _dischargeScale,
-                  regenFull: _regenScale,
+                  dischargeFull: hist.dischargeScale,
+                  regenFull: hist.regenScale,
                 ),
               ),
             ),
             const SizedBox(height: 8),
             Expanded(
               flex: 5,
-              child: CustomPaint(
-                size: Size.infinite,
-                painter: _PowerBarsPainter(
-                  samples: _ordered,
-                  dischargeFull: _dischargeScale,
-                  regenFull: _regenScale,
-                ),
-              ),
+              // Слоты считаются от ФАКТИЧЕСКОЙ ширины полосы: она внутри
+              // карточки с отступами, и на 2175 dp разница заметна.
+              child: LayoutBuilder(builder: (ctx, box) {
+                final dpr = MediaQuery.of(ctx).devicePixelRatio;
+                final slots = powerSlotsFor(box.maxWidth, dpr);
+                return CustomPaint(
+                  size: Size.infinite,
+                  painter: _PowerBarsPainter(
+                    samples: hist.tail(slots),
+                    dischargeFull: hist.dischargeScale,
+                    regenFull: hist.regenScale,
+                    dpr: dpr,
+                  ),
+                );
+              }),
             ),
           ],
         ),
@@ -440,11 +386,11 @@ class _PowerBarPainter extends CustomPainter {
       old.regenFull != regenFull;
 }
 
-/// ~60 s power sparkline. Zero line at the regen/discharge boundary
+/// Power history chart. Zero line at the regen/discharge boundary
 /// (same asymmetric vertical scale as the bar: top = +dischargeFull,
 /// bottom = −regenFull). Discharge above the line in blue, regen below
 /// in green; null samples leave gaps.
-/// v0.1.29+73: 60 s power history drawn as discrete vertical bars rather
+/// v0.1.29+73: power history drawn as discrete vertical bars rather
 /// than a connected line. The source (HAL ~2.2 Hz / OBD2 slower) doesn't
 /// produce a value on every 500 ms tick, and a polyline tears at every
 /// gap. Bars sidestep this entirely: each sample is its own bar from the
@@ -456,10 +402,12 @@ class _PowerBarsPainter extends CustomPainter {
   final List<double?> samples;
   final double dischargeFull;
   final double regenFull;
+  final double dpr;
   _PowerBarsPainter(
       {required this.samples,
       required this.dischargeFull,
-      required this.regenFull});
+      required this.regenFull,
+      required this.dpr});
 
   double _y(double kw, Size size) {
     final span = dischargeFull + regenFull;
@@ -477,8 +425,12 @@ class _PowerBarsPainter extends CustomPainter {
 
     // Bar pitch: divide the width evenly across all slots; keep a hairline
     // gap so adjacent bars stay legible. Bars are at least ~2 px wide.
-    final pitch = size.width / samples.length;
-    final barW = (pitch * 0.7).clamp(1.5, 6.0);
+    // Пиксельная сетка, а не зажим по dp: см. близнеца в
+    // driver_view_tall.dart. Прежний `clamp(1.5, 6.0)` делал столбик шире
+    // шага и столбики налезали друг на друга.
+    final scale = dpr <= 0 ? 1.0 : dpr;
+    final pitchPx = size.width * scale / samples.length;
+    final barPx = powerBarWidthFor(scale) * scale;
 
     final discharge = Paint()
       ..style = PaintingStyle.fill
@@ -491,13 +443,14 @@ class _PowerBarsPainter extends CustomPainter {
       final s = samples[i];
       if (s == null) continue; // missing bar — no neighbour effect
       final yVal = _y(s, size);
-      final cx = i * pitch + pitch / 2;
+      final leftPx = (i * pitchPx).roundToDouble();
       // Bar spans between the zero line and the value; min 1 px so a
       // near-zero reading still shows a sliver.
       final top = s >= 0 ? yVal : zeroY;
       final bot = s >= 0 ? zeroY : yVal;
       final h = (bot - top).clamp(1.0, size.height);
-      final rect = Rect.fromLTWH(cx - barW / 2, top, barW, h);
+      final rect =
+          Rect.fromLTWH(leftPx / scale, top, barPx / scale, h);
       canvas.drawRRect(
         RRect.fromRectAndRadius(rect, const Radius.circular(1)),
         s >= 0 ? discharge : regen,
@@ -703,7 +656,7 @@ class _BottomStatusStrip extends StatelessWidget {
 
     // v0.1.29+67: power moved out of this strip into its own _PowerCard
     // (gear/power/SOC stack) — a 14 pt line was unreadable at driver
-    // distance and the card adds the flow bar + 60 s sparkline.
+    // distance and the card adds the flow bar + the power bar chart.
 
     // Battery temp: HAL probe_highest_temp (verified = battery temp) when
     // fresh, else OBD2 — trip range if active, single 790/002F if idle.
