@@ -9842,17 +9842,28 @@ if int(pv) >= 193:
     # что границы взяты из разных мгновений, поэтому лгут все три, а не
     # одно. Девять строк по полю: пять у фоновой #155 и четыре сиротских от
     # 6–23 июня (живой писатель до охраны знака +131).
+    # И ОБЕ ТАБЛИЦЫ, а не одна. Первая редакция миграции чистила только
+    # снапшоты — и оставляла на экране ровно то число, против которого
+    # писалась: разброс поездки лежит в `trips`, и именно его показывает
+    # карточка разбаланса. Условие там шире «отрицательного», потому что
+    # агрегат брал МАКСИМУМ по рассинхронам и по построению отбирал худший:
+    # отдельный снапшот мог случайно попасть в одномоментную пару, максимум
+    # не мог.
     _bz7 = ('int get schemaVersion => 19;' in _bz_db and
             'if (from < 19)' in _bz_db and
             'cell_spread = NULL' in _bz_db and
             'cell_voltage_min = NULL' in _bz_db and
             'cell_voltage_max = NULL' in _bz_db and
-            'WHERE cell_spread < 0' in _bz_db)
+            'WHERE cell_spread < 0' in _bz_db and
+            'UPDATE trips SET max_cell_spread_mv = NULL' in _bz_db and
+            "WHERE source = 'hal_bg' AND max_cell_spread_mv IS NOT NULL"
+            in _bz_db)
     if _bz7:
-        ok('BZ7 migration 19 clears the whole fabricated triple, not just its '
-           'sign')
+        ok('BZ7 migration 19 clears the whole fabricated triple AND the '
+           'background trip aggregate that the Trends card actually shows')
     else:
-        fail('BZ7 fabricated cell rows survive, or only the spread is cleared')
+        fail('BZ7 fabricated cell rows survive, only the spread is cleared, '
+             'or the 190 mV aggregate stays on screen')
 
     # BZ8: ЭКРАН ЧИТАЕТ СЕРВИС — И ЭТО ГЛАВНЫЙ ГЕЙТ ПУНКТА 3.
     #

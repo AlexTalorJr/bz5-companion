@@ -265,13 +265,73 @@ def main(path):
 
     check_source()
 
-    print('=== кандидаты миграции 18 → 19 (весь снимок базы) ===')
-    tot = db.execute('SELECT COUNT(*) FROM snapshots WHERE cell_spread < 0').fetchone()[0]
-    print(f'  строк с отрицательным разбросом: {tot}')
+    print('=== миграция 18 → 19, прогон на копии реальной базы ===')
+    tot = db.execute(
+        'SELECT COUNT(*) FROM snapshots WHERE cell_spread < 0').fetchone()[0]
+    print(f'  снапшотов с отрицательным разбросом: {tot}')
     for r in db.execute('SELECT trip_id, COUNT(*), MIN(cell_spread) FROM snapshots '
                         'WHERE cell_spread < 0 GROUP BY trip_id'):
         print(f'    trip {r[0]}: {r[1]} строк, минимум {r[2]:.1f} мВ')
     check(tot == 9, f'девять строк, как в плане (факт {tot})')
+
+    agg = db.execute(
+        "SELECT COUNT(*), MAX(max_cell_spread_mv) FROM trips "
+        "WHERE source = 'hal_bg' AND max_cell_spread_mv IS NOT NULL"
+    ).fetchone()
+    print(f'  фоновых поездок с агрегатом: {agg[0]}, '
+          f'крупнейший {agg[1]:.1f} мВ')
+
+    # Прогоняем ОБЕ команды на копии в памяти. База экспорта открыта только
+    # на чтение по смыслу, поэтому переносим её в память целиком.
+    mem = sqlite3.connect(':memory:')
+    db.backup(mem)
+    rows_before = mem.execute('SELECT COUNT(*) FROM snapshots').fetchone()[0]
+    trips_before = mem.execute('SELECT COUNT(*) FROM trips').fetchone()[0]
+    live_before = mem.execute(
+        "SELECT COUNT(*) FROM trips WHERE (source IS NULL OR source <> 'hal_bg')"
+        " AND max_cell_spread_mv IS NOT NULL").fetchone()[0]
+
+    def migrate(conn):
+        a = conn.execute(
+            'UPDATE snapshots SET cell_spread = NULL, '
+            'cell_voltage_min = NULL, cell_voltage_max = NULL '
+            'WHERE cell_spread < 0').rowcount
+        b = conn.execute(
+            'UPDATE trips SET max_cell_spread_mv = NULL '
+            "WHERE source = 'hal_bg' AND max_cell_spread_mv IS NOT NULL"
+        ).rowcount
+        conn.commit()
+        return a, b
+
+    a1, b1 = migrate(mem)
+    a2, b2 = migrate(mem)
+    print(f'  первый проход: снапшотов {a1}, поездок {b1}')
+    print(f'  второй проход: снапшотов {a2}, поездок {b2}')
+
+    check((a1, b1) == (9, 1), f'первый проход правит ровно 9 и 1 ({a1}, {b1})')
+    check((a2, b2) == (0, 0),
+          f'второй проход не правит ничего — идемпотентна ({a2}, {b2})')
+    check(mem.execute('SELECT COUNT(*) FROM snapshots').fetchone()[0]
+          == rows_before,
+          f'ни один снапшот не удалён ({rows_before})')
+    check(mem.execute('SELECT COUNT(*) FROM trips').fetchone()[0]
+          == trips_before, f'ни одна поездка не удалена ({trips_before})')
+    check(mem.execute(
+        'SELECT COUNT(*) FROM snapshots WHERE cell_spread < 0').fetchone()[0]
+        == 0, 'отрицательных разбросов не осталось')
+    check(mem.execute(
+        "SELECT COUNT(*) FROM trips WHERE source = 'hal_bg' "
+        "AND max_cell_spread_mv IS NOT NULL").fetchone()[0] == 0,
+        'у фоновых поездок агрегат разброса снят')
+    check(mem.execute(
+        "SELECT COUNT(*) FROM trips WHERE (source IS NULL OR source <> 'hal_bg')"
+        " AND max_cell_spread_mv IS NOT NULL").fetchone()[0] == live_before,
+        f'живые поездки не тронуты ({live_before} с агрегатом)')
+    check(mem.execute(
+        'SELECT COUNT(*) FROM snapshots WHERE soc IS NOT NULL').fetchone()[0]
+        == db.execute(
+            'SELECT COUNT(*) FROM snapshots WHERE soc IS NOT NULL').fetchone()[0],
+        'прочие поля снапшотов целы (SOC)')
 
     print('\n' + '=' * 60)
     print('MIRROR FAIL' if FAIL else 'MIRROR PASS')
