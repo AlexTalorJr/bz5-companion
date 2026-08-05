@@ -538,6 +538,182 @@ def check_nullable_keys(f: Path, by_class):
     return bad
 
 
+def _method_bodies(src):
+    """Тела методов класса: (имя_класса, имя_метода, текст) по фигурным скобкам.
+
+    Метод опознаётся по объявлению на отступе в два пробела — так устроены
+    все наши классы. Точность здесь важнее полноты: пропустить метод значит
+    не проверить его, а ошибиться границей значит соврать.
+    """
+    out = []
+    for cm in re.finditer(r'\nclass\s+(\w+)', src):
+        cstart = cm.start()
+        nxt = re.search(r'\nclass\s+\w+', src[cstart + 1:])
+        cend = cstart + 1 + nxt.start() if nxt else len(src)
+        body = src[cstart:cend]
+        # Объявление метода: отступ ровно два пробела, СИГНАТУРА В ОДНОЙ
+        # СТРОКЕ (без переносов и вложенных скобок в параметрах), имя с
+        # маленькой буквы или подчёркивания.
+        #
+        # Первая редакция допускала переносы в типе и параметрах — и
+        # регулярка поймала `Card(` внутри чужого тела, приняв вызов
+        # виджета за метод. Границы поехали, скан сообщил о переменной
+        # `bins` из другого класса. Метод с многострочной сигнатурой теперь
+        # просто пропускается: недосмотреть безопаснее, чем соврать.
+        for mm in re.finditer(
+                r'\n  (?:[\w<>?,\[\]]+\s+)?([a-z_]\w*)'
+                r'\([^;{()\n]*\)\s*(?:async\s*)?\{',
+                body):
+            i = body.index('{', mm.end() - 1)
+            depth, j = 0, i
+            while j < len(body):
+                if body[j] == '{':
+                    depth += 1
+                elif body[j] == '}':
+                    depth -= 1
+                    if depth == 0:
+                        break
+                j += 1
+            # Параметры метода связаны в его теле наравне с локальными.
+            # Без них скан обвиняет `rows` и `auth`, пришедшие аргументами.
+            sig = body[mm.start():i]
+            out.append((cm.group(1), mm.group(1), sig, body[i:j + 1]))
+    return out
+
+
+# Имена, которые объявляет не `final x =`, а сам язык или сборка.
+_SCOPE_FREE = {
+    'context', 'this', 'super', 'widget', 'mounted', 'setState', 'build',
+}
+
+
+def check_local_scope(path):
+    """Восьмой скан (+195): имя от провайдера, использованное НЕ В СВОЁМ методе.
+
+    ПОВОД, И ОН ДОРОГОЙ. В +193 объявление `final hist =
+    context.watch<PowerHistoryService>()` легло в build ЧУЖОГО класса, а
+    использовалось в шести местах другого: правка шла текстовой заменой, и
+    `replace(..., 1)` взял первое вхождение якоря. Сборка упала девятью
+    ошибками на CI — после того, как ПОЛНАЯ церемония дала зелёный свет.
+
+    Ни один инструмент такого не видел ПО ПОСТРОЕНИЮ. Гейты ищут подстроку в
+    ФАЙЛЕ и подтверждают, что объявление и обращение оба присутствуют, — про
+    области видимости текст не знает ничего. Мутации доказывают, что гейт
+    реагирует на свой предмет, а не что предмет осмыслен. Компилятора Dart в
+    песочнице нет и взять негде: `dart` не ставится ни из apt, ни из
+    доступных зеркал.
+
+    ПОЧЕМУ СКАН УЗКИЙ. Первая редакция проверяла ЛЮБУЮ локальную переменную
+    и утонула в ложных срабатываниях: границы методов текут на многострочных
+    сигнатурах, имена связываются деструктуризацией, параметрами, циклами,
+    `catch`, замыканиями — каждая пропущенная форма превращается в обвинение
+    невиновного. Пять правок подряд убирали одно семейство ложных и
+    открывали следующее.
+
+    Поэтому предмет сужен до формы, которая и сломалась: имя, связанное
+    через `context.watch<...>()` или `context.read<...>()`. Такое имя всегда
+    局 локально, всегда используется через точку и никогда не бывает полем
+    класса. Ложных срабатываний тут ждать неоткуда, а именно эта форма
+    множится по экранам при каждой перестройке виджетов — то есть ровно там,
+    где текстовая правка и промахивается.
+
+    Скан НЕ заменяет компилятор и не претендует на это. Он закрывает один
+    класс ошибок — тот, что уже стоил сборки.
+    """
+    src = strip_code(path.read_text(encoding='utf-8'))
+    bodies = _method_bodies(src)
+    if not bodies:
+        return []
+
+    prov_re = re.compile(r'(?:final|var)\s+(\w+)\s*=\s*context\s*\.\s*'
+                         r'(?:watch|read)\s*<')
+    decl_re = re.compile(r'(?:final|var|const)\s+(?:[\w<>?,\[\]]+\s+)?(\w+)\s*=')
+
+    # Поля и геттеры класса видны во всех его методах. `(?! )` после двух
+    # пробелов обязателен: без него шаблон принимал за поле любое локальное
+    # объявление с отступом в четыре, то есть ровно те имена, ради которых
+    # скан и написан.
+    fields = set(re.findall(
+        r'\n  (?! )(?:static\s+)?(?:final\s+|late\s+|const\s+)?'
+        r'[\w<>?,\[\]]+\s+(\w+)\s*[=;]', src))
+    fields |= set(re.findall(r'\bget\s+(\w+)', src))
+
+    home = {}
+    for cls, meth, _sig, body in bodies:
+        for name in prov_re.findall(body):
+            home.setdefault(name, []).append((cls, meth))
+
+    def params_of(sig):
+        # Параметры связаны в теле наравне с локальными: без них скан
+        # обвиняет `_errorText(AccountAuthService auth)` в использовании
+        # чужого `auth`.
+        inner = sig[sig.find('(') + 1:sig.rfind(')')]
+        return set(re.findall(r'(\w+)\s*(?:,|$|\}|\])', inner))
+
+    bad = []
+    for cls, meth, _sig, body in bodies:
+        bound = (set(prov_re.findall(body)) | set(decl_re.findall(body))
+                 | params_of(_sig))
+        for name, where in home.items():
+            if name in bound or name in fields:
+                continue
+            if re.search(r'(?<![\w$.])' + re.escape(name) + r'\s*\.', body):
+                bad.append((cls, meth, name, where[0]))
+    return bad
+
+
+def check_private_fields(path):
+    """Девятый скан (+195): приватное ПОЛЕ, которого больше нет.
+
+    Вторая половина той же упавшей сборки. В +193 из состояния карточки
+    удалили `_dischargeScale` и `_regenScale`, а строка `scaleLabel` в
+    вертикальном экране осталась на них — в широком остаток проверили, в
+    вертикальном нет.
+
+    `check_privates` этого не видит: он опознаёт вызов по круглой скобке и
+    работает с приватными ФУНКЦИЯМИ. Обращение к полю выглядит иначе, и
+    целый класс «удалили поле, забыли потребителя» проходил мимо всех
+    инструментов сразу.
+
+    Правило: приватное имя, использованное через точку, обязано быть
+    где-то в этом же файле ОБЪЯВЛЕНО. Приватные имена в Дарте видны в
+    пределах библиотеки, а наши экраны — по файлу на библиотеку, поэтому
+    файла достаточно.
+    """
+    src = path.read_text(encoding='utf-8')
+    if re.search(r'^part\b', src, re.M):
+        return []
+    code = strip_code(src)
+    bad = []
+    used = set(re.findall(r'(?<![\w$.])(_[A-Za-z]\w*)\s*\.', code))
+    for name in sorted(used):
+        esc = re.escape(name)
+        declared = (
+            # Поле или локальная. Тип не перечисляется посимвольно: у нас
+            # встречается `Map<String, ({double value, DateTime at})> _latest`,
+            # и любой список допустимых символов такой тип отсекает, объявляя
+            # объявленное необъявленным. Достаточно, что имени предшествует
+            # конец типа, а следом идёт присваивание или точка с запятой.
+            re.search(r'[)>\]}\w]\s+' + esc + r'\s*(?:=|;)', code)
+            # геттер
+            or re.search(r'\bget\s+' + esc + r'\b', code)
+            # поле, инициализируемое конструктором
+            or re.search(r'\bthis\.' + esc + r'\b', code)
+            # объявление типа с приватным именем
+            or re.search(r'\b(?:class|enum|mixin|typedef|extension)\s+'
+                         + esc + r'\b', code)
+            # функция/метод
+            or re.search(r'(?<![\w$.])' + esc + r'\s*\([^)]*\)\s*(?:async\s*)?\{',
+                         code)
+            # объявление без инициализации: `late final Foo _bar`
+            or re.search(r'(?:late|final|static|const)\s+[\w<>?,\[\]]*\s*'
+                         + esc + r'\b', code)
+        )
+        if not declared:
+            bad.append(name)
+    return bad
+
+
 def provider_owned_classes():
     """Кого уничтожает провайдер — и, значит, кто ОБЯЗАН убирать за собой.
 
@@ -679,6 +855,24 @@ def main():
             td += 1
             fails.append(f'{f.name}:timer:{cls}')
     print(f'  timer dispose: {td} leaking')
+
+    ls = 0
+    for f in files:
+        for cls, meth, name, where in check_local_scope(f):
+            print(f'    [FAIL] {f.relative_to(LIB)}: {cls}.{meth}() использует '
+                  f'«{name}», объявленное в {where[0]}.{where[1]}()')
+            ls += 1
+            fails.append(f'{f.name}:scope:{name}')
+    print(f'  local scope: {ls} out of scope')
+
+    pf = 0
+    for f in files:
+        for name in check_private_fields(f):
+            print(f'    [FAIL] {f.relative_to(LIB)}: {name} используется, '
+                  f'но нигде в файле не объявлено')
+            pf += 1
+            fails.append(f'{f.name}:field:{name}')
+    print(f'  private fields: {pf} unresolved')
 
     print('=' * 56)
     print('DART SCAN ' + ('FAIL' if fails else 'PASS'))

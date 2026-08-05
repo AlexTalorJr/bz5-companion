@@ -38,9 +38,6 @@ class DriverViewWideScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final svc = context.watch<ConnectionService>();
     final hal = context.watch<HalTelemetryService>();
-    // Крупное число и цвет потока остаются событийными — раз в секунду
-    // главная цифра на приборе обновляться не должна.
-    final hist = context.watch<PowerHistoryService>();
     // v0.1.29+60: language switch re-renders this tab (const home
     // subtree blocks MaterialApp-level rebuilds — see LocaleService).
     context.watch<LocaleService>();
@@ -217,10 +214,13 @@ class _PowerCardState extends State<_PowerCard> {
   Widget build(BuildContext context) {
     final svc = context.watch<ConnectionService>();
     final hal = context.watch<HalTelemetryService>();
+    // Крупное число и цвет потока остаются событийными — раз в секунду
+    // главная цифра на приборе обновляться не должна.
     final powerKw =
         hal.useHalForPower ? hal.halPowerKw : svc.instantPowerKw;
     final flowDir =
         hal.useHalForPower ? hal.halFlowDir : svc.powerFlowDirection;
+    final hist = context.watch<PowerHistoryService>();
 
     final Color powerColor = flowDir == -1
         ? Colors.greenAccent

@@ -359,7 +359,7 @@ class _PowerCardTallState extends State<_PowerCardTall> {
     final String dirLabel =
         flowDir == -1 ? S.of('drv.regen') : S.of('drv.power');
     final String scaleLabel =
-        '+${_dischargeScale.round()} / −${_regenScale.round()} kW';
+        '+${hist.dischargeScale.round()} / −${hist.regenScale.round()} kW';
 
     return Card(
       child: Padding(
