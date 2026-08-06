@@ -1203,8 +1203,92 @@ object ApkInstall {
  * существующий файл — обычный хунк, который таким образом не теряется.
  */
 class StageActivity : android.app.Activity() {
+
+    /**
+     * Наш архив это или APK, судя по СОДЕРЖИМОМУ. v0.1.97+196.
+     *
+     * Зовётся только когда имя файла промолчало. Читает ИМЕНА записей,
+     * а не сами записи: `getNextEntry` пропускает данные, поэтому цена
+     * ответа не зависит от размера архива.
+     *
+     * Читаем не больше `LOOK_ENTRIES` записей: у нашего экспорта
+     * опознаваемые имена стоят первыми (`trips.csv`, `snapshots.csv`), у
+     * APK тем более. Дальше первых полусотни имён копаться незачем, а
+     * потолок держит время ответа на подложенном файле.
+     *
+     * Умолчание при любой беде — `false`, то есть прежнее поведение
+     * «считать APK». Новая ступень имеет право только ДОБАВИТЬ узнанные
+     * архивы, а не отобрать работающий путь установки.
+     */
+    private fun looksLikeArchive(uri: Uri): Boolean {
+        val apkNames = setOf("androidmanifest.xml", "classes.dex")
+        val ourNames = setOf(
+            "metadata.json", "samples.sqlite", "trips.csv", "snapshots.csv"
+        )
+        // Один выход и ни одного возврата из лямбды. `use` и `return`
+        // внутри неё компилятор разбирает только когда тип приёмника
+        // известен; на голом kotlinc без android.jar приёмник неизвестен,
+        // и проверка перед выдачей начинала врать про несуществующую
+        // ошибку. Обычный try/finally читается так же и проверяется чем
+        // угодно.
+        var verdict = false
+        var zip: java.util.zip.ZipInputStream? = null
+        try {
+            val raw = contentResolver.openInputStream(uri)
+            if (raw != null) {
+                zip = java.util.zip.ZipInputStream(raw)
+                var seen = 0
+                var decided = false
+                while (!decided && seen < LOOK_ENTRIES) {
+                    val e = zip.nextEntry
+                    if (e == null) {
+                        decided = true
+                    } else {
+                        seen++
+                        val n = e.name.substringAfterLast('/').lowercase()
+                        zip.closeEntry()
+                        if (n in apkNames) {
+                            verdict = false
+                            decided = true
+                        } else if (n in ourNames) {
+                            verdict = true
+                            decided = true
+                        }
+                    }
+                }
+            }
+        } catch (t: Throwable) {
+            // В журнал, а не в logcat: logcat с этой машины не достать, а
+            // отказ ступени объясняет, почему архив снова ушёл в APK.
+            AutostartMarker.write(this, "stage-peek: failed ${t.message}")
+        } finally {
+            try {
+                zip?.close()
+            } catch (_: Throwable) {
+            }
+        }
+        return verdict
+    }
+
+    private companion object {
+        /** Сколько имён записей смотрим, прежде чем сдаться. */
+        const val LOOK_ENTRIES = 50
+    }
+
     override fun onCreate(saved: android.os.Bundle?) {
         super.onCreate(saved)
+        // ── СТРОКА О САМОМ ЗАПУСКЕ, ДО ВСЯКОЙ РАБОТЫ. v0.1.97+196 ──
+        //
+        // Три визита подряд «поделиться» кончалось ничем, и разобрать было
+        // нечем: прежняя первая запись стояла ПОСЛЕ разбора запроса, и её
+        // отсутствие означало сразу две разные вещи — «нас не позвали» и
+        // «позвали, но мы умерли по дороге». Различить их важнее, чем
+        // сэкономить строку: лечение у них разное.
+        AutostartMarker.write(
+            this,
+            "stage-open: action=${intent?.action ?: "-"}" +
+                " type=${intent?.type ?: "-"}"
+        )
         val uri: Uri? = when (intent?.action) {
             Intent.ACTION_SEND ->
                 @Suppress("DEPRECATION")
@@ -1242,8 +1326,28 @@ class StageActivity : android.app.Activity() {
         // Умолчание — APK: так вела себя активити с +176, и менять
         // поведение по умолчанию из-за нового груза значит ломать
         // работающий путь ради ещё не проверенного.
+        //
+        // v0.1.97+196 — ИМЯ БОЛЬШЕ НЕ ЕДИНСТВЕННЫЙ СУДЬЯ.
+        //
+        // `displayName` возвращает «?», когда провайдер источника имя не
+        // отдал. «?» не кончается на «.zip», архив уходил в ветку APK и
+        // ложился в кэш под чужим именем — восстановление его там не
+        // искало никогда. Отказ молчаливый и зависящий от чужого
+        // провайдера: отсюда «один раз получилось, дальше нет».
+        //
+        // Смотрим внутрь: у нашего архива в корне лежит `metadata.json`,
+        // у APK — `AndroidManifest.xml` и `classes.dex`. Оба файла zip,
+        // так что первые байты не различают их вовсе.
+        //
+        // Порядок ступеней: имя — ответ дешёвый и в обычном случае
+        // верный; содержимое — только когда имя промолчало.
         val srcName = ApkInstall.displayName(this, uri).lowercase()
-        val isArchive = srcName.endsWith(".zip")
+        val byName = srcName.endsWith(".zip")
+        val isArchive = if (byName) true else looksLikeArchive(uri)
+        AutostartMarker.write(
+            this,
+            "stage-pick: name=$srcName by_name=$byName archive=$isArchive"
+        )
         val main = android.os.Handler(android.os.Looper.getMainLooper())
         Thread {
             val res = if (isArchive) {

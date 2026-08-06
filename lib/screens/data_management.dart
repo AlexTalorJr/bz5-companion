@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -8,6 +9,7 @@ import '../l10n/strings.dart';
 import '../services/connection.dart';
 import '../services/locale_service.dart';
 import '../services/apk_install_channel.dart';
+import '../services/autostart_arm.dart';
 import '../services/export_service.dart';
 import '../services/import_service.dart';
 
@@ -65,12 +67,82 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
   // Итог трёх проб хранилища одной строкой. Пусто, пока не спрашивали.
   String? _probeLine;
 
+  // v0.1.97+196 — СТРОКИ ЖУРНАЛА ПРО ПРИЁМ И ВОССТАНОВЛЕНИЕ, ПРЯМО ЗДЕСЬ.
+  //
+  // Журнал лежит в файле и уезжает внутри архива экспорта, но вынуть
+  // файл из машины владельцу дорого: три визита подряд разбор шёл
+  // вслепую именно потому, что свежего журнала не было. Те же строки
+  // читаются каналом и показываются на экране — их можно прочитать
+  // прямо в машине или сфотографировать.
+  List<String> _traceLines = const [];
+  bool _traceOpen = false;
+
+  // Принятая, но ещё не восстановленная копия. Спрашивается при открытии
+  // экрана и гаснет сама: после успешного импорта файл удаляется.
+  ArchiveCandidate? _staged;
+
   @override
   void initState() {
     super.initState();
     _refreshCounts();
     _refreshPending();
     _refreshReport();
+    _refreshTrace();
+    _refreshStaged();
+  }
+
+  /// Только наши строки, и только хвост. Журнал автозапуска пишет ещё и
+  /// пробуждения — их здесь десятки на одну интересную, и они утопили бы
+  /// то, ради чего экран открыли.
+  /// Принятая копия, спрошенная при ОТКРЫТИИ экрана.
+  ///
+  /// Не из списка кандидатов: тот наполняется только после нажатия «найти
+  /// архив», и полоса появлялась бы ровно тогда, когда список уже виден,
+  /// то есть никогда вовремя. Находка собственной ревизии.
+  Future<void> _refreshStaged() async {
+    final c = await ImportService.stagedCopy();
+    if (!mounted) return;
+    setState(() => _staged = c);
+  }
+
+  String _stagedSize() {
+    final c = _staged;
+    if (c == null) return '—';
+    final b = c.sizeBytes;
+    if (b >= 1024 * 1024) {
+      return '${(b / (1024 * 1024)).toStringAsFixed(1)} MB';
+    }
+    return '${(b / 1024).toStringAsFixed(0)} KB';
+  }
+
+  Future<void> _refreshTrace() async {
+    const marks = [
+      'stage-open:',
+      'stage-pick:',
+      'stage-peek:',
+      'stage-share:',
+      'stage-archive:',
+      'import-see:',
+      'import-read:',
+      'import-queue:',
+      'import-apply:',
+      'import-report:',
+    ];
+    final whole = await AutostartArm.marker();
+    final picked = <String>[];
+    for (final line in const LineSplitter().convert(whole)) {
+      for (final m in marks) {
+        if (line.contains(m)) {
+          picked.add(line);
+          break;
+        }
+      }
+    }
+    final tail = picked.length > 40
+        ? picked.sublist(picked.length - 40)
+        : picked;
+    if (!mounted) return;
+    setState(() => _traceLines = tail);
   }
 
   Future<void> _refreshReport() async {
@@ -285,6 +357,40 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
 
           const Divider(),
           _section(S.of('dataimp.sec_restore')),
+          // ── ПРИНЯТЫЙ АРХИВ ВИДНО СРАЗУ. v0.1.97+196 ──
+          //
+          // Поле, три попытки подряд: владелец отдаёт файл приложению,
+          // открывает его и видит прежние данные. Приём и восстановление
+          // — два РАЗНЫХ действия, и о первом приложение не говорило
+          // ничего: файл молча ложился в каталог, а узнать об этом можно
+          // было, только досмотрев список кандидатов ниже до строки со
+          // словом «принят».
+          //
+          // Полоса стоит ДО вводного текста и до списка: пропустить её,
+          // открыв раздел, нельзя.
+          if (_staged != null)
+            Container(
+              margin: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.amberAccent.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.inbox, color: Colors.amberAccent),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      S
+                          .of('dataimp.staged_here')
+                          .replaceFirst('{size}', _stagedSize()),
+                      style: const TextStyle(fontSize: 13),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
             child: Text(
@@ -451,6 +557,49 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
               child: Text(_importResult!,
                   style: const TextStyle(
                       fontSize: 12, color: Colors.greenAccent)),
+            ),
+
+          // ── ЖУРНАЛ ПРИЁМА И ВОССТАНОВЛЕНИЯ, ВИДИМЫЙ БЕЗ ФАЙЛОВ ──
+          //
+          // v0.1.97+196. Строки лежат в файле и уезжают внутри архива
+          // экспорта, но вынуть файл из машины дорого, и три разбора
+          // подряд шли вслепую ровно поэтому. Здесь тот же самый файл,
+          // прочитанный тем же каналом, только отфильтрованный до наших
+          // строк.
+          //
+          // Свёрнуто по умолчанию: раздел нужен, когда что-то не вышло, а
+          // не каждый раз. Читать десять строк служебной латиницы поверх
+          // обычной работы владелец не подписывался.
+          ListTile(
+            dense: true,
+            leading: const Icon(Icons.receipt_long, size: 20),
+            title: Text(
+              S
+                  .of('dataimp.trace_title')
+                  .replaceFirst('{n}', '${_traceLines.length}'),
+              style: const TextStyle(fontSize: 13),
+            ),
+            trailing: Icon(
+                _traceOpen ? Icons.expand_less : Icons.expand_more,
+                size: 20),
+            onTap: () async {
+              await _refreshTrace();
+              if (!mounted) return;
+              setState(() => _traceOpen = !_traceOpen);
+            },
+          ),
+          if (_traceOpen)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+              child: SelectableText(
+                _traceLines.isEmpty
+                    ? S.of('dataimp.trace_empty')
+                    : _traceLines.join('\n'),
+                style: const TextStyle(
+                    fontSize: 10,
+                    color: Colors.grey,
+                    fontFamily: 'monospace'),
+              ),
             ),
 
           const Divider(),

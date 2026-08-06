@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../l10n/strings.dart';
 import '../services/connection.dart';
+import '../services/export_service.dart' show ScreenGeometry;
 import '../services/hal_telemetry_service.dart';
 import '../services/locale_service.dart';
 import '../services/speed_profile_service.dart';
@@ -45,6 +46,12 @@ class HomeScreen extends StatelessWidget {
     final mq = MediaQuery.of(context);
     debugPrint('Screen: ${mq.size.width.round()}x${mq.size.height.round()}'
         ' dp, dpr ${mq.devicePixelRatio}');
+    // v0.1.97+196: те же три числа — в `metadata.json` экспорта. Строка
+    // выше уезжает только отдельной кнопкой диаг-дампа и за два визита
+    // так и не доехала; архив экспорта владелец присылает сам.
+    ScreenGeometry.widthDp = mq.size.width.round();
+    ScreenGeometry.heightDp = mq.size.height.round();
+    ScreenGeometry.dpr = mq.devicePixelRatio;
   }
 
   @override

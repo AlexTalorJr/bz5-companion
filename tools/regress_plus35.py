@@ -9088,8 +9088,15 @@ if int(pv) >= 187:
 
     # BU5: ЗАЯВЛЕН ПРИЁМ ZIP. Прямо проверяет версию владельца о том, что
     # кнопки «Поделиться» в проводнике нет из-за отсутствия получателя.
-    _bu5 = ('android:mimeType="application/zip"' in _bu_mf and
-            'android:mimeType="application/x-zip-compressed"' in _bu_mf and
+    #
+    # v0.1.97+196: гейт сужен до фильтров ПОДЕЛИТЬСЯ. Мутация показала, чем
+    # была плоха проверка по всему манифесту: +196 добавил вторую дверь
+    # («Открыть с помощью») с теми же типами, и снятие zip у «поделиться»
+    # перестало ронять гейт — он держался за ЧУЖУЮ дверь. Предмет BU5 —
+    # именно приём по «поделиться», единственный путь мимо uid.
+    _bu5_send = _bu_mf.split('android.intent.action.VIEW')[0]
+    _bu5 = ('android:mimeType="application/zip"' in _bu5_send and
+            'android:mimeType="application/x-zip-compressed"' in _bu5_send and
             'fun stageArchive(' in _bu_apk)
     if _bu5:
         ok('BU5 the app is offered as a receiver for zip — if the file '
@@ -9952,11 +9959,19 @@ if int(pv) >= 193:
     # проходить за счёт ЧУЖОЙ строки: свой предмет — обрез «около N км» —
     # можно было снять, и он остался бы зелёным. Ровно семья BF5, где
     # проверка по всему файлу проходила за счёт постороннего кода.
+    #
+    # v0.1.97+196 — ПРЕДМЕТ ТОТ ЖЕ, МЕХАНИЗМ ДРУГОЙ. Гейт требовал рядом
+    # со строкой `Flexible(`, и это была проверка СПОСОБА, а не свойства.
+    # Поле 05.08 показало цену: гибкая строка честно не соврала и честно
+    # показала «около…» — числа не видно вовсе. Способ сменился (цифра
+    # наверх, подпись под ней одним куском), свойство осталось прежним:
+    # обрыв обязан быть виден многоточием, а не съесть цифру молча.
+    # Сторожим теперь свойство — одну строку и явное многоточие.
     _bz11_at = _bz_band.find("measure.range_est")
     _bz11_near = (_bz_band[max(0, _bz11_at - 400):_bz11_at + 400]
                   if _bz11_at > 0 else '')
     _bz11 = ('TextOverflow.ellipsis' in _bz11_near and
-             'Flexible(' in _bz11_near and
+             'maxLines: 1' in _bz11_near and
              "measure.band_window" in _bz_band and
              'kBandHalfWidthKmh' in _bz_band and
              _bz_l10n.count("'measure.band_window'") == 2 and
@@ -9973,6 +9988,200 @@ if int(pv) >= 193:
 else:
     ok(f"Part BZ skipped (build +{pv}, the cell delta and the power history "
        f"land in +193)")
+
+# ══════════════════════════ ЭРА CA (+196) ══════════════════════════
+#
+# Что закрывает эта эра, одной фразой на пункт:
+#   1. окно приёма файла оставляет след ДО всякой работы, и его больше
+#      нельзя снять требованием немедленно закрыться;
+#   2. весь путь восстановления пишет в ФАЙЛ, а не в кольцо в памяти,
+#      которое умирает вместе с процессом — а восстановление процесс
+#      как раз убивает;
+#   3. у применения записан КАЖДЫЙ выход, включая три отказа;
+#   4. развилка «архив или APK» не висит на одном имени файла;
+#   5. карточка полосы не зависит от угаданной ширины холста;
+#   6. размер экрана уезжает сам, внутри архива экспорта;
+#   7. упор числа столбиков в потолок оставляет запись.
+if int(pv) >= 196:
+    _ca_imp = (root / 'lib/services/import_service.dart').read_text()
+    _ca_arm = (root / 'lib/services/autostart_arm.dart').read_text()
+    _ca_apk = (root / 'android/app/src/main/kotlin/com/bz5companion'
+                      '/bz5_companion/ApkInstall.kt').read_text()
+    _ca_mainact = (root / 'android/app/src/main/kotlin/com/bz5companion'
+                          '/bz5_companion/MainActivity.kt').read_text()
+    _ca_mf = (root / 'android/app/src/main/AndroidManifest.xml').read_text()
+    _ca_band = _strip_comments_safe(
+        (root / 'lib/widgets/band_card.dart').read_text())
+    _ca_exp = _strip_comments_safe(
+        (root / 'lib/services/export_service.dart').read_text())
+    _ca_home = _strip_comments_safe(
+        (root / 'lib/screens/home.dart').read_text())
+    _ca_ph = _strip_comments_safe(
+        (root / 'lib/services/power_history_service.dart').read_text())
+    _ca_data = _strip_comments_safe(
+        (root / 'lib/screens/data_management.dart').read_text())
+    _ca_l10n = (root / 'lib/l10n/strings.dart').read_text()
+    _ca_l10n_ok = all(
+        _ca_l10n.count(f"'{k}'") == 2
+        for k in ('dataimp.staged_here', 'dataimp.trace_title',
+                  'dataimp.trace_empty'))
+
+    # CA1: СЛЕД РАНЬШЕ РАБОТЫ. Отсутствие строки означало сразу две разные
+    # вещи — «нас не позвали» и «позвали, и мы умерли по дороге», — а
+    # лечение у них разное. Строка обязана стоять ДО разбора ссылки, и
+    # тема больше не может требовать немедленного закрытия.
+    _ca_open_at = _ca_apk.find('stage-open:')
+    _ca_uri_at = _ca_apk.find('val uri: Uri? = when (intent?.action)')
+    _ca1 = (_ca_open_at > 0 and _ca_uri_at > 0 and
+            _ca_open_at < _ca_uri_at and
+            'android:theme="@android:style/Theme.NoDisplay"'
+            not in _ca_mf and
+            'Theme.Translucent.NoTitleBar' in _ca_mf and
+            'android.intent.action.VIEW' in _ca_mf)
+    if _ca1:
+        ok('CA1 the receiving window logs its own launch before any work, '
+           'is no longer required to close instantly, and «open with» is '
+           'declared')
+    else:
+        fail('CA1 the receive path can die again without leaving a trace')
+
+    # CA2: ЖУРНАЛ В ФАЙЛ, А НЕ В ПАМЯТЬ. Канал обязан быть объявлен с
+    # ОБЕИХ сторон: одна сторона без другой — мёртвый код.
+    _ca2 = ("'markerWrite'" in _ca_arm and
+            '"markerWrite"' in _ca_mainact and
+            'static Future<void> write(' in _ca_arm and
+            _ca_imp.count('AutostartArm.write(') >= 6 and
+            "import 'autostart_arm.dart';" in _ca_imp)
+    if _ca2:
+        ok('CA2 the restore path writes into the file log through a channel '
+           'that exists on both sides')
+    else:
+        fail('CA2 the restore path is back to the in-memory ring that dies '
+             'with the process')
+
+    # CA3: КАЖДЫЙ ВЫХОД ПРИМЕНЕНИЯ ЗАПИСАН. Считаем по телу функции, а не
+    # по файлу: гейт по всему файлу проходил бы за счёт чужих строк —
+    # семья BF5 и первой редакции BZ11.
+    _ca_apply = _ca_imp.split('static Future<ImportApplyResult?> '
+                              'applyPending()')[1].split(
+                                  '\n  static ')[0]
+    _ca3 = (_ca_apply.count('import-apply:') == 4 and
+            _ca_apply.count('return ImportApplyResult(') == 4)
+    if _ca3:
+        ok('CA3 all four exits of applyPending leave a line — the three '
+           'refusals too, not just success')
+    else:
+        fail('CA3 an exit of applyPending went silent again')
+
+    # CA4: РАЗВИЛКА НЕ ВИСИТ НА ИМЕНИ. `displayName` отдаёт «?», когда
+    # провайдер имя не вернул, и архив молча уходил в ветку APK.
+    #
+    # Мутация нашла слабость первой редакции: она проверяла, что ступень
+    # СУЩЕСТВУЕТ и что её зовут, но не то, что она отвечает «да», узнав
+    # своё. Перевернуть приговор внутри можно было, не тронув ни одной
+    # проверяемой буквы — ступень есть, толку нет.
+    _ca4_at = _ca_apk.find('n in ourNames')
+    _ca4_near = _ca_apk[_ca4_at:_ca4_at + 200] if _ca4_at > 0 else ''
+    _ca4 = ('looksLikeArchive' in _ca_apk and
+            'val isArchive = if (byName) true else looksLikeArchive(uri)'
+            in _ca_apk and
+            'stage-pick:' in _ca_apk and
+            'metadata.json' in _ca_apk and
+            'verdict = true' in _ca4_near)
+    if _ca4:
+        ok('CA4 archive-or-APK is decided by content when the file name '
+           'says nothing')
+    else:
+        fail('CA4 the fork hangs on the file name alone again')
+
+    # CA5: КАРТОЧКА НЕ ЗАВИСИТ ОТ УГАДАННОГО ХОЛСТА. Жёсткий слот в 200 dp
+    # обрезал подпись стадии на любом экране, потому что ширину мерили на
+    # АНГЛИЙСКОЙ подписи ЗРЕЮЩЕЙ полосы, а самая длинная — русская
+    # подпись дозревшей.
+    _ca5 = ('SizedBox(width: 200' not in _ca_band and
+            'Expanded(flex: 3, child: _leftBlock())' in _ca_band and
+            'Expanded(flex: 2, child: _crossFade())' in _ca_band)
+    if _ca5:
+        ok('CA5 the band card takes the width it is given instead of a '
+           'guessed 200 dp slot')
+    else:
+        fail('CA5 the fixed slot is back and the stage line truncates again')
+
+    # CA6: РАЗМЕР ЭКРАНА УЕЗЖАЕТ САМ. Строка +193 уходила только в журнал
+    # приложения, который выгружают ОТДЕЛЬНОЙ кнопкой; за два визита
+    # число так и не доехало. Заполняет экран, читает экспорт.
+    _ca6 = ('class ScreenGeometry' in _ca_exp and
+            "'screen': ScreenGeometry.snapshot()" in _ca_exp and
+            'ScreenGeometry.widthDp =' in _ca_home and
+            'ScreenGeometry.dpr =' in _ca_home)
+    if _ca6:
+        ok('CA6 the measured screen geometry rides out inside every export')
+    else:
+        fail('CA6 the screen size is stuck in a log nobody exports')
+
+    # CA7: УПОР В ПОТОЛОК НЕ МОЛЧИТ. Сработай он — и шаг перестанет быть
+    # двумя пикселями без единого следа: та же молчаливая деградация,
+    # которую лечил +193.
+    #
+    # Мутация нашла слабость первой редакции: гейт искал `debugPrint(` в
+    # окрестности условия, и обёртка `if (false)` оставляла его зелёным —
+    # запись на месте, толку ноль. Требуем запись ПЕРВЫМ действием внутри
+    # условия: тогда любая обёртка сдвигает её и видна.
+    _ca_cap_head = 'if (slots > PowerHistoryService.ringLength) {'
+    _ca_cap_at = _ca_ph.find(_ca_cap_head)
+    _ca_cap_body = (_ca_ph[_ca_cap_at + len(_ca_cap_head):
+                           _ca_cap_at + len(_ca_cap_head) + 400]
+                    if _ca_cap_at > 0 else '')
+    _ca7 = (_ca_cap_body.lstrip().startswith('debugPrint(') and
+            'capped' in _ca_cap_body)
+    if _ca7:
+        ok('CA7 hitting the bar ceiling leaves a line instead of silently '
+           'breaking the two-pixel step')
+    else:
+        fail('CA7 the bar ceiling went silent again')
+
+    # CA8: ПОКАЗ НЕ РАСХОДИТСЯ С ЗАПИСЬЮ. Экран данных фильтрует журнал по
+    # списку меток; писателей и меток должно быть поровну по именам,
+    # иначе новая строка перестанет показываться молча — класс «текст не
+    # соответствует коду», случаев уже двенадцать.
+    _ca_marks = ('stage-open:', 'stage-pick:', 'stage-peek:',
+                 'import-see:', 'import-read:', 'import-queue:',
+                 'import-apply:', 'import-report:')
+    _ca8_missing = [m for m in _ca_marks if m not in _ca_data]
+    _ca8 = (not _ca8_missing and
+            "'dataimp.trace_title'" in _ca_data and
+            _ca_l10n_ok)
+    if _ca8:
+        ok('CA8 every mark the code writes is a mark the on-screen log '
+           'shows, in both locales')
+    else:
+        fail(f'CA8 the on-screen log drifted from the writers {_ca8_missing}')
+    # CA9: ИЗВЕЩЕНИЕ КОРМИТСЯ ПРИ ОТКРЫТИИ, А НЕ ПОСЛЕ ПОИСКА.
+    #
+    # Находка собственной ревизии, до поля. Первая редакция брала полосу
+    # «принят архив» из списка кандидатов, а список наполняется только
+    # после нажатия «найти архив» — то есть извещение появлялось ровно
+    # тогда, когда список и так на экране. Патч промахнулся бы мимо своей
+    # цели, оставшись зелёным по всем прочим проверкам.
+    #
+    # Источник обязан быть ДЕШЁВЫМ и без побочных действий: `searchArchive`
+    # спрашивает разрешение, а запрос разрешения стоит только на явном
+    # действии владельца (правило +192).
+    _ca9_init = _ca_data.split('void initState()')[1].split('\n  }')[0] \
+        if 'void initState()' in _ca_data else ''
+    _ca9 = ('static Future<ArchiveCandidate?> stagedCopy()' in _ca_imp and
+            'requestStoragePermission' not in
+            _ca_imp.split('stagedCopy()')[1].split('\n  static ')[0] and
+            '_refreshStaged()' in _ca9_init and
+            'ImportService.stagedCopy()' in _ca_data)
+    if _ca9:
+        ok('CA9 the received-archive notice is fed when the screen opens, '
+           'by a cheap check that asks for nothing')
+    else:
+        fail('CA9 the notice is back to appearing only after a manual '
+             'search, which is exactly too late')
+else:
+    ok(f"Part CA skipped (build +{pv}, the restore trace lands in +196)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)

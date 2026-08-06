@@ -103,6 +103,20 @@ class MainActivity : FlutterActivity() {
                 // диаг-дампом. Экспортный ZIP 29.07 дважды приехал
                 // обрезанным, диаг-дамп — целым оба раза.
                 "marker" -> result.success(AutostartMarker.read(this))
+                // v0.1.97+196: ЗАПИСЬ в тот же журнал со стороны Dart.
+                // Путь восстановления архива живёт в Dart и до сих пор
+                // рассказывал о себе только в кольцо в памяти, которое
+                // умирает вместе с процессом, — а восстановление процесс
+                // как раз убивает. Строка обязана лечь в файл.
+                "markerWrite" -> {
+                    val line = call.argument<String>("line")
+                    if (line.isNullOrBlank()) {
+                        result.success(false)
+                    } else {
+                        AutostartMarker.write(this, line)
+                        result.success(true)
+                    }
+                }
                 "isArmed" -> result.success(AutostartPrefs.isArmed(this))
                 "optedOut" -> result.success(AutostartPrefs.optedOut(this))
                 else -> result.notImplemented()

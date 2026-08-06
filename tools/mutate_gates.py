@@ -936,8 +936,8 @@ MUTATIONS = [
      'сглаживанием'),
 
     ('BZ11', BC,
-     '                overflow: TextOverflow.ellipsis,',
-     '                //',
+     '      maxLines: 1,\n      overflow: TextOverflow.ellipsis,',
+     '      maxLines: 1,',
      'вернуть молчаливый обрез «около N км» — число врало в десять раз'),
 
     # Второй анкер BZ11: постоянное имя не должно вернуться и в сверку.
@@ -948,6 +948,87 @@ MUTATIONS = [
      '      File(zipPath),\n'
      '      File(p.join(destDir.path, ImportService.kFixedName)),\n    ]);',
      'вернуть в сверку файл, записать который мы не смогли'),
+
+    # ── ЭРА CA (+196) ──
+    #
+    # Восемь гейтов, десять мутаций: у CA1 и CA4 предмет составной, и
+    # снимать надо каждую половину отдельно — иначе гейт мог бы держаться
+    # за одну и молча отпустить вторую.
+
+    ('CA1', AI,
+     '        AutostartMarker.write(\n'
+     '            this,\n'
+     '            "stage-open: action=${intent?.action ?: "-"}" +\n'
+     '                " type=${intent?.type ?: "-"}"\n'
+     '        )\n',
+     '',
+     'убрать след запуска окна приёма — отсутствие строки снова означало '
+     'бы сразу «нас не звали» и «позвали и убили»'),
+
+    ('CA1', MF,
+     '            android:theme="@android:style/Theme.Translucent.NoTitleBar">',
+     '            android:theme="@android:style/Theme.NoDisplay">',
+     'вернуть тему, требующую закрыться до конца onResume, — окно снимут '
+     'посреди копирования'),
+
+    ('CA2', MA,
+     '                "markerWrite" -> {',
+     '                "markerWriteDisabled" -> {',
+     'отобрать у Dart дверь в файл-журнал — путь восстановления снова '
+     'рассказывал бы о себе только в память'),
+
+    ('CA3', IS_,
+     "      await AutostartArm.write('import-apply: ok=false "
+     "err=staged-missing');\n",
+     '',
+     'отнять строку у одного из отказов применения — молчал бы ровно тот '
+     'выход, ради которого журнал и заводили'),
+
+    ('CA4', AI,
+     '        val isArchive = if (byName) true else looksLikeArchive(uri)',
+     '        val isArchive = byName',
+     'вернуть решение по одному имени файла — при молчащем провайдере '
+     'архив снова уходит в ветку APK'),
+
+    ('CA4', AI,
+     '} else if (n in ourNames) {\n                            verdict = true',
+     '} else if (n in ourNames) {\n                            verdict = false',
+     'заглянуть внутрь и не узнать своё — ступень есть, толку нет'),
+
+    ('CA5', BC,
+     '                Expanded(flex: 3, child: _leftBlock()),',
+     '                SizedBox(width: 200, child: _leftBlock()),',
+     'вернуть жёсткий слот в 200 dp — подпись стадии обрежется на любом '
+     'экране'),
+
+    ('CA6', ES,
+     "        'screen': ScreenGeometry.snapshot(),\n",
+     '',
+     'убрать размер экрана из экспорта — число снова застрянет в журнале, '
+     'который никто не выгружает'),
+
+    ('CA7', PH,
+     "  if (slots > PowerHistoryService.ringLength) {\n    debugPrint(",
+     "  if (slots > PowerHistoryService.ringLength) {\n    if (false) "
+     "debugPrint(",
+     'отодвинуть запись от условия обёрткой — гейт обязан требовать её '
+     'ПЕРВЫМ действием, иначе заглушить её можно не тронув ни буквы'),
+
+    ('CA8', DM,
+     "      'stage-peek:',\n",
+     '',
+     'выкинуть метку из показа — писатель остался, экран о нём молчит'),
+
+    ('CA9', DM,
+     '    _refreshStaged();\n',
+     '',
+     'перестать спрашивать про принятую копию при открытии — полоса '
+     'появится только после ручного поиска, то есть с опозданием'),
+
+    ('CA9', IS_,
+     '  static Future<ArchiveCandidate?> stagedCopy() async {',
+     '  static Future<ArchiveCandidate?> stagedCopyUnused() async {',
+     'убрать дешёвую проверку — экрану снова придётся звать тяжёлый поиск'),
 ]
 
 

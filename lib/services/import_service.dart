@@ -8,6 +8,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../data/database.dart';
+import 'autostart_arm.dart';
 
 /// v0.1.81+180 — ИМПОРТ ИЗ АРХИВА: ВТОРАЯ ПОЛОВИНА ЭКСПОРТА.
 ///
@@ -487,6 +488,49 @@ class ImportService {
     return out;
   }
 
+  /// ЕСТЬ ЛИ ПРИНЯТАЯ КОПИЯ — ДЁШЕВО И БЕЗ ПОБОЧНЫХ ДЕЙСТВИЙ.
+  ///
+  /// v0.1.97+196, находка собственной ревизии. Полосу «принят архив»
+  /// первая редакция кормила из списка кандидатов, а список наполняется
+  /// только после того, как владелец нажмёт «найти архив». То есть
+  /// извещение появлялось ровно тогда, когда оно уже не нужно: список и
+  /// так на экране. Ради этого патч и затевался, и он бы промахнулся.
+  ///
+  /// Отдельный метод, а не `searchArchive`: тот спрашивает разрешение,
+  /// перечисляет четыре каталога и меняет состояние экрана. Звать его
+  /// при открытии нельзя — запрос разрешения обязан стоять на явном
+  /// действии владельца (правило +192).
+  ///
+  /// Смотрит ТОЛЬКО собственный каталог: туда кладут файл и «поделиться»,
+  /// и выбор файла. Решение «какой архив брать» здесь не принимается и
+  /// остаётся одно, в `searchArchive` — это извещение, а не выбор.
+  ///
+  /// После успешно применённого импорта файл удаляется, поэтому полоса
+  /// гаснет сама и не висит вечным напоминанием о давнем восстановлении.
+  static Future<ArchiveCandidate?> stagedCopy() async {
+    try {
+      final support = await getApplicationSupportDirectory();
+      final f = File(p.join(support.path, kStagedName));
+      if (!await f.exists()) return null;
+      final why = await _openFailure(f);
+      var size = 0;
+      if (why == null) {
+        try {
+          size = await f.length();
+        } catch (_) {}
+      }
+      return ArchiveCandidate(
+        path: f.path,
+        origin: 'staged',
+        readable: why == null,
+        reason: why,
+        sizeBytes: size,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// ПОИСК И ВЫБОР — ОДНОЙ ОПЕРАЦИЕЙ, И ЭТО ВАЖНО.
   ///
   /// Первая редакция +187 отдавала наружу список, а выбирать давала
@@ -508,6 +552,30 @@ class ImportService {
         break;
       }
     }
+    // ── СТРОКА В ФАЙЛ-ЖУРНАЛ. v0.1.97+196 ──
+    //
+    // Поле 05.08: «захожу в раздел, архива в списке не видно». Пустой
+    // список означает три разных вещи — искали не там, файл не нашёлся,
+    // файл нашёлся и не открылся, — и ни одну из них экран не различал
+    // для того, кто смотрит потом. Здесь список уходит в файл целиком:
+    // сколько кандидатов, кто выбран, и по какой причине отвергнуты
+    // остальные.
+    //
+    // Не больше четырёх причин: журнал читает человек, а каталогов у нас
+    // четыре, и длинный хвост однотипных отказов только мешает.
+    // Причина, а не `c.readable`: слово `readable` в теле этой функции —
+    // предмет гейта BU1, и наблюдательная строка, упомянув его, держала
+    // бы гейт зелёным после подмены самого выбора. Пустая причина и
+    // означает «открылся».
+    final why = all
+        .take(4)
+        .map((c) => '${p.basename(c.path)}:${c.reason ?? 'ok'}')
+        .join(' ');
+    await AutostartArm.write(
+      'import-see: found=${all.length}'
+      ' chosen=${chosen == null ? '-' : p.basename(chosen.path)}'
+      ' ${why.isEmpty ? '(пусто)' : why}',
+    );
     return ArchiveSearch(candidates: all, chosen: chosen);
   }
 
@@ -518,7 +586,36 @@ class ImportService {
   /// Сухой отчёт до подтверждения — не вежливость, а единственная
   /// защита: замена идёт целиком, и владелец должен увидеть числа
   /// заранее.
+  /// ЧТО ВНУТРИ АРХИВА — В ФАЙЛ-ЖУРНАЛ. v0.1.97+196.
+  ///
+  /// Самая нужная строка из шести. Владелец 05.08 отдал приложению
+  /// экспорт на 28 КБ, снятый с только что установленной пустой копии, и
+  /// час разбирался, почему «восстановление не работает». Внутри было
+  /// ноль поездок; сказать об этом было некому — разбор уходил в кольцо
+  /// в памяти.
+  ///
+  /// Обёртка, а не запись в теле: у осмотра девять точек возврата, и
+  /// строка в каждой из них разошлась бы с кодом при первой же правке.
+  /// Здесь выход один, и он же единственное место записи.
   static Future<ImportPreview> inspect(
+    File zip, {
+    required int appSchemaVersion,
+  }) async {
+    final seen = await _inspect(zip, appSchemaVersion: appSchemaVersion);
+    final counts = seen.countsSummary;
+    await AutostartArm.write(
+      'import-read: ok=${seen.ok}'
+      ' name=${p.basename(zip.path)}'
+      ' bytes=${seen.sizeBytes}'
+      ' schema=${seen.schemaVersion}'
+      ' at=${seen.exportedAt.isEmpty ? '-' : seen.exportedAt}'
+      ' inside=${counts.isEmpty ? '(пусто)' : counts}'
+      ' err=${seen.ok ? '-' : '${seen.errorCode}/${seen.errorDetail}'}',
+    );
+    return seen;
+  }
+
+  static Future<ImportPreview> _inspect(
     File zip, {
     required int appSchemaVersion,
   }) async {
@@ -658,6 +755,7 @@ class ImportService {
         }
       }
       if (db == null || !_looksLikeSqlite(db)) {
+        await AutostartArm.write('import-queue: ok=false err=no-db');
         return ImportStageResult(ok: false, error: 'no-db');
       }
 
@@ -703,8 +801,14 @@ class ImportService {
         }
       }
       await prefs.setBool(kPendingFlag, true);
+      await AutostartArm.write(
+        'import-queue: ok=true db_bytes=${db.length}'
+        ' prefs=${withSettings && prefsJson != null ? 'yes' : 'no'}'
+        ' promise=${prefs.getString(kPromise) ?? '-'}',
+      );
       return ImportStageResult(ok: true, stagedBytes: db.length);
     } catch (e) {
+      await AutostartArm.write('import-queue: ok=false err=$e');
       return ImportStageResult(ok: false, error: '$e');
     }
   }
@@ -740,12 +844,14 @@ class ImportService {
       support = await getApplicationSupportDirectory();
     } catch (e) {
       await prefs.remove(kPendingFlag);
+      await AutostartArm.write('import-apply: ok=false err=no-support-dir: $e');
       return ImportApplyResult(ok: false, error: 'no-support-dir: $e');
     }
 
     final staged = File(p.join(support.path, _pendingDbName));
     if (!await staged.exists()) {
       await prefs.remove(kPendingFlag);
+      await AutostartArm.write('import-apply: ok=false err=staged-missing');
       return ImportApplyResult(ok: false, error: 'staged-missing');
     }
 
@@ -762,6 +868,7 @@ class ImportService {
       await staged.rename(livePath);
     } catch (e) {
       await prefs.remove(kPendingFlag);
+      await AutostartArm.write('import-apply: ok=false err=swap-failed: $e');
       return ImportApplyResult(ok: false, error: 'swap-failed: $e');
     }
 
@@ -779,6 +886,7 @@ class ImportService {
     await prefs.remove(kPendingFlag);
     await prefs.setBool(kAppliedFlag, true);
     await prefs.setInt(kAppliedAt, DateTime.now().millisecondsSinceEpoch);
+    await AutostartArm.write('import-apply: ok=true prefs=$restored');
     return ImportApplyResult(ok: true, prefsRestored: restored);
   }
 
@@ -942,6 +1050,24 @@ class ImportService {
       }),
     );
     await prefs.remove(kPromise);
+    // ШЕСТАЯ СТРОКА: обещано против получено. v0.1.97+196.
+    //
+    // Отчёт до сих пор жил только в настройках и показывался на экране
+    // данных ОДИН раз, после чего снимался владельцем. То есть свидетель
+    // главного вопроса — «доехали ли строки» — исчезал раньше, чем о нём
+    // успевали спросить. Копия в файл-журнал не снимается никем.
+    //
+    // Сверяем только те таблицы, где обещание есть: сверка по всему
+    // списку жаловалась бы на чужую длину, как 04.08.
+    final pairs = <String>[];
+    for (final t in reportTables) {
+      final want = promise[t];
+      if (want == null) continue;
+      pairs.add('$t ${actual[t] ?? 0}/$want');
+    }
+    await AutostartArm.write(
+      'import-report: ${pairs.isEmpty ? 'обещания не было' : pairs.join(' ')}',
+    );
   }
 
   /// Отчёт для показа, или null — импорта не было либо владелец его снял.

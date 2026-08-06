@@ -43,6 +43,40 @@ import 'import_service.dart';
 /// uninstall the app cannot know the timestamp of the last export, and
 /// listing public Downloads may return nothing on this firmware — a
 /// constant name is readable by direct path.
+/// ГЕОМЕТРИЯ ЭКРАНА, ПРИЕЗЖАЮЩАЯ САМА. v0.1.97+196.
+///
+/// +193 научил приложение замерять размер экрана, но строка уходила
+/// только в журнал приложения — а он выгружается ОТДЕЛЬНОЙ кнопкой,
+/// которую в поле не нажимают. За два визита число так и не доехало, и
+/// разбор фотографии 05.08 дал ответ, расходящийся с тем, что записано
+/// в `responsive.dart` (2175 × 1224). Спор о размере холста нельзя
+/// решать фотографией.
+///
+/// Отсюда: те же три числа кладутся в `metadata.json` внутри архива
+/// экспорта — файла, который владелец присылает и так. Отдельного
+/// действия не требуется, лишнего похода к машине тоже.
+///
+/// Держится здесь, а не в `home.dart`, чтобы экспорт не зависел от
+/// экрана: заполняет `home`, читает экспорт, и стрелка идёт в одну
+/// сторону. Пусто до первой сборки кадра — тогда ключа в metadata
+/// просто нет, и это честнее выдуманного значения.
+class ScreenGeometry {
+  ScreenGeometry._();
+
+  static int? widthDp;
+  static int? heightDp;
+  static double? dpr;
+
+  /// Снимок для `metadata.json`; `null`, пока кадр не собран ни разу.
+  static Map<String, Object?>? snapshot() {
+    final w = widthDp;
+    final h = heightDp;
+    final d = dpr;
+    if (w == null || h == null || d == null) return null;
+    return {'width_dp': w, 'height_dp': h, 'dpr': d};
+  }
+}
+
 class ExportService {
   final AppDatabase db;
   ExportService(this.db);
@@ -264,6 +298,9 @@ class ExportService {
       'prefs_count': prefsCount,
       'prefs_format': ImportService.kPrefsFormat,
       'exported_at': DateTime.now().toIso8601String(),
+      // v0.1.97+196: ключа нет, пока экран ни разу не собирался.
+      if (ScreenGeometry.snapshot() != null)
+        'screen': ScreenGeometry.snapshot(),
       'counts': counts,
       'includes': {
         'trips': includeTrips,

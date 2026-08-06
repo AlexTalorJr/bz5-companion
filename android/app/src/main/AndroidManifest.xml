@@ -303,15 +303,37 @@
              показывает пакет и требует подтверждения), поэтому цена
              ограничена содержимым нашего же кэша.
 
-             noHistory + excludeFromRecents + NoDisplay: активити
-             стажирует файл и немедленно закрывается, своего UI у неё
-             нет. -->
+             noHistory + excludeFromRecents: активити стажирует файл и
+             немедленно закрывается, своего UI у неё нет.
+
+             ── ПОЧЕМУ БОЛЬШЕ НЕ NoDisplay. v0.1.97+196 ──
+
+             Поле 05.08 и раньше: в списке «поделиться» приложение есть,
+             владелец жмёт на него, окно закрывается — и не происходит
+             НИЧЕГО. Ни файла, ни строки в журнале. А строку эта активити
+             пишет в любом случае, даже когда ссылки в запросе нет вовсе.
+             Значит она запускается и умирает раньше, чем доходит до
+             первой своей работы.
+
+             Theme.NoDisplay требует от активити закрыться до того, как
+             завершится onResume. Наша закрывается ПОСЛЕ копирования, а
+             копирование идёт в рабочем потоке — десятки мегабайт на
+             главном держать нельзя. То есть требование нарушалось всегда,
+             и система вправе снять такую активити.
+
+             Translucent.NoTitleBar даёт то же самое снаружи — своего
+             изображения нет, — но не ставит условия закрыться немедленно.
+
+             Это ЛУЧШЕЕ ОБЪЯСНЕНИЕ, А НЕ ДОКАЗАННЫЙ ФАКТ: записи о снятии
+             у нас нет и в песочнице её не добыть. Проверяется одной
+             попыткой в поле — по строке `stage-open` в журнале. Появится
+             строка, а файла не будет — дело не в теме. -->
         <activity
             android:name=".StageActivity"
             android:exported="true"
             android:noHistory="true"
             android:excludeFromRecents="true"
-            android:theme="@android:style/Theme.NoDisplay">
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -342,6 +364,34 @@
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="application/x-zip-compressed" />
+            </intent-filter>
+            <!--
+                v0.1.97+196 — ВТОРАЯ ДВЕРЬ: «Открыть с помощью».
+
+                Код StageActivity разбирал ACTION_VIEW с самого начала, а
+                манифест его не объявлял: система про эту дверь не знала и
+                пункт в проводнике не показывала. Готовый путь лежал рядом
+                неподключённым.
+
+                Схемы названы поимённо: у ACTION_VIEW без `scheme` фильтр с
+                одним `mimeType` не совпадает с content-ссылкой.
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <!--
+                    Порядок и написание не косметика: анкер мутации BU5
+                    стоит на строке приёма zip в фильтре SEND, и точный
+                    повтор её здесь сделал бы анкер неоднозначным, а
+                    мутацию — несобираемой. Пишем те же типы иначе.
+                -->
+                <data android:mimeType="application/x-zip-compressed" />
+                <data android:mimeType="application/octet-stream" />
+                <data android:mimeType="application/vnd.android.package-archive" />
+                <data android:mimeType="application/zip"/>
             </intent-filter>
         </activity>
         <provider

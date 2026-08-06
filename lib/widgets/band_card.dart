@@ -105,12 +105,31 @@ class BandCard extends StatelessWidget {
               ],
             )
           // 1i-A: two-block row, the stage body flushed right.
+          //
+          // ── ШИРИНЫ ДОЛЯМИ, А НЕ ЧИСЛОМ. v0.1.97+196 ──
+          //
+          // Левый блок стоял жёстко в 200 dp, и подпись стадии обрезалась
+          // на любом экране: ширину мерили на АНГЛИЙСКОЙ подписи зреющей
+          // полосы («140–144 km/h · maturing», около 152 px), а самая
+          // длинная — русская подпись ДОЗРЕВШЕЙ («88–92 км/ч · дозрела,
+          // замер этой поездки», около 240). Поле 05.08: «замер это…».
+          //
+          // Число заменено долями, потому что чинить надо не промах в
+          // сорок пикселей, а зависимость от угаданного холста: доли
+          // подстраиваются под любую ширину сами. Три к двум, а не
+          // поровну: левому блоку нужна длинная фраза, правому — цифра и
+          // одна подпись под ней.
+          //
+          // Правая доля обязана остаться ГИБКОЙ (`Expanded`), а не
+          // ужаться по содержимому: бар зреющей стадии тянется на всю
+          // ширину, и в нефлексовом ребёнке `Row` он получил бы
+          // бесконечную ширину и уронил раскладку.
           : Row(
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
-                SizedBox(width: 200, child: _leftBlock()),
+                Expanded(flex: 3, child: _leftBlock()),
                 const SizedBox(width: 32),
-                Expanded(child: _crossFade()),
+                Expanded(flex: 2, child: _crossFade()),
               ],
             ),
     );
@@ -166,8 +185,15 @@ class BandCard extends StatelessWidget {
         // Одна строка ЖЁСТКО. Без этого длинная подпись обернулась бы во
         // вторую, левый блок вырос бы, и слот 82 + 10 поехал бы ровно так,
         // как если бы окно стояло отдельной строкой, — то есть смысл
-        // объединения потерялся бы молча. Замер: самая длинная подпись
-        // («140–144 km/h · maturing») занимает около 152 px в слоте 200.
+        // объединения потерялся бы молча.
+        //
+        // v0.1.97+196: прежний замер здесь врал и стоил поля. Он назывался
+        // «самая длинная подпись — 140–144 km/h · maturing, около 152 px в
+        // слоте 200», но это подпись ЗРЕЮЩЕЙ полосы и по-английски. Самая
+        // длинная — русская подпись дозревшей, около 240 px, и в слот 200
+        // она не влезала никогда. Слота больше нет, ширина берётся долей
+        // от карточки; многоточие осталось последней защитой, а не
+        // ежедневным состоянием.
         Text(stage,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
@@ -237,11 +263,36 @@ class BandCard extends StatelessWidget {
     final m = model;
     final cons = m.kwh100;
     final numText = cons == null ? '—' : cons.toStringAsFixed(1);
-    return Row(
+    // v0.1.94+193 сделал строку «около N км» гибкой, чтобы она не врала
+    // обрезанным числом. Поле 05.08 показало, чем это кончилось на самом
+    // экране: «16.7 кВт·ч/100 км около…» — числа не видно вовсе. Честно,
+    // но бесполезно, и одной строкой это не лечится: трём кускам в ряд
+    // нужно около 300 dp, а свободно было около 30.
+    //
+    // v0.1.97+196, решение владельца по фотографии: цифра поднимается
+    // наверх, обе подписи уходят под неё ОДНОЙ строкой размера левой
+    // колонки. Ширины нужно вдвое меньше, высота карточки не растёт —
+    // левый блок и так стоит в три строки, слот 82 + 10 цел (гейт BD6).
+    //
+    // Диапазон приклеен к единице, а не живёт отдельным `Text`: два
+    // куска в столбик снова разошлись бы по ширине, и обрезался бы тот,
+    // что длиннее. Один кусок — один обрыв, видимый многоточием.
+    final unit = S.of('measure.kwh100');
+    final range = (!bz3 && cons != null && cons > 0.5)
+        ? S
+            .of('measure.range_est')
+            .replaceFirst('{km}', '${atlasRangeKm(cons)}')
+        : null;
+    final caption = Text(
+      range == null ? unit : '$unit · $range',
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      textAlign: TextAlign.right,
+      style: TextStyle(fontSize: bz3 ? 11 : 12, color: AtlasTokens.t50),
+    );
+    return Column(
       mainAxisSize: MainAxisSize.min,
-      mainAxisAlignment: MainAxisAlignment.end,
-      crossAxisAlignment: CrossAxisAlignment.baseline,
-      textBaseline: TextBaseline.alphabetic,
+      crossAxisAlignment: CrossAxisAlignment.end,
       children: [
         Text(numText,
             style: TextStyle(
@@ -249,31 +300,8 @@ class BandCard extends StatelessWidget {
                 fontWeight: FontWeight.w700,
                 color: AtlasTokens.t100,
                 fontFeatures: const [FontFeature.tabularFigures()])),
-        SizedBox(width: bz3 ? 10 : 16),
-        Text(S.of('measure.kwh100'),
-            style: TextStyle(
-                fontSize: bz3 ? 13 : 16, color: AtlasTokens.t50)),
-        // v0.1.94+193 — «ОКОЛО N КМ» БОЛЬШЕ НЕ СРЕЗАЕТСЯ.
-        //
-        // Строка стояла голым `Text` в `Row` с жёстким отступом в 24, и на
-        // 786 км конец уходил за край: владелец видел «около 78», то есть
-        // число врало в ДЕСЯТЬ РАЗ. Молчаливый обрез числа опаснее
-        // отсутствия числа, поэтому теперь строка гибкая, а обрыв, если он
-        // всё же случится, виден многоточием — той же честностью, что и
-        // обрыв архива в +192.
-        if (!bz3 && cons != null && cons > 0.5) ...[
-          const SizedBox(width: 16),
-          Flexible(
-            child: Text(
-                S
-                    .of('measure.range_est')
-                    .replaceFirst('{km}', '${atlasRangeKm(cons)}'),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style:
-                    const TextStyle(fontSize: 16, color: AtlasTokens.t60)),
-          ),
-        ],
+        const SizedBox(height: 2),
+        caption,
       ],
     );
   }

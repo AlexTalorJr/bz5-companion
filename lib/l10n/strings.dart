@@ -1072,6 +1072,9 @@ class S {
         'by the previous install stop opening. Use "Choose the file myself" '
         'and point at the archive — that grant does not depend on the id.',
     'dataimp.probe_btn': 'Storage probe',
+    'dataimp.staged_here': 'An archive was received — {size}. It is in the list below; press Restore.',
+    'dataimp.trace_title': 'Receive and restore log ({n} lines)',
+    'dataimp.trace_empty': 'No lines yet — nothing has been received or restored since this install.',
     'dataimp.bad_truncated': 'The archive arrived incomplete — the end of '
         'the zip is missing. Copy it again and hand it over once more.',
     'dataimp.bad_denied': 'No access to this file. It was written by an '
@@ -2295,6 +2298,9 @@ class S {
         'от прежней установки перестают открываться. Нажмите «Выбрать файл '
         'самому» и укажите архив — этот доступ от идентификатора не зависит.',
     'dataimp.probe_btn': 'Проба хранилища',
+    'dataimp.staged_here': 'Принят архив — {size}. Он в списке ниже, нажмите «Восстановить».',
+    'dataimp.trace_title': 'Журнал приёма и восстановления ({n} строк)',
+    'dataimp.trace_empty': 'Строк пока нет — с этой установки ничего не принимали и не восстанавливали.',
     'dataimp.bad_truncated': 'Архив передан не целиком — конца zip нет. '
         'Скопируйте файл заново и отдайте ещё раз.',
     'dataimp.bad_denied': 'К этому файлу нет доступа: его написала прежняя '
