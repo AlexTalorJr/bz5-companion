@@ -80,7 +80,25 @@ const double kSpeedRealFactor = 0.98;
 const int kBandHalfWidthKmh = 2;
 const int kBandMinKmh = 40;
 const int kBandMaxKmh = 180;
-const double kBandMinSeconds = 120.0;
+/// ── ТРИ МИНУТЫ, А НЕ ДВЕ. v0.1.98+197, решение владельца 08.08 ──
+///
+/// Двух минут мало. На 100 км/ч это 3,3 км, и один километровый спуск
+/// занимал треть замера — картина выходила искажённой. Три минуты дают
+/// 5 км, тот же спуск становится пятой частью, искажение падает вдвое.
+///
+/// Совсем оно не уходит: три минуты тоже можно ехать под уклон целиком.
+/// Лечится это только накоплением в Атласе, где складываются замеры
+/// разных мест, и более длинный кусок этот путь ускоряет — каждый
+/// отдельный замер честнее.
+///
+/// Старые замеры не портятся: на карточке живёт ОТНОШЕНИЕ энергии к
+/// расстоянию, а оно складывается одинаково из кусков любой длины.
+/// Меняется только порог «замер закончен».
+///
+/// Цена названа владельцу заранее: полосы дозревают в полтора раза
+/// дольше, и это складывается со сменой показа на текущее окно, где
+/// счёт начинается с нуля. Первое время карточки будут выглядеть пустее.
+const double kBandMinSeconds = 180.0;
 
 // ── +158 «Атлас» — temperature-window ledger (spec v2 + UI contract) ──
 
@@ -811,6 +829,19 @@ class SpeedProfileService extends ChangeNotifier {
   /// (И1 — nothing appears or disappears in motion).
   int? _displayWindow;
   int? get atlasDisplayWindow => _displayWindow;
+
+  /// Окно, в которое леджер ПИШЕТ прямо сейчас. v0.1.98+197.
+  ///
+  /// Отличается от [atlasDisplayWindow] нарочно. Набор карточек привязан
+  /// к display-окну и в движении не меняется (И1: ничто не появляется и
+  /// не исчезает на ходу). А полоска обязана показывать ту клетку, что
+  /// НАПОЛНЯЕТСЯ, иначе она замирает — поле 08.08. Отсюда два окна:
+  /// display держит состав, active даёт число и подпись с градусами.
+  ///
+  /// Подпись берёт именно это окно, чтобы текст и число не разошлись:
+  /// меняется окно — в тот же миг меняется и подпись, и счёт с нуля.
+  /// Смена объяснена ровно тем, что видно на экране.
+  int? get atlasActiveWindow => _ledger?.activeWindow;
   // Prefs write-amplification guard (review R6): the 30 s timer
   // persists only after qualified ticks / freezes / rotations — a
   // parked-but-awake head unit stops grinding prefs forever.
@@ -2246,34 +2277,55 @@ class SpeedProfileService extends ChangeNotifier {
 
   // ───────────── +163: band-card read API (леджер как источник) ─────────────
 
-  /// One live band of the «Замеры» screen — the per-band projection of
-  /// the ledger. [timeS]/[kwh100] come from the band's DEEPEST live
-  /// cell (max timeS across windows): after a mid-drive window switch
-  /// the bar freezes at the old cell's mark until the new window's
-  /// cell catches up, then keeps crawling — monotonic, never backwards,
-  /// И1 holds without the display layer knowing about windows at all.
+  /// ── ПОКАЗЫВАЕМ ТУ КЛЕТКУ, ЧТО НАПОЛНЯЕТСЯ. v0.1.98+197 ──
   ///
-  /// +164 (A): reads SESSION totals (frozen chunks ⊕ live remainder),
-  /// not the raw live cell. Without this the 120 s chunk reset would
-  /// yank a «дозрела» card back to «зреет · 0 с из 120» mid-drive —
-  /// the exact И1 violation +163 closed for window switches. The
-  /// numbers are unchanged from the owner's point of view: `sessionTimeS`
-  /// grows monotonically across chunk boundaries, and the kwh figure is
-  /// the steady-weighted mean of the whole session, which is what a
-  /// single un-chunked cell used to hold.
+  /// Было: самая глубокая клетка полосы по всем температурным окнам.
+  /// Замысел — чтобы число не шло назад при смене окна. Цена оказалась
+  /// тяжелее замысла: полоска ЗАМИРАЛА, пока клетка текущего окна не
+  /// догонит старую, и объяснить это на экране было нечем.
+  ///
+  /// Поле 08.08, слова владельца: «поддерживаю нужную скорость, а время
+  /// замера не движется вообще». Разбор его же выгрузки: полоса 120
+  /// показывала 118,5 с (окно 25), а копилось 83,2 с (окно 20) — тридцать
+  /// пять секунд езды без единого движения числа, на карточке, где до
+  /// конца оставалось два шага. Полоса 40: сорок девять секунд.
+  ///
+  /// Теперь берём клетку ТЕКУЩЕГО окна: единственное число, отвечающее
+  /// на вопрос «сколько мне ещё держать». Достижения Атласа не теряются
+  /// — их несёт отдельная строка «в атласе N за M поездок», а глубокая
+  /// клетка чужого окна остаётся в леджере нетронутой.
+  ///
+  /// Плата: при смене окна полоска честно начнётся заново. Прежний код
+  /// избегал этого ценой молчаливого замирания, и размен был неверный —
+  /// откат объясним подписью с градусами (она добавлена тем же патчем),
+  /// замирание не объяснимо ничем.
+  ///
+  /// Клетки в текущем окне нет вовсе — ноль, а не число из чужого окна:
+  /// пусто честнее чужого. Карточка при этом остаётся на экране, и
+  /// градусы в подписи объясняют, почему она пустая.
+  ///
+  /// Сессионные итоги (замороженные куски ⊕ живой остаток) сохранены от
+  /// +164: без них сброс куска дёргал бы дозревшую карточку назад.
   ({int band, double timeS, double? kwh100}) _liveBandOf(
       int band, Iterable<MapEntry<String, _AtlasCell>> entries) {
-    _AtlasCell? best;
+    final win = _ledger?.activeWindow;
+    _AtlasCell? here;
     for (final e in entries) {
-      final c = e.value;
-      if (best == null || c.sessionTimeS > best.sessionTimeS) best = c;
+      final sep = e.key.indexOf(':');
+      final ws = e.key.substring(sep + 1);
+      final int? w = ws == 'u' ? null : int.tryParse(ws);
+      if (w == win) {
+        here = e.value;
+        break;
+      }
     }
-    final b = best!;
+    if (here == null) return (band: band, timeS: 0.0, kwh100: null);
+    final c = here;
     return (
       band: band,
-      timeS: b.sessionTimeS,
-      kwh100: b.sessionDistKm > 1e-6
-          ? b.sessionEnergyKwh / b.sessionDistKm * 100.0
+      timeS: c.sessionTimeS,
+      kwh100: c.sessionDistKm > 1e-6
+          ? c.sessionEnergyKwh / c.sessionDistKm * 100.0
           : null,
     );
   }

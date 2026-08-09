@@ -55,7 +55,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   // нативной стороне (AutostartPrefs — её же читает BootReceiver),
   // здесь только отражение, поэтому читаем через канал, а не из
   // SharedPreferences Dart-стороны: две копии разошлись бы.
-  bool _autostartOn = false;
   // v0.1.94+193: настоящее тройное состояние, а не одно «включено».
   // «Не решали» ≠ «выключено вами»: первое означает, что владелец не
   // высказывался и следующий запуск на ГУ взведёт автозапуск сам, второе —
@@ -75,54 +74,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _autoConnect = prefs.getBool('auto_connect_enabled') ?? false;
       _advancedUnlocked = prefs.getBool('advanced_unlocked') ?? false;
     });
-    final on = await AutostartArm.isArmed();
     final st = await AutostartArm.state();
     if (!mounted) return;
     setState(() {
-      _autostartOn = on;
       _autostartState = st;
     });
-  }
-
-  /// v0.1.75+174: журнал автозапуска в диаг-дамп.
-  ///
-  /// До этого патча единственным каналом доставки маркера был
-  /// экспортный ZIP. 29.07 он дважды приехал обрезанным ровно на
-  /// кратном 32 КиБ — подпись несброшенного буфера. Диаг-дамп при этом
-  /// доезжал целым каждый раз: он мелкий и пишется отдельно. Значит
-  /// критическая мелочь не должна зависеть от доставки хрупкой большой
-  /// посылки — и теперь не зависит.
-  bool _dumpingMarker = false;
-
-  Future<void> _dumpMarker() async {
-    // Чтение журнала уходит через канал и занимает заметное время;
-    // без защёлки двойное касание положило бы в диаг-дамп две копии
-    // одной секции и заставило бы потом гадать, что это значит.
-    if (_dumpingMarker) return;
-    _dumpingMarker = true;
-    try {
-      await _dumpMarkerInner();
-    } finally {
-      _dumpingMarker = false;
-    }
-  }
-
-  Future<void> _dumpMarkerInner() async {
-    final text = await AutostartArm.marker();
-    String msg;
-    try {
-      final res = await DiagDumpFile.instance.append(
-        title: 'Autostart marker — $kAppVersion',
-        body: '```\n$text\n```',
-      );
-      msg = '${S.of('install.exported')} ${res.path}';
-    } catch (e) {
-      // Отказ записи больше не молчит. До +178 исключение уходило в
-      // никуда, и владелец видел просто отсутствие реакции.
-      msg = '${S.of('settings.adv.dump_fail')} $e';
-    }
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
   Future<void> _setAutostart(bool v) async {
@@ -134,27 +90,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
     // Перечитываем с нативной стороны, а не верим намерению: если
     // запись prefs не удалась, переключатель обязан вернуться назад,
     // иначе он покажет состояние, которого нет.
-    final on = await AutostartArm.isArmed();
     final st = await AutostartArm.state();
     if (!mounted) return;
     setState(() {
-      _autostartOn = on;
       _autostartState = st;
     });
   }
 
-  /// Подпись выключателя. Показывает то, что есть на нативной стороне, —
-  /// включая «не решали», которое до +193 было неотличимо от «выключено».
-  String _autostartSubtitle() {
-    switch (_autostartState) {
-      case AutostartState.on:
-        return S.of('settings.autostart.state_on');
-      case AutostartState.offByOwner:
-        return S.of('settings.autostart.state_off');
-      case AutostartState.undecided:
-        return S.of('settings.autostart.state_undecided');
-    }
-  }
+  /// Поднимется ли приложение само — ответ тумблера. v0.1.98+197.
+  ///
+  /// Три состояния нативной стороны сохранены и читаются по-прежнему:
+  /// они нужны, чтобы тумблер не врал. Наружу выходит одно значение.
+  ///
+  /// «Не решали» даёт ВКЛЮЧЕНО, потому что следующий запуск на ГУ
+  /// взведёт автозапуск сам. Показывать в этом состоянии «выключено»
+  /// значило бы соврать дважды: сейчас — про намерение системы, и через
+  /// минуту — тумблером, который сам собой перекинулся.
+  bool get _autostartWillRise =>
+      _autostartState != AutostartState.offByOwner;
 
   Future<void> _setAutoConnect(bool v) async {
     final prefs = await SharedPreferences.getInstance();
@@ -654,26 +607,33 @@ class _SettingsScreenState extends State<SettingsScreen> {
       // Только на ГУ: на телефоне автозапуск не взводится никогда, и
       // переключатель, который заведомо ничего не делает, — та же
       // нечестность, что вкладка «Замеры» на телефоне.
+      // ── ОДИН ТУМБЛЕР, БЕЗ ДИАГНОСТИКИ. v0.1.98+197 ──
+      //
+      // Решение владельца 08.08: «достаточно одного тогла с включением
+      // или выключением автозапуска, по умолчанию включен». Вопрос,
+      // ради которого стояли три подписи состояния и строка выгрузки
+      // журнала, закрыт полем — `arm: result=armed` подтверждён.
+      //
+      // Состояний внутри по-прежнему три, и это НЕ упрощение модели:
+      // «не решали» отличается от «выключено» тем, что следующий запуск
+      // взведёт сам. Наружу выходит ответ на один вопрос — «поднимется
+      // ли приложение само», и в состоянии «не решали» ответ ДА. Иначе
+      // тумблер показывал бы «выключено», а через минуту сам становился
+      // включённым: самоволие на глазах у владельца.
       if (context.watch<HalTelemetryService>().canUseHal)
         SwitchListTile(
           secondary: const Icon(Icons.play_circle_outline,
               color: Colors.lightBlueAccent),
           title: Text(S.of('settings.autostart.title')),
-          subtitle: Text(_autostartSubtitle()),
-          value: _autostartOn,
+          subtitle: Text(S.of('settings.autostart.sub')),
+          value: _autostartWillRise,
           onChanged: _setAutostart,
         ),
-      // Журнал — прибор этого же выключателя: включил, дождался
-      // пробуждения ГУ, выгрузил журнал, увидел, сработал ли мост.
-      if (context.watch<HalTelemetryService>().canUseHal)
-        ListTile(
-          leading: const Icon(Icons.receipt_long,
-              color: Colors.lightBlueAccent),
-          title: Text(S.of('settings.marker.title')),
-          subtitle: Text(S.of('settings.marker.sub')),
-          trailing: const Icon(Icons.save_alt, color: Colors.grey),
-          onTap: _dumpMarker,
-        ),
+      // v0.1.98+197: строка «Журнал автозапуска» убрана. Она была
+      // прибором того же выключателя, и прибор своё отработал. Журнал
+      // при этом никуда не делся: он пишется сам в публичную папку
+      // Download под именем со сборкой и едет внутри архива экспорта —
+      // кнопка была третьим способом добраться до того же текста.
       // Язык / Language — compact entry with the current language on
       // the row; the two radios live in a dialog (the +58/+59 setMode
       // contract is unchanged: exactly two explicit modes).
@@ -769,6 +729,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
       // denied with the auth/error group; menu row is amber for both.
       case CloudSyncStatus.pendingApproval:
       case CloudSyncStatus.accessDenied:
+      // v0.1.98+197: приостановка и удаление — тот же янтарь в строке
+      // меню. Оба требуют внимания и ни один не означает поломки.
+      case CloudSyncStatus.accountSuspended:
+      case CloudSyncStatus.accountDeletionPending:
         return Colors.amber;
       default: // idle | syncing | transient disconnected
         return Colors.lightGreenAccent;
@@ -788,6 +752,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
         return S.of('cloud.status.pending_approval');
       case CloudSyncStatus.accessDenied:
         return S.of('cloud.status.access_denied');
+      // v0.1.98+197, контракт v1.3.
+      case CloudSyncStatus.accountSuspended:
+        return S.of('cloud.status.suspended');
+      case CloudSyncStatus.accountDeletionPending:
+        return S.of('cloud.status.deletion_pending');
       default: // idle | syncing | transient disconnected
         return S.of('cloud.menu.connected');
     }
@@ -1654,6 +1623,17 @@ class _CloudServicesScreenState extends State<CloudServicesScreen> {
         return Colors.orangeAccent;
       case CloudSyncStatus.accessDenied:
         return Colors.redAccent;
+      // v0.1.98+197. Цвет здесь несёт смысл «можно ли вернуть»:
+      // приостановка обратима — оранжевый, как ожидание одобрения;
+      // после срока удаление необратимо — красный.
+      //
+      // Ветки обязательны: этот switch без `default`, и новое значение
+      // перечисления без своей ветки уронило бы сборку. Именно так и
+      // задумано — молча забыть состояние здесь нельзя.
+      case CloudSyncStatus.accountSuspended:
+        return Colors.orangeAccent;
+      case CloudSyncStatus.accountDeletionPending:
+        return Colors.redAccent;
     }
   }
 
@@ -1678,6 +1658,12 @@ class _CloudServicesScreenState extends State<CloudServicesScreen> {
         return S.of('cloud.status.pending_approval');
       case CloudSyncStatus.accessDenied:
         return S.of('cloud.status.access_denied');
+      // v0.1.98+197, контракт v1.3. Ветки обязательны — switch без
+      // `default`.
+      case CloudSyncStatus.accountSuspended:
+        return S.of('cloud.status.suspended');
+      case CloudSyncStatus.accountDeletionPending:
+        return S.of('cloud.status.deletion_pending');
     }
   }
 

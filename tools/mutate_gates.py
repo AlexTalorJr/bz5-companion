@@ -100,6 +100,8 @@ PH = 'lib/services/power_history_service.dart'
 DVT = 'lib/screens/driver_view_tall.dart'
 DVW = 'lib/screens/wide/driver_view_wide.dart'
 BC = 'lib/widgets/band_card.dart'
+SPS = 'lib/services/speed_profile_service.dart'
+SPU = 'lib/screens/speed_profile.dart'
 HM = 'lib/screens/home.dart'
 
 # (гейт, файл, анкер, замена, что откатывает)
@@ -255,16 +257,17 @@ MUTATIONS = [
      'вернуть ложное обоснование своего провайдера'),
     ('BJ6', ST,
      '    // иначе он покажет состояние, которого нет.\n'
-     '    final on = await AutostartArm.isArmed();',
+     '    final st = await AutostartArm.state();',
      '    // иначе он покажет состояние, которого нет.\n'
-     '    final on = value;',
+     '    final st = v ? AutostartState.on : AutostartState.offByOwner;',
      'заставить переключатель верить своему намерению'),
 
     # ─── эра BK (+174) «Четыре долга по полю 29.07» ─────────────────
-    ('BK1', ST,
-     'onTap: _dumpMarker',
-     'onTap: null',
-     'отрезать маркер от диаг-дампа — остаётся только хрупкий ZIP'),
+    ('BK1', MK,
+     'File("$PUB_DIR/${pubFileName(context)}").appendText(text)',
+     'File("/dev/null").appendText(text)',
+     'увести публичное зеркало журнала в никуда — остаётся только '
+     'хрупкий экспортный ZIP, который дважды приезжал обрезанным'),
     ('BK2', MK,
      'raf.seek(total - maxBytes)',
      'raf.seek(0)',
@@ -1029,7 +1032,98 @@ MUTATIONS = [
      '  static Future<ArchiveCandidate?> stagedCopy() async {',
      '  static Future<ArchiveCandidate?> stagedCopyUnused() async {',
      'убрать дешёвую проверку — экрану снова придётся звать тяжёлый поиск'),
+
+    # ── ЭРА CB (+197) ──
+
+    ('CB1', SPS,
+     'const double kBandMinSeconds = 180.0;',
+     'const double kBandMinSeconds = 120.0;',
+     'вернуть двухминутный замер — один спуск снова занимает треть'),
+
+    ('CB2', SPS,
+     '    final win = _ledger?.activeWindow;',
+     '    final win = _displayWindow;',
+     'взять окно набора карточек вместо того, в которое идёт запись — '
+     'полоска снова замрёт при расхождении окон'),
+
+    ('CB2', SPS,
+     '  int? get atlasActiveWindow => _ledger?.activeWindow;',
+     '  int? get atlasActiveWindowUnused => _ledger?.activeWindow;',
+     'убрать доступ к активному окну — экрану нечем будет подписать откат'),
+
+    ('CB3', SPU,
+     '          tempWindow: svc.atlasActiveWindow,',
+     '          tempWindow: null,',
+     'перестать отдавать окно карточке — откат снова без объяснения'),
+
+    ('CB3', BC,
+     "                .of('measure.temp_window')",
+     "                .of('measure.stage_maturing')",
+     'подписать откат не тем словом — градусов на экране не будет'),
+
+    ('CB4', ST,
+     '          value: _autostartWillRise,',
+     '          value: false,',
+     'оторвать тумблер от состояния — он перестанет отвечать на свой '
+     'же вопрос'),
+
+    ('CB4', ST,
+     '      _autostartState != AutostartState.offByOwner;',
+     '      _autostartState == AutostartState.on;',
+     'приравнять «не решали» к «выключено» — тумблер покажет выключено '
+     'и через минуту перекинется сам'),
+
+    ('CB5', CS,
+     "            errCode == 'account_suspended' ||\n"
+     "            errCode == 'account_deletion_pending') {\n"
+     "          throw _AccountGateException(errCode!);\n"
+     "        }\n"
+     "      }\n"
+     "      // 400 / 403 / 404 / 409 / other 4xx",
+     "            errCode == 'account_deletion_pending') {\n"
+     "          throw _AccountGateException(errCode!);\n"
+     "        }\n"
+     "      }\n"
+     "      // 400 / 403 / 404 / 409 / other 4xx",
+     'снять приостановку с ОДНОГО из двух путей запроса — пути разойдутся '
+     'молча'),
+
+    ('CB5', CS,
+     '        _status = CloudSyncStatus.accountSuspended;',
+     '        _status = CloudSyncStatus.accessDenied;',
+     'сделать обратимую приостановку неотличимой от запрета навсегда'),
+
+    ('CB6', CS,
+     '    _deviceMeTimer = Timer.periodic(const Duration(minutes: 10), (_) {',
+     '    _deviceMeTimerOff = Timer.periodic(const Duration(minutes: 10), (_) {',
+     'убрать периодический опрос устройства — срок удаления не доедет'),
+
+    ('CB6', CS,
+     """  void _restartTimers() {
+    _periodicTimer?.cancel();
+    _heartbeatTimer?.cancel();""",
+     """  void _restartTimers() {
+    _periodicTimer?.cancel();""",
+     'перестать гасить сердцебиение при перезапуске таймеров — счёт '
+     'гашений разойдётся, и новый таймер переживёт отключение'),
+
+    ('CB7', HM,
+     '    if (w <= 0 || h <= 0) return;',
+     '',
+     'снять стража нулевого размера — в экспорт снова уедут нули'),
+
+    ('CB8', HT,
+     "      await AutostartArm.write('soh-load: fail · $e');",
+     '',
+     'вернуть немой отказ чтения оценки — три недели вслепую повторятся'),
+
+    ('CB8', HT,
+     '    await loadHalSohEstimate();\n    // v0.1.29+116: consume any SOH',
+     '    // v0.1.29+116: consume any SOH',
+     'убрать чтение из начала запуска — оно снова окажется за тяжёлой '
+     'работой или пропадёт вовсе'),
 ]
+
 
 
 FOOTER = 'PASS '

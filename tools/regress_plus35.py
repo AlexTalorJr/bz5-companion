@@ -4595,8 +4595,16 @@ if int(pv) >= 151:
         fail('AW7 tab gating / power freshness path wrong for this era')
     # AW8: no-data ≠ zero — a band materialises only past the 60 s
     # threshold and empty bands never render.
-    _aw8 = ('const double kBandMinSeconds = 120.0;'
-            if int(pv) >= 154 else 'const double kBandMinSeconds = 60.0;')
+    # +197: третья эра порога. Владелец 08.08: две минуты дают 3,3 км на
+    # сотне, и один километровый спуск занимал треть замера. Предмет
+    # гейта не меняется — «нет данных» ≠ «ноль», порог обязан быть один
+    # и явный; меняется только его значение.
+    if int(pv) >= 197:
+        _aw8 = 'const double kBandMinSeconds = 180.0;'
+    elif int(pv) >= 154:
+        _aw8 = 'const double kBandMinSeconds = 120.0;'
+    else:
+        _aw8 = 'const double kBandMinSeconds = 60.0;'
     # +163 re-era: the screen renders the LEDGER — the session
     # projection (visibleBands) must be GONE from the screen; the
     # threshold constant and its cell-side use are permanent.
@@ -7235,8 +7243,14 @@ if int(pv) >= 173:
     # он показывает состояние, которого нет.
     _bj_set = _bj_st.split('Future<void> _setAutostart(')[-1] \
         .split('\n  Future<')[0]
-    _bj6 = ('await AutostartArm.isArmed()' in _bj_set and
-            _bj_set.find('AutostartArm.isArmed()') >
+    # +197: тумблер стал одним и читает ТРОЙНОЕ состояние, а не флаг
+    # isArmed — иначе «не решали» показывалось бы выключенным и через
+    # минуту перекидывалось само. Предмет гейта прежний: перечитываем с
+    # нативной стороны ПОСЛЕ записи, а не верим намерению.
+    _bj6_read = ('AutostartArm.state()' if int(pv) >= 197
+                 else 'AutostartArm.isArmed()')
+    _bj6 = ('await ' + _bj6_read in _bj_set and
+            _bj_set.find(_bj6_read) >
             _bj_set.find('AutostartArm.disable()') and
             'isArmed' in _bj_arm)
     if _bj6:
@@ -7282,19 +7296,38 @@ if int(pv) >= 174:
     # каждый раз, экспортный ZIP — дважды обрезанным. Критическая мелочь
     # не должна зависеть от доставки хрупкой большой посылки.
     _bk_adv = _bk_st.split('Widget _advancedCard(')[-1].split('\n  Widget ')[0]
+    # +197: канал чтения жив, но читает его теперь экран данных (журнал
+    # приёма и восстановления, +196), а не снятая плитка настроек.
+    _bk1_reader = (_bk_slurp('lib/screens/data_management.dart')
+                   if int(pv) >= 197 else _bk_st)
     _bk1 = ('fun read(context: Context' in _bk_mk and
             '"marker" -> result.success(AutostartMarker.read(this))'
             in _bk_ma and
             "invokeMethod<String>('marker')" in _bk_arm and
-            'AutostartArm.marker()' in _bk_st and
-            'DiagDumpFile.instance.append' in _bk_st and
+            'AutostartArm.marker()' in _bk1_reader and
+            ('DiagDumpFile.instance.append' in _bk_st
+             if int(pv) < 197 else True) and
             # ERA-AWARE (+193): плитка переехала в основной список вместе с
             # выключателем — это прибор ОДНОГО механизма, и разлучать их
             # значило бы оставить кнопку без её измерителя.
-            "S.of('settings.marker.title')" in
-            (_bk_st if int(pv) >= 193 else _bk_adv) and
-            'onTap: _dumpMarker' in
-            (_bk_st if int(pv) >= 193 else _bk_adv))
+            #
+            # ERA-AWARE (+197): плитки больше нет — решение владельца
+            # 08.08 «достаточно одного тогла». Предмет гейта при этом
+            # ЦЕЛ: маркер по-прежнему едет ВТОРЫМ каналом, и канал стал
+            # лучше кнопки — публичное зеркало в Downloads пишется САМО
+            # на каждую строку, не требует нажатия и переживает
+            # переустановку (имя со сборкой). Именно этот файл владелец
+            # и присылает с 05.08. Проверяем зеркало, а не кнопку.
+            (True if int(pv) >= 197 else
+             ("S.of('settings.marker.title')" in _bk_st and
+              'onTap: _dumpMarker' in _bk_st)) and
+            # Мутация показала слабость: объявления константы PUB_DIR
+            # хватало, а саму запись можно было увести в другой файл —
+            # зеркала нет, гейт зелёный. Сторожим САМУ ЗАПИСЬ.
+            (('/storage/emulated/0/Download' in _bk_mk and
+              'File("$PUB_DIR/${pubFileName(context)}").appendText(text)'
+              in _bk_mk)
+             if int(pv) >= 197 else True))
     if _bk1:
         ok('BK1 the marker travels through the diag dump, not only '
            'inside the fragile export ZIP')
@@ -7791,9 +7824,14 @@ if int(pv) >= 178:
 
     # BM4: «писать нечего» ≠ «запись отказала». Один текст на два разных
     # состояния — тот же класс, что и остальные три ошибки этой эры.
+    # +197: дамперов стало один вместо двух — строка «Журнал автозапуска»
+    # снята вместе со своим `_dumpMarkerInner`. Предмет гейта не тронут:
+    # «писать нечего» и «запись отказала» остаются РАЗНЫМИ ответами у
+    # того дампера, который жив. Меняется только их число.
+    _bm4_fails = 1 if int(pv) >= 197 else 2
     _bm4 = ("S.of('settings.adv.dump_empty')" in _bm_st and
             "'${S.of('settings.adv.dump_fail')} $e'" in _bm_st and
-            _bm_st.count("S.of('settings.adv.dump_fail')") == 2 and
+            _bm_st.count("S.of('settings.adv.dump_fail')") == _bm4_fails and
             "'settings.adv.dump_empty':" in
             _bm_slurp('lib/l10n/strings.dart'))
     if _bm4:
@@ -9744,8 +9782,17 @@ if int(pv) >= 193:
     _bz_adv_at = _bz_set.find('Widget _advancedCard(')
     _bz_sw_at = _bz_set.find("S.of('settings.autostart.title')")
     _bz_mk_at = _bz_set.find("S.of('settings.marker.title')")
-    _bz1 = (_bz_sw_at > 0 and _bz_mk_at > 0 and _bz_adv_at > 0 and
-            _bz_sw_at < _bz_adv_at and _bz_mk_at < _bz_adv_at)
+    # +197: плитка журнала снята решением владельца, и предмет гейта на
+    # неё не опирается. Существо BZ1 — выключатель механизма, который
+    # поднимает приложение при каждом пробуждении, обязан выключаться
+    # БЕЗ пароля, то есть стоять выше расширенной карточки. Это и
+    # проверяем.
+    if int(pv) >= 197:
+        _bz1 = (_bz_sw_at > 0 and _bz_adv_at > 0 and
+                _bz_sw_at < _bz_adv_at and _bz_mk_at < 0)
+    else:
+        _bz1 = (_bz_sw_at > 0 and _bz_mk_at > 0 and _bz_adv_at > 0 and
+                _bz_sw_at < _bz_adv_at and _bz_mk_at < _bz_adv_at)
     if _bz1:
         ok('BZ1 the autostart switch and its log live in the main list, not '
            'behind a 15-tap lock and a collapsed tile')
@@ -9757,14 +9804,29 @@ if int(pv) >= 193:
     # НАТИВНОЙ стороны — той же, что читает BootReceiver. Dart-кэш `_armed`
     # для показа не годится: он говорит лишь «звали ли мы arm в этом
     # запуске», а не «взведено ли». Три ключа обязаны быть в ОБЕИХ картах.
-    _bz2 = ('enum AutostartState' in _bz_arm and
-            "await _flag('isArmed')" in _bz_arm and
-            "await _flag('optedOut')" in _bz_arm and
-            '_autostartSubtitle()' in _bz_set and
-            "AutostartArm.state()" in _bz_set and
-            _bz_l10n.count("'settings.autostart.state_undecided'") == 2 and
-            _bz_l10n.count("'settings.autostart.state_on'") == 2 and
-            _bz_l10n.count("'settings.autostart.state_off'") == 2)
+    # +197: ПРЕДМЕТ ПЕРЕЕХАЛ С ПОДПИСИ НА ТУМБЛЕР. Владелец 08.08 убрал
+    # три подписи как диагностику. Но различать три состояния всё ещё
+    # обязательно — иначе «не решали» покажется выключенным и через
+    # минуту перекинется само. Теперь различие живёт в положении
+    # тумблера: он отвечает «поднимется ли приложение само», и ответ
+    # берётся из состояния, а не из флага isArmed.
+    if int(pv) >= 197:
+        _bz2 = ('enum AutostartState' in _bz_arm and
+                "await _flag('isArmed')" in _bz_arm and
+                "await _flag('optedOut')" in _bz_arm and
+                'AutostartState.offByOwner' in _bz_set and
+                '_autostartWillRise' in _bz_set and
+                "AutostartArm.state()" in _bz_set and
+                'value: _autostartWillRise' in _bz_set)
+    else:
+        _bz2 = ('enum AutostartState' in _bz_arm and
+                "await _flag('isArmed')" in _bz_arm and
+                "await _flag('optedOut')" in _bz_arm and
+                '_autostartSubtitle()' in _bz_set and
+                "AutostartArm.state()" in _bz_set and
+                _bz_l10n.count("'settings.autostart.state_undecided'") == 2 and
+                _bz_l10n.count("'settings.autostart.state_on'") == 2 and
+                _bz_l10n.count("'settings.autostart.state_off'") == 2)
     if _bz2:
         ok('BZ2 the switch caption tells «not decided» from «turned off», '
            'read natively in both locales')
@@ -10182,6 +10244,170 @@ if int(pv) >= 196:
              'search, which is exactly too late')
 else:
     ok(f"Part CA skipped (build +{pv}, the restore trace lands in +196)")
+
+# ══════════════════════════ ЭРА CB (+197) ══════════════════════════
+#
+# Что закрывает эта эра, одной фразой на пункт:
+#   1. замер длиной три минуты, а не две;
+#   2. полоска показывает клетку, которая НАПОЛНЯЕТСЯ, и подпись
+#      объясняет откат градусами;
+#   3. настройки автозапуска — один тумблер, который не врёт ни в один
+#      момент времени;
+#   4. два обратимых кода аккаунта известны клиенту ДО того, как сервер
+#      начнёт их слать, и известны ОБОИМ путям запроса;
+#   5. состояние устройства спрашивается периодически, иначе срок
+#      удаления не доедет до экрана в машине;
+#   6. размер экрана не записывается нулями;
+#   7. чтение сохранённой оценки ёмкости говорит на каждом исходе.
+if int(pv) >= 197:
+    _cb_sp = _strip_comments_safe(
+        (root / 'lib/services/speed_profile_service.dart').read_text())
+    _cb_band = _strip_comments_safe(
+        (root / 'lib/widgets/band_card.dart').read_text())
+    _cb_scr = _strip_comments_safe(
+        (root / 'lib/screens/speed_profile.dart').read_text())
+    _cb_set = _strip_comments_safe(
+        (root / 'lib/screens/settings.dart').read_text())
+    _cb_cloud = _strip_comments_safe(
+        (root / 'lib/services/cloud_sync_service.dart').read_text())
+    _cb_home = _strip_comments_safe(
+        (root / 'lib/screens/home.dart').read_text())
+    _cb_hal = _strip_comments_safe(
+        (root / 'lib/services/hal_telemetry_service.dart').read_text())
+    _cb_l10n = (root / 'lib/l10n/strings.dart').read_text()
+
+    # CB1: ТРИ МИНУТЫ. Решение владельца 08.08: две минуты дают 3,3 км на
+    # сотне, и один спуск занимал треть замера.
+    _cb1 = ('const double kBandMinSeconds = 180.0;' in _cb_sp and
+            'kBandMinSeconds = 120' not in _cb_sp)
+    if _cb1:
+        ok('CB1 a measurement is three minutes, not two')
+    else:
+        fail('CB1 the two-minute window is back')
+
+    # CB2: ПОЛОСКА ПОКАЗЫВАЕТ ТУ КЛЕТКУ, ЧТО НАПОЛНЯЕТСЯ. Поле 08.08:
+    # «поддерживаю нужную скорость, а время замера не движется вообще» —
+    # показывалась глубочайшая клетка по всем окнам, копилась текущая.
+    _cb2_at = _cb_sp.find('_liveBandOf(')
+    _cb2_body = _cb_sp[_cb2_at:_cb2_at + 900] if _cb2_at > 0 else ''
+    _cb2 = ('activeWindow' in _cb2_body and
+            'sessionTimeS > best.sessionTimeS' not in _cb_sp and
+            'int? get atlasActiveWindow => _ledger?.activeWindow;' in _cb_sp)
+    if _cb2:
+        ok('CB2 the bar reads the cell that is filling, not the deepest '
+           'one across windows')
+    else:
+        fail('CB2 the bar is back to the deepest cell and will stall again')
+
+    # CB3: ОТКАТ ОБЪЯСНЁН ГРАДУСАМИ. Смена окна обнуляет счёт — без
+    # подписи это выглядело бы новой поломкой. Подпись обязана брать
+    # АКТИВНОЕ окно, то же самое, что и число: разойдись они, текст стал
+    # бы объяснять не тот откат.
+    _cb3 = ("measure.temp_window" in _cb_band and
+            'tempWindow' in _cb_band and
+            'tempWindow: svc.atlasActiveWindow' in _cb_scr and
+            _cb_l10n.count("'measure.temp_window'") == 2)
+    if _cb3:
+        ok('CB3 the window reset is explained by degrees in the stage line, '
+           'from the same window the bar counts')
+    else:
+        fail('CB3 the bar can restart with nothing on screen explaining it')
+
+    # CB4: ОДИН ТУМБЛЕР, КОТОРЫЙ НЕ ВРЁТ. Решение владельца 08.08.
+    # Три состояния ОСТАЮТСЯ в коде — они нужны, чтобы «не решали»
+    # показывалось как включено, иначе тумблер сам собой перекинется.
+    # Мутация показала слабость первой редакции: геттер оставался на
+    # месте, а `value:` уводили в константу — гейт этого не замечал.
+    # Сторожим ПОЛОЖЕНИЕ тумблера, а не существование геттера.
+    _cb4 = ('value: _autostartWillRise,' in _cb_set and
+            'AutostartState.offByOwner' in _cb_set and
+            'enum AutostartState' in
+            (root / 'lib/services/autostart_arm.dart').read_text() and
+            'settings.marker.title' not in _cb_set and
+            'autostart.state_on' not in _cb_l10n and
+            'autostart.state_undecided' not in _cb_l10n and
+            "'settings.marker.title'" not in _cb_l10n)
+    if _cb4:
+        ok('CB4 autostart is one toggle that never lies — three states stay '
+           'in code, the diagnostics are gone from the screen')
+    else:
+        fail('CB4 the autostart diagnostics are back, or the toggle lost the '
+             'third state and will flip by itself')
+
+    # CB5: ДВА КОДА, В ОБОИХ МЕСТАХ. Список ворот встречается дважды —
+    # по одному на путь запроса. Разойдись они, один путь показывал бы
+    # спокойное состояние, а другой сырую строку HTTP 403.
+    _cb5 = (_cb_cloud.count("errCode == 'account_suspended'") == 2 and
+            _cb_cloud.count("errCode == 'account_deletion_pending'") == 2 and
+            'accountSuspended,' in _cb_cloud and
+            'accountDeletionPending,' in _cb_cloud and
+            # Мутация нашла дыру: объявления в перечислении хватало, а
+            # отображение кода в состояние можно было увести в
+            # accessDenied, и обратимость терялась молча.
+            '_status = CloudSyncStatus.accountSuspended;' in _cb_cloud and
+            '_status = CloudSyncStatus.accountDeletionPending;'
+            in _cb_cloud and
+            _cb_l10n.count("'cloud.status.suspended'") == 2 and
+            _cb_l10n.count("'cloud.status.deletion_pending'") == 2)
+    if _cb5:
+        ok('CB5 both request paths know the two reversible account codes, '
+           'and both locales have the words')
+    else:
+        fail('CB5 a request path or a locale is missing an account code')
+
+    # CB6: ОПРОС СОСТОЯНИЯ УСТРОЙСТВА. Без него срок удаления, начатого
+    # с веб-страницы, не доедет до экрана в машине за все 30 дней.
+    # Гасится ВЕЗДЕ, где гаснут остальные таймеры, иначе переживёт
+    # отключение и будет стучаться мёртвым токеном.
+    _cb6 = ('_deviceMeTimer = Timer.periodic(const Duration(minutes: 10)'
+            in _cb_cloud and
+            _cb_cloud.count('_deviceMeTimer?.cancel();') ==
+            _cb_cloud.count('_heartbeatTimer?.cancel();'))
+    if _cb6:
+        ok('CB6 device state is polled every 10 minutes and stops wherever '
+           'the other timers stop')
+    else:
+        fail('CB6 the device poll is missing or outlives the other timers')
+
+    # CB7: РАЗМЕР ЭКРАНА НЕ ПИШЕТСЯ НУЛЯМИ. Поле 07.08 привезло
+    # {"width_dp":0,"height_dp":0}: +196 запирал замер после первого
+    # кадра, а на первом кадре окно ещё нулевое.
+    _cb7_at = _cb_home.find('_logScreenMetrics(BuildContext context)')
+    _cb7_body = _cb_home[_cb7_at:_cb7_at + 700] if _cb7_at > 0 else ''
+    _cb7 = ('if (w <= 0 || h <= 0) return;' in _cb7_body and
+            _cb7_body.find('if (w <= 0') < _cb7_body.find('_metricsLogged = true'))
+    if _cb7:
+        ok('CB7 the screen size latches only on a real size, never on zeros')
+    else:
+        fail('CB7 zeros can be latched into the export again')
+
+    # CB8: ЧТЕНИЕ ОЦЕНКИ ЁМКОСТИ ГОВОРИТ. Здесь стоял пустой перехват:
+    # владелец три недели видел 96 % вместо 102, а следа не оставалось.
+    # Причина не найдена — чиним слепоту, а не причину.
+    _cb8_at = _cb_hal.find('Future<void> loadHalSohEstimate()')
+    _cb8_body = _cb_hal[_cb8_at:_cb8_at + 2600] if _cb8_at > 0 else ''
+    # Мутация нашла две дыры первой редакции. Первая: окно тела в 1600
+    # знаков не покрывало все четыре строки, и удаление одной оставалось
+    # незамеченным — окно расширено. Вторая, злее: при удалении вызова
+    # `find` возвращает −1, а −1 меньше любой позиции, и проверка
+    # «раньше» проходила на ОТСУТСТВИИ предмета. Оба конца обязаны
+    # существовать.
+    _cb8_hyd = _cb_hal.find('await loadHalSohEstimate();')
+    _cb8_rec = _cb_hal.find('await _recoverPendingSohSession();')
+    # Исходов ПЯТЬ, а не четыре, как стояло в первой редакции: skip
+    # (посчитали в этом запуске), fail без базы, ok, none (записи нет) и
+    # fail с текстом исключения. Считал по памяти — поймал прогон.
+    _cb8 = (_cb8_body.count('soh-load:') == 5 and
+            'catch (_) {' not in _cb8_body and
+            _cb8_hyd > 0 and _cb8_rec > 0 and _cb8_hyd < _cb8_rec)
+    if _cb8:
+        ok('CB8 the SOH hydration reports every outcome and runs before the '
+           'heavy startup work')
+    else:
+        fail('CB8 the SOH hydration is silent again, or back behind the '
+             'heavy work')
+else:
+    ok(f"Part CB skipped (build +{pv}, the three-minute band lands in +197)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)

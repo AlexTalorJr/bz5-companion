@@ -26,6 +26,8 @@ import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
+
+import 'autostart_arm.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 // v0.1.39+138: Value for the SnapshotsCompanion of the HAL snapshot
 // writer — same show-only import shape as connection.dart line 5.
@@ -2528,7 +2530,12 @@ class HalTelemetryService extends ChangeNotifier
   /// v0.1.29+116: consume a session snapshot left by a process death and, if
   /// it passes the standard gates, store it as the HAL SOH (id=2). Runs once
   /// per startup from init(), AFTER loadHalSohEstimate (so hydration can't
-  /// clobber a fresher recovered value) and BEFORE the stream starts (so a
+  /// clobber a fresher recovered value) — v0.1.98+197 привёл КОД к этому
+  /// утверждению: до него восстановление шло первым, а гидрация стояла
+  /// последней строкой init(), то есть текст лгал с самого начала.
+  /// Тринадцатый случай класса «текст не соответствует коду», и первый,
+  /// найденный не в собственном патче, а в чужом при чтении рядом.
+  /// И BEFORE the stream starts (so a
   /// new session can't race the snapshot). The snapshot is removed up front —
   /// whatever the outcome, it must be consumed exactly once. The recovered
   /// window ends at the last snapshot (≤ _kHalSohPersistEvery before the
@@ -2599,9 +2606,15 @@ class HalTelemetryService extends ChangeNotifier
     // this hydration runs, and its DB upsert is fire-and-forget, so reading
     // the DB here could still see the OLD row and silently roll the fresher
     // recovered estimate back.
-    if (_halSohAhPctCached != null) return;
+    if (_halSohAhPctCached != null) {
+      await AutostartArm.write('soh-load: skip · уже посчитано в этом запуске');
+      return;
+    }
     final db = _diagDb;
-    if (db == null) return;
+    if (db == null) {
+      await AutostartArm.write('soh-load: fail · базы нет');
+      return;
+    }
     try {
       final row = await db.getLatestSohEstimate(rowId: 2);
       if (row != null) {
@@ -2611,11 +2624,32 @@ class HalTelemetryService extends ChangeNotifier
         debugPrint('HalSoh: hydrated id=2 → '
             '${row.sohAhPct.toStringAsFixed(1)}% '
             '(computed ${row.computedAt.toIso8601String()})');
+        await AutostartArm.write('soh-load: ok · '
+            '${row.sohAhPct.toStringAsFixed(1)}% от '
+            '${row.computedAt.toIso8601String()}');
       } else {
         debugPrint('HalSoh: no stored id=2 estimate — '
             'display falls through to live BMS/UDS');
+        await AutostartArm.write('soh-load: none · записи нет, '
+            'показываем число машины');
       }
-    } catch (_) {/* no DB / not migrated yet — stay on fallback */}
+    } catch (e) {
+      // ── ПУСТОЙ ПЕРЕХВАТ БОЛЬШЕ НЕ ГЛОТАЕТ. v0.1.98+197 ──
+      //
+      // Здесь стоял `catch (_) {}` без единой строки. Владелец три
+      // недели видел «SOH 96 %» вместо своих 102 после каждой ночи, а
+      // разобрать было нечем: если чтение спотыкалось, значение молча
+      // терялось, повтора не было, и в журнале не оставалось следа.
+      //
+      // Причину мы ДО СИХ ПОР не знаем — 07.08 цепочка отработала
+      // целиком, и воспроизвести отказ не удалось. Поэтому чиним не
+      // причину, а слепоту: следующий случай объяснит себя сам.
+      //
+      // Уронить запуск из-за журнала нельзя, поэтому перехват остаётся
+      // — но теперь он говорит.
+      debugPrint('HalSoh: hydrate failed — $e');
+      await AutostartArm.write('soh-load: fail · $e');
+    }
   }
 
   /// v0.1.29+91: fold the current frame into the trip min/max accumulators
@@ -2907,11 +2941,29 @@ class HalTelemetryService extends ChangeNotifier
     if (_isHeadUnit) {
       await _recoverOrphanHalTrips();
     }
+    // ── ЧТЕНИЕ СОХРАНЁННОЙ ОЦЕНКИ — В НАЧАЛО. v0.1.98+197 ──
+    //
+    // Стояло последним вызовом init(), ПОСЛЕ втягивания фонового
+    // журнала и запуска потока — то есть после самой тяжёлой работы с
+    // базой. Пока оно не дошло, экран показывал число самой машины
+    // (96 %) вместо посчитанной нами оценки (102 %).
+    //
+    // Ту ли болезнь это лечит, мы не знаем: воспроизвести отказ не
+    // удалось. Но держать чтение за тяжёлой работой не было причин
+    // никогда, а строка `soh-load:` в журнале теперь скажет, чем
+    // кончилась попытка.
+    //
+    // Порядок с восстановлением сохранён и теперь СОВПАДАЕТ с тем, что
+    // обещает комментарий на объявлении `_recoverPendingSohSession`:
+    // сначала гидрация, потом восстановление. Восстановление пишет в
+    // кэш напрямую и потому по-прежнему перекрывает гидрацию более
+    // свежим значением — направление защиты не изменилось.
+    await loadHalSohEstimate();
     // v0.1.29+116: consume any SOH session snapshot left by a process death
     // (ignition off mid-charge). MUST run before _startStream — once frames
     // flow, a new session's reset would clear the pending key before it is
-    // read. Writes the recovered value to the cache + DB; the hydration
-    // below is guarded so it can't clobber this fresher value.
+    // read. Writes the recovered value to the cache + DB; it runs AFTER the
+    // hydration above and overwrites it, which is the intended direction.
     await _recoverPendingSohSession();
     // v0.1.83+182: ВТЯНУТЬ ФОНОВЫЙ ЖУРНАЛ HAL — И СТРОГО ДО `_startStream`.
     //
@@ -2974,7 +3026,6 @@ class HalTelemetryService extends ChangeNotifier
     await refreshTotalDriveEnergy();
     // v0.1.29+105: hydrate the cached HAL SOH (id=2) so the dashboard shows
     // the last computed value before any new charge session this run.
-    await loadHalSohEstimate();
     notifyListeners();
   }
 

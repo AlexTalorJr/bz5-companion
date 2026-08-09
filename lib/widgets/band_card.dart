@@ -62,9 +62,19 @@ class BandCardModel {
   /// Independent drives behind [atlasMean] (contract dedup count).
   final int atlasDrives;
 
+  /// Температурное окно, в которое замер копится ПРЯМО СЕЙЧАС (нижняя
+  /// граница пятиградусной ступени). v0.1.98+197.
+  ///
+  /// Стоит в подписи стадии, потому что с этого патча полоска считает
+  /// именно это окно и при его смене начинается заново. Без подписи
+  /// откат выглядел бы новой поломкой; с подписью видно причину —
+  /// градусы сменились. null = температуры нет, подпись опускаем.
+  final int? tempWindow;
+
   const BandCardModel({
     required this.band,
     required this.timeS,
+    this.tempWindow,
     required this.kwh100,
     required this.atlasMean,
     required this.atlasDrives,
@@ -169,10 +179,23 @@ class BandCard extends StatelessWidget {
         .of('measure.band_window')
         .replaceFirst('{lo}', '${m.band - kBandHalfWidthKmh}')
         .replaceFirst('{hi}', '${m.band + kBandHalfWidthKmh}');
+    // v0.1.98+197: окно температуры в конце подписи. Полоска с этого
+    // патча считает клетку текущего окна, и при смене окна счёт идёт
+    // заново — подпись объясняет откат ровно в тот момент, когда он
+    // случается. Пятиградусная ступень: нижняя граница и следующая.
+    final tw = m.tempWindow;
+    final tail = tw == null
+        ? ''
+        : ' · ' +
+            S
+                .of('measure.temp_window')
+                .replaceFirst('{lo}', '$tw')
+                .replaceFirst('{hi}', '${tw + kAtlasWindowStepC}');
     final stage = '$window · ' +
         (m.matured
             ? S.of('measure.stage_matured')
-            : S.of('measure.stage_maturing'));
+            : S.of('measure.stage_maturing')) +
+        tail;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [

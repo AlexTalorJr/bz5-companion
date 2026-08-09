@@ -135,6 +135,25 @@ enum CloudSyncStatus {
   /// v0.1.34+133: server gate — account_rejected / account_blocked.
   /// Permanent until the owner flips it; token and LOCAL DATA intact.
   accessDenied,
+
+  /// v0.1.98+197: доступ ПРИОСТАНОВЛЕН (403 account_suspended).
+  ///
+  /// Обратимо — в этом всё отличие от [accessDenied]. Обращаемся как с
+  /// [pendingApproval]: токен, курсоры и таймеры целы, обычная
+  /// каденция, снятие подхватится само.
+  ///
+  /// Контракт v1.3 с Другом 2, заморожен 08.08. Код добавлен ДО того,
+  /// как сервер начнёт его слать: незнакомый код просто не приходит, а
+  /// приди он в сборку без этой ветки — владелец увидел бы сырую
+  /// строку `HTTP 403 on /v2/sync/...` вместо спокойного текста.
+  accountSuspended,
+
+  /// v0.1.98+197: аккаунт помечен на удаление (403
+  /// account_deletion_pending). Отдельно от [accessDenied], потому что
+  /// у него есть СРОК и есть отмена. Дату отдаёт `/v2/device/me`; сама
+  /// метка и текст с датой приедут вместе с кнопками, когда сервер
+  /// построит ручки.
+  accountDeletionPending,
 }
 
 /// Vehicle row from GET /v1/setup/vehicles.
@@ -754,6 +773,7 @@ class CloudSyncService extends ChangeNotifier {
   void dispose() {
     _periodicTimer?.cancel();
     _heartbeatTimer?.cancel();
+    _deviceMeTimer?.cancel();
     _pairPollTimer?.cancel(); // v0.1.29+127
     _http.close();
     super.dispose();
@@ -820,6 +840,26 @@ class CloudSyncService extends ChangeNotifier {
   bool? _deviceMeLinked; // null = never fetched OK; false = account:null
   DateTime? _deviceMeFetchedAt;
   bool _deviceMeInFlight = false;
+
+  /// v0.1.98+197: периодический опрос состояния устройства.
+  ///
+  /// До этого патча ручка дёргалась ровно трижды: при запуске, после
+  /// привязки и по ручному нажатию. Контракт v1.3 кладёт в неё СРОК
+  /// удаления аккаунта, начатого с публичной веб-страницы, — а такой
+  /// срок без периодического опроса не доехал бы до экрана в машине
+  /// вовсе, хоть все тридцать дней.
+  ///
+  /// Десять минут согласованы с Другом 2 письменно, вместе с его
+  /// встречным обязательством: ручка не получает гейт одобрения и не
+  /// получает лимит строже одного запроса в минуту без предупреждения
+  /// заранее.
+  ///
+  /// Остаётся ТОЛЬКО показом: `fetchDeviceMe` не трогает
+  /// `CloudSyncStatus` и не участвует в счёте подряд идущих 401 —
+  /// решение владельца от 14.07 в силе. Единственное исключение,
+  /// разрешённое владельцем 08.08, — стирание местной метки об
+  /// удалении, и оно приедет вместе с кнопками, не здесь.
+  Timer? _deviceMeTimer;
 
   String? get deviceMeEmail => _deviceMeEmail;
   String? get deviceMeStatus => _deviceMeStatus;
@@ -1198,6 +1238,10 @@ class CloudSyncService extends ChangeNotifier {
   void _restartTimers() {
     _periodicTimer?.cancel();
     _heartbeatTimer?.cancel();
+    // v0.1.98+197: новый таймер гасится ВЕЗДЕ, где гаснут те два.
+    // Опрос состояния устройства без регистрации бессмыслен, а
+    // переживи он отключение — стучался бы мёртвым токеном вечно.
+    _deviceMeTimer?.cancel();
     if (!_enabled || !isRegistered) return;
 
     // Sync every 60s. Catches new trips/snapshots/sweeps/livelogs the
@@ -1210,6 +1254,14 @@ class CloudSyncService extends ChangeNotifier {
     // Heartbeat every 60s (offset by 30s from sync to spread load).
     _heartbeatTimer = Timer.periodic(const Duration(minutes: 1), (_) {
       _sendHeartbeat();
+    });
+
+    // v0.1.98+197: состояние устройства раз в 10 минут — см. поле
+    // _deviceMeTimer. Fire-and-forget: отказ ручки не должен ни
+    // остановить таймер, ни попасть в состояние синхронизации.
+    _deviceMeTimer?.cancel();
+    _deviceMeTimer = Timer.periodic(const Duration(minutes: 10), (_) {
+      unawaited(fetchDeviceMe());
     });
 
     // Kick off an immediate sync + heartbeat so the user sees activity
@@ -1364,6 +1416,7 @@ class CloudSyncService extends ChangeNotifier {
   Future<void> disconnect() async {
     _periodicTimer?.cancel();
     _heartbeatTimer?.cancel();
+    _deviceMeTimer?.cancel();
     try {
       await _secureStorage.delete(key: _kTokenKey);
     } catch (e) {
@@ -1570,6 +1623,7 @@ class CloudSyncService extends ChangeNotifier {
       await _wipeTokenAndCursors();
       _periodicTimer?.cancel();
       _heartbeatTimer?.cancel();
+      _deviceMeTimer?.cancel();
     } on _TransientAuthException catch (e) {
       // v0.1.29+9: one or two 401s in a row — non-fatal. Surface a
       // soft error to UI but keep the token and let the next periodic
@@ -1590,9 +1644,20 @@ class CloudSyncService extends ChangeNotifier {
       // v0.1.34+133: not an error — a state. Token, cursors and timers
       // stay; the next periodic tick re-probes, so an approval flips us
       // back to normal flow automatically (server SPEC §2/§8).
-      _status = e.code == 'account_pending'
-          ? CloudSyncStatus.pendingApproval
-          : CloudSyncStatus.accessDenied;
+      // v0.1.98+197: четыре ветки вместо двух. Приостановка обратима и
+      // ведёт себя как ожидание одобрения; у удаления есть срок.
+      // Умолчание — accessDenied, самое строгое: код из списка, но без
+      // своей ветки, обязан выглядеть запретом, а не разрешением.
+      final gate = e.code;
+      if (gate == 'account_pending') {
+        _status = CloudSyncStatus.pendingApproval;
+      } else if (gate == 'account_suspended') {
+        _status = CloudSyncStatus.accountSuspended;
+      } else if (gate == 'account_deletion_pending') {
+        _status = CloudSyncStatus.accountDeletionPending;
+      } else {
+        _status = CloudSyncStatus.accessDenied;
+      }
       _lastError = e.code;
       await _persistError(e.code);
     } on _BridgeException catch (e) {
@@ -3377,9 +3442,16 @@ class CloudSyncService extends ChangeNotifier {
       // pull/restore path. Recognized BEFORE the permanent-4xx collapse.
       if (code == 403) {
         final errCode = _parseErrorCode(resp.body);
+        // v0.1.98+197: список расширен двумя кодами контракта v1.3.
+        // Держим СПИСКОМ, а не «любой account_*»: незнакомый код обязан
+        // остаться ошибкой, иначе мы молча проглотим состояние, которого
+        // не понимаем. Оба места правятся вместе — их два, по одному на
+        // путь запроса, и разойтись им нельзя (гейт CB2).
         if (errCode == 'account_pending' ||
             errCode == 'account_rejected' ||
-            errCode == 'account_blocked') {
+            errCode == 'account_blocked' ||
+            errCode == 'account_suspended' ||
+            errCode == 'account_deletion_pending') {
           throw _AccountGateException(errCode!);
         }
       }
@@ -3620,9 +3692,16 @@ class CloudSyncService extends ChangeNotifier {
         // v0.1.34+133: data-plane approval gate (server SPEC §2).
         // Same nested wire shape as samples_disabled — _parseErrorCode
         // already unwraps detail.error.code.
+        // v0.1.98+197: список расширен двумя кодами контракта v1.3.
+        // Держим СПИСКОМ, а не «любой account_*»: незнакомый код обязан
+        // остаться ошибкой, иначе мы молча проглотим состояние, которого
+        // не понимаем. Оба места правятся вместе — их два, по одному на
+        // путь запроса, и разойтись им нельзя (гейт CB2).
         if (errCode == 'account_pending' ||
             errCode == 'account_rejected' ||
-            errCode == 'account_blocked') {
+            errCode == 'account_blocked' ||
+            errCode == 'account_suspended' ||
+            errCode == 'account_deletion_pending') {
           throw _AccountGateException(errCode!);
         }
         if (path.contains('/samples') && errCode == 'samples_disabled') {
@@ -3992,7 +4071,7 @@ class CloudSyncService extends ChangeNotifier {
   /// Read app version from the static value baked into the build.
   /// We don't have package_info_plus as a dep — pubspec-version is
   /// hardcoded here. Update when bumping. Off-by-one tolerated.
-  Future<String> _readAppVersion() async => '0.1.97+196';
+  Future<String> _readAppVersion() async => '0.1.98+197';
 }
 
 // ─── Internal exceptions ────────────────────────────────────────────
@@ -4007,7 +4086,8 @@ class _BridgeException implements Exception {
 /// v0.1.34+133: data-plane approval gate (server SPEC §2). Carries the
 /// server error code so syncOnce can map pending vs rejected/blocked.
 class _AccountGateException implements Exception {
-  final String code; // 'account_pending' | 'account_rejected' | 'account_blocked'
+  // v0.1.98+197: + account_suspended | account_deletion_pending
+  final String code;
   const _AccountGateException(this.code);
 }
 

@@ -40,17 +40,35 @@ class HomeScreen extends StatelessWidget {
   /// изменении размера, а строка нужна одна.
   static bool _metricsLogged = false;
 
+  // ── ЗАМОК СНЯТ, ПОКА РАЗМЕР НЕ НАСТОЯЩИЙ. v0.1.98+197 ──
+  //
+  // +196 запирал замер после ПЕРВОГО кадра — и поле 07.08 привезло
+  // `{"width_dp":0,"height_dp":0,"dpr":1.0}`: на первом кадре окно ещё
+  // нулевого размера. Защита стояла от «ничего», а пришли нули, и в
+  // экспорт уехал мусор, запертый навсегда.
+  //
+  // Теперь замок защёлкивается только на настоящем размере. Пока
+  // ширина или высота нулевая — не пишем ничего и пробуем на следующем
+  // кадре. Отсутствие ключа в metadata честнее нулей: «не измерили» и
+  // «измерили ноль» — разные вещи.
+  //
+  // Страж стоит ВПЛОТНУЮ к замеру, без комментария между ними: гейт
+  // CB7 смотрит окрестность, а вычищенный комментарий оставляет пустые
+  // строки и отодвигает предмет проверки за край окна (та же ловушка,
+  // что поймала CA7 в прошлом патче).
   static void _logScreenMetrics(BuildContext context) {
+    final mq = MediaQuery.of(context);
+    final w = mq.size.width.round();
+    final h = mq.size.height.round();
+    if (w <= 0 || h <= 0) return;
     if (_metricsLogged) return;
     _metricsLogged = true;
-    final mq = MediaQuery.of(context);
-    debugPrint('Screen: ${mq.size.width.round()}x${mq.size.height.round()}'
-        ' dp, dpr ${mq.devicePixelRatio}');
-    // v0.1.97+196: те же три числа — в `metadata.json` экспорта. Строка
-    // выше уезжает только отдельной кнопкой диаг-дампа и за два визита
-    // так и не доехала; архив экспорта владелец присылает сам.
-    ScreenGeometry.widthDp = mq.size.width.round();
-    ScreenGeometry.heightDp = mq.size.height.round();
+    debugPrint('Screen: ${w}x$h dp, dpr ${mq.devicePixelRatio}');
+    // +196: те же три числа — в `metadata.json` экспорта. Строка выше
+    // уезжает только отдельной кнопкой диаг-дампа и за два визита так
+    // и не доехала; архив экспорта владелец присылает сам.
+    ScreenGeometry.widthDp = w;
+    ScreenGeometry.heightDp = h;
     ScreenGeometry.dpr = mq.devicePixelRatio;
   }
 

@@ -193,19 +193,12 @@ class S {
     // the screen itself stay untranslated by project rule; only chrome
     // is localized.
     // v0.1.74+173 — autostart switch (Advanced, head unit only).
-    'settings.autostart.title': 'Autostart',
+    'settings.autostart.title': 'App autostart',
     'settings.autostart.sub':
         'Raise the app by itself when the head unit wakes',
     // v0.1.94+193 — the real three states. «Not decided» is not «off»:
     // the next launch on the head unit arms it, and the owner has said
     // nothing either way.
-    'settings.autostart.state_undecided':
-        'Not decided — will arm on the next launch',
-    'settings.autostart.state_on': 'On — rises when the head unit wakes',
-    'settings.autostart.state_off': 'Turned off by you',
-    // v0.1.75+174 — autostart marker → diag dump (Advanced, HU only).
-    'settings.marker.title': 'Autostart log',
-    'settings.marker.sub': 'Write the autostart marker into the diag dump',
     'settings.install.title': 'Install path',
     'settings.install.subtitle':
         'Probe the system installer and install an APK over this build',
@@ -373,6 +366,8 @@ class S {
     // v0.1.34+133: account approval gate
     'cloud.status.pending_approval': 'Waiting for approval',
     'cloud.status.access_denied': 'Access denied by owner',
+    'cloud.status.suspended': 'Access suspended — data is kept',
+    'cloud.status.deletion_pending': 'Account marked for deletion',
     // v0.1.42+141: device whoami (GET /v2/device/me)
     'cloud.device_me.linked': 'Linked to {email}',
     'cloud.device_me.not_linked': 'Not linked to an account',
@@ -668,6 +663,7 @@ class S {
     'measure.chip_rec_tail': 'steady time counting',
     'measure.chip_parked': 'Parked, steady time not counting',
     'measure.stage_maturing': 'maturing',
+    'measure.temp_window': '{lo}\u2013{hi}\u00B0',
     'measure.stage_matured': 'matured, this drive\u2019s measurement',
     'measure.of_120': '{s} s of {m}',
     'measure.range_est': 'about {km} km',
@@ -1415,18 +1411,9 @@ class S {
     'settings.hal.subtitle': 'Нативный BYD HAL — статус, подписки, логи',
     // v0.1.73+172 — путь установки (Расширенные).
     // v0.1.74+173 — выключатель автозапуска (Расширенные, только ГУ).
-    'settings.autostart.title': 'Автозапуск',
+    'settings.autostart.title': 'Автозапуск приложения',
     'settings.autostart.sub':
         'Поднимать приложение самостоятельно при пробуждении ГУ',
-    // v0.1.94+193 — настоящие три состояния. «Не решали» ≠ «выключено»:
-    // следующий запуск на ГУ взведёт сам, а владелец ничего не выбирал.
-    'settings.autostart.state_undecided':
-        'Не решали — взведётся при следующем запуске',
-    'settings.autostart.state_on': 'Включён — поднимается при пробуждении ГУ',
-    'settings.autostart.state_off': 'Выключен вами',
-    // v0.1.75+174 — журнал автозапуска → диаг-дамп (Расширенные, ГУ).
-    'settings.marker.title': 'Журнал автозапуска',
-    'settings.marker.sub': 'Записать маркер автозапуска в диаг-дамп',
     'settings.install.title': 'Путь установки',
     'settings.install.subtitle':
         'Проба системного установщика и установка APK поверх',
@@ -1598,6 +1585,8 @@ class S {
     // v0.1.34+133: account approval gate
     'cloud.status.pending_approval': 'Ожидает подтверждения',
     'cloud.status.access_denied': 'Доступ закрыт владельцем',
+    'cloud.status.suspended': 'Доступ приостановлен, данные целы',
+    'cloud.status.deletion_pending': 'Аккаунт помечен на удаление',
     // v0.1.42+141: device whoami (GET /v2/device/me)
     'cloud.device_me.linked': 'Привязано к {email}',
     'cloud.device_me.not_linked': 'Не привязано к аккаунту',
@@ -1892,6 +1881,7 @@ class S {
     'measure.chip_rec_tail': 'ровное время идёт',
     'measure.chip_parked': 'Стоянка, ровное время не идёт',
     'measure.stage_maturing': 'зреет',
+    'measure.temp_window': '{lo}\u2013{hi}\u00B0',
     'measure.stage_matured': 'дозрела, замер этой поездки',
     'measure.of_120': '{s} с из {m}',
     'measure.range_est': 'около {km} км',
