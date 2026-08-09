@@ -14,7 +14,7 @@
 //   • HalTelemetrySource — интерфейс на девять членов вместо
 //     прибитого к платформенному каналу синглтона;
 //   • AppDatabase.forTesting(QueryExecutor) — база в памяти;
-//   • инъекция часов в две точки входа тика — 120 секунд накопления
+//   • инъекция часов в две точки входа тика — kBandMinSeconds накопления
 //     проигрываются за миллисекунды.
 
 @Timeout(Duration(seconds: 60))
@@ -90,6 +90,29 @@ class _FakeHal extends ChangeNotifier implements HalTelemetrySource {
 
 /// Проигрывает [seconds] секунд ровной езды: одно событие в секунду,
 /// как отдаёт живой поток по изменению плюс насос +156.
+/// Секунд, чтобы ГАРАНТИРОВАННО перевалить порог замера. v0.1.99+198.
+///
+/// Числом писать нельзя. Порог менялся уже трижды (60 → 120 → 180), и
+/// на третьем разе жёсткие 130 секунд молча перестали его перекрывать:
+/// гейты и мутации были зелёными, а `flutter test` на CI упал двумя
+/// проверками. Ни один из наших приборов тесты не читает — единственная
+/// защита в том, чтобы длительность ВЫВОДИЛАСЬ из той же константы, что
+/// и порог.
+///
+/// Запас в десять секунд покрывает прогрев полосы (kBandDwellS) и
+/// округления тика.
+final int _pastThreshold = kBandMinSeconds.toInt() + 10;
+
+/// Один полный кусок с запасом — для проверки, что аккумулятор
+/// сбросился и второй кусок вообще возможен.
+///
+/// Запас в пять секунд не украшение: ровно на границе сравнение
+/// `timeS >= kBandMinSeconds` зависит от того, как сложились
+/// накопленные доли, и тест стал бы мигающим. Проверяем ПОЯВЛЕНИЕ
+/// второго куска, а не точную его длину, поэтому лишние секунды
+/// ничего не портят.
+final int _oneChunk = kBandMinSeconds.toInt() + 5;
+
 Future<void> _drive(
     _FakeHal hal, _Clock clock, double kmh, int seconds) async {
   for (var i = 0; i < seconds; i++) {
@@ -172,7 +195,7 @@ void main() {
     await boot();
     await _drive(hal, clock, 160.0, 30);
     // До +166 здесь появлялась полноценная карточка «Полоса 160 ·
-    // зреет», её полоска доходила до 120 с, и только тогда клетка
+    // зреет», её полоска доходила до порога, и только тогда клетка
     // молча удалялась.
     expect(svc.atlasLiveBands(), isEmpty);
   });
@@ -194,7 +217,7 @@ void main() {
   test('A1: аккумулятор сбрасывается — второй чанк вообще возможен',
       () async {
     await boot();
-    await _drive(hal, clock, 60.0, 130);
+    await _drive(hal, clock, 60.0, _pastThreshold);
     expect(await _waitFor(() async => (await db.countAtlasSnapshots()) >= 1),
         isTrue,
         reason: 'первый снимок не лёг в базу');
@@ -203,14 +226,14 @@ void main() {
     expect(first.single.steadySeconds, closeTo(kBandMinSeconds, 1.5));
 
     // ГЛАВНОЕ. Второй чанк возможен ТОЛЬКО если аккумулятор сбросился:
-    // переход требует beforeS < 120, а cell.timeS без сброса остаётся
+    // переход требует beforeS < порога, а cell.timeS без сброса остаётся
     // выше порога навсегда и условие не выполнится больше никогда.
     //
     // Прежняя редакция этого теста проверяла atlasLiveBands().timeS и
     // была неправа: тот геттер отдаёт СЕССИОННУЮ сумму frozen ⊕ live
     // (решение +164 — число на карточке не должно прыгать назад), то
-    // есть 120 + остаток, и «меньше 120» там не могло быть никогда.
-    await _drive(hal, clock, 60.0, 120);
+    // есть порог + остаток, и «меньше порога» там не могло быть никогда.
+    await _drive(hal, clock, 60.0, _oneChunk);
     expect(await _waitFor(() async => (await db.countAtlasSnapshots()) >= 2),
         isTrue,
         reason: 'второго чанка нет — значит аккумулятор не сбросился');
@@ -231,7 +254,7 @@ void main() {
         'BEFORE INSERT ON $t '
         "BEGIN SELECT RAISE(ABORT, 'forced'); END;");
 
-    await _drive(hal, clock, 60.0, 130);
+    await _drive(hal, clock, 60.0, _pastThreshold);
     expect(await _waitFor(() async => svc.atlasFreezeRetryPending >= 1),
         isTrue,
         reason: 'клетка не встала в очередь повтора');
@@ -249,7 +272,7 @@ void main() {
 
     final rows = await db.select(db.atlasSnapshots).get();
     expect(rows, hasLength(1));
-    // Замер уцелел ЦЕЛИКОМ: 120 с порога плюс всё, что натекло за
+    // Замер уцелел ЦЕЛИКОМ: порог плюс всё, что натекло за
     // время отказов. До +166 здесь было бы либо пусто, либо строка,
     // потерявшая накопление между сбросом и неудачной вставкой.
     expect(rows.single.steadySeconds, greaterThanOrEqualTo(kBandMinSeconds));

@@ -102,6 +102,7 @@ DVW = 'lib/screens/wide/driver_view_wide.dart'
 BC = 'lib/widgets/band_card.dart'
 SPS = 'lib/services/speed_profile_service.dart'
 SPU = 'lib/screens/speed_profile.dart'
+TST = 'test/speed_profile_engine_test.dart'
 HM = 'lib/screens/home.dart'
 
 # (гейт, файл, анкер, замена, что откатывает)
@@ -1122,6 +1123,12 @@ MUTATIONS = [
      '    // v0.1.29+116: consume any SOH',
      'убрать чтение из начала запуска — оно снова окажется за тяжёлой '
      'работой или пропадёт вовсе'),
+
+    ('CB9', TST,
+     'final int _pastThreshold = kBandMinSeconds.toInt() + 10;',
+     'final int _pastThreshold = 130;',
+     'вернуть жёсткое число в тест — следующая смена порога снова уронит '
+     'CI после зелёной церемонии'),
 ]
 
 

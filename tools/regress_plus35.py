@@ -10406,6 +10406,33 @@ if int(pv) >= 197:
     else:
         fail('CB8 the SOH hydration is silent again, or back behind the '
              'heavy work')
+    # CB9: ТЕСТЫ ВЫВОДЯТ ДЛИТЕЛЬНОСТЬ ИЗ ПОРОГА, А НЕ ПИШУТ ЧИСЛОМ.
+    #
+    # Найдено CI, а не нами. Порог поднят до 180, а в тестах стояли
+    # жёсткие 130 и 120 секунд — они перестали его перекрывать, и
+    # `flutter test` упал двумя проверками ПОСЛЕ полностью зелёной
+    # церемонии: 622 гейта, 184 мутации, четыре скана.
+    #
+    # Дыра в самом методе, вторая по счёту после +193: НИ ОДИН наш
+    # прибор не читает каталог `test/`. Пока Dart в песочнице нет,
+    # закрыть её целиком нечем — но конкретно этот класс закрывается
+    # тем, что длительность выводится из той же константы, что и порог.
+    # Тогда следующая смена порога подтянет тесты сама.
+    _cb9_t = (root / 'test/speed_profile_engine_test.dart').read_text()
+    # Мутация показала слабость первой редакции: одного упоминания
+    # `kBandMinSeconds.toInt()` хватало, и второе объявление можно было
+    # увести в жёсткое число, не тронув проверку. Сторожим ОБА.
+    _cb9 = ('final int _pastThreshold = kBandMinSeconds.toInt() + 10;'
+            in _cb9_t and
+            'final int _oneChunk = kBandMinSeconds.toInt() + 5;' in _cb9_t and
+            'await _drive(hal, clock, 60.0, 130);' not in _cb9_t and
+            'await _drive(hal, clock, 60.0, 120);' not in _cb9_t)
+    if _cb9:
+        ok('CB9 the engine tests derive their durations from the threshold '
+           'instead of hard-coding seconds')
+    else:
+        fail('CB9 a test hard-codes the threshold again and will go stale '
+             'silently on the next change')
 else:
     ok(f"Part CB skipped (build +{pv}, the three-minute band lands in +197)")
 
