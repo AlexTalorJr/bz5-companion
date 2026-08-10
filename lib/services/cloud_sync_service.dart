@@ -496,6 +496,24 @@ class CloudSyncService extends ChangeNotifier {
   String? _lastRestoreSummary;
 
   CloudSyncStatus _status = CloudSyncStatus.disconnected;
+
+  /// Состояние аккаунта на сервере. `null` — сервер нас пускает.
+  /// v0.2.2+201.
+  ///
+  /// Живёт ОТДЕЛЬНО от `_status`, и это главное в этом патче. `_status`
+  /// меняется по многу раз за минуту: начало цикла ставит «идёт обмен»,
+  /// конец ставит «готово», сетевая помеха ставит «ошибка». Пока
+  /// приостановка аккаунта хранилась там же, любая из этих записей её
+  /// стирала — и полоса на экране гасла, хотя сервер по-прежнему
+  /// отказывал (найдено Другом 2 живьём 10.08 на сборке +200).
+  ///
+  /// Записать сюда имеет право только доказательство от сервера:
+  /// отказ 403 с кодом про аккаунт ставит состояние, ответ
+  /// `/v2/device/me` ставит или снимает его. Ни один расчёт, ни один
+  /// удачный цикл и ни одна сетевая ошибка сюда не пишут. В частности
+  /// цикл, не сделавший ни одного запроса, не может снять полосу —
+  /// снимать её нечем, доказательства нет.
+  CloudSyncStatus? _accountGate;
   CloudSyncStats _stats = const CloudSyncStats();
   bool _syncInProgress = false;
   bool _initialized = false;
@@ -607,6 +625,37 @@ class CloudSyncService extends ChangeNotifier {
       _lastSuccessAt = DateTime.fromMillisecondsSinceEpoch(lastTs);
     }
     _lastError = prefs.getString(_kLastError);
+    // v0.2.2+201: если приложение закрыли при отказе по аккаунту, полоса
+    // должна стоять сразу после запуска, а не через секунду-две, когда
+    // ответит первый опрос состояния устройства. Восстанавливаем из
+    // сохранённого кода — тем же соответствием, что и живой отказ.
+    //
+    // Это ДОГАДКА, а не доказательство: код сохранён с прошлого раза, и
+    // за время, пока приложение было закрыто, отказ могли снять. Ниже
+    // init всё равно спрашивает `/v2/device/me`, и его ответ перепишет
+    // догадку на настоящее состояние. Ошибиться в эту сторону безопасно:
+    // лишняя секунда полосы не вредит, а её отсутствие при живом отказе
+    // — это ровно тот дефект, который мы чиним.
+    final savedGate = _lastError;
+    if (savedGate != null) {
+      switch (savedGate) {
+        case 'account_pending':
+          _accountGate = CloudSyncStatus.pendingApproval;
+          break;
+        case 'account_suspended':
+          _accountGate = CloudSyncStatus.accountSuspended;
+          break;
+        case 'account_deletion_pending':
+          _accountGate = CloudSyncStatus.accountDeletionPending;
+          break;
+        case 'account_rejected':
+        case 'account_blocked':
+          _accountGate = CloudSyncStatus.accessDenied;
+          break;
+        default:
+          break;
+      }
+    }
     // v0.1.35+134: user-declared vehicle descriptor.
     _vehDescMake = prefs.getString(_kVehDescMake);
     _vehDescModel = prefs.getString(_kVehDescModel);
@@ -886,6 +935,11 @@ class CloudSyncService extends ChangeNotifier {
   /// удалении, и оно приедет вместе с кнопками, не здесь.
   Timer? _deviceMeTimer;
 
+  /// Текущий период опроса `/v2/device/me` — чтобы не пересоздавать
+  /// таймер на каждый вызов и не сдвигать этим момент следующего
+  /// запроса. v0.2.2+201.
+  Duration? _deviceMePeriod;
+
   String? get deviceMeEmail => _deviceMeEmail;
   String? get deviceMeStatus => _deviceMeStatus;
   bool? get deviceMeLinked => _deviceMeLinked;
@@ -927,6 +981,22 @@ class CloudSyncService extends ChangeNotifier {
         _deviceMeEmail = (em is String && em.isNotEmpty) ? em : null;
         _deviceMeStatus = st is String ? st : null;
         _deviceMeLinked = true;
+        // ── ИСТОЧНИК ИСТИНЫ О СОСТОЯНИИ АККАУНТА. v0.2.2+201 ──
+        //
+        // Решение владельца 10.08, окно №17, расширяющее разрешение от
+        // 08.08: этому запросу позволено задавать состояние аккаунта в
+        // приложении и возобновлять обмен, когда пришёл `approved`.
+        // Токен, курсоры, счётчик отказов и записи о переданных строках
+        // он по-прежнему не касается.
+        //
+        // Почему именно он: сервер не блокирует его никогда, он работает
+        // по токену устройства и потому годится на головном устройстве,
+        // где запрос про аккаунт недоступен. Состояние отсюда не зависит
+        // от того, какой путь последним получил отказ, — значит его не
+        // погасит ни свайп, ни удачный цикл, ни сетевая помеха.
+        if (st is String && st.isNotEmpty) {
+          await _applyAccountStatus(st);
+        }
       } else {
         // account: null — legacy device, never claimed.
         _deviceMeEmail = null;
@@ -1263,9 +1333,16 @@ class CloudSyncService extends ChangeNotifier {
   void _restartTimers() {
     _periodicTimer?.cancel();
     _heartbeatTimer?.cancel();
-    // v0.1.98+197: новый таймер гасится ВЕЗДЕ, где гаснут те два.
-    // Опрос состояния устройства без регистрации бессмыслен, а
-    // переживи он отключение — стучался бы мёртвым токеном вечно.
+    // v0.1.98+197: опрос состояния устройства без регистрации
+    // бессмыслен, а переживи он отключение — стучался бы мёртвым
+    // токеном вечно. Поэтому гасим здесь, до выхода по «выключено или
+    // не зарегистрированы».
+    //
+    // v0.2.2+201: прежняя редакция обещала, что опрос гаснет ВЕЗДЕ, где
+    // гаснут те два. Это было неправдой уже тогда — восстановление из
+    // облака гасит те два и не трогает опрос, — а с этого патча стало
+    // неправдой намеренно: в отказе по аккаунту опрос обязан работать,
+    // он единственный канал, по которому мы узнаём о снятии отказа.
     _deviceMeTimer?.cancel();
     if (!_enabled || !isRegistered) return;
 
@@ -1281,13 +1358,14 @@ class CloudSyncService extends ChangeNotifier {
       _sendHeartbeat();
     });
 
-    // v0.1.98+197: состояние устройства раз в 10 минут — см. поле
-    // _deviceMeTimer. Fire-and-forget: отказ ручки не должен ни
-    // остановить таймер, ни попасть в состояние синхронизации.
-    _deviceMeTimer?.cancel();
-    _deviceMeTimer = Timer.periodic(const Duration(minutes: 10), (_) {
-      unawaited(fetchDeviceMe());
-    });
+    // v0.1.98+197: состояние устройства раз в 10 минут.
+    // v0.2.2+201: ритм выбирает _armDeviceMeTimer — при живом отказе по
+    // аккаунту он учащается до раза в минуту, потому что это
+    // единственный канал, по которому мы узнаем о снятии отказа.
+    // Запрос не проходит через _getJson и не может остановить таймер
+    // или попасть в состояние обмена.
+    _deviceMePeriod = null;
+    _armDeviceMeTimer();
 
     // Kick off an immediate sync + heartbeat so the user sees activity
     // right after toggling on.
@@ -1536,7 +1614,11 @@ class CloudSyncService extends ChangeNotifier {
       return;
     }
     _syncInProgress = true;
-    _status = CloudSyncStatus.syncing;
+    // v0.2.2+201: через _setStatus. Раньше здесь стояла прямая запись,
+    // и полоса на экране гасла в момент НАЧАЛА цикла — ещё до того, как
+    // приложение вообще что-нибудь послало. Свайп владельца гасил её
+    // мгновенно, без всякого ответа сервера.
+    _setStatus(CloudSyncStatus.syncing);
     notifyListeners();
     try {
       // v0.1.47+146 (Phase-5 companion): pipeline resilience. Before this
@@ -1621,7 +1703,7 @@ class CloudSyncService extends ChangeNotifier {
         // a fully clean cycle, and the Diagnostics screen reads both.
         _lastError = 'Push blocked (permanent): ${guarded.first}'
             '${guarded.length > 1 ? ' (+${guarded.length - 1} more)' : ''}';
-        _status = CloudSyncStatus.error;
+        _setStatus(CloudSyncStatus.error);
         await _persistError(_lastError!);
       }
       await _recomputeStats();
@@ -1656,33 +1738,33 @@ class CloudSyncService extends ChangeNotifier {
       // (it's a field on this), so the third in-a-row across multiple
       // ticks will still flip to _AuthException.
       _lastError = e.toString();
-      _status = CloudSyncStatus.error;
+      _setStatus(CloudSyncStatus.error);
       await _persistError(_lastError!);
     } on _RetryableException catch (e) {
       // v0.1.29+9: 5xx/429/408 that survived the internal retry
       // budget. Don't touch the token; the next periodic tick will
       // try again with a fresh request.
       _lastError = e.toString();
-      _status = CloudSyncStatus.error;
+      _setStatus(CloudSyncStatus.error);
       await _persistError(_lastError!);
     } on _AccountGateException catch (e) {
       await _applyAccountGate(e);
     } on _BridgeException catch (e) {
       _lastError = e.message;
-      _status = CloudSyncStatus.error;
+      _setStatus(CloudSyncStatus.error);
       await _persistError(e.message);
     } on SocketException catch (e) {
       _lastError = 'Network: ${e.message}';
-      _status = CloudSyncStatus.error;
+      _setStatus(CloudSyncStatus.error);
       await _persistError(_lastError!);
     } on TimeoutException {
       _lastError = 'Timeout waiting for bridge';
-      _status = CloudSyncStatus.error;
+      _setStatus(CloudSyncStatus.error);
       await _persistError(_lastError!);
     } catch (e, st) {
       debugPrint('CloudSync: unexpected error: $e\n$st');
       _lastError = 'Unexpected: $e';
-      _status = CloudSyncStatus.error;
+      _setStatus(CloudSyncStatus.error);
       await _persistError(_lastError!);
     } finally {
       _syncInProgress = false;
@@ -2437,13 +2519,6 @@ class CloudSyncService extends ChangeNotifier {
   /// удаление приехали в +197, а этот ранний выход про них не узнал — и
   /// сердцебиение продолжало стучать раз в минуту в состоянии, где
   /// сервер всё равно отказывает.
-  static const Set<CloudSyncStatus> _gatedStates = {
-    CloudSyncStatus.pendingApproval,
-    CloudSyncStatus.accessDenied,
-    CloudSyncStatus.accountSuspended,
-    CloudSyncStatus.accountDeletionPending,
-  };
-
   /// КОД ВОРОТ → СОСТОЯНИЕ. Единственное место. v0.2.1+200.
   ///
   /// Было в теле `syncOnce`. Вынесено, когда сердцебиение перестало
@@ -2461,17 +2536,173 @@ class CloudSyncService extends ChangeNotifier {
   Future<void> _applyAccountGate(_AccountGateException e) async {
     final gate = e.code;
     if (gate == 'account_pending') {
-      _status = CloudSyncStatus.pendingApproval;
+      _accountGate = CloudSyncStatus.pendingApproval;
     } else if (gate == 'account_suspended') {
-      _status = CloudSyncStatus.accountSuspended;
+      _accountGate = CloudSyncStatus.accountSuspended;
     } else if (gate == 'account_deletion_pending') {
-      _status = CloudSyncStatus.accountDeletionPending;
+      _accountGate = CloudSyncStatus.accountDeletionPending;
     } else {
-      _status = CloudSyncStatus.accessDenied;
+      _accountGate = CloudSyncStatus.accessDenied;
     }
+    _status = _accountGate!;
     _lastError = e.code;
     await _persistError(e.code);
+    _armDeviceMeTimer();
+    // v0.2.2+201: отказ — это повод немедленно спросить, что на самом
+    // деле с аккаунтом, а не ждать десять минут до следующего опроса.
+    // `/v2/device/me` сервер не блокирует никогда (обязательство Друга 2
+    // от 08.08, у него есть тест, который падает при попытке навесить
+    // блокировку), поэтому ответ придёт и в приостановке. Замкнуться
+    // этот вызов не может: он не ходит через `_getJson` и не умеет
+    // бросать исключение про аккаунт.
+    unawaited(fetchDeviceMe());
     notifyListeners();
+  }
+
+  /// Состояние аккаунта из ответа `/v2/device/me` → наше состояние.
+  /// v0.2.2+201. Единственное место, где разбирается словарь статусов.
+  ///
+  /// Шесть значений контракта v1.3 §1.3 (Друг 2 поправил §1.3 сегодня,
+  /// коммит `b9714f0` — до этого там было четыре, и `suspended` с
+  /// `deletion_pending` в контракте не значились).
+  ///
+  /// `approved` → `null`: сервер пускает, полосы нет.
+  /// Незнакомое значение → `_kAccountStatusUnknown`, и вызывающий НЕ
+  /// трогает состояние. Снять полосу по слову, которого мы не понимаем,
+  /// значит возобновить обмен в стену; поставить полосу по нему же
+  /// значит запретить работу без причины. Правильного действия нет,
+  /// поэтому не делаем никакого и оставляем решать отказам 403.
+  static CloudSyncStatus? _gateForAccountStatus(String s) {
+    switch (s) {
+      case 'pending':
+        return CloudSyncStatus.pendingApproval;
+      case 'suspended':
+        return CloudSyncStatus.accountSuspended;
+      case 'deletion_pending':
+        return CloudSyncStatus.accountDeletionPending;
+      case 'rejected':
+      case 'blocked':
+        return CloudSyncStatus.accessDenied;
+      default:
+        // `approved` и всё, чего мы не знаем. Различает их вызывающий,
+        // и различает по единственному слову, которое даёт нам право
+        // снять полосу, — см. _applyAccountStatus.
+        return null;
+    }
+  }
+
+  /// Применить состояние аккаунта, пришедшее от `/v2/device/me`.
+  /// v0.2.2+201. Это и есть источник истины из решения владельца.
+  ///
+  /// Снятие приостановки ловится ЗДЕСЬ и только здесь. До этого патча
+  /// узнать о снятии было нечем: в приостановке сердцебиение молчит,
+  /// а обмен без накопленных строк не делает ни одного запроса, значит
+  /// отказов больше не приходит — и приходить перестаёт навсегда.
+  /// Владельцу оставался ручной перезапуск приложения (Друг 2, 10.08:
+  /// 22 минуты тишины после снятия отказа против 38 секунд на +198).
+  Future<void> _applyAccountStatus(String raw) async {
+    final next = _gateForAccountStatus(raw);
+    // Снять полосу разрешено ТОЛЬКО по слову `approved`. Всё, что не
+    // `approved` и не легло ни в одно известное состояние, — слово,
+    // которого мы не понимаем: седьмое значение, опечатка сервера,
+    // ответ чужой версии. Правильного действия для него нет. Снять
+    // полосу значит возобновить обмен в стену; поставить — запретить
+    // работу без причины. Поэтому не делаем ничего и оставляем решать
+    // отказам 403.
+    //
+    // Условие написано так намеренно: оно не опирается на отдельный
+    // список известных значений, который мог бы разойтись с разбором
+    // выше. Разбор и часовой читают одно и то же.
+    if (next == null && raw != 'approved') {
+      debugPrint('CloudSync: device/me прислал незнакомое состояние '
+          'аккаунта "$raw" — состояние не трогаем');
+      return;
+    }
+    final was = _accountGate;
+    if (next == was) return;
+    _accountGate = next;
+    if (next != null) {
+      _status = next;
+      _lastError = _errorCodeForGate(next);
+      await _persistError(_lastError!);
+      _armDeviceMeTimer();
+      notifyListeners();
+      return;
+    }
+    // ── Отказ снят. Возобновляем обмен сами, без перезапуска. ──
+    _lastError = null;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_kLastError);
+    // Разрешение скачивать даётся не чаще раза в пять минут, и отсчёт
+    // идёт от последнего УДАЧНОГО скачивания. После долгой приостановки
+    // этот отсчёт давно истёк, но полагаться на это нельзя: короткая
+    // приостановка уложится внутрь пяти минут, и первое скачивание
+    // после снятия отказа молча не состоится. Сбрасываем отсчёт.
+    _lastPullAt = null;
+    _armDeviceMeTimer();
+    _recomputeStatus();
+    notifyListeners();
+    debugPrint('CloudSync: аккаунт снова approved — возобновляем обмен');
+    unawaited(syncOnce(reason: 'account_approved'));
+  }
+
+  /// Обратное соответствие: состояние → код отказа, как его пишет
+  /// сервер. Нужно, чтобы строка последней ошибки выглядела одинаково
+  /// независимо от того, приехало состояние отказом 403 или опросом
+  /// `/v2/device/me`. v0.2.2+201.
+  static String _errorCodeForGate(CloudSyncStatus s) {
+    switch (s) {
+      case CloudSyncStatus.pendingApproval:
+        return 'account_pending';
+      case CloudSyncStatus.accountSuspended:
+        return 'account_suspended';
+      case CloudSyncStatus.accountDeletionPending:
+        return 'account_deletion_pending';
+      default:
+        return 'account_blocked';
+    }
+  }
+
+  /// Выставить состояние, не затирая состояние аккаунта. v0.2.2+201.
+  ///
+  /// Через эту точку проходят ВСЕ записи состояния, кроме трёх местных
+  /// истин, которые сильнее любого ответа сервера: нет токена, владелец
+  /// выключил обмен, токен мёртв. Всё остальное — «идёт обмен»,
+  /// «готово», «ошибка сети» — при живом отказе по аккаунту не
+  /// записывается: полоса на экране важнее, чем отчёт о текущем цикле.
+  void _setStatus(CloudSyncStatus s) {
+    if (_accountGate != null) {
+      _status = _accountGate!;
+      return;
+    }
+    _status = s;
+  }
+
+  /// Ритм опроса `/v2/device/me`. v0.2.2+201.
+  ///
+  /// Обычно раз в десять минут (согласовано 08.08). При живом отказе по
+  /// аккаунту — раз в минуту: это единственный канал, по которому мы
+  /// узнаем о снятии отказа, и владелец не должен ждать до десяти минут
+  /// с неработающим приложением. Чаще раза в минуту нельзя — предел
+  /// сервера (Друг 2, справка §4).
+  ///
+  /// Таймер не останавливается ни в каком состоянии аккаунта. Именно
+  /// его остановка вместе с обменом и делала положение безвыходным.
+  void _armDeviceMeTimer() {
+    final want = _accountGate == null
+        ? const Duration(minutes: 10)
+        : const Duration(minutes: 1);
+    // Именно `isActive`, а не «ссылка не пустая». `cancel()` ссылку не
+    // обнуляет: остановленный таймер остаётся объектом. Проверяй мы
+    // ссылку, любое место, которое гасит опрос (отключение, мёртвый
+    // токен), навсегда запирало бы его — этот метод решил бы, что
+    // нужный таймер уже стоит, и не завёл бы новый.
+    if (_deviceMeTimer?.isActive == true && _deviceMePeriod == want) return;
+    _deviceMePeriod = want;
+    _deviceMeTimer?.cancel();
+    _deviceMeTimer = Timer.periodic(want, (_) {
+      unawaited(fetchDeviceMe());
+    });
   }
 
   /// Не в порядке ли аккаунт — для полосы на главном экране.
@@ -2479,12 +2710,43 @@ class CloudSyncService extends ChangeNotifier {
   /// v0.2.1+200. Отдельный признак, а не сравнение состояний в экране:
   /// список состояний ворот живёт в сервисе, и экрану незачем знать его
   /// наизусть. Добавится седьмое состояние — полоса подхватит его сама.
-  bool get accountNeedsAttention => _gatedStates.contains(_status);
+  /// v0.2.2+201: условие приведено ровно к тому, что делают экраны
+  /// строкой ниже — `S.of(accountGateStringKey(cs.status)!)`. Раньше
+  /// признак считался по одному списку состояний, а текст брался из
+  /// другого перечисления, и совпадали они только на честном слове:
+  /// стоило спискам разойтись, как экран падал на восклицательном
+  /// знаке. Теперь признак и текст — одно и то же вычисление.
+  bool get accountNeedsAttention => accountGateStringKey(_status) != null;
+
+  /// Состояние аккаунта как таковое, без примеси текущего цикла.
+  /// `null` — сервер нас пускает. v0.2.2+201.
+  CloudSyncStatus? get accountGate => _accountGate;
 
   Future<void> _sendHeartbeat() async {
     if (!_enabled || !isRegistered) return;
-    if (_gatedStates.contains(_status)) {
-      return; // v0.1.34+133: gated — syncOnce's probe is enough traffic.
+    // v0.2.2+201: спрашиваем у состояния аккаунта напрямую, а не у
+    // отдельного перечня отказных состояний. Перечень был вторым
+    // списком тех же четырёх состояний — рядом с раскладкой текста в
+    // accountGateStringKey. Ровно про такую пару в этом файле записано,
+    // что однажды они разойдутся молча; одну такую пару патч +201 уже
+    // развёл на экране, эта была последней.
+    if (_accountGate != null) {
+      // v0.2.2+201. Здесь стояло обоснование «проверок от основного
+      // цикла достаточно». Оно было неверным, и на нём приложение
+      // встало намертво.
+      //
+      // Основной цикл не делает НИ ОДНОГО запроса, когда отправлять
+      // нечего: там стоит выход по пустой очереди. Скачивание к тому
+      // же разрешено не чаще раза в пять минут. То есть в приостановке
+      // замолкали все до единого запроса, отказов больше не приходило,
+      // и узнать о снятии приостановки было нечем — до ручного
+      // перезапуска приложения (Друг 2, 10.08: 22 минуты тишины).
+      //
+      // Молчать здесь по-прежнему правильно: это отправка данных,
+      // сервер её отклоняет, повторять бессмысленно. Но проверяет
+      // теперь не она и не основной цикл, а опрос `/v2/device/me` —
+      // он идёт всегда и в приостановке учащается до раза в минуту.
+      return;
     }
     try {
       await _postIngest('/v1/data/ingest/heartbeat',
@@ -2505,7 +2767,14 @@ class CloudSyncService extends ChangeNotifier {
       // Теперь он ставит состояние ровно так же, как syncOnce, — та же
       // раскладка кодов лежит в одном месте (_applyAccountGate), чтобы
       // два пути не разошлись.
-      _applyAccountGate(e);
+      //
+      // v0.2.2+201: добавлено ожидание. Без него вызов возвращал
+      // недоделанную работу, которую никто не ждал: разбор пишет на
+      // диск и оповещает экран, и эта запись могла лечь уже после
+      // того, как следующий цикл поставит своё состояние. Порядок двух
+      // записей был случайным. В основном цикле ожидание стояло с
+      // самого начала — расходиться этим двум местам нельзя.
+      await _applyAccountGate(e);
     } catch (e) {
       // Heartbeat failure is non-fatal; just log. Note: if this hits
       // a 401, _postIngest still increments _consecutiveAuthFailures,
@@ -2751,6 +3020,25 @@ class CloudSyncService extends ChangeNotifier {
     } on _EndpointNotDeployedException {
       // Server without S4 or vehicle unknown -- silent, not an error.
       return;
+    } on _AccountGateException {
+      // ── СКАЧИВАНИЕ БОЛЬШЕ НЕ ПРЯЧЕТ ОТКАЗ ПО АККАУНТУ. v0.2.2+201 ──
+      //
+      // Перехват ниже ловит всё подряд, чтобы помеха связи при
+      // скачивании не красила состояние отправки. Правило верное, но
+      // отказ по аккаунту — не помеха связи, а состояние, и он под это
+      // правило попал по недосмотру.
+      //
+      // Последствие видел Друг 2 живьём 10.08: свайпом на главном
+      // экране владелец запускает цикл, скачивание получает 403
+      // «аккаунт приостановлен», отказ гасится здесь, цикл считает себя
+      // удачным — и полоса на экране пропадает. То есть ровно то
+      // действие, которым проверяют «всё ли в порядке», проблему и
+      // прятало.
+      //
+      // Отпускаем наружу, к единственному месту разбора кодов в
+      // `syncOnce`. Курсор при этом не двигается — он двигается только
+      // в удачной ветке выше, а мы до неё не дошли.
+      rethrow;
     } catch (e) {
       _lastPullError = e.toString();
       debugPrint('CloudSync: pull failed -- $e '
@@ -3900,7 +4188,21 @@ class CloudSyncService extends ChangeNotifier {
       _status = CloudSyncStatus.pausedByUser;
     } else if (_status == CloudSyncStatus.authFailed) {
       // sticky until reconnect/disconnect
+    } else if (_accountGate != null) {
+      // v0.2.2+201. Этой ветки не было, и она — вторая половина того
+      // же дефекта. Пересчёт доходил до последнего «иначе» и ставил
+      // «готово», чем стирал приостановку при каждом чистом с виду
+      // цикле. Причём цикл выглядел чистым и тогда, когда не сделал ни
+      // одного запроса: отправлять нечего, скачивание придушено — а
+      // «ошибок не было» засчитывалось за успех.
+      //
+      // Снять состояние аккаунта отсюда нельзя в принципе: пересчёт не
+      // спрашивает сервер, значит доказательства у него нет. Снимает
+      // только `_applyAccountStatus` по ответу `/v2/device/me`.
+      _status = _accountGate!;
     } else if (_lastError != null && _lastSuccessAt == null) {
+      // Прямая запись, а не _setStatus: до сюда доходим только когда
+      // состояния аккаунта нет — ветка выше уже вернула бы его.
       _status = CloudSyncStatus.error;
     } else {
       _status = CloudSyncStatus.idle;
@@ -4144,7 +4446,7 @@ class CloudSyncService extends ChangeNotifier {
   /// Read app version from the static value baked into the build.
   /// We don't have package_info_plus as a dep — pubspec-version is
   /// hardcoded here. Update when bumping. Off-by-one tolerated.
-  Future<String> _readAppVersion() async => '0.2.1+200';
+  Future<String> _readAppVersion() async => '0.2.2+201';
 }
 
 // ─── Internal exceptions ────────────────────────────────────────────

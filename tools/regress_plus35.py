@@ -10348,6 +10348,12 @@ if int(pv) >= 197:
     # CB5: ДВА КОДА, В ОБОИХ МЕСТАХ. Список ворот встречается дважды —
     # по одному на путь запроса. Разойдись они, один путь показывал бы
     # спокойное состояние, а другой сырую строку HTTP 403.
+    # Тело разбора кода отказа — режем по сигнатуре, чтобы проверка
+    # смотрела именно на него, а не на любое упоминание состояния в
+    # файле (второе соответствие для ответа device/me появилось в +201
+    # и содержит те же имена состояний).
+    _cb_gate_body = _cb_cloud.split('Future<void> _applyAccountGate(')[-1]
+    _cb_gate_body = _cb_gate_body.split('\n  }\n')[0]
     _cb5 = (_cb_cloud.count("errCode == 'account_suspended'") == 2 and
             _cb_cloud.count("errCode == 'account_deletion_pending'") == 2 and
             'accountSuspended,' in _cb_cloud and
@@ -10355,9 +10361,16 @@ if int(pv) >= 197:
             # Мутация нашла дыру: объявления в перечислении хватало, а
             # отображение кода в состояние можно было увести в
             # accessDenied, и обратимость терялась молча.
-            '_status = CloudSyncStatus.accountSuspended;' in _cb_cloud and
-            '_status = CloudSyncStatus.accountDeletionPending;'
-            in _cb_cloud and
+            # v0.2.2+201: было пришпилено к «_status = ...». Патч +201
+            # увёл состояние аккаунта в отдельное поле, и проверка
+            # упала на верной правке. Сторожим СМЫСЛ: разбор кода
+            # отказа обязан отдавать каждому обратимому коду своё
+            # состояние, а не сваливать оба в запрет. Куда он это
+            # записывает — дело разбора, не проверки.
+            'CloudSyncStatus.accountSuspended;' in _cb_gate_body and
+            'CloudSyncStatus.accountDeletionPending;' in _cb_gate_body and
+            "'account_suspended'" in _cb_gate_body and
+            "'account_deletion_pending'" in _cb_gate_body and
             _cb_l10n.count("'cloud.status.suspended'") == 2 and
             _cb_l10n.count("'cloud.status.deletion_pending'") == 2)
     if _cb5:
@@ -10370,15 +10383,39 @@ if int(pv) >= 197:
     # с веб-страницы, не доедет до экрана в машине за все 30 дней.
     # Гасится ВЕЗДЕ, где гаснут остальные таймеры, иначе переживёт
     # отключение и будет стучаться мёртвым токеном.
-    _cb6 = ('_deviceMeTimer = Timer.periodic(const Duration(minutes: 10)'
-            in _cb_cloud and
-            _cb_cloud.count('_deviceMeTimer?.cancel();') ==
-            _cb_cloud.count('_heartbeatTimer?.cancel();'))
+    # v0.2.2+201: требование изменилось по докладу Друга 2 от 10.08.
+    # Опрос ОБЯЗАН пережить отказ по аккаунту — он единственный канал,
+    # по которому приложение узнаёт о снятии отказа. Прежняя редакция
+    # требовала обратного (гаснуть везде, где гаснут те два) и была бы
+    # прямым запретом на починку. Равенство счётчиков тоже снято: с
+    # +201 опрос перезаводится с другим ритмом, и его остановок стало
+    # законно больше.
+    _cb6_arm = _cb_cloud.split('void _armDeviceMeTimer()')[-1]
+    _cb6_arm = _cb6_arm.split('\n  }\n')[0]
+    _cb6_restart = _cb_cloud.split('void _restartTimers() {')[-1]
+    _cb6_restart = _cb6_restart.split('\n  }\n')[0]
+    _cb6 = ('_armDeviceMeTimer()' in _cb_cloud and
+            'Timer.periodic' in _cb6_arm and
+            # обычный ритм и учащённый — оба на месте. Закрывающая
+            # скобка в образце обязательна: без неё «minutes: 1»
+            # нашлось бы внутри «minutes: 10», и подмена одного другим
+            # прошла бы незамеченной.
+            'Duration(minutes: 10)' in _cb6_arm and
+            'Duration(minutes: 1)' in _cb6_arm and
+            # ритм выбирается ПО СОСТОЯНИЮ АККАУНТА, а не как попало
+            '_accountGate' in _cb6_arm and
+            # опрос переживает отказ по аккаунту...
+            '_gatedStates' not in _cb6_arm and
+            # ...но не переживает отключения владельцем: гашение стоит
+            # до выхода по «выключено или не зарегистрированы»
+            '_deviceMeTimer?.cancel();' in _cb6_restart and
+            _cb6_restart.index('_deviceMeTimer?.cancel();') <
+            _cb6_restart.index('if (!_enabled || !isRegistered) return;'))
     if _cb6:
-        ok('CB6 device state is polled every 10 minutes and stops wherever '
-           'the other timers stop')
+        ok('CB6 the device poll survives an account gate and speeds up to '
+           'once a minute while it lasts')
     else:
-        fail('CB6 the device poll is missing or outlives the other timers')
+        fail('CB6 the device poll is missing, or an account gate can stop it')
 
     # CB7: РАЗМЕР ЭКРАНА НЕ ПИШЕТСЯ НУЛЯМИ. Поле 07.08 привезло
     # {"width_dp":0,"height_dp":0}: +196 запирал замер после первого
@@ -10620,10 +10657,20 @@ if int(pv) >= 200:
 
     # CD3: В СОСТОЯНИЯХ ОТКАЗА СЕРДЦЕБИЕНИЕ ЗАТИХАЕТ. Список был из двух и
     # не узнал приостановку с удалением, приехавшие в +197.
-    _cd3 = ('_gatedStates = {' in _cd_cs and
-            _cd_cs.count('CloudSyncStatus.accountSuspended,') >= 1 and
-            'CloudSyncStatus.accountDeletionPending,' in _cd_cs and
-            '_gatedStates.contains(_status)' in _cd_cs)
+    # v0.2.2+201: отдельный перечень отказных состояний удалён — он был
+    # вторым списком тех же четырёх рядом с раскладкой текста, то есть
+    # ровно та пара, про которую в этом файле записано «однажды
+    # разойдутся молча». Сердцебиение спрашивает у состояния аккаунта.
+    # Предмет проверки прежний: в отказе оно обязано затихать, и
+    # затихать во ВСЕХ отказных состояниях, а не в двух из четырёх.
+    _cd3_hb = _cd_cs.split('Future<void> _sendHeartbeat() async {')[-1]
+    _cd3_hb = _cd3_hb.split('\n  }\n')[0]
+    _cd3 = ('_accountGate != null' in _cd3_hb and
+            'return;' in _cd3_hb.split('_accountGate != null')[1] and
+            # состояние аккаунта заполняется разбором, который знает все
+            # четыре кода, — иначе «затихает во всех» пустое обещание
+            'CloudSyncStatus.accountSuspended;' in _cb_gate_body and
+            'CloudSyncStatus.accountDeletionPending;' in _cb_gate_body)
     if _cd3:
         ok('CD3 the heartbeat goes quiet in every state the server refuses')
     else:
@@ -10643,8 +10690,14 @@ if int(pv) >= 200:
     _cd4 = ('const _AccountBanner(),' in _cd_dash and
             'class _AccountBanner' in _cd_dash and
             'accountNeedsAttention' in _cd_dash and
-            'bool get accountNeedsAttention => _gatedStates.contains(_status);'
-            in _cd_cs and
+            # v0.2.2+201: было пришпилено к точному телу признака.
+            # Патч +201 привёл признак к тому же вычислению, которым
+            # экран берёт текст, — иначе экран падал на восклицательном
+            # знаке, когда списки расходились. Сторожим связь признака
+            # с раскладкой текста, а не буквы прежней редакции.
+            'bool get accountNeedsAttention' in _cd_cs and
+            'accountGateStringKey' in _cd_cs.split(
+                'bool get accountNeedsAttention')[1].split(';')[0] and
             'CloudSyncStatus.' not in
             _cd_dash.split('class _AccountBanner')[1].split('\n}')[0] and
             _cd_l10n.count("'dash.account_hint'") == 2)
@@ -10685,6 +10738,172 @@ if int(pv) >= 200:
              'network')
 else:
     ok(f"Part CD skipped (build +{pv}, account visibility lands in +200)")
+
+
+# ─────────────────────────── Part CE (+201) ──────────────────────────
+# Эра CE. Что закрывает, одной фразой на пункт:
+#   1. скачивание больше не прячет отказ по аккаунту — свайп не гасит
+#      полосу на экране;
+#   2. состояние аккаунта живёт отдельно от состояния текущего цикла, и
+#      снять его может только доказательство от сервера;
+#   3. опрос /v2/device/me — источник истины: он ставит и снимает
+#      состояние и сам возобновляет обмен, когда отказ снят;
+#   4. цикл, не сделавший ни одного запроса, не может снять полосу.
+if int(pv) >= 201:
+    _ce_raw = (root / 'lib/services/cloud_sync_service.dart').read_text()
+    _ce_cs = _strip_comments_safe(_ce_raw)
+
+    def _slice(src, sig, close='\n  }\n'):
+        if sig not in src:
+            return ''
+        return src.split(sig)[-1].split(close)[0]
+
+    _ce_pull = _slice(_ce_cs, 'Future<void> _syncPull() async {')
+    _ce_sync = _slice(_ce_cs, 'Future<void> syncOnce({')
+    if not _ce_sync:
+        _ce_sync = _slice(_ce_cs, 'Future<void> syncOnce(')
+    _ce_recomp = _slice(_ce_cs, 'void _recomputeStatus() {')
+    _ce_applystatus = _slice(_ce_cs, 'Future<void> _applyAccountStatus(')
+    _ce_setstatus = _slice(_ce_cs, 'void _setStatus(CloudSyncStatus s) {')
+    _ce_forstatus = _slice(_ce_cs, 'static CloudSyncStatus? _gateForAccountStatus(')
+
+    # CE1: СКАЧИВАНИЕ НЕ ПРЯЧЕТ ОТКАЗ ПО АККАУНТУ. Найдено Другом 2
+    # живьём 10.08 на +200: девять отказов 403 на /v2/sync/pull, и после
+    # свайпа полоса пропадает. Общий перехват ниже ловил всё подряд,
+    # включая отказ по аккаунту, и цикл считал себя удачным. Отпускать
+    # наружу обязательно ДО общего перехвата — иначе он снова съест.
+    _ce1 = ('on _AccountGateException' in _ce_pull and
+            'rethrow;' in _ce_pull and
+            # ПОСЛЕДНИЙ общий перехват, а не первый: в начале метода
+            # есть свой маленький try вокруг опроса «мы головное
+            # устройство?», и сравнение с ним ничего не значит.
+            _ce_pull.index('on _AccountGateException') <
+            _ce_pull.rindex('catch (e)'))
+    if _ce1:
+        ok('CE1 a pull refusal about the account reaches the one place that '
+           'reads such codes')
+    else:
+        fail('CE1 the pull swallows an account refusal again')
+
+    # CE2: РАЗБОР ОТКАЗА ЖДУТ В ОБОИХ МЕСТАХ. В +200 сердцебиение звало
+    # разбор без ожидания: тот пишет на диск и оповещает экран, и запись
+    # могла лечь после того, как следующий цикл поставит своё. Порядок
+    # двух записей был случайным.
+    _ce2 = (_ce_cs.count('_applyAccountGate(e)') > 0 and
+            _ce_cs.count('_applyAccountGate(e)') ==
+            _ce_cs.count('await _applyAccountGate(e)'))
+    if _ce2:
+        ok('CE2 both paths wait for the refusal to be written down')
+    else:
+        fail('CE2 a refusal is applied without waiting for it')
+
+    # CE3: ПЕРЕСЧЁТ ВОЗВРАЩАЕТ СОСТОЯНИЕ АККАУНТА И НЕ ПИШЕТ В НЕГО.
+    # Вторая половина дефекта +200: пересчёт доходил до последнего
+    # «иначе» и ставил «готово», чем стирал приостановку при каждом
+    # чистом с виду цикле.
+    _ce3 = ('_accountGate != null' in _ce_recomp and
+            '_status = _accountGate!' in _ce_recomp and
+            '_accountGate =' not in _ce_recomp and
+            _ce_recomp.index('_accountGate != null') <
+            _ce_recomp.index('CloudSyncStatus.idle'))
+    if _ce3:
+        ok('CE3 the recompute restores the account state and cannot clear it')
+    else:
+        fail('CE3 the recompute can overwrite or clear the account state')
+
+    # CE4: СНЯТЬ ПОЛОСУ МОЖЕТ ТОЛЬКО ОТВЕТ СЕРВЕРА. Единственное
+    # присваивание пустого значения — в разборе ответа /v2/device/me.
+    # Это и есть запрет «цикл без единого запроса снимает полосу»:
+    # снимать нечем, доказательства нет.
+    _ce4 = (_ce_cs.count('_accountGate = null') == 0 and
+            _ce_cs.count('_accountGate = next') == 1 and
+            '_accountGate = next' in _ce_applystatus and
+            '_accountGate' not in _ce_sync)
+    if _ce4:
+        ok('CE4 only a server answer can clear the account state; the cycle '
+           'never touches it')
+    else:
+        fail('CE4 something other than a server answer can clear the account '
+             'state')
+
+    # CE5: ОТКАЗ СРАЗУ СПРАШИВАЕТ, ЧТО НА САМОМ ДЕЛЕ. Без немедленного
+    # запроса владелец ждал бы до десяти минут после снятия отказа.
+    _ce5_gate = _slice(_ce_cs, 'Future<void> _applyAccountGate(')
+    _ce5 = ('fetchDeviceMe()' in _ce5_gate and
+            '_armDeviceMeTimer()' in _ce5_gate)
+    if _ce5:
+        ok('CE5 a refusal immediately asks the server what the account state '
+           'really is')
+    else:
+        fail('CE5 a refusal does not ask the server for the real state')
+
+    # CE6: ОБМЕН ВОЗОБНОВЛЯЕТСЯ САМ. Регресс относительно +198, найден
+    # Другом 2: 22 минуты тишины после снятия отказа против 38 секунд.
+    # Сброс отсчёта скачивания обязателен: короткая приостановка
+    # уложится внутрь пяти минут, и первое скачивание молча не
+    # состоится.
+    _ce6 = ('_lastPullAt = null' in _ce_applystatus and
+            'syncOnce(' in _ce_applystatus and
+            '_recomputeStatus()' in _ce_applystatus)
+    if _ce6:
+        ok('CE6 clearing the refusal resumes the exchange without a restart')
+    else:
+        fail('CE6 clearing the refusal does not resume the exchange')
+
+    # CE7: ЛОЖНОЕ ОБОСНОВАНИЕ УБРАНО. В +200 молчание сердцебиения было
+    # оправдано тем, что проверок якобы хватает от основного цикла. Это
+    # неверно: при пустой очереди он не делает ни одного запроса.
+    # Проверяем ИСХОДНЫЙ текст, не очищенный от примечаний, — иначе
+    # примечания не видно. Ищем английский оригинал: пересказ по-русски
+    # в исправленном примечании стоит намеренно и совпадать не должен.
+    _ce7 = ("syncOnce's probe is enough traffic" not in _ce_raw)
+    if _ce7:
+        ok('CE7 the false reason for the heartbeat going quiet is gone')
+    else:
+        fail('CE7 the false reason for the heartbeat going quiet is back')
+
+    # CE8: ЕДИНАЯ ТОЧКА ЗАПИСИ. Прямая запись состояния внутри цикла
+    # затирала полосу; теперь всё, кроме мёртвого токена, идёт через
+    # _setStatus, который живой отказ не переписывает.
+    _ce8 = ('_setStatus(CloudSyncStatus.syncing)' in _ce_sync and
+            _ce_sync.count('_status = CloudSyncStatus.') == 1 and
+            'authFailed' in _ce_sync and
+            '_accountGate != null' in _ce_setstatus)
+    if _ce8:
+        ok('CE8 the cycle writes status through one point that respects the '
+           'account state')
+    else:
+        fail('CE8 the cycle writes status directly and can bury the account '
+             'state')
+
+    # CE9: ШЕСТЬ ЗНАЧЕНИЙ, НЕ ЧЕТЫРЕ. Контракт v1.3 §1.3 (Друг 2 поправил
+    # 10.08, коммит b9714f0). Незнакомое значение не трогает состояние:
+    # снять полосу по непонятому слову значит возобновить обмен в стену,
+    # поставить — запретить работу без причины.
+    _ce9 = all(("'%s'" % v) in _ce_forstatus for v in
+               ('pending', 'suspended', 'deletion_pending',
+                'rejected', 'blocked')) and \
+        "raw != 'approved'" in _ce_applystatus and \
+        'return;' in _ce_applystatus.split("raw != 'approved'")[1]
+    if _ce9:
+        ok('CE9 all six contract values are known, and an unknown one leaves '
+           'the state alone')
+    else:
+        fail('CE9 the status vocabulary is short, or an unknown value moves '
+             'the state')
+
+    # CE10: ПРИЗНАК И ТЕКСТ — ОДНО ВЫЧИСЛЕНИЕ. Экран берёт текст с
+    # восклицательным знаком сразу после проверки признака. Считайся они
+    # по разным спискам, расхождение уронило бы экран.
+    _ce10_body = _ce_cs.split('bool get accountNeedsAttention')[1].split(';')[0]
+    _ce10 = ('accountGateStringKey' in _ce10_body and
+             '_gatedStates' not in _ce10_body)
+    if _ce10:
+        ok('CE10 the banner flag and the banner text come from one mapping')
+    else:
+        fail('CE10 the banner flag and its text are judged separately')
+else:
+    ok(f"Part CE skipped (build +{pv}, account state as truth lands in +201)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
