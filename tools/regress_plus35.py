@@ -10574,6 +10574,118 @@ if int(pv) >= 199:
 else:
     ok(f"Part CC skipped (build +{pv}, the insulation tile lands in +199)")
 
+# ══════════════════════════ ЭРА CD (+200) ══════════════════════════
+#
+# Что закрывает эта эра, одной фразой на пункт:
+#   1. сердцебиение — самый частый запрос — больше не глотает отказ
+#      ворот, и раскладка кодов лежит в ОДНОМ месте на оба пути;
+#   2. в состояниях, где сервер отказывает, сердцебиение затихает;
+#   3. аккаунт не в порядке — видно на главном экране телефона, а не
+#      только в настройках, куда владелец не заходит;
+#   4. свайп говорит про отказ аккаунта и по-прежнему молчит про сеть.
+if int(pv) >= 200:
+    _cd_cs = _strip_comments_safe(
+        (root / 'lib/services/cloud_sync_service.dart').read_text())
+    _cd_dash = _strip_comments_safe(
+        (root / 'lib/screens/dashboard.dart').read_text())
+    _cd_set = _strip_comments_safe(
+        (root / 'lib/screens/settings.dart').read_text())
+    _cd_l10n = (root / 'lib/l10n/strings.dart').read_text()
+
+    # CD1: СЕРДЦЕБИЕНИЕ НЕ ГЛОТАЕТ ОТКАЗ ВОРОТ. Найдено Другом 2 живьём
+    # 10.08 на +198: девять отказов 403 за прогон, на экране ничего.
+    # Причина — общий `catch (e)`, ловивший и наше исключение ворот.
+    _cd1_hb = _cd_cs.split('Future<void> _sendHeartbeat()')[1] \
+        .split('\n  }')[0] if 'Future<void> _sendHeartbeat()' in _cd_cs else ''
+    _cd1 = ('on _AccountGateException catch (e)' in _cd1_hb and
+            '_applyAccountGate(e)' in _cd1_hb and
+            _cd1_hb.find('on _AccountGateException') <
+            _cd1_hb.find('} catch (e) {'))
+    if _cd1:
+        ok('CD1 the heartbeat converts an account refusal into state instead '
+           'of swallowing it')
+    else:
+        fail('CD1 the most frequent request is silent about refusals again')
+
+    # CD2: РАСКЛАДКА КОДОВ В ОДНОМ МЕСТЕ. Двух путей с собственными
+    # раскладками быть не должно: они разошлись бы молча — один показывал
+    # бы приостановку, другой запрет навсегда.
+    _cd2 = (_cd_cs.count("if (gate == 'account_pending')") == 1 and
+            'Future<void> _applyAccountGate(' in _cd_cs and
+            _cd_cs.count('_applyAccountGate(') >= 3)
+    if _cd2:
+        ok('CD2 the code-to-state mapping lives in one place for both paths')
+    else:
+        fail('CD2 a second copy of the gate mapping is back')
+
+    # CD3: В СОСТОЯНИЯХ ОТКАЗА СЕРДЦЕБИЕНИЕ ЗАТИХАЕТ. Список был из двух и
+    # не узнал приостановку с удалением, приехавшие в +197.
+    _cd3 = ('_gatedStates = {' in _cd_cs and
+            _cd_cs.count('CloudSyncStatus.accountSuspended,') >= 1 and
+            'CloudSyncStatus.accountDeletionPending,' in _cd_cs and
+            '_gatedStates.contains(_status)' in _cd_cs)
+    if _cd3:
+        ok('CD3 the heartbeat goes quiet in every state the server refuses')
+    else:
+        fail('CD3 the heartbeat keeps knocking in a refused state')
+
+    # CD4: ВИДНО НА ГЛАВНОМ ЭКРАНЕ. Состояние считалось верно и
+    # показывалось — но только в настройках. Чинить надо было видимость.
+    # Полоса спрашивает у сервиса, а не сравнивает состояния сама:
+    # добавится седьмое — подхватит без правки экрана.
+    # Мутация показала слабость первой редакции: имя признака оставалось
+    # на месте, а его тело уводили в постоянный `false` — полоса есть, а
+    # показать ей нечего, и гейт этого не замечал.
+    # И вторая слабость там же: класс полосы оставался объявленным, а из
+    # списка детей его убирали — гейт видел имя и был доволен. Сторожим
+    # ПРИМЕНЕНИЕ, а не объявление: объявленный и не поставленный виджет
+    # это мёртвый код, а не работающая полоса.
+    _cd4 = ('const _AccountBanner(),' in _cd_dash and
+            'class _AccountBanner' in _cd_dash and
+            'accountNeedsAttention' in _cd_dash and
+            'bool get accountNeedsAttention => _gatedStates.contains(_status);'
+            in _cd_cs and
+            'CloudSyncStatus.' not in
+            _cd_dash.split('class _AccountBanner')[1].split('\n}')[0] and
+            _cd_l10n.count("'dash.account_hint'") == 2)
+    if _cd4:
+        ok('CD4 a bad account state is visible on the phone main screen, '
+           'asking the service rather than judging states itself')
+    else:
+        fail('CD4 the account state hides in Settings again, or the screen '
+             'judges states on its own')
+
+    # CD5: ОДНИ СЛОВА НА ВСЕ ЭКРАНЫ. Два набора слов для одного состояния
+    # однажды разошлись бы, и владелец получил бы два разных ответа.
+    _cd5 = ('String? accountGateStringKey(' in _cd_cs and
+            "S.of(accountGateStringKey(cs.status)!)" in _cd_set and
+            "S.of(accountGateStringKey(cs.status)!)" in _cd_dash and
+            _cd_set.count("S.of('cloud.status.suspended')") == 0 and
+            _cd_dash.count("S.of('cloud.status.suspended')") == 0)
+    if _cd5:
+        ok('CD5 every screen speaks about the account with the same words, '
+           'from one mapping')
+    else:
+        fail('CD5 a screen keeps its own copy of the account words')
+
+    # CD6: СВАЙП ГОВОРИТ ПРО АККАУНТ И МОЛЧИТ ПРО СЕТЬ. Прежнее решение
+    # («ошибка не показывается модально») остаётся в силе для помех —
+    # всплывать по поводу пропавшей связи значит приучить закрывать
+    # всплывающее не читая. Отказ аккаунта сам не пройдёт.
+    _cd6_r = _cd_dash.split('Future<void> _refreshNow()')[1] \
+        .split('\n  }')[0] if 'Future<void> _refreshNow()' in _cd_dash else ''
+    _cd6 = ('accountGateStringKey(cs.status)' in _cd6_r and
+            'showSnackBar' in _cd6_r and
+            'CloudSyncStatus.error' not in _cd6_r)
+    if _cd6:
+        ok('CD6 the manual refresh reports an account refusal and stays quiet '
+           'about network hiccups')
+    else:
+        fail('CD6 the refresh is silent about refusals, or noisy about the '
+             'network')
+else:
+    ok(f"Part CD skipped (build +{pv}, account visibility lands in +200)")
+
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
 print(f"+35→+51 REGRESSION — build +{pv}")

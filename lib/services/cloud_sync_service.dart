@@ -156,6 +156,31 @@ enum CloudSyncStatus {
   accountDeletionPending,
 }
 
+/// КЛЮЧ СТРОКИ ДЛЯ СОСТОЯНИЯ ВОРОТ. Единственная раскладка. v0.2.1+200.
+///
+/// Заведено, когда про аккаунт заговорили в двух местах: подпись в
+/// настройках и полоса на главном экране телефона. Два набора слов для
+/// одного состояния однажды разошлись бы, и владелец получил бы два
+/// разных ответа на один вопрос.
+///
+/// Отдаёт КЛЮЧ, а не текст: сервис не должен знать про словарь. И только
+/// для состояний ворот — у `idle` и `syncing` текст зависит от числа
+/// непереданных строк, а это забота экрана, не сервиса.
+String? accountGateStringKey(CloudSyncStatus s) {
+  switch (s) {
+    case CloudSyncStatus.pendingApproval:
+      return 'cloud.status.pending_approval';
+    case CloudSyncStatus.accessDenied:
+      return 'cloud.status.access_denied';
+    case CloudSyncStatus.accountSuspended:
+      return 'cloud.status.suspended';
+    case CloudSyncStatus.accountDeletionPending:
+      return 'cloud.status.deletion_pending';
+    default:
+      return null;
+  }
+}
+
 /// Vehicle row from GET /v1/setup/vehicles.
 class CloudVehicle {
   final String id;
@@ -1641,25 +1666,7 @@ class CloudSyncService extends ChangeNotifier {
       _status = CloudSyncStatus.error;
       await _persistError(_lastError!);
     } on _AccountGateException catch (e) {
-      // v0.1.34+133: not an error — a state. Token, cursors and timers
-      // stay; the next periodic tick re-probes, so an approval flips us
-      // back to normal flow automatically (server SPEC §2/§8).
-      // v0.1.98+197: четыре ветки вместо двух. Приостановка обратима и
-      // ведёт себя как ожидание одобрения; у удаления есть срок.
-      // Умолчание — accessDenied, самое строгое: код из списка, но без
-      // своей ветки, обязан выглядеть запретом, а не разрешением.
-      final gate = e.code;
-      if (gate == 'account_pending') {
-        _status = CloudSyncStatus.pendingApproval;
-      } else if (gate == 'account_suspended') {
-        _status = CloudSyncStatus.accountSuspended;
-      } else if (gate == 'account_deletion_pending') {
-        _status = CloudSyncStatus.accountDeletionPending;
-      } else {
-        _status = CloudSyncStatus.accessDenied;
-      }
-      _lastError = e.code;
-      await _persistError(e.code);
+      await _applyAccountGate(e);
     } on _BridgeException catch (e) {
       _lastError = e.message;
       _status = CloudSyncStatus.error;
@@ -2424,15 +2431,81 @@ class CloudSyncService extends ChangeNotifier {
     }
   }
 
+  /// Все состояния, в которых сервер нам отказывает по воротам аккаунта.
+  ///
+  /// v0.2.1+200: список был из двух, стал из четырёх. Приостановка и
+  /// удаление приехали в +197, а этот ранний выход про них не узнал — и
+  /// сердцебиение продолжало стучать раз в минуту в состоянии, где
+  /// сервер всё равно отказывает.
+  static const Set<CloudSyncStatus> _gatedStates = {
+    CloudSyncStatus.pendingApproval,
+    CloudSyncStatus.accessDenied,
+    CloudSyncStatus.accountSuspended,
+    CloudSyncStatus.accountDeletionPending,
+  };
+
+  /// КОД ВОРОТ → СОСТОЯНИЕ. Единственное место. v0.2.1+200.
+  ///
+  /// Было в теле `syncOnce`. Вынесено, когда сердцебиение перестало
+  /// глотать отказ: два пути, каждый со своей раскладкой кодов, однажды
+  /// разошлись бы, и разошлись бы молча — один показывал бы приостановку,
+  /// другой запрет навсегда.
+  ///
+  /// Это НЕ ошибка, а состояние: токен, курсоры и таймеры целы, а
+  /// следующий опрос переспросит сам — снятие приостановки или одобрение
+  /// подхватятся без участия владельца (SPEC сервера §2/§8).
+  ///
+  /// Умолчание — `accessDenied`, самое строгое из возможных: код попал в
+  /// список ворот, но своей ветки не имеет, значит выглядеть он обязан
+  /// запретом, а не разрешением.
+  Future<void> _applyAccountGate(_AccountGateException e) async {
+    final gate = e.code;
+    if (gate == 'account_pending') {
+      _status = CloudSyncStatus.pendingApproval;
+    } else if (gate == 'account_suspended') {
+      _status = CloudSyncStatus.accountSuspended;
+    } else if (gate == 'account_deletion_pending') {
+      _status = CloudSyncStatus.accountDeletionPending;
+    } else {
+      _status = CloudSyncStatus.accessDenied;
+    }
+    _lastError = e.code;
+    await _persistError(e.code);
+    notifyListeners();
+  }
+
+  /// Не в порядке ли аккаунт — для полосы на главном экране.
+  ///
+  /// v0.2.1+200. Отдельный признак, а не сравнение состояний в экране:
+  /// список состояний ворот живёт в сервисе, и экрану незачем знать его
+  /// наизусть. Добавится седьмое состояние — полоса подхватит его сама.
+  bool get accountNeedsAttention => _gatedStates.contains(_status);
+
   Future<void> _sendHeartbeat() async {
     if (!_enabled || !isRegistered) return;
-    if (_status == CloudSyncStatus.pendingApproval ||
-        _status == CloudSyncStatus.accessDenied) {
+    if (_gatedStates.contains(_status)) {
       return; // v0.1.34+133: gated — syncOnce's probe is enough traffic.
     }
     try {
       await _postIngest('/v1/data/ingest/heartbeat',
           {'client_version': await _readAppVersion()});
+    } on _AccountGateException catch (e) {
+      // ── СЕРДЦЕБИЕНИЕ БОЛЬШЕ НЕ ГЛОТАЕТ ОТКАЗ ВОРОТ. v0.2.1+200 ──
+      //
+      // Найдено Другом 2 живьём 10.08 на сборке +198: аккаунт переведён
+      // в suspended, девять отказов 403 за прогон — и на экране не
+      // меняется ничего.
+      //
+      // Причина была здесь. Перехват ниже ловил ВСЁ подряд, включая наше
+      // собственное исключение ворот, и молча писал в отладочный вывод.
+      // А сердцебиение — самый частый запрос, раз в минуту: то есть
+      // сигнал, который приходил чаще всех, единственный не доходил
+      // никуда.
+      //
+      // Теперь он ставит состояние ровно так же, как syncOnce, — та же
+      // раскладка кодов лежит в одном месте (_applyAccountGate), чтобы
+      // два пути не разошлись.
+      _applyAccountGate(e);
     } catch (e) {
       // Heartbeat failure is non-fatal; just log. Note: if this hits
       // a 401, _postIngest still increments _consecutiveAuthFailures,
@@ -4071,7 +4144,7 @@ class CloudSyncService extends ChangeNotifier {
   /// Read app version from the static value baked into the build.
   /// We don't have package_info_plus as a dep — pubspec-version is
   /// hardcoded here. Update when bumping. Off-by-one tolerated.
-  Future<String> _readAppVersion() async => '0.2.0+199';
+  Future<String> _readAppVersion() async => '0.2.1+200';
 }
 
 // ─── Internal exceptions ────────────────────────────────────────────

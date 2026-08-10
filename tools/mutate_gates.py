@@ -108,6 +108,7 @@ ATW = 'lib/screens/wide/atlas_wide.dart'
 DW = 'lib/screens/wide/dashboard_wide.dart'
 TAB = ('android/app/src/main/kotlin/com/bz5companion/bz5_companion'
        '/hal/TelemetryDecoderTable.kt')
+DSH = 'lib/screens/dashboard.dart'
 HM = 'lib/screens/home.dart'
 
 # (гейт, файл, анкер, замена, что откатывает)
@@ -1095,8 +1096,8 @@ MUTATIONS = [
      'молча'),
 
     ('CB5', CS,
-     '        _status = CloudSyncStatus.accountSuspended;',
-     '        _status = CloudSyncStatus.accessDenied;',
+     '      _status = CloudSyncStatus.accountSuspended;',
+     '      _status = CloudSyncStatus.accessDenied;',
      'сделать обратимую приостановку неотличимой от запрета навсегда'),
 
     ('CB6', CS,
@@ -1190,7 +1191,55 @@ MUTATIONS = [
      '            Decoder("pack_voltage_fine", "V", ValueSource.INT,',
      'читать дробное напряжение как целое — придёт ноль, и весь смысл '
      'канала пропадёт молча'),
+
+    # ── ЭРА CD (+200) ──
+
+    ('CD1', CS,
+     '      _applyAccountGate(e);\n'
+     '    } catch (e) {\n'
+     '      // Heartbeat failure is non-fatal',
+     '    } catch (e) {\n'
+     '      // Heartbeat failure is non-fatal',
+     'вернуть сердцебиению общий перехват — самый частый запрос снова '
+     'проглотит отказ ворот, как это и нашёл Друг 2'),
+
+    ('CD2', CS,
+     "    if (gate == 'account_pending') {",
+     "    if (gate == 'account_pending_x') {",
+     'сломать единственную раскладку кодов — ожидание одобрения станет '
+     'запретом навсегда'),
+
+    ('CD3', CS,
+     '    CloudSyncStatus.accountSuspended,\n'
+     '    CloudSyncStatus.accountDeletionPending,\n'
+     '  };',
+     '  };',
+     'вернуть список отказных состояний к двум — сердцебиение будет '
+     'стучать раз в минуту там, где сервер отказывает'),
+
+    ('CD4', DSH,
+     '        const _AccountBanner(),',
+     '',
+     'снять полосу с главного экрана — состояние опять спрячется в '
+     'настройках, куда владелец не заходит'),
+
+    ('CD4', CS,
+     '  bool get accountNeedsAttention => _gatedStates.contains(_status);',
+     '  bool get accountNeedsAttention => false;',
+     'заставить признак всегда молчать — полоса есть, а показать ей нечего'),
+
+    ('CD5', CS,
+     'String? accountGateStringKey(CloudSyncStatus s) {',
+     'String? accountGateStringKeyUnused(CloudSyncStatus s) {',
+     'убрать общую раскладку слов — экраны заведут свои копии и разойдутся'),
+
+    ('CD6', DSH,
+     '      ScaffoldMessenger.of(context).showSnackBar(',
+     '      debugPrint(',
+     'вернуть свайпу молчание про аккаунт — тишина снова прочитается как '
+     '«всё в порядке»'),
 ]
+
 
 
 

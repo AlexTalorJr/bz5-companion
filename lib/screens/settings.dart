@@ -747,16 +747,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
         return S.of('cloud.menu.auth_error');
       case CloudSyncStatus.pausedByUser:
         return S.of('cloud.menu.paused');
-      // v0.1.34+133: approval gate states get their own labels.
+      // v0.2.1+200: и здесь тоже общая раскладка. Это ВТОРАЯ подпись
+      // состояния в этом же файле — строка меню, — и она держала свою
+      // копию слов. Гейт CD5 поймал: экранов, говорящих об аккаунте,
+      // стало три, а не два.
       case CloudSyncStatus.pendingApproval:
-        return S.of('cloud.status.pending_approval');
       case CloudSyncStatus.accessDenied:
-        return S.of('cloud.status.access_denied');
-      // v0.1.98+197, контракт v1.3.
       case CloudSyncStatus.accountSuspended:
-        return S.of('cloud.status.suspended');
       case CloudSyncStatus.accountDeletionPending:
-        return S.of('cloud.status.deletion_pending');
+        return S.of(accountGateStringKey(cs.status)!);
       default: // idle | syncing | transient disconnected
         return S.of('cloud.menu.connected');
     }
@@ -1654,16 +1653,18 @@ class _CloudServicesScreenState extends State<CloudServicesScreen> {
       case CloudSyncStatus.authFailed:
         return S.of('cloud.status.auth_failed');
       // v0.1.34+133: approval gate states.
+      // v0.2.1+200: ВСЕ состояния ворот отвечают ОДНОЙ раскладкой,
+      // общей с полосой на главном экране телефона. Второй набор слов
+      // для того же состояния однажды разошёлся бы с первым.
+      //
+      // Ветки перечислены поимённо, а не свёрнуты в `default`: switch без
+      // умолчания — это то, что уронит сборку, если в перечисление
+      // добавится седьмое состояние и его забудут здесь назвать.
       case CloudSyncStatus.pendingApproval:
-        return S.of('cloud.status.pending_approval');
       case CloudSyncStatus.accessDenied:
-        return S.of('cloud.status.access_denied');
-      // v0.1.98+197, контракт v1.3. Ветки обязательны — switch без
-      // `default`.
       case CloudSyncStatus.accountSuspended:
-        return S.of('cloud.status.suspended');
       case CloudSyncStatus.accountDeletionPending:
-        return S.of('cloud.status.deletion_pending');
+        return S.of(accountGateStringKey(cs.status)!);
     }
   }
 

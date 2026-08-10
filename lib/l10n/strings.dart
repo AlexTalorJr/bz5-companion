@@ -367,6 +367,7 @@ class S {
     'cloud.status.pending_approval': 'Waiting for approval',
     'cloud.status.access_denied': 'Access denied by owner',
     'cloud.status.suspended': 'Access suspended — data is kept',
+    'dash.account_hint': 'Open Settings \u2192 Cloud for details',
     'cloud.status.deletion_pending': 'Account marked for deletion',
     // v0.1.42+141: device whoami (GET /v2/device/me)
     'cloud.device_me.linked': 'Linked to {email}',
@@ -1593,6 +1594,7 @@ class S {
     'cloud.status.pending_approval': 'Ожидает подтверждения',
     'cloud.status.access_denied': 'Доступ закрыт владельцем',
     'cloud.status.suspended': 'Доступ приостановлен, данные целы',
+    'dash.account_hint': 'Подробности в Настройках \u2192 Облако',
     'cloud.status.deletion_pending': 'Аккаунт помечен на удаление',
     // v0.1.42+141: device whoami (GET /v2/device/me)
     'cloud.device_me.linked': 'Привязано к {email}',

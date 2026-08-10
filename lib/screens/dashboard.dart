@@ -215,13 +215,35 @@ class _BlockedBodyState extends State<_BlockedBody> {
   /// call while one is in flight is a cheap no-op — no local debounce.
   /// A sync error is NOT surfaced modally: the reloaded freshness line IS
   /// the feedback (diag lines are written on the normal path anyway).
+  ///
+  /// ── ИСКЛЮЧЕНИЕ ДЛЯ АККАУНТА. v0.2.1+200 ──
+  ///
+  /// Прежнее решение остаётся в силе для СЕТИ: связь пропала, сервер
+  /// ответил пятисотой — это помеха, она проходит сама, и всплывать по
+  /// такому поводу значит приучить владельца закрывать всплывающее не
+  /// читая.
+  ///
+  /// Отказ по аккаунту — другое. Друг 2 проверил живьём 10.08: свайп
+  /// рапортовал успех, пока все девять запросов получали 403. Тишина
+  /// здесь читается как «всё в порядке», а всё не в порядке, и само это
+  /// не пройдёт — нужен либо владелец аккаунта, либо срок.
+  ///
+  /// Поэтому про аккаунт говорим ровно один раз, коротко и теми же
+  /// словами, что стоят в полосе и в настройках.
   Future<void> _refreshNow() async {
+    final cs = context.read<CloudSyncService>();
     try {
-      await context.read<CloudSyncService>().syncOnce(reason: 'stale_refresh');
+      await cs.syncOnce(reason: 'stale_refresh');
     } catch (e) {
       debugPrint('StaleDash: manual syncOnce failed: $e');
     }
     if (!mounted) return;
+    final key = accountGateStringKey(cs.status);
+    if (key != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(S.of(key))),
+      );
+    }
     setState(() => _latest = _load());
   }
 
@@ -292,6 +314,52 @@ class _StaleData {
 /// v0.1.42+141: fieldwise — each card shows the last row that CARRIED
 /// its value, with that row's own date, instead of '—' whenever the
 /// single newest row happened to hold NULL in the field.
+/// Полоса про аккаунт на главном экране телефона. v0.2.1+200.
+///
+/// Признак «не в порядке» берётся у сервиса (`accountNeedsAttention`), а
+/// не собирается здесь сравнением состояний: список состояний ворот
+/// живёт в одном месте, и появись седьмое — полоса подхватит его сама.
+///
+/// Текст берётся из того же словаря, что подпись в настройках. Второй
+/// набор слов для того же состояния однажды разошёлся бы с первым.
+class _AccountBanner extends StatelessWidget {
+  const _AccountBanner();
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = context.watch<CloudSyncService>();
+    if (!cs.accountNeedsAttention) return const SizedBox.shrink();
+    return Container(
+      margin: const EdgeInsets.only(bottom: 14),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.amberAccent.withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.amberAccent.withValues(alpha: 0.4)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.cloud_off, color: Colors.amberAccent, size: 22),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(S.of(accountGateStringKey(cs.status)!),
+                    style: const TextStyle(
+                        fontSize: 14, fontWeight: FontWeight.w600)),
+                const SizedBox(height: 2),
+                Text(S.of('dash.account_hint'),
+                    style: const TextStyle(fontSize: 12, color: Colors.grey)),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _StaleDashboard extends StatelessWidget {
   final _StaleData data;
   // v0.1.43+142 §5: manual sync kick — wired to both the pull-to-refresh
@@ -321,6 +389,19 @@ class _StaleDashboard extends StatelessWidget {
       physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.all(16),
       children: [
+        // ── АККАУНТ НЕ В ПОРЯДКЕ — ВИДНО СРАЗУ. v0.2.1+200 ──
+        //
+        // Друг 2 проверил живьём 10.08 на сборке +198: аккаунт переведён
+        // в suspended, девять отказов 403 за прогон — и на экране не
+        // меняется ничего. Свайп рапортует успех.
+        //
+        // Состояние при этом СЧИТАЛОСЬ верно и показывалось — но только
+        // в настройках, куда владельцу незачем заходить каждый день. То
+        // есть чинить надо было не расшифровку кодов, а видимость.
+        //
+        // Полоса появляется ТОЛЬКО когда аккаунт не в порядке. Когда всё
+        // хорошо, её нет вовсе: экран занимать нечем.
+        const _AccountBanner(),
         Row(
           children: [
             const Icon(Icons.history, color: Colors.grey, size: 32),
@@ -1423,7 +1504,7 @@ class _TripCard extends StatelessWidget {
 
 /// Bump when changing the diagnostic format — helps cross-reference
 /// screenshots to specific app versions while iterating.
-const String _kDiagVersion = 'v0.2.0+199';
+const String _kDiagVersion = 'v0.2.1+200';
 
 /// v0.1.29+94: public alias of the build version string for display outside
 /// dashboard (e.g. the About screen's APP card). Single literal source — the
