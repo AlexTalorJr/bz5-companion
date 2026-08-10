@@ -246,6 +246,9 @@ class HalTelemetryService extends ChangeNotifier
   static const Map<String, Duration> _continuousWindow = {
     'speed': Duration(milliseconds: 1500),
     'pack_voltage': Duration(seconds: 6),
+    // v0.2.0+199: дробное напряжение с того же устройства. Та же
+    // придержка, что у целочисленного зеркала — поток тот же.
+    'pack_voltage_fine': Duration(seconds: 6),
     'pack_current': Duration(seconds: 6),
     // v0.1.29+72: battery/drive temperatures. Slow signals — probe runs
     // ~0.5 Hz (n=12-15 per recon chunk), motor/inverter similar — so the
@@ -309,6 +312,9 @@ class HalTelemetryService extends ChangeNotifier
   static const Map<String, (double, double)> _range = {
     'speed': (0, 220),
     'pack_voltage': (250, 500),
+    // Тот же коридор, что у целочисленного: 136 ячеек LFP дают
+    // 415…479 В по наблюдениям, запас с обеих сторон.
+    'pack_voltage_fine': (250, 500),
     'pack_current': (-600, 600),
     'gear_enum': (0, 15),
     'soc_display': (0, 100),
@@ -1413,6 +1419,80 @@ class HalTelemetryService extends ChangeNotifier
   }
 
   bool get useHalForInsulation => _useHal('insulation_resistance');
+
+
+
+  // ── ЧТО ДЛЯ ЭТОЙ МАШИНЫ ОБЫЧНО. v0.2.0+199 ──
+  //
+  // Норматив ISO 6469-3 требует не меньше 100 Ом на вольт для постоянного
+  // тока. При 452 В это 0,045 МОм. Замеры владельца: медиана 15,5 МОм,
+  // худший за пять дней 6,2. То есть даже худшее показание в 136 раз выше
+  // нормы, а обычное — в 343 раза.
+  //
+  // Светофор от норматива был бы вечно зелёным: пока изоляция не рухнет в
+  // триста раз, он ничего не скажет — а к тому времени машина поднимет
+  // тревогу сама, для этого у неё есть штатная система слежения, чьи
+  // показания мы и читаем.
+  //
+  // Полезен не порог, а падение относительно СОБСТВЕННОЙ привычной
+  // величины: 15 МОм, ставшие тремя, — это сигнал, хотя три по нормативу
+  // отличные. Поэтому норму считаем по своим же замерам за месяц.
+  //
+  // Медиана, а не среднее: просадки на зарядке — законная часть выборки,
+  // и среднее они бы утянули вниз, сделав норму мягче, чем надо.
+  double? _insulBaselineMOhm;
+  DateTime? _insulBaselineAt;
+
+  /// Привычная величина изоляции, МОм. null — замеров ещё мало.
+  double? get insulationBaselineMOhm => _insulBaselineMOhm;
+
+  /// Сколько замеров легло в норму. Наружу не отдаётся: экран решает по
+  /// самой норме — она null, пока замеров меньше [_kInsulBaselineMin], и
+  /// этого достаточно. Счётчик остаётся для диагностики внутри.
+  int _insulBaselineN = 0;
+
+  static const int _kInsulBaselineMin = 20;
+  static const Duration _kInsulBaselineWindow = Duration(days: 30);
+  static const Duration _kInsulBaselineEvery = Duration(minutes: 30);
+
+  /// Пересчёт нормы. Дёшево и редко: раз в полчаса, и только если с
+  /// прошлого раза прошло достаточно.
+  ///
+  /// Таблица `hal_samples` местная и умирает при переустановке — значит
+  /// после каждой установки норма набирается заново за пару дней. Это
+  /// принято сознательно: показать «копим, что для неё обычно» честнее,
+  /// чем вывести оценку по трём замерам.
+  Future<void> refreshInsulationBaseline() async {
+    final now = DateTime.now();
+    final was = _insulBaselineAt;
+    if (was != null && now.difference(was) < _kInsulBaselineEvery) return;
+    final db = _diagDb;
+    if (db == null) return;
+    _insulBaselineAt = now;
+    try {
+      final since = now.subtract(_kInsulBaselineWindow);
+      final vals = await db.halSampleValues(
+        name: 'insulation_resistance',
+        since: since,
+      );
+      if (vals.length < _kInsulBaselineMin) {
+        _insulBaselineN = vals.length;
+        _insulBaselineMOhm = null;
+        notifyListeners();
+        return;
+      }
+      vals.sort();
+      final mid = vals.length ~/ 2;
+      final med = vals.length.isOdd
+          ? vals[mid]
+          : (vals[mid - 1] + vals[mid]) / 2.0;
+      _insulBaselineN = vals.length;
+      _insulBaselineMOhm = med * 0.001;
+      notifyListeners();
+    } catch (e) {
+      debugPrint('Insulation baseline skipped — $e');
+    }
+  }
 
   // ── brake-light indicator (v0.1.29+78, reworked +80). The real stop-lamp
   //    state (LIGHT_CMD_STOP_LIGHT_STATE 0x33100012) is UNREACHABLE for our
@@ -2959,6 +3039,10 @@ class HalTelemetryService extends ChangeNotifier
     // кэш напрямую и потому по-прежнему перекрывает гидрацию более
     // свежим значением — направление защиты не изменилось.
     await loadHalSohEstimate();
+    // v0.2.0+199: норма изоляции. Сама себя придерживает — пересчёт не
+    // чаще раза в полчаса, — поэтому её можно звать из мест, которые
+    // случаются часто, не боясь молотить базу.
+    unawaited(refreshInsulationBaseline());
     // v0.1.29+116: consume any SOH session snapshot left by a process death
     // (ignition off mid-charge). MUST run before _startStream — once frames
     // flow, a new session's reset would clear the pending key before it is
@@ -3172,6 +3256,17 @@ class HalTelemetryService extends ChangeNotifier
     // export shows the real HAL stream and matches recon's schema. Throttled
     // per-name so the ~15 Hz stream doesn't bloat the DB. No-op without DB.
     _logHalDiag(e, d);
+    // v0.2.0+199: замер изоляции пришёл — подтянуть норму. Место
+    // выбрано здесь, а не в геттере: геттер читается на каждой
+    // перерисовке панели, и побочное действие в нём — та самая
+    // неряшливость, которую ревизия обязана отклонять. Здесь же событие
+    // настоящее, а сам пересчёт придерживается получасом внутри.
+    //
+    // Отдельного таймера нет сознательно: он молотил бы на стоянке
+    // впустую, а норма нужна только когда сигнал реально идёт.
+    if (e.name == 'insulation_resistance') {
+      unawaited(refreshInsulationBaseline());
+    }
     // v0.1.39+138: periodic HAL snapshot — same event path, own 60-s gate
     // inside (no new timers). Restores the snapshots plane that died on
     // 2026-06-24 with the move to HAL-only (OBD2 ConnectionService was

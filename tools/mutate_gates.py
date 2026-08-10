@@ -103,6 +103,11 @@ BC = 'lib/widgets/band_card.dart'
 SPS = 'lib/services/speed_profile_service.dart'
 SPU = 'lib/screens/speed_profile.dart'
 TST = 'test/speed_profile_engine_test.dart'
+EXP = 'lib/widgets/atlas_export.dart'
+ATW = 'lib/screens/wide/atlas_wide.dart'
+DW = 'lib/screens/wide/dashboard_wide.dart'
+TAB = ('android/app/src/main/kotlin/com/bz5companion/bz5_companion'
+       '/hal/TelemetryDecoderTable.kt')
 HM = 'lib/screens/home.dart'
 
 # (гейт, файл, анкер, замена, что откатывает)
@@ -1119,8 +1124,9 @@ MUTATIONS = [
      'вернуть немой отказ чтения оценки — три недели вслепую повторятся'),
 
     ('CB8', HT,
-     '    await loadHalSohEstimate();\n    // v0.1.29+116: consume any SOH',
-     '    // v0.1.29+116: consume any SOH',
+     '    await loadHalSohEstimate();\n'
+     '    // v0.2.0+199: норма изоляции.',
+     '    // v0.2.0+199: норма изоляции.',
      'убрать чтение из начала запуска — оно снова окажется за тяжёлой '
      'работой или пропадёт вовсе'),
 
@@ -1129,7 +1135,63 @@ MUTATIONS = [
      'final int _pastThreshold = 130;',
      'вернуть жёсткое число в тест — следующая смена порога снова уронит '
      'CI после зелёной церемонии'),
+
+    # ── ЭРА CC (+199) ──
+
+    ('CC1', EXP,
+     '                      mean: _meanOf(b, w),',
+     '                      mean: null,',
+     'вернуть пустые клетки в картинку — переслать её снова будет незачем'),
+
+    ('CC1', EXP,
+     '      final image = await obj.toImage(pixelRatio: 2.0);',
+     '      final image = await obj.toImage(pixelRatio: 1.0);',
+     'вернуть прежнюю плотность — цифра в клетке расплывётся в сжатом PNG'),
+
+    ('CC2', ATW,
+     '                                textScaler: const TextScaler.linear(1.7),',
+     '                                textScaler: const TextScaler.linear(1.0),',
+     'открыть подробности телефонным шрифтом — нажатие ведёт на '
+     'нечитаемый экран, а это хуже отсутствия нажатия'),
+
+    ('CC2', ATW,
+     "                      Text(S.of('atlas.tap_for_detail'),",
+     "                      Text(S.of('atlas.view_only'),",
+     'оставить подпись «подробности на телефоне» при живых клетках — '
+     'экран будет врать про себя'),
+
+    ('CC3', DW,
+     "                        label: S.of('dash.insulation'),",
+     "                        label: S.of('dash.total_energy'),",
+     'вернуть накопительный итог вместо показателя безопасности'),
+
+    ('CC3', HT,
+     '  static const int _kInsulBaselineMin = 20;',
+     '  static const int _kInsulBaselineMin = 1;',
+     'объявить нормой один замер — оценка станет совпадением, а не нормой'),
+
+    ('CC3', DW,
+     '  if (mOhm < base * 0.5) return _Insul.watch;',
+     '  if (mOhm < base * 0.6) return _Insul.watch;\n'
+     '  if (mOhm < base * 0.5) return _Insul.watch;',
+     'развести пороги по двум местам — цвет и подпись однажды разойдутся, '
+     'как уже разошлись в первой редакции'),
+
+    ('CC4', HT,
+     "    if (e.name == 'insulation_resistance') {\n"
+     "      unawaited(refreshInsulationBaseline());\n"
+     "    }",
+     '',
+     'отрезать пересчёт нормы от прихода замера — норма замрёт на той, '
+     'что успела набраться при запуске'),
+
+    ('CC5', TAB,
+     '            Decoder("pack_voltage_fine", "V", ValueSource.DOUBLE,',
+     '            Decoder("pack_voltage_fine", "V", ValueSource.INT,',
+     'читать дробное напряжение как целое — придёт ноль, и весь смысл '
+     'канала пропадёт молча'),
 ]
+
 
 
 

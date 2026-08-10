@@ -5301,7 +5301,18 @@ if int(pv) >= 151:
                 # +162 language pass: +7 atlas keys (full months, км/ч,
                 # reading plurals, two hints), −2 (the motion-gate strings
                 # died with the gate) → 51 keys × 2 maps.
-                _az10_atlas = 102 if int(pv) >= 162 else 92
+                # +199: +1 ключ atlas.tap_for_detail ×2 маппинга. Клетки
+                # на головном устройстве стали нажимаемыми (владелец
+                # отменил своё же решение 10.08), и подпись «просмотр,
+                # подробности на телефоне» сменилась. Старый ключ оставлен
+                # на месте — он ещё может понадобиться, если у какого-то
+                # экрана подробностей не будет.
+                if int(pv) >= 199:
+                    _az10_atlas = 104
+                elif int(pv) >= 162:
+                    _az10_atlas = 102
+                else:
+                    _az10_atlas = 92
                 if l10n.count("'atlas.") == _az10_atlas and \
                    l10n.count("'export.") == 32 and \
                    l10n.count("'measure.plate_title'") == 2 and \
@@ -10435,6 +10446,133 @@ if int(pv) >= 197:
              'silently on the next change')
 else:
     ok(f"Part CB skipped (build +{pv}, the three-minute band lands in +197)")
+
+# ══════════════════════════ ЭРА CC (+199) ══════════════════════════
+#
+# Что закрывает эта эра, одной фразой на пункт:
+#   1. картинка «поделиться» несёт ЧИСЛА, а не только цвета;
+#   2. клетки атласа на головном устройстве нажимаются, и текст на
+#      экране подробностей читается с вытянутой руки;
+#   3. сопротивление изоляции видно на панели, и оценка идёт от
+#      СОБСТВЕННОЙ нормы машины, а не от норматива;
+#   4. дробное напряжение включено вторым именем, без подмены.
+if int(pv) >= 199:
+    _cc_exp = _strip_comments_safe(
+        (root / 'lib/widgets/atlas_export.dart').read_text())
+    _cc_atlw = _strip_comments_safe(
+        (root / 'lib/screens/wide/atlas_wide.dart').read_text())
+    _cc_dash = _strip_comments_safe(
+        (root / 'lib/screens/wide/dashboard_wide.dart').read_text())
+    _cc_hal = _strip_comments_safe(
+        (root / 'lib/services/hal_telemetry_service.dart').read_text())
+    _cc_db = _strip_comments_safe(
+        (root / 'lib/data/database.dart').read_text())
+    _cc_tab = (root / 'android/app/src/main/kotlin/com/bz5companion'
+                      '/bz5_companion/hal/TelemetryDecoderTable.kt').read_text()
+    _cc_l10n = (root / 'lib/l10n/strings.dart').read_text()
+
+    # CC1: ЧИСЛА В КЛЕТКАХ. Поле 10.08: «экспорт показывает картинку с
+    # пустыми ячейками, в них ничего нет, это бессмысленно». Число берётся
+    # из того же `mean`, что показывает экран — второго расчёта нет, иначе
+    # два места однажды разойдутся молча.
+    _cc1 = ('double? mean;' in _cc_exp and
+            '_meanOf(b, w)' in _cc_exp and
+            'c.mean' in _cc_exp and
+            'toImage(pixelRatio: 2.0)' in _cc_exp)
+    if _cc1:
+        ok('CC1 the share image carries each cell value, from the same mean '
+           'the screen shows, at a density that survives compression')
+    else:
+        fail('CC1 the share image is back to colours with no numbers')
+
+    # CC2: КЛЕТКИ НА ГУ ЖИВЫЕ. Решение «подробности на телефоне» отменено
+    # владельцем 10.08 его же словами. Текст экрана подробностей рос под
+    # телефон (11–20), поэтому на ГУ он масштабируется — иначе нажатие
+    # ведёт на нечитаемый экран, что хуже отсутствия нажатия.
+    _cc2 = ('onTapCell:' in _cc_atlw and
+            'AtlasCellDetailScreen' in _cc_atlw and
+            'TextScaler.linear(1.7)' in _cc_atlw and
+            "S.of('atlas.tap_for_detail')" in _cc_atlw and
+            _cc_l10n.count("'atlas.tap_for_detail'") == 2)
+    if _cc2:
+        ok('CC2 head-unit atlas cells open details, and the detail text is '
+           'scaled to be readable at arm length')
+    else:
+        fail('CC2 head-unit cells are dead again, or open unreadable text')
+
+    # CC3: ИЗОЛЯЦИЯ ОТ СВОЕЙ НОРМЫ, НЕ ОТ НОРМАТИВА. Норматив ISO 6469-3
+    # (100 Ом/В = 0,045 МОм при 452 В) ниже обычных показаний в триста
+    # раз — светофор от него был бы вечно зелёным. Норма считается по
+    # своим же замерам, медианой (среднее утянули бы вниз законные
+    # просадки на зарядке), и не раньше двадцати замеров.
+    # +199, находка ревизии: пороги считались ДВАЖДЫ — отдельно для
+    # цвета, отдельно для подписи, — и уже разошлись: ниже 0,25 МОм на
+    # зарядке цвет краснел, а подпись говорила «просадка обычна». Теперь
+    # приговор один, цвет и подпись — два его прочтения. Гейт держит
+    # именно единственность.
+    # Мутация показала слабость и этой редакции: считать вхождения
+    # конкретного числа мало — дубликат правила с ДРУГИМ числом
+    # (`base * 0.6` перед `base * 0.5`) проходил насквозь. Сторожим не
+    # число, а форму: пороги живут ровно в одной функции, и решений в ней
+    # ровно столько, сколько состояний.
+    _cc3_v = _cc_dash.split('_Insul _insulVerdict(')[1].split('\n}')[0] \
+        if '_Insul _insulVerdict(' in _cc_dash else ''
+    _cc3_rest = _cc_dash.replace(_cc3_v, '') if _cc3_v else _cc_dash
+    _cc3 = ('enum _Insul' in _cc_dash and
+            # ни одного порога вне единственного судьи
+            'base *' not in _cc3_rest and
+            _cc3_v.count('return _Insul.') == 7 and
+            _cc3_v.count('base *') == 2 and
+            "S.of('dash.insulation')" in _cc_dash and
+            'dash.total_energy' not in _cc_dash and
+            '_insulColor(' in _cc_dash and
+            '_insulNote(' in _cc_dash and
+            'insulationBaselineMOhm' in _cc_hal and
+            '_kInsulBaselineMin = 20' in _cc_hal and
+            'halSampleValues(' in _cc_db and
+            _cc_l10n.count("'dash.insul_learning'") == 2 and
+            _cc_l10n.count("'dash.insul_charging'") == 2)
+    if _cc3:
+        ok('CC3 insulation is judged against this car own baseline, with an '
+           'honest «still learning» state and no alarm while charging')
+    else:
+        fail('CC3 insulation lost its baseline or its honest states')
+
+    # CC4: ПЕРЕСЧЁТ НОРМЫ НЕ В ГЕТТЕРЕ. Первая редакция звала его из
+    # геттера, который читается на каждой перерисовке панели. Побочное
+    # действие в геттере — та неряшливость, которую ревизия обязана
+    # отклонять; найдено собственной ревизией до поля.
+    _cc4_get = _cc_hal.split('double? get halInsulationMOhm')[1] \
+        .split('\n  }')[0] if 'double? get halInsulationMOhm' in _cc_hal else ''
+    _cc4 = ('refreshInsulationBaseline' not in _cc4_get and
+            "if (e.name == 'insulation_resistance') {" in _cc_hal)
+    if _cc4:
+        ok('CC4 the baseline is refreshed where the sample arrives, not from '
+           'a getter read on every repaint')
+    else:
+        fail('CC4 a getter has side effects again')
+
+    # CC5: ДРОБНОЕ НАПРЯЖЕНИЕ ВТОРЫМ ИМЕНЕМ. Друг 3 подтвердил канал на
+    # живой зарядке, но потребители НЕ переезжают в этом же патче: сначала
+    # оба поедут в выгрузку и сверятся на своих данных. Подменить сейчас
+    # значило бы поверить чужому замеру без своей проверки.
+    # Мутация показала слабость первой редакции: `ValueSource.DOUBLE`
+    # встречается в таблице у десятка сигналов, и подмена источника
+    # значения ИМЕННО у этого канала гейт не роняла. Сторожим свою строку
+    # целиком: неверный источник даёт тихий ноль, а не отказ.
+    _cc5 = ('Decoder("pack_voltage_fine", "V", ValueSource.DOUBLE,'
+            in _cc_tab and
+            "'pack_voltage_fine': (250, 500)," in _cc_hal and
+            "'pack_voltage_fine': Duration(seconds: 6)," in _cc_hal and
+            "halValue('pack_voltage_fine')" not in _cc_hal)
+    if _cc5:
+        ok('CC5 fractional pack voltage is decoded under its own name and no '
+           'consumer moved onto it before it was cross-checked')
+    else:
+        fail('CC5 the fractional channel is missing, or a consumer already '
+             'trusts it unverified')
+else:
+    ok(f"Part CC skipped (build +{pv}, the insulation tile lands in +199)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)

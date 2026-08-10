@@ -1305,6 +1305,29 @@ class AppDatabase extends _$AppDatabase {
     return row?.timestamp;
   }
 
+  /// СЫРЫЕ ЗНАЧЕНИЯ ОДНОГО СИГНАЛА ЗА ОКНО. v0.2.0+199.
+  ///
+  /// Заведено ради нормы изоляции: чтобы понять, что для ЭТОЙ машины
+  /// обычно, нужны её собственные замеры за месяц, а не зашитое число.
+  ///
+  /// Возвращает значения как есть, без пересчёта в единицы показа —
+  /// перевод живёт в одном месте, в геттере сервиса, и удваивать его
+  /// здесь значило бы завести второй источник правды для той же
+  /// величины.
+  Future<List<double>> halSampleValues({
+    required String name,
+    required DateTime since,
+  }) async {
+    final rows = await (select(halSamples)
+          ..where((s) =>
+              s.name.equals(name) & s.timestamp.isBiggerThanValue(since)))
+        .get();
+    return [
+      for (final r in rows)
+        if (r.numericValue != null) r.numericValue!,
+    ];
+  }
+
   /// Count hal_samples tagged to a trip (companion to the OBD2
   /// countSamplesForTrip). Lets recovery distinguish an empty pup (no HAL
   /// samples, nothing worth keeping) from a real drive that simply wasn't

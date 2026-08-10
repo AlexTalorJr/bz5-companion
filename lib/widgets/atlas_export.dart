@@ -11,8 +11,8 @@
 // exactly what leaves the phone before it leaves.
 //
 // The boundary is laid out at exactly 1080×1350 logical px, so
-// `toImage(pixelRatio: 1.0)` is a 1080×1350 PNG regardless of the screen
-// it was previewed on. The outer FittedBox only scales the PAINTED
+// `toImage(pixelRatio: 2.0)` is a 2160×2700 PNG regardless of the screen
+// it was previewed on (v0.2.0+199 — числа в клетках требуют плотности). The outer FittedBox only scales the PAINTED
 // result down to the viewport; the boundary keeps its own size.
 //
 // Deviation on the cell size (documented): the contract says «клетка
@@ -70,8 +70,18 @@ class _AtlasExportScreenState extends State<AtlasExportScreen> {
       if (obj is! RenderRepaintBoundary) {
         throw StateError('export boundary not mounted');
       }
-      // pixelRatio 1.0 — the boundary IS 1080×1350 logical px.
-      final image = await obj.toImage(pixelRatio: 1.0);
+      // ── КАРТИНКА ВДВОЕ КРУПНЕЕ. v0.2.0+199 ──
+      //
+      // Была 1080×1350 при pixelRatio 1.0. С числами внутри клеток этого
+      // мало: цифра в клетке 45 px рисуется шрифтом 17 и в сжатом PNG
+      // расплывается ровно там, где её и надо прочитать.
+      //
+      // pixelRatio 2.0 даёт 2160×2700 без единой правки раскладки —
+      // границе по-прежнему 1080×1350 логических точек, меняется только
+      // плотность. Владелец 10.08: «необязательно, чтобы картинка
+      // помещалась на экране, она может быть и больше размерностью, но с
+      // данными».
+      final image = await obj.toImage(pixelRatio: 2.0);
       final png = await image.toByteData(format: ui.ImageByteFormat.png);
       image.dispose();
       if (png == null) throw StateError('png encode returned null');
@@ -322,6 +332,19 @@ class _ExportMatrix extends StatelessWidget {
   /// drawn, unopened cells are a thin slab, never a dashed outline).
   Set<int> get _liveBands => {for (final c in data.cells) c.band};
 
+  /// Расход клетки, если в ней вообще ездили. v0.2.0+199.
+  ///
+  /// Тот же `mean`, что показывает экран атласа, — взвешенное по ровным
+  /// секундам среднее. Второго расчёта нет намеренно: два места, где
+  /// одно и то же число считается по-своему, однажды разойдутся, и
+  /// разойдутся молча.
+  double? _meanOf(int band, int? window) {
+    for (final c in data.cells) {
+      if (c.band == band && c.window == window) return c.mean;
+    }
+    return null;
+  }
+
   @override
   Widget build(BuildContext context) {
     return Container(
@@ -383,6 +406,7 @@ class _ExportMatrix extends StatelessWidget {
                       best: data.best != null &&
                           data.best!.band == b &&
                           data.best!.window == w,
+                      mean: _meanOf(b, w),
                     ),
                   ),
                 ],
@@ -412,12 +436,28 @@ class _ExportMatrix extends StatelessWidget {
 class _ExportCell extends StatelessWidget {
   final Color fill;
   final bool best;
-  const _ExportCell({required this.fill, required this.best});
+
+  /// Расход клетки, кВт·ч на 100 км. null — в этом окне не ездили.
+  final double? mean;
+
+  const _ExportCell({required this.fill, required this.best, this.mean});
 
   @override
   Widget build(BuildContext context) {
+    // ── ЧИСЛА В КЛЕТКАХ. v0.2.0+199, поле 10.08 ──
+    //
+    // Владелец: «экспорт показывает картинку с пустыми ячейками, в них
+    // ничего нет, это бессмысленно». Так и было: раскрашенная сетка без
+    // единой цифры. Цвет отвечал на вопрос «ездил ли я тут», а на
+    // главный вопрос — «сколько там расход» — картинка не отвечала, и
+    // переслать её было незачем.
+    //
+    // Пустыми остаются только клетки, где не ездили: там числа нет, и
+    // рисовать нечего. Пустая клетка означает пусто, а не «не влезло».
+    final m = mean;
     return Container(
       height: _ExportMatrix._cell,
+      alignment: Alignment.center,
       decoration: BoxDecoration(
         color: fill,
         borderRadius: BorderRadius.circular(6),
@@ -425,6 +465,19 @@ class _ExportCell extends StatelessWidget {
             ? Border.all(color: AtlasTokens.expBestBorder, width: 4.5)
             : null,
       ),
+      child: m == null
+          ? null
+          : Text(
+              m.toStringAsFixed(1),
+              maxLines: 1,
+              style: const TextStyle(
+                fontSize: 17,
+                height: 1.0,
+                fontWeight: FontWeight.w600,
+                color: AtlasTokens.exportPanel,
+                fontFeatures: [FontFeature.tabularFigures()],
+              ),
+            ),
     );
   }
 }

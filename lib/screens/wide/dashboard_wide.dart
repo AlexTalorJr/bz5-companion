@@ -643,7 +643,20 @@ class _MiddleColumn extends StatelessWidget {
     // counter on this vehicle (never changed; not charge cycles) — replaced
     // by lifetime cumulative drive energy (kWh), SUM over all trips, same in
     // both sources (HAL trips are now persisted too). Null → "—".
-    final totalEnergy = hal.totalDriveEnergyKwh;
+    // ── СОПРОТИВЛЕНИЕ ИЗОЛЯЦИИ ВМЕСТО «ЭНЕРГИЯ ВСЕГО». v0.2.0+199 ──
+    //
+    // Решение владельца 10.08. «Энергия всего» — накопительный итог,
+    // который меняется на десятые за поездку и ни о чём не спрашивает.
+    // Изоляция — показатель безопасности: она отвечает на вопрос, не
+    // пробивает ли высокое напряжение на кузов, и мы её уже читаем со
+    // штатной системы слежения машины.
+    //
+    // Сама цифра без опоры бесполезна: 15 МОм — это много или мало,
+    // владелец знать не обязан. Поэтому рядом идёт короткая оценка
+    // относительно того, что для ЭТОЙ машины обычно (см.
+    // refreshInsulationBaseline).
+    final insulation = hal.useHalForInsulation ? hal.halInsulationMOhm : null;
+    final insulBase = hal.insulationBaselineMOhm;
     // v0.1.29+91: inverter temp from HAL (0x3DB00008) for the PDU slot in
     // halOnly — the PDU UDS DIDs (740/0010-0011) need the dongle, so without
     // it that card was blank. With the dongle the card keeps showing PDU
@@ -721,13 +734,14 @@ class _MiddleColumn extends StatelessWidget {
                     const SizedBox(width: 12),
                     Expanded(
                       child: _SmallMetricCard(
-                        icon: Icons.bolt,
-                        color: Colors.purpleAccent,
-                        label: S.of('dash.total_energy'),
-                        value: totalEnergy != null
-                            ? totalEnergy.toStringAsFixed(1)
+                        icon: Icons.shield_outlined,
+                        color: _insulColor(insulation, insulBase, isCharging),
+                        label: S.of('dash.insulation'),
+                        value: insulation != null
+                            ? insulation.toStringAsFixed(1)
                             : '—',
-                        unit: 'kWh',
+                        unit: 'MΩ',
+                        sub: _insulNote(insulation, insulBase, isCharging),
                       ),
                     ),
                   ],
@@ -786,6 +800,82 @@ class _MiddleColumn extends StatelessWidget {
         ),
       ],
     );
+  }
+}
+
+/// Цвет плитки изоляции. v0.2.0+199.
+///
+/// Пороги — доли от СОБСТВЕННОЙ нормы машины, а не от норматива:
+/// норматив ISO 6469-3 (100 Ом на вольт, у нас это 0,045 МОм) ниже
+/// обычных показаний в триста раз, и светофор от него был бы вечно
+/// зелёным.
+///
+/// Абсолютный низ всё же есть: 0,25 МОм. Это ещё впятеро выше требования
+/// для постоянного тока, но уже ниже требования для переменного — то
+/// есть такая машина небезопасна на зарядке независимо от того, к чему
+/// она привыкла.
+///
+/// На зарядке не тревожим: просадка там законна, через станцию
+/// добавляется параллельный путь. Поле 06.08 — 7,5 МОм прямо в зарядной
+/// сессии при обычных пятнадцати.
+/// Приговор по изоляции. ОДНО место, где живут пороги.
+///
+/// Найдено собственной ревизией до поля: первая редакция считала пороги
+/// ДВАЖДЫ — отдельно для цвета, отдельно для подписи. Они уже успели
+/// разойтись: при падении ниже 0,25 МОм на зарядке цвет становился
+/// красным, а подпись говорила «на зарядке просадка обычна». Экран
+/// противоречил сам себе.
+///
+/// Теперь приговор один, а цвет и подпись — два его прочтения.
+enum _Insul { unknown, learning, charging, normal, watch, alarm }
+
+_Insul _insulVerdict(double? mOhm, double? base, bool charging) {
+  if (mOhm == null) return _Insul.unknown;
+  // Абсолютный низ сильнее всего остального, включая зарядку. 0,25 МОм
+  // ещё впятеро выше требования ISO 6469-3 для постоянного тока, но уже
+  // ниже требования для переменного — такая машина небезопасна на
+  // зарядке независимо от того, к чему она привыкла.
+  if (mOhm < 0.25) return _Insul.alarm;
+  // Просадка на зарядке законна: через станцию добавляется параллельный
+  // путь. Поле 06.08 — 7,5 МОм прямо в зарядной сессии при обычных
+  // пятнадцати. Тревожить тут значило бы приучить не верить тревоге.
+  if (charging) return _Insul.charging;
+  if (base == null) return _Insul.learning;
+  if (mOhm < base * 0.25 || mOhm < 1.0) return _Insul.alarm;
+  if (mOhm < base * 0.5) return _Insul.watch;
+  return _Insul.normal;
+}
+
+Color _insulColor(double? mOhm, double? base, bool charging) {
+  switch (_insulVerdict(mOhm, base, charging)) {
+    case _Insul.unknown:
+      return Colors.grey;
+    case _Insul.alarm:
+      return Colors.redAccent;
+    case _Insul.watch:
+      return Colors.amber;
+    case _Insul.learning:
+    case _Insul.charging:
+    case _Insul.normal:
+      return Colors.lightGreenAccent;
+  }
+}
+
+/// Подпись под числом изоляции — короткая и на человеческом языке.
+String? _insulNote(double? mOhm, double? base, bool charging) {
+  switch (_insulVerdict(mOhm, base, charging)) {
+    case _Insul.unknown:
+      return null;
+    case _Insul.learning:
+      return S.of('dash.insul_learning');
+    case _Insul.charging:
+      return S.of('dash.insul_charging');
+    case _Insul.normal:
+      return S.of('dash.insul_normal');
+    case _Insul.watch:
+      return S.of('dash.insul_watch');
+    case _Insul.alarm:
+      return S.of('dash.insul_alarm');
   }
 }
 

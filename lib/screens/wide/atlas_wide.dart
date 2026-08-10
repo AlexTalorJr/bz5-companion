@@ -19,6 +19,7 @@ import '../../services/locale_service.dart';
 import '../../services/speed_profile_service.dart';
 import '../../theme/atlas_tokens.dart';
 import '../../widgets/atlas_grid.dart';
+import '../atlas_cell_detail.dart';
 
 class AtlasWideScreen extends StatefulWidget {
   const AtlasWideScreen({super.key});
@@ -107,7 +108,7 @@ class _AtlasWideScreenState extends State<AtlasWideScreen> {
                             fontSize: 22, color: AtlasTokens.t55),
                       ),
                       const Spacer(),
-                      Text(S.of('atlas.view_only'),
+                      Text(S.of('atlas.tap_for_detail'),
                           style: const TextStyle(
                               fontSize: 20, color: AtlasTokens.t40)),
                     ],
@@ -121,7 +122,36 @@ class _AtlasWideScreenState extends State<AtlasWideScreen> {
                           scale: AtlasGridScale.bz5,
                           pending: pending,
                           intentKey: intent?.key,
-                          // Cells are dead by contract on the head unit.
+                          // ── КЛЕТКИ ОЖИЛИ. v0.2.0+199 ──
+                          //
+                          // Здесь стояло «Cells are dead by contract on
+                          // the head unit», и это было решение владельца:
+                          // подробности смотреть на телефоне. Владелец
+                          // ОТМЕНИЛ его 10.08 своими словами: «я думал
+                          // что будет удобно смотреть на телефоне, но по
+                          // факту хочется после поездки или на светофоре
+                          // посмотреть на машине».
+                          //
+                          // Причины безопасности за прежним запретом не
+                          // стояло — это была догадка об удобстве, и
+                          // поле её опровергло. Снимаем явно, с записью,
+                          // а не тихо.
+                          onTapCell: (cell) =>
+                              Navigator.of(context).push(MaterialPageRoute(
+                            builder: (_) => MediaQuery(
+                              // Экран подробностей рисовался под телефон:
+                              // шрифты 11–20. На вытянутой руке в машине
+                              // это не читается. Множитель растит ТОЛЬКО
+                              // текст и не трогает раскладку — экран
+                              // прокручиваемый, а единственная коробка с
+                              // жёсткой высотой держит столбики, а не
+                              // буквы, и переполниться ей нечем.
+                              data: MediaQuery.of(context).copyWith(
+                                textScaler: const TextScaler.linear(1.7),
+                              ),
+                              child: AtlasCellDetailScreen(cell: cell),
+                            ),
+                          )),
                         ),
                         if (pending.isNotEmpty) ...[
                           const SizedBox(height: 14),

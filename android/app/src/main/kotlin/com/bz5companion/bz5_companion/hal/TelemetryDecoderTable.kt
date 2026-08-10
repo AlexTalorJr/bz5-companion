@@ -97,10 +97,27 @@ object TelemetryDecoderTable {
         put("BYDAutoChargingDevice|0x2D300018",
             Decoder("pack_current", "A", ValueSource.DOUBLE,
                 notes = "discharge-positive; same convention as UDS C33"))
-        // HYPOTHESIS — needs corr-with primary pack_voltage on charge run:
-        // put("BYDAutoChargingDevice|0x2FF00030",
-        //     Decoder("pack_voltage_alt", "V", ValueSource.DOUBLE,
-        //         notes = "possibly high-side; not independently verified"))
+        // ── ГИПОТЕЗА ЗАКРЫТА, КАНАЛ ВКЛЮЧЁН. v0.2.0+199 ──
+        //
+        // Друг 3 подтвердил его на живой быстрой зарядке 06.08: 436 В в
+        // покое → 478,6 В на пике → таппер к 452, 8 489 событий за
+        // сессию, источник значения — double. В его справке помечен как
+        // «подтв», а не «гипотеза».
+        //
+        // Зачем он нужен: основной канал 0x2D300008 отдаёт ЦЕЛЫЕ вольты
+        // (все 5 710 замеров в выгрузке 10.08 без дробной части). Один
+        // вольт округления при качании тока в сто ампер — это десять
+        // миллиом ошибки в расчёте сопротивления пакета, и по двум
+        // точкам оно вырождалось в мусор (от 6 до 199 мОм).
+        //
+        // Заводится ВТОРЫМ именем, а не подменяет `pack_voltage`.
+        // Причина процедурная: сначала оба поедут в выгрузку, там я
+        // сверю их между собой на настоящих данных, и только потом
+        // потребители переедут. Подменить сейчас значило бы поверить
+        // чужому замеру без своей проверки.
+        put("BYDAutoChargingDevice|0x2FF00030",
+            Decoder("pack_voltage_fine", "V", ValueSource.DOUBLE,
+                notes = "fractional volts; confirmed by recon 06.08 DC charge"))
 
         // ─── Energy (cells) ──────────────────────────────────────────────
         put("BYDAutoEnergyDevice|0x45400030",
