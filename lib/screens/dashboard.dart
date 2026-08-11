@@ -591,9 +591,17 @@ class _Connected extends StatelessWidget {
     final DateTime? sohDate = hal.halSohAhPct != null
         ? hal.halSohComputedAt
         : (svc.sohAhPct != null ? svc.sohComputedAt : null);
-    final String? sohSub = sohDate == null
-        ? null
-        : S.of('soh.computed_at').replaceFirst('{age}', _relTime(sohDate));
+    // v0.2.3+202: подписи две, а не одна. Есть своя оценка — дата, как
+    // раньше. Нет — строка о том, чего для неё не хватает, потому что в
+    // самой ячейке в этот момент стоит число машины, и без объяснения
+    // непонятно, чьё оно и почему сменилось.
+    final String? sohSub = sohDate != null
+        ? S.of('soh.computed_at').replaceFirst('{age}', _relTime(sohDate))
+        : sohMissingReasonText(
+            minDeltaSocPct: hal.halSohMinDeltaSocPct,
+            lastDeltaSocPct:
+                hal.halSohRejectedDeltaSoc ?? svc.sohRejectedDeltaSoc,
+          );
     // v0.1.43+142 §2: one-shot "SOH recomputed" SnackBar (variant A).
     _maybeShowSohSnack(context, hal, svc);
     final tempRaw = svc.readNumeric('790', '002F');
@@ -1504,7 +1512,7 @@ class _TripCard extends StatelessWidget {
 
 /// Bump when changing the diagnostic format — helps cross-reference
 /// screenshots to specific app versions while iterating.
-const String _kDiagVersion = 'v0.2.2+201';
+const String _kDiagVersion = 'v0.2.3+202';
 
 /// v0.1.29+94: public alias of the build version string for display outside
 /// dashboard (e.g. the About screen's APP card). Single literal source — the

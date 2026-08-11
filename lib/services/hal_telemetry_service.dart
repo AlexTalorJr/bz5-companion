@@ -282,7 +282,10 @@ class HalTelemetryService extends ChangeNotifier
     'cell_v_highest': Duration(seconds: 6),
     'cell_idx_lowest': Duration(seconds: 6),
     'cell_idx_highest': Duration(seconds: 6),
-    'insulation_resistance': Duration(seconds: 30),
+    // v0.2.3+202: insulation_resistance переехало в _eventDriven ниже.
+    // Здесь его запись была бы мёртвой — halFresh спрашивает _eventDriven
+    // первым, — а мёртвое объявление рано или поздно прочтут как
+    // действующее.
     // v0.1.29+86: fractional SOC from BigData 0x044C (recon p091 decode
     // record → soc_precise, DBL = u16LE[10]×0.1). Confirmed by Друг 3 to
     // arrive once per ~30 s on the CAN bus (NOT 1 Hz — frame is genuinely
@@ -305,6 +308,12 @@ class HalTelemetryService extends ChangeNotifier
     // now holds it for the whole running stream, like _stickyGear does
     // for the trip machine and +82 did for brake_pedal.
     'gear_enum',
+    // v0.2.3+202: сопротивление изоляции приходит редко и без
+    // расписания — платформа шлёт кадр, когда сама решит. Срок годности
+    // в 30 или 90 секунд для него бессмысленен: значение не портится от
+    // того, что следующий кадр задержался. Прежняя запись в
+    // _continuousWindow (30 с) убрана — она противоречила этой.
+    'insulation_resistance',
   };
 
   // Range guards per name — same role as the 0..220 speed guard from the
@@ -433,6 +442,19 @@ class HalTelemetryService extends ChangeNotifier
     // being held. Same treatment as soh/battery_temp_bigdata above.
     'cell_v_lowest', 'cell_v_highest',
     'cell_idx_lowest', 'cell_idx_highest',
+    // ── ПРИЧИНА ПРОЧЕРКА В ЯЧЕЙКЕ ИЗОЛЯЦИИ. v0.2.3+202 ──
+    //
+    // Ровно тот же случай, что с парой cell_v_lowest/highest в +105.
+    // Замер проходит проверку диапазона в _onEvent и ложится в _latest,
+    // но БЕЗ этой строки он никогда не попадал в _lastGood. А читают
+    // его только оттуда: halInsulationMOhm и useHalForInsulation оба
+    // идут через _heldValue → _lastGood. Значит разрешение показывать
+    // было всегда «нет», а число всегда null, и прочерк на широком
+    // экране стоял постоянно, а не «после 90 секунд без кадра».
+    //
+    // Сигнал физически идёт — экспорт 10.08 его содержит. Не хватало
+    // одной строки здесь.
+    'insulation_resistance',
   };
   final Map<String, ({double value, DateTime at})> _lastGood = {};
 
@@ -470,7 +492,21 @@ class HalTelemetryService extends ChangeNotifier
   // against BMS SOH ~98%; 150.0 nominal resolves that to 98.3%. Keep in sync
   // with ConnectionService.Bz5Model.batteryCapacityAh by hand.
   static const double _halSohPackCapacityAh = 150.0;
-  static const double _kHalSohMinDeltaSocPct = 20.0; // min SOC span to accept
+  // ── ПОРОГ ОХВАТА ЗАРЯДА 20 → 40 %. v0.2.3+202 ──
+  //
+  // Близнец _kSohMinDeltaSocPct из connection.dart, обоснование там же:
+  // при погрешности определения заряда на концах около 1,5 пункта окно
+  // в 27 % даёт ±5,9 % на выходе, и это не оценка, а шум.
+  //
+  // Числа обязаны совпадать — два пути пишут в одну таблицу soh_estimates
+  // (id=1 адаптер, id=2 HAL), и разные пороги дали бы две несравнимые
+  // оценки в одном показе. Равенство сторожит гейт CF1.
+  //
+  // Все зарядки владельца за 2,5 месяца по охвату: 25,8 · 25,3 · 20,6 ·
+  // 15,0 · 3,8 · 0,4 % и восемь по нулям. Порог 40 % пока не проходила
+  // ни одна — это ожидаемо и есть смысл правки: лучше показать честное
+  // число машины, чем свою оценку с разбросом в шесть пунктов.
+  static const double _kHalSohMinDeltaSocPct = 40.0; // min SOC span to accept
   static const double _kHalSohMinCoverage = 0.90;    // min live-current frac
   // v0.1.29+116: crash-safe SOH sessions. The whole session state used to
   // live in RAM only and was finalized ONLY on a live charge→idle edge — so
@@ -730,6 +766,10 @@ class HalTelemetryService extends ChangeNotifier
   // before the crash-snapshot cleanup). Feeds the "estimate: {age}"
   // subtitle on the SOH cards.
   DateTime? _halSohComputedAtCached;
+  // v0.2.3+202: охват заряда у записи id=2, которую отбраковал порог при
+  // чтении. Экран берёт отсюда число «последний был N %» для строки о
+  // том, чего не хватает. Null означает «отбраковывать было нечего».
+  double? _halSohRejectedDeltaSoc;
   // v0.1.43+142 §2: one-shot "SOH just recomputed" marker (Q2 variant A —
   // no new dependencies). Set in the same ordered section; the dashboards
   // consume it via takeSohFreshlyComputedAt() and show a SnackBar once.
@@ -870,6 +910,21 @@ class HalTelemetryService extends ChangeNotifier
     final s = _lastGood[name];
     if (s == null) return null;
     if (!_running) return null;
+    // ── СОБСТВЕННОЕ ЗНАЧЕНИЕ И РАЗРЕШЕНИЕ ЕГО ПОКАЗАТЬ ОБЯЗАНЫ ЖИТЬ
+    //    ОДИНАКОВО ДОЛГО. v0.2.3+202 ──
+    //
+    // _useHal для событийного имени отвечает «да» без срока годности:
+    // кадр приходит только на изменение, значит последнее значение
+    // верно весь прогон. Здесь такой проверки не было, и получалась
+    // пара «показывать разрешено, а числа нет» — экран рисовал прочерк
+    // при живом разрешении. Сегодня это чинит ячейку изоляции, но чинит
+    // по устройству, а не по имени: следующее событийное имя в эту яму
+    // уже не попадёт.
+    //
+    // На нынешние три имени (soc_display, soc_battery, gear_enum) не
+    // влияет — ни одно из них не читается через _heldValue, они идут
+    // через halValue и _lastGood напрямую. Проверено на дереве +201.
+    if (_eventDriven.contains(name)) return s.value;
     if (DateTime.now().difference(s.at) > hold) return null;
     return s.value;
   }
@@ -1289,6 +1344,16 @@ class HalTelemetryService extends ChangeNotifier
   /// half of [halSohAhPct], always from the SAME id=2 row / session, so the
   /// card subtitle never mixes sources with the shown percent.
   DateTime? get halSohComputedAt => _halSohComputedAtCached;
+
+  /// v0.2.3+202: требуемый охват заряда, проценты. Открыт наружу, чтобы
+  /// экран строил объяснение из того же числа, что и проверка, а не из
+  /// второго списка, который однажды разойдётся.
+  double get halSohMinDeltaSocPct => _kHalSohMinDeltaSocPct;
+
+  /// v0.2.3+202: охват сохранённой записи, отбракованной при чтении, или
+  /// null, если отбраковывать было нечего. Экран показывает это число в
+  /// строке «последний был N %».
+  double? get halSohRejectedDeltaSoc => _halSohRejectedDeltaSoc;
 
   /// v0.1.43+142 §2: one-shot "SOH just recomputed" flag. Non-null exactly
   /// once after a finalize/recovery lands; a dashboard build consumes it
@@ -2452,10 +2517,22 @@ class HalTelemetryService extends ChangeNotifier
   /// span and current-coverage gates both pass. Mirrors
   /// ConnectionService._finalizeSohEstimate exactly, but on HAL data.
   void _finalizeHalSohEstimate() {
+    // v0.2.3+202: оба выхода ниже были молчаливыми. Сюда попадают
+    // сессии, у которых не оказалось заряда на одном из концов, — и
+    // снаружи это неотличимо от «зарядки не было вовсе». Отдельная
+    // причина, отдельная запись.
     final startSoc = _halSohStartSoc;
-    if (startSoc == null) return;
+    if (startSoc == null) {
+      unawaited(AutostartArm.write(
+          'soh-drop: нет заряда на начало сессии, считать не из чего'));
+      return;
+    }
     final curSoc = halSocForTrip;
-    if (curSoc == null) return;
+    if (curSoc == null) {
+      unawaited(AutostartArm.write('soh-drop: нет текущего заряда на конец '
+          'сессии, начало было ${startSoc.toStringAsFixed(1)}%'));
+      return;
+    }
     _storeHalSohIfValid(
       startSoc: startSoc,
       endSoc: curSoc,
@@ -2469,6 +2546,25 @@ class HalTelemetryService extends ChangeNotifier
   /// split out so the crash-recovery path (_recoverPendingSohSession) runs
   /// the EXACT same ΔSOC / coverage / sanity gates and the same id=2 write
   /// as a live finalize — one rule set, two entry points.
+  /// v0.2.3+202: имя первого непрошедшего условия, для записи в журнал.
+  ///
+  /// Порядок проверок здесь тот же, что в булевом выражении gatesPass
+  /// ниже, и это не совпадение: если порядок разойдётся, журнал начнёт
+  /// называть не то условие, из-за которого сессия отброшена. Менять
+  /// одно без другого нельзя.
+  static String _halSohFailedGateName({
+    required double deltaSocPct,
+    required double chargeAh,
+    required double liveSec,
+    required double totalSec,
+  }) {
+    if (deltaSocPct < _kHalSohMinDeltaSocPct) return 'охват';
+    if (totalSec <= 0) return 'нет отсчётов времени';
+    if ((liveSec / totalSec) < _kHalSohMinCoverage) return 'покрытие';
+    if (chargeAh <= 0) return 'не набрано ампер-часов';
+    return 'ничего';
+  }
+
   void _storeHalSohIfValid({
     required double startSoc,
     required double endSoc,
@@ -2487,6 +2583,38 @@ class HalTelemetryService extends ChangeNotifier
         (liveSec / totalSec) >= _kHalSohMinCoverage &&
         chargeAh > 0;
     if (!gatesPass) {
+      // ── ОТБРОШЕННАЯ СЕССИЯ ОБЯЗАНА СЕБЯ ОБЪЯСНИТЬ. v0.2.3+202 ──
+      //
+      // Здесь стояла молчаливая очистка заготовки. Владелец собирается
+      // зарядиться на медленной станции и сравнить результат; без этой
+      // записи опыт нечем интерпретировать — сессия просто исчезнет, и
+      // останется гадать, порог по охвату не прошёл или покрытие.
+      //
+      // Предупреждение по расчёту: 40 % на 2 кВт это около тринадцати
+      // часов, а условие покрытия 90 % почти наверняка не пройдёт —
+      // самая длинная медленная сессия в данных 64 минуты. Тогда в
+      // журнале будет видно именно «покрытие», а не «охват».
+      // Покрытие считаем ДО записи. Тернарный оператор внутри
+      // подстановки со своим строковым литералом внутри внешнего
+      // литерала — законный Dart, но проверить это может только
+      // компилятор, а его в песочнице нет. Одна лишняя строка дешевле
+      // упавшей сборки.
+      final String coverStr = totalSec > 0
+          ? (liveSec / totalSec * 100).toStringAsFixed(0)
+          : '—';
+      final String failedGate = _halSohFailedGateName(
+        deltaSocPct: deltaSocPct,
+        chargeAh: chargeAh,
+        liveSec: liveSec,
+        totalSec: totalSec,
+      );
+      unawaited(AutostartArm.write('soh-drop: '
+          'охват ${deltaSocPct.toStringAsFixed(1)}% '
+          'из ${_kHalSohMinDeltaSocPct.toStringAsFixed(0)}% · '
+          'покрытие $coverStr% '
+          'из ${(_kHalSohMinCoverage * 100).toStringAsFixed(0)}% · '
+          'набрано ${chargeAh.toStringAsFixed(1)} А·ч · '
+          'не прошло: $failedGate'));
       unawaited(_clearPendingSohSession());
       return;
     }
@@ -2494,6 +2622,15 @@ class HalTelemetryService extends ChangeNotifier
     final sohPct = fullAh / _halSohPackCapacityAh * 100.0;
     // Sanity clamp — outside this band means a bad session, so drop it.
     if (sohPct < 50.0 || sohPct > 110.0) {
+      // v0.2.3+202: и этот выход тоже был молчаливым. Сессия прошла все
+      // условия, но результат вышел за коридор правдоподобия 50…110 % —
+      // значит счёт ампер-часов или заряд на концах врут. Число надо
+      // видеть: без него отличить «сессии не было» от «сессия дала 140 %»
+      // нечем.
+      unawaited(AutostartArm.write('soh-drop: '
+          'расчёт ${sohPct.toStringAsFixed(1)}% вне коридора 50…110% · '
+          'охват ${deltaSocPct.toStringAsFixed(1)}% · '
+          'набрано ${chargeAh.toStringAsFixed(1)} А·ч'));
       unawaited(_clearPendingSohSession());
       return;
     }
@@ -2697,6 +2834,27 @@ class HalTelemetryService extends ChangeNotifier
     }
     try {
       final row = await db.getLatestSohEstimate(rowId: 2);
+      if (row != null && row.deltaSocCovered < _kHalSohMinDeltaSocPct) {
+        // ── ОТБОР ПРИ ЧТЕНИИ, НЕ ПРИ ЗАПИСИ. v0.2.3+202 ──
+        //
+        // Порог поднят с 20 до 40 %, и запись, посчитанная по узкому
+        // окну, лежит в базе с прошлого раза. Проверка стоит здесь, а
+        // не только в момент записи: тогда новый порог действует назад,
+        // а строка в базе остаётся целой и переживёт обратное решение.
+        //
+        // Кэш не заполняем — и показ сам спускается на число машины.
+        // Решение владельца 11.08: пока нет записи с измеренной
+        // оценкой, показываем оценку машины.
+        _halSohRejectedDeltaSoc = row.deltaSocCovered;
+        debugPrint('HalSoh: stored id=2 rejected — covered '
+            '${row.deltaSocCovered.toStringAsFixed(1)}% < '
+            '${_kHalSohMinDeltaSocPct.toStringAsFixed(0)}%');
+        await AutostartArm.write('soh-load: narrow · охват '
+            '${row.deltaSocCovered.toStringAsFixed(1)}% меньше '
+            '${_kHalSohMinDeltaSocPct.toStringAsFixed(0)}%, '
+            'показываем число машины');
+        return;
+      }
       if (row != null) {
         _halSohAhPctCached = row.sohAhPct;
         // v0.1.43+142 §2: hydrate the subtitle date with the percent.

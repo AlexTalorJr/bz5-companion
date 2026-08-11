@@ -639,9 +639,17 @@ class _BottomStatusStrip extends StatelessWidget {
     final DateTime? sohDate = hal.halSohAhPct != null
         ? hal.halSohComputedAt
         : (svc.sohAhPct != null ? svc.sohComputedAt : null);
-    final String? sohSub = sohDate == null
-        ? null
-        : S.of('soh.computed_at').replaceFirst('{age}', _relTime(sohDate));
+    // v0.2.3+202: подписи две, а не одна. Есть своя оценка — дата, как
+    // раньше. Нет — строка о том, чего для неё не хватает, потому что в
+    // самой ячейке в этот момент стоит число машины, и без объяснения
+    // непонятно, чьё оно и почему сменилось.
+    final String? sohSub = sohDate != null
+        ? S.of('soh.computed_at').replaceFirst('{age}', _relTime(sohDate))
+        : sohMissingReasonText(
+            minDeltaSocPct: hal.halSohMinDeltaSocPct,
+            lastDeltaSocPct:
+                hal.halSohRejectedDeltaSoc ?? svc.sohRejectedDeltaSoc,
+          );
     // v0.1.43+142 §2: one-shot "SOH recomputed" SnackBar (variant A).
     _maybeShowSohSnack(context, hal, svc);
     final odo = hal.useHalForOdometer ? hal.halOdometerKm : svc.readNumeric('791', '0026');
@@ -703,7 +711,15 @@ class _BottomStatusStrip extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(sohDisplay),
+                      // v0.2.3+202: защита от переполнения. Раньше здесь
+                      // всегда стояла дата — короткая и предсказуемая.
+                      // Теперь при отсутствии оценки приходит строка об
+                      // охвате, и она длиннее. Строка внутри Row без
+                      // ограничения переполняется полосатой рамкой; на
+                      // двух других экранах такая защита уже стояла.
                       Text(sohSub,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                           style: TextStyle(
                               fontSize: 9, color: Colors.grey.shade600)),
                     ],

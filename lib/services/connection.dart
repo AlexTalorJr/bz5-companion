@@ -271,7 +271,22 @@ class ConnectionService extends ChangeNotifier {
   DateTime? _sohLastIntegrationAt;    // previous tick time
   double _sohCoverageLiveSec = 0.0;   // seconds with a live _packCurrentA
   double _sohCoverageTotalSec = 0.0;  // total seconds integrated
-  static const double _kSohMinDeltaSocPct = 20.0; // min SOC span for validity
+  // ── ПОРОГ ОХВАТА ЗАРЯДА 20 → 40 %. v0.2.3+202 ──
+  //
+  // Поле 10.08: своя оценка дала 101,7 % при охвате 27,2 %, машина в это
+  // же время сообщает 96 %. Расхождение 5,7 пункта объясняется шириной
+  // окна: погрешность определения заряда на концах около 1,5 пункта, на
+  // окне в 27 % это даёт ±5,9 %. То есть узкое окно не даёт оценки, оно
+  // даёт шум, и показывать его как «состояние батареи» нельзя.
+  //
+  // Второе такое же число живёт во втором пути расчёта под именем
+  // _kHalSohMinDeltaSocPct. Разойтись им нельзя: два пути пишут в одну
+  // таблицу soh_estimates, и разные пороги дали бы две несравнимые
+  // оценки в одном показе. Равенство сторожит гейт CF1.
+  //
+  // Имя файла второго пути здесь намеренно не названо: этот файл не
+  // должен знать о том сервисе ничего, даже в примечании. Сторожит AA2.
+  static const double _kSohMinDeltaSocPct = 40.0; // min SOC span for validity
   static const double _kSohMinCoverage = 0.90;    // min live-current fraction
 
   // ── v0.1.29+94: per-module UDS charge logger ──
@@ -3885,11 +3900,33 @@ class ConnectionService extends ChangeNotifier {
     return v;
   }
 
+  /// v0.2.3+202: охват заряда у сохранённой записи, которую отбраковал
+  /// порог при чтении. Нужен экрану, чтобы сказать владельцу, сколько
+  /// было в последний раз. Null означает «отбраковывать было нечего» —
+  /// либо записи нет вовсе, либо она порог прошла.
+  double? _sohRejectedDeltaSoc;
+  double? get sohRejectedDeltaSoc => _sohRejectedDeltaSoc;
+
   /// Load the persisted SOH estimate into the cache (called once at startup).
+  ///
+  /// ── ОТБОР ПРИ ЧТЕНИИ, НЕ ПРИ ЗАПИСИ. v0.2.3+202 ──
+  ///
+  /// Порог поднят с 20 до 40 %, и старая запись, посчитанная по узкому
+  /// окну, никуда не делась. Проверять её надо здесь, а не только в
+  /// момент записи: тогда повышение порога действует назад, а строка в
+  /// базе остаётся нетронутой и переживёт обратное решение.
+  ///
+  /// Отбраковали — кэш остаётся пустым, и экран сам спускается на число
+  /// машины. Решение владельца 11.08: пока нет записи с измеренной
+  /// оценкой, показываем оценку машины.
   Future<void> loadSohEstimate() async {
     try {
       final row = await db.getLatestSohEstimate();
       if (row != null) {
+        if (row.deltaSocCovered < _kSohMinDeltaSocPct) {
+          _sohRejectedDeltaSoc = row.deltaSocCovered;
+          return;
+        }
         _sohAhPctCached = row.sohAhPct;
         // v0.1.43+142 §2: hydrate the subtitle date with the percent.
         _sohComputedAtCached = row.computedAt;

@@ -10433,19 +10433,51 @@ if int(pv) >= 197:
     # владелец три недели видел 96 % вместо 102, а следа не оставалось.
     # Причина не найдена — чиним слепоту, а не причину.
     _cb8_at = _cb_hal.find('Future<void> loadHalSohEstimate()')
-    _cb8_body = _cb_hal[_cb8_at:_cb8_at + 2600] if _cb8_at > 0 else ''
     # Мутация нашла две дыры первой редакции. Первая: окно тела в 1600
     # знаков не покрывало все четыре строки, и удаление одной оставалось
     # незамеченным — окно расширено. Вторая, злее: при удалении вызова
     # `find` возвращает −1, а −1 меньше любой позиции, и проверка
     # «раньше» проходила на ОТСУТСТВИИ предмета. Оба конца обязаны
     # существовать.
+    #
+    # ── ТРЕТЬЯ ДЫРА, НАЙДЕНА В +202. ОКНО ПО ДЛИНЕ ВМЕСТО КОНЦА МЕТОДА ──
+    #
+    # Стояло окно в 2600 знаков и требование РОВНО пяти вхождений
+    # `soh-load:`. В +202 у метода появился шестой исход, тело выросло до
+    # 3381 знака, окно обрезало последний исход — и счётчик снова выдал
+    # пять. Гейт зеленел, не увидев предмета. Пришпиливание к точному
+    # числу здесь дало не строгость, а слепоту.
+    #
+    # Теперь границы берутся по настоящему концу метода, а исходы
+    # проверяются каждый по имени. Добавить седьмой исход можно, потерять
+    # любой из шести — нет.
+    #
+    # ── ЧЕТВЁРТАЯ ДЫРА, ТАМ ЖЕ. ГЕЙТ ЧИТАЛ КОММЕНТАРИЙ КАК КОД ──
+    #
+    # Проверка «пустого перехвата больше нет» ищет текст по телу метода.
+    # Примечание от +197, которое ОБЪЯСНЯЕТ починку, цитирует ту самую
+    # конструкцию дословно — и как только окно расширилось до настоящего
+    # конца метода, проверка нашла бы её в примечании и объявила дефект
+    # на исправном коде. Спасает то, что _cb_hal уже вычищен от
+    # комментариев выше. Отсюда же требование к концу окна: маркером
+    # обязан быть КОД, а не заголовок соседнего примечания — тот в
+    # вычищенном тексте отсутствует, find вернёт −1, окно схлопнется в
+    # пустую строку, и гейт упадёт на исправном коде. Поймано прогоном.
+    _cb8_end = _cb_hal.find('void _accumulateHalTripStats()', _cb8_at)
+    _cb8_body = _cb_hal[_cb8_at:_cb8_end] if -1 < _cb8_at < _cb8_end else ''
     _cb8_hyd = _cb_hal.find('await loadHalSohEstimate();')
     _cb8_rec = _cb_hal.find('await _recoverPendingSohSession();')
-    # Исходов ПЯТЬ, а не четыре, как стояло в первой редакции: skip
-    # (посчитали в этом запуске), fail без базы, ok, none (записи нет) и
-    # fail с текстом исключения. Считал по памяти — поймал прогон.
-    _cb8 = (_cb8_body.count('soh-load:') == 5 and
+    # Исходов ШЕСТЬ: skip (посчитали в этом запуске), fail без базы,
+    # narrow (охват записи меньше порога — +202), ok, none (записи нет) и
+    # fail с текстом исключения. В первой редакции стояло четыре, во
+    # второй пять; оба раза считал по памяти, и оба раза ловил прогон.
+    # Поэтому теперь не счёт, а перечень.
+    _cb8_outcomes = ('soh-load: skip', 'soh-load: fail · базы нет',
+                     'soh-load: narrow', 'soh-load: ok', 'soh-load: none',
+                     'soh-load: fail · $e')
+    _cb8 = (_cb8_body != '' and
+            all(o in _cb8_body for o in _cb8_outcomes) and
+            _cb8_body.count('soh-load:') >= len(_cb8_outcomes) and
             'catch (_) {' not in _cb8_body and
             _cb8_hyd > 0 and _cb8_rec > 0 and _cb8_hyd < _cb8_rec)
     if _cb8:
@@ -10904,6 +10936,273 @@ if int(pv) >= 201:
         fail('CE10 the banner flag and its text are judged separately')
 else:
     ok(f"Part CE skipped (build +{pv}, account state as truth lands in +201)")
+
+# ─────────────────────────── Part CF (+202) ──────────────────────────
+# Эра CF. Что закрывает, одной фразой на пункт:
+#   1. порог охвата заряда поднят до 40 % и одинаков в обоих путях;
+#   2. узкая сохранённая запись отбраковывается ПРИ ЧТЕНИИ, в обоих
+#      путях, — иначе повышение порога не действует назад;
+#   3. отбраковали — показ спускается на число машины, лестница цела;
+#   4. вместо пустой подписи экран говорит, чего не хватает, и строит
+#      это из того же порога, что и проверка;
+#   5. сопротивление изоляции доезжает до экрана: удерживается,
+#      объявлено событийным, и значение живёт столько же, сколько
+#      разрешение его показать;
+#   6. ни одна отброшенная сессия оценки не исчезает молча.
+if int(pv) >= 202:
+    _cf_hal = _strip_comments_safe(
+        (root / 'lib/services/hal_telemetry_service.dart').read_text())
+    _cf_con = _strip_comments_safe(
+        (root / 'lib/services/connection.dart').read_text())
+    _cf_l10n = (root / 'lib/l10n/strings.dart').read_text()
+    _cf_screens = {
+        p: _strip_comments_safe((root / p).read_text())
+        for p in ('lib/screens/dashboard.dart',
+                  'lib/screens/wide/dashboard_wide.dart',
+                  'lib/screens/wide/driver_view_wide.dart')
+    }
+
+    def _cf_num(src, name):
+        """Число у объявления `static const double name = X;` или None."""
+        m = re.search(r'static const double ' + re.escape(name)
+                      + r'\s*=\s*([0-9.]+)\s*;', src)
+        return float(m.group(1)) if m else None
+
+    # CF1: ДВА ПОРОГА — ОДНО ЧИСЛО. Пути разные (адаптер и HAL), таблица
+    # одна: soh_estimates, id=1 и id=2. Разойдись эти числа — в одном
+    # показе окажутся две несравнимые оценки, и понять, какая по какому
+    # правилу принята, будет нечем. Гейт сторожит РАВЕНСТВО и нижнюю
+    # границу, а не конкретное значение: поднять порог до 45 % завтра
+    # можно, развести пути — нельзя.
+    _cf1_con = _cf_num(_cf_con, '_kSohMinDeltaSocPct')
+    _cf1_hal = _cf_num(_cf_hal, '_kHalSohMinDeltaSocPct')
+    if (_cf1_con is not None and _cf1_hal is not None
+            and _cf1_con == _cf1_hal and _cf1_con >= 40.0):
+        ok('CF1 both charge-span thresholds are one number, and it is at '
+           'least 40 percent')
+    else:
+        fail('CF1 the two charge-span thresholds diverged or fell below 40')
+
+    # CF2: ОТБОР ПРИ ЧТЕНИИ, ПУТЬ HAL. Смысл правки в том, что новый
+    # порог действует НАЗАД: запись, посчитанная по узкому окну, лежит в
+    # базе с прошлого раза, и проверка только в момент записи её не
+    # достанет. Проверка обязана стоять между чтением строки и
+    # заполнением кэша, сравнивать с тем же порогом и уходить из метода,
+    # не тронув кэш, — иначе отбраковка ничего не меняет на экране.
+    _cf2_at = _cf_hal.find('Future<void> loadHalSohEstimate()')
+    _cf2_end = _cf_hal.find('void _accumulateHalTripStats()', _cf2_at)
+    _cf2 = _cf_hal[_cf2_at:_cf2_end] if -1 < _cf2_at < _cf2_end else ''
+    _cf2_read = _cf2.find('db.getLatestSohEstimate(rowId: 2)')
+    _cf2_test = _cf2.find('row.deltaSocCovered < _kHalSohMinDeltaSocPct')
+    _cf2_keep = _cf2.find('_halSohAhPctCached = row.sohAhPct;')
+    _cf2_ret = _cf2.find('return;', _cf2_test) if _cf2_test > 0 else -1
+    if (-1 < _cf2_read < _cf2_test < _cf2_keep and -1 < _cf2_ret < _cf2_keep
+            and '_halSohRejectedDeltaSoc = row.deltaSocCovered;' in _cf2):
+        ok('CF2 the HAL read path rejects a stored estimate whose charge span '
+           'is below the threshold, before it can reach the cache')
+    else:
+        fail('CF2 the HAL read path hydrates a narrow stored estimate again')
+
+    # CF3: ОТБОР ПРИ ЧТЕНИИ, ПУТЬ АДАПТЕРА. Экран берёт значение как
+    # `hal.halSohAhPct ?? svc.sohAhPct`. Отбраковка только в пути HAL
+    # оставила бы дыру: на место отвергнутой записи id=2 встала бы
+    # старая узкая запись id=1, и владелец увидел бы ровно то, от чего
+    # уходили. Правка обязана быть в ОБОИХ путях.
+    _cf3_at = _cf_con.find('Future<void> loadSohEstimate()')
+    _cf3_end = _cf_con.find('void _finalizeSohEstimate()', _cf3_at)
+    _cf3 = _cf_con[_cf3_at:_cf3_end] if -1 < _cf3_at < _cf3_end else ''
+    _cf3_test = _cf3.find('row.deltaSocCovered < _kSohMinDeltaSocPct')
+    _cf3_keep = _cf3.find('_sohAhPctCached = row.sohAhPct;')
+    if (-1 < _cf3_test < _cf3_keep
+            and '_sohRejectedDeltaSoc = row.deltaSocCovered;' in _cf3):
+        ok('CF3 the dongle read path rejects a narrow stored estimate too, so '
+           'it cannot stand in for the rejected HAL one')
+    else:
+        fail('CF3 the dongle read path still hydrates a narrow estimate')
+
+    # CF4: ЛЕСТНИЦА ПОКАЗА ЦЕЛА. Решение владельца 11.08: пока нет
+    # записи с измеренной оценкой, показываем оценку машины. Это
+    # работает только потому, что отбраковка оставляет кэш пустым, а
+    # ниже по лестнице стоит число машины. Тронь порядок — и на месте
+    # отвергнутой оценки окажется прочерк вместо честных 96 %.
+    #
+    # Лестницы на телефоне и на широких экранах РАЗНОЙ длины, и это
+    # правильно: у телефона нет ступени с числом машины по HAL, там её
+    # физически не берут. Поэтому общее требование одно — своя оценка
+    # первой, а под ней ступень, которая не прочерк. Ступень HAL
+    # требуется только там, где она есть. Первая редакция гейта искала
+    # ступень HAL на всех трёх и упала на исправном телефоне.
+    #
+    # Мутация показала слабость первой редакции: ступень проверялась по
+    # тексту сравнения `sohBms != null`, а он остаётся на месте, даже
+    # если саму переменную назначить null. Гейт держал форму, а не
+    # предмет. Теперь требуется ИСТОЧНИК ступени — запрос к машине.
+    _cf4_own = 'hal.halSohAhPct ?? svc.sohAhPct'
+    _cf4_car = 'hal.useHalForSoh ? hal.halSoh'
+    _cf4_bms = "svc.readNumeric('790', '0029')"
+    _cf4 = True
+    for _p, _src in _cf_screens.items():
+        _a = _src.find(_cf4_own)
+        _b = _src.find(_cf4_bms)
+        if not (-1 < _a < _b) or 'sohBms != null' not in _src:
+            _cf4 = False
+        if 'wide/' in _p:
+            _c = _src.find(_cf4_car)
+            if not (-1 < _a < _c < _b):
+                _cf4 = False
+    if _cf4:
+        ok('CF4 with no accepted estimate the display still steps down to the '
+           'car own number, on all three screens')
+    else:
+        fail('CF4 the SOH display ladder lost its step down to the car number')
+
+    # CF5: СТРОКА О ТОМ, ЧЕГО НЕ ХВАТАЕТ. Раньше при отсутствии оценки
+    # подпись была пустой, и смена числа на экране выглядела необъяснимо.
+    # Два требования. Первое: строка строится из ТОГО ЖЕ порога, что и
+    # проверка (halSohMinDeltaSocPct), а не из числа, вписанного вторым
+    # списком, — иначе объяснение однажды разойдётся с поведением.
+    # Второе: построитель ОДИН на три экрана. Три копии локализованной
+    # строки с числом расходятся молча, увидеть это можно только глазами
+    # и только на устройстве.
+    # Считать по имени БЕЗ двоеточия нельзя: 'soh.need_wider' входит в
+    # 'soh.need_wider_last' как часть, и счёт даёт три вместо двух.
+    # Поймано прогоном.
+    _cf5_pairs = (_cf_l10n.count("'soh.need_wider':") == 2
+                  and _cf_l10n.count("'soh.need_wider_last':") == 2)
+    _cf5_one = _cf_l10n.count('String sohMissingReasonText(') == 1
+    _cf5_use = all('sohMissingReasonText(' in src
+                   and 'minDeltaSocPct: hal.halSohMinDeltaSocPct' in src
+                   and 'hal.halSohRejectedDeltaSoc ?? svc.sohRejectedDeltaSoc'
+                   in src
+                   for src in _cf_screens.values())
+    if _cf5_pairs and _cf5_one and _cf5_use:
+        ok('CF5 the missing-estimate line exists in both languages, is built '
+           'once, and takes its number from the same threshold as the check')
+    else:
+        fail('CF5 the missing-estimate line is duplicated, unpaired, or its '
+             'number is written by hand')
+
+    # CF6: ЗАМЕР ИЗОЛЯЦИИ ДОЕЗЖАЕТ ДО ЭКРАНА. Прочерк держался постоянно,
+    # а не «после 90 секунд»: имени не было в _stickyNames, значит в
+    # _lastGood оно не попадало никогда, а читают его только оттуда.
+    # Тот же случай, что с парой cell_v_lowest/highest в +103.
+    #
+    # Три условия, и ни одного лишнего. Без первого нет значения. Без
+    # второго срок годности гасит разрешение показывать. Без третьего
+    # разрешение живёт, а число исчезает — и это ХУЖЕ прочерка, потому
+    # что выглядит как исправная ячейка без данных.
+    #
+    # Четвёртое условие сторожит устройство, а не имя: _heldValue обязан
+    # спрашивать _eventDriven ДО сравнения со сроком годности. Тогда
+    # следующее событийное имя в эту яму не попадёт.
+    _cf6_sticky = re.search(r'_stickyNames = \{(.*?)\n  \};', _cf_hal, re.S)
+    _cf6_event = re.search(r'_eventDriven = \{(.*?)\n  \};', _cf_hal, re.S)
+    _cf6_held = re.search(r'double\? _heldValue\(String name, Duration hold\) \{'
+                          r'(.*?)\n  \}', _cf_hal, re.S)
+    _cf6_hb = _cf6_held.group(1) if _cf6_held else ''
+    _cf6_ev = _cf6_hb.find('_eventDriven.contains(name)')
+    _cf6_exp = _cf6_hb.find('> hold')
+    _cf6 = (_cf6_sticky is not None
+            and "'insulation_resistance'" in _cf6_sticky.group(1)
+            and _cf6_event is not None
+            and "'insulation_resistance'" in _cf6_event.group(1)
+            and -1 < _cf6_ev < _cf6_exp)
+    if _cf6:
+        ok('CF6 the insulation reading is held, declared event-driven, and its '
+           'value outlives the freshness window exactly as its permission does')
+    else:
+        fail('CF6 the insulation reading cannot reach the screen, or a held '
+             'event-driven value can expire while its permission does not')
+
+    # CF7: НИ ОДНА ОТБРОШЕННАЯ СЕССИЯ НЕ ИСЧЕЗАЕТ МОЛЧА. Владелец
+    # собирается зарядиться на медленной станции и сравнить; без записи
+    # опыт нечем интерпретировать. Выходов ЧЕТЫРЕ, а не один, как стояло
+    # в плане: два до расчёта (нет заряда на начало, нет на конец) и два
+    # внутри (условия и коридор правдоподобия). Считать выходы числом
+    # нельзя — CB8 на этом уже подловил дважды, поэтому проверяется, что
+    # у КАЖДОГО раннего возврата в обоих методах есть своя запись.
+    _cf7_fa = _cf_hal.find('void _finalizeHalSohEstimate()')
+    _cf7_fe = _cf_hal.find('static String _halSohFailedGateName(', _cf7_fa)
+    _cf7_fin = _cf_hal[_cf7_fa:_cf7_fe] if -1 < _cf7_fa < _cf7_fe else ''
+    _cf7_sa = _cf_hal.find('void _storeHalSohIfValid({')
+    _cf7_se = _cf_hal.find('Future<void> _persistPendingSohSession()', _cf7_sa)
+    _cf7_st = _cf_hal[_cf7_sa:_cf7_se] if -1 < _cf7_sa < _cf7_se else ''
+    # Каждый `return;` до места, где сессия признана годной, обязан идти
+    # ПОСЛЕ записи в журнал и не дальше чем через 600 знаков от неё.
+    def _cf7_voiced(body, upto):
+        if not body:
+            return False
+        head = body[:upto] if upto > 0 else body
+        rets = [m.start() for m in re.finditer(r'\n      return;', head)]
+        if not rets:
+            return False
+        for r in rets:
+            w = head[max(0, r - 600):r]
+            # Искать вместе с именем метода нельзя: перенос строки между
+            # `write(` и литералом разрывает подстроку, и гейт объявляет
+            # дефект на исправном коде. Предмет — сама запись в журнал.
+            if "'soh-drop:" not in w:
+                return False
+        return True
+    _cf7_a = _cf7_voiced(_cf7_fin, len(_cf7_fin))
+    _cf7_b = _cf7_voiced(_cf7_st, _cf7_st.find('_halSohAhPctCached = sohPct;'))
+    # Мутация показала вторую слабость: запись можно было оставить, а
+    # числа из неё убрать, и гейт этого не замечал. План требует именно
+    # чисел — «охват, покрытие, какое условие не прошло». Обе записи
+    # внутри _storeHalSohIfValid всегда имеют что назвать, поэтому
+    # подстановка значения в них обязательна. К записи «нет заряда на
+    # начало сессии» это не относится: называть там нечего, и требовать
+    # число значило бы требовать выдуманное.
+    _cf7_num = True
+    _cf7_head = _cf7_st[:_cf7_st.find('_halSohAhPctCached = sohPct;')]
+    _cf7_marks = [m.start() for m in re.finditer(r"'soh-drop:", _cf7_head)]
+    if len(_cf7_marks) < 2:
+        _cf7_num = False
+    for _m in _cf7_marks:
+        _stmt = _cf7_head[_m:_cf7_head.find('));', _m) + 3]
+        if '${' not in _stmt:
+            _cf7_num = False
+    # Название непрошедшего условия обязано считаться тем же порядком,
+    # что и само условие, — иначе журнал назовёт не ту причину.
+    _cf7_nm = _cf_hal.find('static String _halSohFailedGateName(')
+    _cf7_nb = _cf_hal[_cf7_nm:_cf7_nm + 900] if _cf7_nm > 0 else ''
+    _cf7_c = (_cf7_nb.find('_kHalSohMinDeltaSocPct')
+              < _cf7_nb.find('_kHalSohMinCoverage')
+              and _cf7_nb.find('_kHalSohMinDeltaSocPct') > 0)
+    if _cf7_a and _cf7_b and _cf7_c and _cf7_num:
+        ok('CF7 every discarded estimate session says why, with numbers, and '
+           'names the condition in the order the check applies it')
+    else:
+        fail('CF7 a discarded estimate session can still vanish without a '
+             'trace, or the journal names the wrong condition')
+    # CF8: ПОДПИСЬ НЕ ПЕРЕПОЛНЯЕТ ЯЧЕЙКУ. Найдено собственной ревизией
+    # до поля. Раньше в эту строку всегда приходила дата — короткая и
+    # предсказуемая. С +202 при отсутствии оценки туда приходит текст об
+    # охвате, и он длиннее. На двух дашбордах карточка обрезает подпись
+    # многоточием сама, а на драйверском экране строка стояла в Row без
+    # всякого ограничения — это полосатая рамка переполнения на живом
+    # устройстве, и увидеть её можно только на устройстве.
+    #
+    # Гейт сторожит то, что проверить исходниками МОЖНО: у каждого места
+    # показа подписи есть ограничение. Влезает ли текст на самом деле —
+    # вопрос к экрану, не к гейту.
+    _cf8_drv = _cf_screens['lib/screens/wide/driver_view_wide.dart']
+    _cf8_i = _cf8_drv.find('Text(sohSub,')
+    _cf8_w = _cf8_drv[_cf8_i:_cf8_i + 320] if _cf8_i > 0 else ''
+    _cf8_cards = all(
+        'overflow: TextOverflow.ellipsis' in _cf_screens[p]
+        for p in ('lib/screens/dashboard.dart',
+                  'lib/screens/wide/dashboard_wide.dart'))
+    _cf8 = (_cf8_i > 0 and 'maxLines: 1' in _cf8_w
+            and 'overflow: TextOverflow.ellipsis' in _cf8_w and _cf8_cards)
+    if _cf8:
+        ok('CF8 the missing-estimate subtitle is length-bounded everywhere it '
+           'is drawn, so a longer text cannot overflow a cell')
+    else:
+        fail('CF8 the SOH subtitle can overflow its cell on at least one '
+             'screen')
+else:
+    ok(f"Part CF skipped (build +{pv}, the 40 percent threshold lands in +202)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)

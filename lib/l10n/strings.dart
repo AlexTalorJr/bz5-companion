@@ -910,6 +910,9 @@ class S {
     // v0.1.43+142 §2
     'soh.computed_at': 'estimate: {age}',
     'soh.recomputed_snack': 'Battery health recomputed: {pct}%',
+    // v0.2.3+202
+    'soh.need_wider': 'needs a {min}% charge span',
+    'soh.need_wider_last': 'charge span {last}% of {min}% needed',
     'trip.chart_error': 'Chart failed to load',
     'trip.charging_power': 'Charging power',
     'trip.hv_bus_v': 'HV bus voltage',
@@ -2137,6 +2140,9 @@ class S {
     // v0.1.43+142 §2
     'soh.computed_at': 'оценка: {age}',
     'soh.recomputed_snack': 'SOH пересчитан: {pct}%',
+    // v0.2.3+202
+    'soh.need_wider': 'нужен охват заряда {min} %',
+    'soh.need_wider_last': 'охват {last} % из нужных {min} %',
     'trip.chart_error': 'График не загрузился',
     'trip.charging_power': 'Мощность зарядки',
     'trip.hv_bus_v': 'Напряжение HV bus',
@@ -2505,4 +2511,34 @@ class S {
     'status.entry.to_service': 'до ТО {km} км',
     'status.unit.km': 'км',
   };
+}
+
+/// v0.2.3+202: строка о том, чего не хватает для собственной оценки
+/// состояния батареи.
+///
+/// Показывается на месте подписи «оценка: N назад», когда своей оценки
+/// нет, — и тогда в самой ячейке стоит число машины. Владелец должен
+/// видеть не пустоту, а условие: сколько нужно и сколько было в
+/// последний раз.
+///
+/// Живёт здесь, а не в каждом из трёх экранов, потому что это
+/// локализованная строка с числом. Три копии такой строки разойдутся
+/// молча — расхождение видно только глазами и только на устройстве.
+///
+/// [minDeltaSocPct] — требуемый охват, берётся у сервиса, а не пишется
+/// числом, чтобы порог и объяснение не могли разойтись.
+/// [lastDeltaSocPct] — охват последней отбракованной записи, или null,
+/// если отбраковывать было нечего.
+String sohMissingReasonText({
+  required double minDeltaSocPct,
+  double? lastDeltaSocPct,
+}) {
+  final min = minDeltaSocPct.toStringAsFixed(0);
+  if (lastDeltaSocPct == null) {
+    return S.of('soh.need_wider').replaceFirst('{min}', min);
+  }
+  return S
+      .of('soh.need_wider_last')
+      .replaceFirst('{min}', min)
+      .replaceFirst('{last}', lastDeltaSocPct.toStringAsFixed(0));
 }
