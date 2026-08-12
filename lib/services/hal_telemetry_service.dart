@@ -345,7 +345,19 @@ class HalTelemetryService extends ChangeNotifier
     // room above); torque ±400 Nm (peak 330 Nm nameplate, signed for
     // regen); power ±250 kW (peak 208 ≈ 200 kW spec, signed for regen).
     // Guards drop frame-misalignment junk before display.
-    'motor_rpm': (0, 25000),
+    //
+    // v0.2.4+203 — ОБОРОТЫ СТАЛИ ЗНАКОВЫМИ. Задний ход даёт отрицательные
+    // обороты: экспорт 11.08 показал −461…9385 при 266 отброшенных
+    // замерах из 13 434, то есть 2 %. Отбрасывалось не мусорное
+    // выравнивание кадра, а вся езда назад, и на панели обороты в заднем
+    // ходу гасли.
+    //
+    // Страж `motor_power` НЕ трогаем сознательно. Он отбраковывает 6
+    // замеров из 8863, и все шесть — ровно 3095 с 0x15100020 в разные
+    // дни. Одинаковое до цифры значение — это метка «нет данных» от
+    // машины, а не настоящая мощность 3 МВт. Здесь страж работает как
+    // задумано.
+    'motor_rpm': (-25000, 25000),
     'motor_torque': (-400, 400),
     'motor_power': (-250, 250),
     // v0.1.29+80: brake-pedal toggle (GEARBOX_BRAKE_PEDAL, already decoded
@@ -355,14 +367,30 @@ class HalTelemetryService extends ChangeNotifier
     'brake_pedal': (0, 1),
     // v0.1.29+84: BigData battery signals. cell_v LFP 3.10–3.44 V observed
     // (recon) → guard 2.5..4.0 drops misalignment junk. cell_idx 1..136
-    // (pack is 136S) → guard 0..200. insulation arrives RAW (~13272–15919,
-    // recon confirms scale ×0.001 NOT applied upstream) so the guard is in
-    // RAW units: 1000..100000 (→ 1..100 MΩ after the getter scales it).
+    // (pack is 136S) → guard 0..200.
+    //
+    // v0.2.4+203 — СТРАЖ ИЗОЛЯЦИИ ПЕРЕВЕДЁН В МЕГАОМЫ, И ЭТО ПОЧИНКА
+    // ДЕФЕКТА, ЖИВШЕГО С +84.
+    //
+    // Замечание «insulation arrives RAW, scale ×0.001 NOT applied
+    // upstream» было неверным. Масштаб применяет Kotlin:
+    // `CompanionDecoderOverrides` заводит 0x47300018 со `scale = 0.001`,
+    // то есть сюда приходят готовые мегаомы — 6.1…17.1 по 108 замерам
+    // экспорта 11.08. Страж стоял в килоомах, 14.7 < 1000, и
+    // отбраковывались ВСЕ 100 % замеров прямо здесь, до записи в
+    // `_latest` и до `_lastGood`. Ячейка изоляции на экране была пустой
+    // с самого своего появления.
+    //
+    // Низ 0.01 МОм, а не 1: норматив ISO 6469-3 для постоянного тока при
+    // 452 В требует 0.045 МОм, и страж, отсекающий всё ниже единицы,
+    // выбросил бы ровно то показание, ради которого ячейка существует —
+    // настоящее падение изоляции. Ноль и отрицательные не проходят, а
+    // приговор по числу выносит `_insulVerdict`, а не страж.
     'cell_v_lowest': (2.5, 4.0),
     'cell_v_highest': (2.5, 4.0),
     'cell_idx_lowest': (0, 200),
     'cell_idx_highest': (0, 200),
-    'insulation_resistance': (1000, 100000),
+    'insulation_resistance': (0.01, 100),
     // v0.1.29+86: fractional SOC (soc_precise) is a percentage. Recon
     // already validates frame integrity upstream (length==14 AND the
     // b[10]+b[13]==325 checksum AND 0..100) and emits null on failure, so
@@ -1476,11 +1504,15 @@ class HalTelemetryService extends ChangeNotifier
   double? get halCellIdxLowest => _heldValue('cell_idx_lowest', _coreHold);
   double? get halCellIdxHighest => _heldValue('cell_idx_highest', _coreHold);
 
-  /// Insulation resistance in MΩ. Raw value is scaled ×0.001 here (recon
-  /// emits it unscaled, e.g. 13272 → 13.27 MΩ).
+  /// Сопротивление изоляции, МОм.
+  ///
+  /// v0.2.4+203 — УМНОЖЕНИЕ НА 0.001 УБРАНО. Масштаб применяет Kotlin
+  /// (`CompanionDecoderOverrides`, 0x47300018, `scale = 0.001`), сюда
+  /// приходят готовые мегаомы. Прежнее замечание «recon emits it
+  /// unscaled» было неверным, и умножение здесь было вторым по счёту:
+  /// починив только страж, экран показал бы 0,0147 МОм вместо 14,7.
   double? get halInsulationMOhm {
-    final raw = _heldValue('insulation_resistance', _coreHold);
-    return raw == null ? null : raw * 0.001;
+    return _heldValue('insulation_resistance', _coreHold);
   }
 
   bool get useHalForInsulation => _useHal('insulation_resistance');
@@ -1552,7 +1584,15 @@ class HalTelemetryService extends ChangeNotifier
           ? vals[mid]
           : (vals[mid - 1] + vals[mid]) / 2.0;
       _insulBaselineN = vals.length;
-      _insulBaselineMOhm = med * 0.001;
+      // v0.2.4+203 — И ЗДЕСЬ УМНОЖЕНИЕ НА 0.001 УБРАНО. Это было ТРЕТЬЕ
+      // место масштабирования одного и того же числа, и в плане патча его
+      // не было — нашлось сверкой. `hal_samples` наполняется фоновым
+      // журналом (`insertBackgroundHalSamples`), а тот `_range` не
+      // спрашивает вовсе, поэтому замеры изоляции в базе лежат с самого
+      // начала и лежат в мегаомах: 108 штук, медиана 15,504. Оставь
+      // умножение — норма вышла бы 0,0155 МОм, и приговор `_insulVerdict`
+      // сравнивал бы настоящее число с нормой в тысячу раз меньшей.
+      _insulBaselineMOhm = med;
       notifyListeners();
     } catch (e) {
       debugPrint('Insulation baseline skipped — $e');

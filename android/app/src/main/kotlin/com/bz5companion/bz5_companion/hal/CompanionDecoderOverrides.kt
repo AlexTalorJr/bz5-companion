@@ -25,7 +25,14 @@ object CompanionDecoderOverrides {
         // LOCAL FIX (v0.1.29+66) — shared table ships scale=1.0 which
         // renders raw kΩ as "MΩ" (live reading 13517 "MΩ" on 2026-06-11
         // drive, physically absurd). Truth: raw is kΩ → scale 0.001 gives
-        // 13.5 MΩ, inside the 14–18 MΩ healthy band recon documented.
+        // 13.5 MΩ.
+        //
+        // v0.2.4+203 — ОДНА ПОЛОСА НОРМЫ, А НЕ ДВЕ. Здесь стояло
+        // «14–18 MΩ», в общей таблице «16–18 MΩ», а замеры дали
+        // 6.1–17.1 MΩ при медиане 15.5 (108 замеров, экспорт 11.08,
+        // сводка в tools/data/export_summary_20260811.txt). Обе прежние
+        // полосы противоречили данным, и разошлись между собой. Теперь
+        // написано одно и то же в обоих файлах, и написано наблюдение.
         // Official fix queued recon-side (p079); drop this entry on the
         // next re-vendor that contains it.
         "BYDAutoStatisticDevice|0x47300018" to Decoder(

@@ -126,12 +126,38 @@ object TelemetryDecoderTable {
         put("BYDAutoEnergyDevice|0x45400010",
             Decoder("cell_v_lowest",  "V", ValueSource.DOUBLE,
                 notes = "3.24–3.26 V parked LFP"))
+        // v0.2.4+203 — ИМЕНА НОМЕРОВ ПОМЕНЯНЫ МЕСТАМИ.
+        //
+        // До этого патча 0x45400008 назывался `cell_idx_highest`, а
+        // 0x45400028 — `cell_idx_lowest`. Авторитетный каталог
+        // BYDAutoFeatureIds говорит обратное:
+        //   0x45400008 = ENERGY_LOWEST_VOLT_BATTERY_NUM
+        //   0x45400028 = ENERGY_HIGHEST_VOLT_BATTERY_NUM
+        // и это согласуется с раскладкой соседних полей: в младшем блоке
+        // лежат номер (08) и напряжение (10) НИЖНЕЙ ячейки, в старшем —
+        // номер (28) и напряжение (30) ВЕРХНЕЙ. Напряжения у нас были
+        // подписаны верно с самого начала, номера — нет.
+        //
+        // ПОЧЕМУ НЕ ПРОВЕРЕНО ДАННЫМИ. Экспорт 11.08 (282 750 замеров,
+        // 30 856 секундных снимков, из них 930 с разбросом больше 50 мВ)
+        // прогнан четырьмя способами: порядок прихода четырёх полей,
+        // совпадение смены номера со скачком напряжения, устойчивость
+        // номера при большом разбросе, устойчивость на краях напряжения.
+        // Ни один способ два номера не различает. Каталог — единственное
+        // свидетельство, какое есть, и решение принято по нему.
+        //
+        // СТАРЫЕ СТРОКИ В `hal_samples` ОСТАЮТСЯ С ПРЕЖНИМИ ИМЕНАМИ.
+        // Переписывать историю нечем: какое поле стояло за строкой, в
+        // таблице записано (`subtype`), но менять 24 967 строк задним
+        // числом значило бы править замеры. Живой поток с этого патча
+        // подписан правильно; при разборе истории смотреть на `subtype`,
+        // а не на `name`.
         put("BYDAutoEnergyDevice|0x45400008",
-            Decoder("cell_idx_highest", "", ValueSource.INT,
-                notes = "1–136"))
+            Decoder("cell_idx_lowest", "", ValueSource.INT,
+                notes = "1–136; catalog ENERGY_LOWEST_VOLT_BATTERY_NUM"))
         put("BYDAutoEnergyDevice|0x45400028",
-            Decoder("cell_idx_lowest",  "", ValueSource.INT,
-                notes = "1–136"))
+            Decoder("cell_idx_highest",  "", ValueSource.INT,
+                notes = "1–136; catalog ENERGY_HIGHEST_VOLT_BATTERY_NUM"))
 
         // ─── Statistic (head, first 64) ──────────────────────────────────
         put("BYDAutoStatisticDevice|0x15100008",
@@ -139,7 +165,7 @@ object TelemetryDecoderTable {
                 notes = "averaged ~8.7 Hz; verified ground-truth in trip-1"))
         put("BYDAutoStatisticDevice|0x47300018",
             Decoder("insulation_resistance", "MΩ", ValueSource.INT,
-                notes = "16–18 MΩ healthy"))
+                notes = "observed 6.1–17.1 MΩ, median 15.5 (export 11.08)"))
         put("BYDAutoStatisticDevice|0x99000191",
             Decoder("battery_serial", "", ValueSource.BUFDATA,
                 notes = "48B ASCII; decoded as string"))

@@ -11,6 +11,7 @@ import '../services/locale_service.dart';
 import '../services/apk_install_channel.dart';
 import '../services/autostart_arm.dart';
 import '../services/export_service.dart';
+import '../services/hal_telemetry_service.dart';
 import '../services/import_service.dart';
 
 /// v0.1.11: Data management screen — export all data to share sheet,
@@ -77,6 +78,19 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
   List<String> _traceLines = const [];
   bool _traceOpen = false;
 
+  // v0.2.4+203 — ДВА СВЁРНУТЫХ БЛОКА.
+  //
+  // `_pickOpen` — «Что включить»: пять переключателей состава экспорта.
+  // Все пять включены (экспорт 11.08 подтверждает: в `metadata.json`
+  // все пять `includes` истинны), а места они занимают пол-экрана над
+  // кнопкой, которая нужна каждый раз.
+  //
+  // `_helpOpen` — «Не получилось?»: ручной поиск, проба хранилища,
+  // список кандидатов с приговорами. Всё это нужно ровно тогда, когда
+  // обычный путь отказал, то есть редко.
+  bool _pickOpen = false;
+  bool _helpOpen = false;
+
   // Принятая, но ещё не восстановленная копия. Спрашивается при открытии
   // экрана и гаснет сама: после успешного импорта файл удаляется.
   ArchiveCandidate? _staged;
@@ -89,6 +103,41 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
     _refreshReport();
     _refreshTrace();
     _refreshStaged();
+    // v0.2.4+203 — ОСМОТР ПРИНЯТОГО АРХИВА ПРИ ОТКРЫТИИ ЭКРАНА.
+    //
+    // Рабочий путь на этой машине один: проводник → «Поделиться» → BZ5
+    // Companion. После этого файл уже лежит в нашем каталоге, и всё, что
+    // отделяло владельца от кнопки «Восстановить», — нажатие «Найти
+    // архив». Теперь осмотр идёт сам.
+    //
+    // РАЗРЕШЕНИЕ ЗДЕСЬ НЕ СПРАШИВАЕТСЯ. Принятая копия лежит в НАШЕМ
+    // каталоге и читается без прав; запрос прав остаётся на ручном
+    // поиске, за явным нажатием. Спрашивать права при открытии экрана
+    // значило бы показать системное окно тому, кто зашёл посмотреть
+    // счётчики.
+    //
+    // Через postFrame, а не прямо здесь: нужна схема базы, а она
+    // достаётся из Provider, и в `initState` его читать нельзя.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _autoSeeStaged());
+  }
+
+  /// Осмотреть принятую копию, если она есть. Ни поиска по хранилищу, ни
+  /// запроса прав — только тот файл, который нам уже отдали.
+  Future<void> _autoSeeStaged() async {
+    if (!mounted) return;
+    final c = await ImportService.stagedCopy();
+    if (c == null || !mounted) return;
+    final schema = context.read<ConnectionService>().db.schemaVersion;
+    try {
+      final pv = await ImportService.inspect(File(c.path),
+          appSchemaVersion: schema);
+      if (!mounted) return;
+      setState(() => _preview = pv);
+    } catch (_) {
+      // Молча: полоса «Принят архив» уже стоит, и ручной поиск рядом.
+      // Показать ошибку разбора при входе на экран значило бы напугать
+      // того, кто пришёл за счётчиками.
+    }
   }
 
   /// Только наши строки, и только хвост. Журнал автозапуска пишет ещё и
@@ -186,11 +235,39 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
     });
   }
 
+  /// Сколько частей включено в экспорт. Показывается в заголовке
+  /// свёрнутого блока, чтобы разворачивать его было незачем.
+  int get _includedCount => [
+        _includeTrips,
+        _includeSnapshots,
+        _includeSamples,
+        _includeSweeps,
+        _includeLiveLogs,
+      ].where((e) => e).length;
+
   @override
   Widget build(BuildContext context) {
     final svc = context.watch<ConnectionService>();
     // v0.1.29+60: re-render on language switch (per-screen subscription).
     context.watch<LocaleService>();
+    // ── ОДИН ПРИЗНАК УСТРОЙСТВА НА ВЕСЬ ЭКРАН. v0.2.4+203 ──
+    //
+    // Три кнопки этого экрана ведут себя по-разному на машине и на
+    // телефоне: «Поделиться» работает только на телефоне, «Выбрать файл
+    // самому» — тоже, инструкция под экспортом нужна только на машине.
+    // Признак вычисляется ОДИН раз и здесь.
+    //
+    // Пара `platformProbed && canUseHal`, а не один `canUseHal`. Опрос
+    // платформы завершается уже после первой отрисовки, и до него
+    // `canUseHal` ложен И на телефоне, И на ещё не проснувшейся машине.
+    // На одном признаке машина рисовала бы первый кадр как телефон —
+    // то есть пряталa бы единственный работающий там путь и показывала
+    // два неработающих. С парой первый кадр всегда «как на машине», и
+    // подмена возможна только на телефоне, где оба пути живые и цена
+    // ошибки — лишняя кнопка на долю секунды. Та же дисциплина стоит в
+    // `settings.dart` и в `soc_resolver.dart`.
+    final hal = context.watch<HalTelemetryService>();
+    final bool isPhone = hal.platformProbed && !hal.canUseHal;
     return Scaffold(
       appBar: AppBar(title: Text(S.of('settings.data.title'))),
       body: ListView(
@@ -265,6 +342,25 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
               style: const TextStyle(fontSize: 12, color: Colors.grey),
             ),
           ),
+          // ── ПЯТЬ ПЕРЕКЛЮЧАТЕЛЕЙ СОСТАВА — В СВЁРНУТЫЙ БЛОК. +203 ──
+          //
+          // Все пять включены и такими остаются. Они занимали пол-экрана
+          // над кнопкой, которая нужна каждый раз, а нужны раз в никогда.
+          // Сколько их включено, видно в заголовке блока, не разворачивая.
+          ListTile(
+            dense: true,
+            leading: const Icon(Icons.checklist, size: 20),
+            title: Text(
+              S
+                  .of('dataexp.pick_title')
+                  .replaceFirst('{n}', '$_includedCount'),
+              style: const TextStyle(fontSize: 13),
+            ),
+            trailing: Icon(_pickOpen ? Icons.expand_less : Icons.expand_more,
+                size: 20),
+            onTap: () => setState(() => _pickOpen = !_pickOpen),
+          ),
+          if (_pickOpen) ...[
           SwitchListTile(
             value: _includeTrips,
             onChanged: _exporting ? null : (v) => setState(() => _includeTrips = v),
@@ -309,6 +405,18 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
             subtitle: Text(S.of('dataexp.livelogs_sub')),
             dense: true,
           ),
+          ],
+          // ── «ПОДЕЛИТЬСЯ» — ТОЛЬКО ТЕЛЕФОН. +203 ──
+          //
+          // Поле 11.08, ответ владельца: наш исходящий вызов системного
+          // «Поделиться» на этой машине не работает. Кнопка нажимается и
+          // не делает ничего. На телефоне она главный путь, поэтому не
+          // удаляется, а прячется по признаку устройства.
+          //
+          // Признак — `isPhone`, и он ОДИН на все три кнопки этого
+          // экрана. Три отдельные проверки разошлись бы: гейт CG8 держит
+          // это условие.
+          if (isPhone)
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
             child: ElevatedButton.icon(
@@ -340,13 +448,16 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
               onPressed: _exporting ? null : () => _doExport(svc, toDownloads: true),
             ),
           ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-            child: Text(
-              S.of('dataexp.hu_note'),
-              style: const TextStyle(fontSize: 11, color: Colors.grey),
+          // Прямая инструкция, а не объяснение выбора: выбора на машине
+          // больше нет, кнопка одна. +203.
+          if (!isPhone)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: Text(
+                S.of('dataexp.hu_note'),
+                style: const TextStyle(fontSize: 11, color: Colors.grey),
+              ),
             ),
-          ),
           if (_lastResult != null)
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
@@ -391,11 +502,49 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
                 ],
               ),
             ),
+          // ── ТРИ ШАГА ВОССТАНОВЛЕНИЯ, ПО НОМЕРАМ. v0.2.4+203 ──
+          //
+          // Прежний вводный текст объяснял устройство и предлагал выбор
+          // из путей, которых на этой машине нет. Поле 11.08 показало,
+          // что работает ровно один путь, и он записан здесь по шагам.
+          //
+          // Третий шаг не косметика: обмен базы происходит при следующем
+          // рождении процесса, и без закрытия приложения владелец видит
+          // прежние данные и считает, что восстановление не сработало.
+          // Так было три визита подряд.
+          //
+          // ШАГИ ПОКАЗЫВАЮТСЯ ТОЛЬКО НА МАШИНЕ. Первый шаг называет
+          // проводник машины и «Поделиться» — на телефоне этого пути
+          // нет, там работает выбор файла. Показать шаги везде значило
+          // бы дать владельцу телефона инструкцию, которую он выполнить
+          // не может. Найдено собственной ревизией до выдачи.
+          if (isPhone)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+              child: Text(
+                S.of('dataimp.phone_note'),
+                style: const TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+            ),
+          if (!isPhone)
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
-            child: Text(
-              S.of('dataimp.intro'),
-              style: const TextStyle(fontSize: 12, color: Colors.grey),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                for (final k in const [
+                  'dataimp.step1',
+                  'dataimp.step2',
+                  'dataimp.step3',
+                ])
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 4),
+                    child: Text(
+                      S.of(k),
+                      style: const TextStyle(fontSize: 12, color: Colors.grey),
+                    ),
+                  ),
+              ],
             ),
           ),
           if (_pending) ...[
@@ -427,6 +576,28 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
               ),
             ),
           ] else ...[
+            // ── СВЁРНУТЫЙ БЛОК «НЕ ПОЛУЧИЛОСЬ?». v0.2.4+203 ──
+            //
+            // Внутри всё, что нужно ровно при отказе: ручной поиск, выбор
+            // файла (только телефон), список кандидатов с приговорами,
+            // проба хранилища, подсказка про смену идентификатора.
+            //
+            // «Найти архив» УДАЛЯТЬ НЕЛЬЗЯ, и это записано здесь, чтобы
+            // следующая переделка не приняла её за мёртвую. Кнопка
+            // выглядит бесполезной, потому что первая ступень поиска
+            // почти всегда находит принятую копию сама, — но именно эта
+            // ступень и есть способ подхватить принятый файл, если
+            // осмотр при открытии экрана почему-то не прошёл.
+            ListTile(
+              dense: true,
+              leading: const Icon(Icons.help_outline, size: 20),
+              title: Text(S.of('dataimp.help_title'),
+                  style: const TextStyle(fontSize: 13)),
+              trailing: Icon(
+                  _helpOpen ? Icons.expand_less : Icons.expand_more, size: 20),
+              onTap: () => setState(() => _helpOpen = !_helpOpen),
+            ),
+            if (_helpOpen) ...[
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
               child: OutlinedButton.icon(
@@ -440,9 +611,17 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
                 onPressed: _busy ? null : _findArchive,
               ),
             ),
-            // v0.1.88+187 — второй путь, и на этой прошивке он главный.
-            // Файл, показанный владельцем, приходит с грантом, а грант
-            // не зависит от того, какой uid был у прежней установки.
+            // v0.1.88+187 — второй путь. Файл, показанный владельцем,
+            // приходит с грантом, а грант не зависит от того, какой uid
+            // был у прежней установки.
+            //
+            // v0.2.4+203 — ТОЛЬКО ТЕЛЕФОН. Замечание +187 «на этой
+            // прошивке она главная» было предположением и оказалось
+            // неверным: поле 11.08, ответ владельца — системный выбор
+            // файла не срабатывал на этой машине ни разу. На телефоне
+            // это единственный путь импорта, поэтому кнопка остаётся, но
+            // по тому же признаку устройства, что и «Поделиться».
+            if (isPhone)
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
               child: OutlinedButton.icon(
@@ -485,6 +664,32 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
                   ],
                 ),
               ),
+            // Проба хранилища и подсказка про смену идентификатора —
+            // внутри того же блока: обе нужны в тот же момент, что и
+            // ручной поиск. +203 (прежде проба стояла в общем выводе).
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+              child: TextButton(
+                onPressed: _busy ? null : _runStorageProbe,
+                child: Text(S.of('dataimp.probe_btn')),
+              ),
+            ),
+            if (_probeLine != null)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+                child: Text(
+                  _probeLine!,
+                  style: const TextStyle(fontSize: 10, color: Colors.grey),
+                ),
+              ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: Text(
+                S.of('dataimp.uid_hint'),
+                style: const TextStyle(fontSize: 11, color: Colors.grey),
+              ),
+            ),
+            ],
             if (_preview != null && _preview!.ok) ...[
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
@@ -529,25 +734,6 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
                   _reasonLine(_preview!),
                   style: const TextStyle(
                       fontSize: 12, color: Colors.orangeAccent),
-                ),
-              ),
-            // v0.1.88+187 — проба хранилища. Стоит здесь, а не в
-            // «Расширенном», потому что нужна ровно в тот момент, когда
-            // восстановление отказало, и уходить за ней на другой экран
-            // владельцу незачем.
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
-              child: TextButton(
-                onPressed: _busy ? null : _runStorageProbe,
-                child: Text(S.of('dataimp.probe_btn')),
-              ),
-            ),
-            if (_probeLine != null)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                child: Text(
-                  _probeLine!,
-                  style: const TextStyle(fontSize: 10, color: Colors.grey),
                 ),
               ),
           ],

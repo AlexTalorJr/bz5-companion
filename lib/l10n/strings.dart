@@ -995,10 +995,9 @@ class S {
     'dataexp.exporting': 'Exporting: {stage}...',
     'dataexp.share_btn': 'Share',
     'dataexp.save_btn': 'Save to Downloads',
-    'dataexp.hu_note': 'On the head unit choose "Save to Downloads" — the '
-        'file lands in the system Downloads folder, where the file manager '
-        'can open it and copy it to a USB stick. On a phone "Share" is more '
-        'convenient.',
+    'dataexp.hu_note': 'The file lands in the system Downloads folder. '
+        'Open it from the built-in file manager and copy it to a USB stick.',
+    'dataexp.pick_title': 'What to include ({n} of 5)',
     'dataexp.cleanup_warn': 'Deletion is irreversible. Export your data '
         'before clearing.',
     'dataexp.clear_samples': 'Clear raw samples',
@@ -1049,9 +1048,20 @@ class S {
     'dataimp.rep_unknown': 'unknown',
     'dataimp.rep_dismiss': 'Got it',
     'dataimp.sec_restore': 'RESTORE FROM ARCHIVE',
-    'dataimp.intro': 'Reads an export archive back. Brings in what the '
-        'cloud never carries: raw samples, HAL samples and atlas bands '
-        'that were not yet frozen. Replaces the whole local database.',
+    'dataimp.step1': '1. In the car file manager pick the archive, press '
+        'Share and choose BZ5 Companion.',
+    'dataimp.step2': '2. Come back here. The "Archive accepted" bar appears '
+        'at the top — press Restore.',
+    'dataimp.step3': '3. Press "Close app". The database is swapped on the '
+        'next process start, so until the app is closed you still see the '
+        'old data.',
+    'dataimp.phone_note': 'On a phone open "Did not work?" below and use '
+        '"Pick a file myself" to hand the archive over. After Restore press '
+        '"Close app" — the database is swapped on the next process start.',
+    'dataimp.help_title': 'Did not work?',
+    'dataimp.uid_hint': 'A reinstall changes the app identifier, so files '
+        'left by the previous install are unreadable. Hand the archive over '
+        'with Share instead of looking for it on storage.',
     'dataimp.find_btn': 'Find archive',
     'dataimp.looking': 'Looking…',
     'dataimp.found_fmt': 'Archive: {size}, exported {at}, schema {schema}\n'
@@ -2225,10 +2235,9 @@ class S {
     'dataexp.exporting': 'Экспорт: {stage}...',
     'dataexp.share_btn': 'Поделиться (Share)',
     'dataexp.save_btn': 'Сохранить в Downloads',
-    'dataexp.hu_note': 'На головном устройстве выбирайте «Сохранить в '
-        'Downloads» — файл появится в системной папке Downloads, откуда его '
-        'можно открыть через «Проводник» и скопировать на флешку. На '
-        'телефоне удобнее «Поделиться».',
+    'dataexp.hu_note': 'Файл появится в системной папке Downloads. Откройте '
+        'его штатным проводником машины и скопируйте на флешку.',
+    'dataexp.pick_title': 'Что включить ({n} из 5)',
     'dataexp.cleanup_warn': 'Удаление данных безвозвратно. Перед очисткой '
         'рекомендуем сделать экспорт.',
     'dataexp.clear_samples': 'Очистить raw samples',
@@ -2280,9 +2289,21 @@ class S {
     'dataimp.rep_unknown': 'неизвестно',
     'dataimp.rep_dismiss': 'Понятно',
     'dataimp.sec_restore': 'ВОССТАНОВЛЕНИЕ ИЗ АРХИВА',
-    'dataimp.intro': 'Читает архив экспорта обратно. Возвращает то, чего '
-        'облако не несёт вовсе: сырые сэмплы, HAL-сэмплы и незамороженные '
-        'полосы атласа. Локальная база заменяется целиком.',
+    'dataimp.step1': '1. В проводнике машины выберите архив, нажмите '
+        '«Поделиться» и укажите BZ5 Companion.',
+    'dataimp.step2': '2. Вернитесь сюда. Сверху появится полоса «Принят '
+        'архив» — нажмите «Восстановить».',
+    'dataimp.step3': '3. Нажмите «Закрыть приложение». База подменяется при '
+        'следующем запуске процесса, поэтому до закрытия вы видите прежние '
+        'данные.',
+    'dataimp.phone_note': 'На телефоне откройте «Не получилось?» ниже и '
+        'отдайте архив кнопкой «Выбрать файл самому». После «Восстановить» '
+        'нажмите «Закрыть приложение» — база подменяется при следующем '
+        'запуске процесса.',
+    'dataimp.help_title': 'Не получилось?',
+    'dataimp.uid_hint': 'После переустановки идентификатор приложения '
+        'меняется, и файлы прежней установки прочитать нельзя. Отдавайте '
+        'архив через «Поделиться», а не ищите его в хранилище.',
     'dataimp.find_btn': 'Найти архив',
     'dataimp.looking': 'Ищу…',
     'dataimp.found_fmt': 'Архив: {size}, выгружен {at}, схема {schema}\n'

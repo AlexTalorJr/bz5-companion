@@ -110,6 +110,8 @@ TAB = ('android/app/src/main/kotlin/com/bz5companion/bz5_companion'
        '/hal/TelemetryDecoderTable.kt')
 DSH = 'lib/screens/dashboard.dart'
 HM = 'lib/screens/home.dart'
+OVR = ('android/app/src/main/kotlin/com/bz5companion/bz5_companion'
+       '/hal/CompanionDecoderOverrides.kt')
 
 # (гейт, файл, анкер, замена, что откатывает)
 #
@@ -1405,8 +1407,131 @@ MUTATIONS = [
      "          'расчёт вне коридора 50…110%'));",
      'оставить запись, но снять из неё все числа — журнал перестанет '
      'объяснять, насколько результат вышел за коридор'),
-]
 
+    # ── ЭРА CG (+203) ──
+    #
+    # Эра закрывает дефект, который церемония пропускала восемь версий:
+    # страж, отбраковывающий 100 % данных, оставался зелёным, потому что
+    # ни один прибор не смотрел на числа из машины. Мутации ниже бьют по
+    # каждому гейту эры с обеих сторон.
+
+    ('CG1', HT,
+     "    'insulation_resistance': (0.01, 100),",
+     "    'insulation_resistance': (1000, 100000),",
+     'вернуть стража изоляции в килоомы — ровно тот дефект, что жил с '
+     '+84 и отбраковывал все замеры до единого'),
+    ('CG1', HT,
+     "    'insulation_resistance': (0.01, 100),",
+     "    'insulation_resistance': (1.0, 100),",
+     'поднять низ стража до единицы — настоящее падение изоляции будет '
+     'выброшено вместе с мусором, то есть ячейка промолчит именно тогда, '
+     'когда обязана заговорить'),
+
+    ('CG2', HT,
+     "    return _heldValue('insulation_resistance', _coreHold);",
+     "    final raw = _heldValue('insulation_resistance', _coreHold);\n"
+     "    return raw == null ? null : raw * 0.001;",
+     'вернуть второе умножение в геттер — на экране будет 0,0147 вместо '
+     '14,7'),
+    ('CG2', HT,
+     '      _insulBaselineMOhm = med;',
+     '      _insulBaselineMOhm = med * 0.001;',
+     'вернуть умножение в расчёт нормы — приговор станет сравнивать '
+     'настоящее число с нормой в тысячу раз меньшей'),
+    ('CG2', OVR,
+     '            scale = 0.001,',
+     '            scale = 1.0,',
+     'снять масштаб со стороны Kotlin — придут килоомы, и на экране '
+     'окажется четырёхзначное число мегаом'),
+
+    ('CG3', HT,
+     "    'speed': (0, 220),",
+     "    'speed': (0, 100),",
+     'сузить стража скорости ниже наблюдённого максимума 121 — на трассе '
+     'скорость будет молча пропадать'),
+    ('CG3', HT,
+     "    'pack_current': (-600, 600),",
+     "    'pack_current': (-100, 600),",
+     'сузить стража тока заряда ниже наблюдённых −193 А — быстрая зарядка '
+     'станет невидимой'),
+
+    ('CG4', HT,
+     "    'motor_rpm': (-25000, 25000),",
+     "    'motor_rpm': (0, 25000),",
+     'вернуть стража оборотов к нулю — задний ход снова выбросит 2 % '
+     'замеров, и на панели обороты в нём погаснут'),
+
+    ('CG5', TAB,
+     '            Decoder("speed", "km/h", ValueSource.INT,',
+     '            Decoder("odometer", "km/h", ValueSource.INT,',
+     'подписать фид чужим утверждённым именем — пара с каталогом '
+     'разойдётся'),
+    ('CG5', TAB,
+     '        put("BYDAutoStatisticDevice|0x47300018",',
+     '        put("BYDAutoStatisticDevice|0x47300019",',
+     'завести фид, которого в каталоге нет вовсе — так и появляются '
+     'выдуманные адреса'),
+
+    ('CG6', TAB,
+     '            Decoder("cell_idx_lowest", "", ValueSource.INT,',
+     '            Decoder("cell_idx_highest", "", ValueSource.INT,',
+     'вернуть перекрещенную подпись младшему номеру ячейки'),
+    ('CG6', TAB,
+     '            Decoder("cell_idx_highest",  "", ValueSource.INT,',
+     '            Decoder("cell_idx_lowest",  "", ValueSource.INT,',
+     'вернуть перекрещенную подпись старшему номеру ячейки'),
+
+    ('CG7', IS_,
+     '    final names = <String>[kStagedName, kFixedName];',
+     '    final names = <String>[];',
+     'опустошить список известных имён — единственная работающая на '
+     'машине ступень поиска перестанет искать'),
+    ('CG7', IS_,
+     "        await consider(f, n == kStagedName ? 'staged' : 'fixed');",
+     '        continue;',
+     'выпотрошить первую ступень, оставив её литерал на месте — найденный '
+     'файл не дойдёт до отбора'),
+
+    ('CG8', DM,
+     '    final bool isPhone = hal.platformProbed && !hal.canUseHal;',
+     '    final bool isPhone = !hal.canUseHal;',
+     'спросить признак до окончания опроса платформы — на холодном старте '
+     'кнопки подменятся под пальцем'),
+    ('CG8', DM,
+     '            if (isPhone)\n'
+     '            Padding(\n'
+     '              padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),\n'
+     '              child: OutlinedButton.icon(\n'
+     '                icon: const Icon(Icons.attach_file),',
+     '            if (!hal.canUseHal)\n'
+     '            Padding(\n'
+     '              padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),\n'
+     '              child: OutlinedButton.icon(\n'
+     '                icon: const Icon(Icons.attach_file),',
+     'завести кнопке собственную проверку устройства — два признака '
+     'разойдутся молча'),
+
+    ('CG9', L10,
+     "    'dataimp.help_title': 'Не получилось?',",
+     '',
+     'снять новый ключ из русского набора — на русском экране появится '
+     'английская строка'),
+    ('CG9', L10,
+     "    'dataimp.step1': '1. In the car file manager pick the archive, press '",
+     "    'dataimp.intro': 'Reads an export archive back.',\n"
+     "    'dataimp.step1': '1. In the car file manager pick the archive, press '",
+     'вернуть снятый ключ в один из языков — мёртвые ключи так и '
+     'накапливаются'),
+
+    # CC4 держал только вторую половину своего условия: мутация на
+    # побочное действие В ГЕТТЕРЕ появилась только сейчас, вместе с
+    # починкой окна гейта. +203.
+    ('CC4', HT,
+     "    return _heldValue('insulation_resistance', _coreHold);",
+     '    unawaited(refreshInsulationBaseline());\n'
+     "    return _heldValue('insulation_resistance', _coreHold);",
+     'вернуть побочное действие в геттер, читаемый на каждой перерисовке'),
+]
 
 
 

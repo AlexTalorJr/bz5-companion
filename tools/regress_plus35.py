@@ -10611,9 +10611,24 @@ if int(pv) >= 199:
     # геттера, который читается на каждой перерисовке панели. Побочное
     # действие в геттере — та неряшливость, которую ревизия обязана
     # отклонять; найдено собственной ревизией до поля.
-    _cc4_get = _cc_hal.split('double? get halInsulationMOhm')[1] \
-        .split('\n  }')[0] if 'double? get halInsulationMOhm' in _cc_hal else ''
-    _cc4 = ('refreshInsulationBaseline' not in _cc4_get and
+    # v0.2.4+203 — ОКНО БОЛЬШЕ НЕ ЗАВИСИТ ОТ ФОРМЫ ТЕЛА. Прежний конец
+    # окна стоял на образце закрывающей скобки с отступом. Стоило
+    # переписать геттер в стрелочную форму — этого образца рядом не
+    # оказалось, окно уехало вниз через полсотни строк, захватило чужой
+    # вызов пересчёта, и гейт упал на ИСПРАВНОМ коде. Тот же класс, что
+    # CB8: маркер конца окна обязан пережить изменение формы. Теперь
+    # конец — пустая строка (разделитель членов класса) или потолок в
+    # 400 знаков, что раньше; схлопнуться в пустую строку окно не может,
+    # потому что начинается от найденного объявления.
+    _cc4_d = 'double? get halInsulationMOhm'
+    _cc4_i = _cc_hal.find(_cc4_d)
+    if _cc4_i < 0:
+        _cc4_get = ''
+    else:
+        _cc4_tail = _cc_hal[_cc4_i:_cc4_i + 400]
+        _cc4_end = _cc4_tail.find('\n\n')
+        _cc4_get = _cc4_tail if _cc4_end < 0 else _cc4_tail[:_cc4_end]
+    _cc4 = (_cc4_i >= 0 and 'refreshInsulationBaseline' not in _cc4_get and
             "if (e.name == 'insulation_resistance') {" in _cc_hal)
     if _cc4:
         ok('CC4 the baseline is refreshed where the sample arrives, not from '
@@ -11203,6 +11218,310 @@ if int(pv) >= 202:
              'screen')
 else:
     ok(f"Part CF skipped (build +{pv}, the 40 percent threshold lands in +202)")
+
+
+# ─────────────────────────── Part CG (+203) ──────────────────────────
+# Эра CG. Что закрывает, одной фразой на пункт:
+#   1. страж изоляции стоит в мегаомах, а не в килоомах;
+#   2. масштаб применяется РОВНО ОДИН РАЗ, и делает это Kotlin;
+#   3. КАЖДЫЙ страж `_range` сверен с настоящими числами из машины —
+#      тот прибор, которого не было и без которого три ревизии, 224
+#      мутации и восемь гейтов прошли над стражем, отбраковывавшим
+#      100 % данных;
+#   4. обороты знаковые, задний ход больше не выбрасывается;
+#   5. каждая запись декодера сверена с авторитетным каталогом фидов;
+#   6. номера крайних ячеек подписаны по каталогу;
+#   7. первая ступень поиска существует отдельно и читается до второй;
+#   8. кнопки, зависящие от устройства, спрашивают ОДИН признак;
+#   9. ключи, добавленные этим патчем, есть в обоих языках, а снятый —
+#      снят из обоих.
+if int(pv) >= 203:
+    _cg_hal_raw = (root / 'lib/services/hal_telemetry_service.dart').read_text()
+    _cg_hal = _strip_comments_safe(_cg_hal_raw)
+    _cg_l10n = (root / 'lib/l10n/strings.dart').read_text()
+    _cg_data = _strip_comments_safe(
+        (root / 'lib/screens/data_management.dart').read_text())
+    _cg_imp = _strip_comments_safe(
+        (root / 'lib/services/import_service.dart').read_text())
+    _cg_kt_over = _strip_comments_safe(
+        (root / 'android/app/src/main/kotlin/com/bz5companion/'
+                'bz5_companion/hal/CompanionDecoderOverrides.kt').read_text())
+    _cg_kt_tab = _strip_comments_safe(
+        (root / 'android/app/src/main/kotlin/com/bz5companion/'
+                'bz5_companion/hal/TelemetryDecoderTable.kt').read_text())
+
+    def _cg_range():
+        """Карта имя → (низ, верх) из литерала `_range`. Пусто, если
+        литерал не найден: пустая карта роняет CG1/CG3/CG4, и это верно —
+        гейт без предмета обязан краснеть, а не молчать."""
+        m = re.search(r'_range\s*=\s*(?:const\s*)?<[^>]*>\s*\{|_range\s*=\s*\{',
+                      _cg_hal)
+        if not m:
+            return {}
+        i, depth = m.end(), 1
+        while depth > 0 and i < len(_cg_hal):
+            if _cg_hal[i] == '{':
+                depth += 1
+            elif _cg_hal[i] == '}':
+                depth -= 1
+            i += 1
+        body = _cg_hal[m.end():i]
+        out = {}
+        for nm, lo, hi in re.findall(
+                r"'([a-z0-9_]+)':\s*\(\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*\)",
+                body):
+            out[nm] = (float(lo), float(hi))
+        return out
+
+    _cg_r = _cg_range()
+
+    # CG1: СТРАЖ ИЗОЛЯЦИИ В МЕГАОМАХ.
+    #
+    # Проверяется не точное число, а единица измерения: верх ниже
+    # тысячи означает, что страж не может снова оказаться в килоомах, а
+    # низ не выше 0,05 МОм означает, что настоящее падение изоляции
+    # пройдёт, а не будет отброшено вместе с мусором. Норматив
+    # ISO 6469-3 при 452 В требует 0,045 МОм — ниже низа стража.
+    _cg1 = _cg_r.get('insulation_resistance')
+    if _cg1 is not None and _cg1[1] <= 1000.0 and _cg1[0] <= 0.05:
+        ok('CG1 the insulation guard is stated in megaohms and lets a real '
+           'insulation drop through')
+    else:
+        fail('CG1 the insulation guard is back in kiloohms or its floor sits '
+             'above the safety limit')
+
+    # CG2: МАСШТАБ ПРИМЕНЯЕТСЯ ОДИН РАЗ, И ЕГО ПРИМЕНЯЕТ KOTLIN.
+    #
+    # Дефект +202 состоял из двух умножений одного числа: в геттере и в
+    # расчёте нормы. Гейт держит обе стороны: в Kotlin множитель есть, в
+    # Dart рядом с изоляцией его нет нигде.
+    #
+    # Искомое выражение собирается из частей и в тексте гейта не
+    # приводится: гейт на отсутствие, процитировавший запрещённое
+    # дословно, находит сам себя, как это уже случилось в +197.
+    _cg2_needle = '*' + ' ' + '0.001'
+    _cg2_kt = ('scale' in _cg_kt_over and '0.001' in _cg_kt_over)
+    _cg2_g = _cg_hal.find('get halInsulationMOhm')
+    _cg2_getter = _cg_hal[_cg2_g:_cg2_g + 200] if _cg2_g > 0 else 'нет геттера'
+    # Окно нормы ищет ИМЕННО присвоение медианы. Первое вхождение имени
+    # поля — это сброс в null в раннем выходе «замеров ещё мало», и
+    # окно, поставленное на него, смотрело мимо предмета: мутация,
+    # возвращавшая умножение, гейт не роняла. Поймано прогоном мутаций,
+    # не ревизией.
+    _cg2_b = _cg_hal.find('_insulBaselineMOhm = med')
+    _cg2_base = _cg_hal[_cg2_b:_cg2_b + 60] if _cg2_b > 0 else 'нет нормы'
+    _cg2 = (_cg2_kt and _cg2_g > 0 and _cg2_b > 0
+            and _cg2_needle not in _cg2_getter
+            and _cg2_needle not in _cg2_base)
+    if _cg2:
+        ok('CG2 the insulation scale is applied exactly once, on the Kotlin '
+           'side, and neither the getter nor the baseline scales it again')
+    else:
+        fail('CG2 the insulation value is scaled twice, or the Kotlin scale '
+             'disappeared')
+
+    # CG3: ГЛАВНЫЙ ГЕЙТ ЭТОГО ПАТЧА — КАЖДЫЙ СТРАЖ ПРОТИВ НАСТОЯЩИХ
+    # ЧИСЕЛ ИЗ МАШИНЫ.
+    #
+    # Прибора такого рода не было ни одного: гейты читают исходники,
+    # мутации читают гейты, ревизии читают код, и НИКТО не смотрел на
+    # числа, которые реально приходят. Из-за этого страж изоляции
+    # отбраковывал 100 % замеров восемь версий подряд, оставаясь зелёным.
+    #
+    # ТРИ ИСХОДА, А НЕ ДВА. Данные за стражем сами по себе не дефект:
+    # `motor_power` шесть раз получил ровно 3095 — это метка «нет
+    # данных» от машины, и отбраковать её правильно. Поэтому:
+    #   * имени нет в сводке          → пропуск, проверять нечего;
+    #   * имя в списке известных меток → сверяется ЧИСЛО отбракованных;
+    #   * иначе                        → любой замер за стражем = FAIL.
+    #
+    # СВОДКА НЕ УМЕЕТ СЧИТАТЬ ОТБРАКОВАННЫХ. В ней три числа на имя:
+    # сколько замеров, минимум, максимум. Значит имя из списка меток
+    # освобождается от проверки ЦЕЛИКОМ, а не по числу случаев, и это
+    # записано здесь прямо, чтобы список не рос от удобства: каждое имя
+    # в нём — дыра в приборе. Сегодня оно одно.
+    _cg3_path = root / 'tools/data/export_summary_20260811.txt'
+    _cg3_known = {'motor_power'}
+    if not _cg3_path.exists() or not _cg_r:
+        fail('CG3 the reference export summary is missing, or the guard table '
+             'could not be read — the guards are unchecked against real data')
+    else:
+        _cg3_obs = {}
+        for _ln in _cg3_path.read_text().splitlines():
+            if not _ln or _ln.startswith('#'):
+                continue
+            _p = _ln.split()
+            if len(_p) == 4:
+                _cg3_obs[_p[0]] = (int(_p[1]), float(_p[2]), float(_p[3]))
+        _cg3_bad, _cg3_seen = [], 0
+        for _nm, (_lo, _hi) in sorted(_cg_r.items()):
+            if _nm not in _cg3_obs:
+                continue
+            _cg3_seen += 1
+            _cnt, _omin, _omax = _cg3_obs[_nm]
+            _out = _omin < _lo or _omax > _hi
+            if not _out:
+                continue
+            if _nm in _cg3_known:
+                continue
+            _cg3_bad.append(_nm)
+        if _cg3_bad or _cg3_seen < 20 or not _cg3_obs:
+            fail('CG3 at least one guard rejects readings the car actually '
+                 'sends: ' + (', '.join(_cg3_bad) or 'the summary is empty'))
+        else:
+            ok('CG3 every guard that has observed data accepts it, and the '
+               'known no-data markers are the only readings dropped')
+
+    # CG4: ОБОРОТЫ ЗНАКОВЫЕ. Задний ход даёт отрицательные обороты, и
+    # прежний страж от нуля выбрасывал 266 замеров из 13 434.
+    _cg4 = _cg_r.get('motor_rpm')
+    if _cg4 is not None and _cg4[0] < 0 and _cg4[1] > 0:
+        ok('CG4 the motor speed guard accepts reverse gear')
+    else:
+        fail('CG4 the motor speed guard drops reverse gear again')
+
+    # CG5: КАЖДАЯ ЗАПИСЬ ДЕКОДЕРА СВЕРЕНА С КАТАЛОГОМ.
+    #
+    # Сверка идёт по УТВЕРЖДЁННЫМ ПАРАМ, а не по совпадению слов: шесть
+    # наших имён — законные синонимы каталожных (`odometer` против
+    # `STATISTIC_TOTAL_MILEAGE` и так далее), и гейт на словах давал бы
+    # шесть ложных срабатываний из восьми. Пара меняется — гейт краснеет.
+    _cg5_idx = root / 'tools/data/feature_ids.txt'
+    if not _cg5_idx.exists():
+        fail('CG5 the authoritative feature-id index is missing from the '
+             'repository')
+    else:
+        _cg5_map = {}
+        for _ln in _cg5_idx.read_text().splitlines():
+            if _ln.startswith('#') or not _ln.strip():
+                continue
+            _p = _ln.split()
+            _cg5_map[int(_p[0], 16)] = set(_p[1:])
+        _cg5_pairs = {
+            'insulation_resistance': 'STATISTIC_INSULATION_RESISTANCE_VALUE',
+            'cell_idx_lowest': 'ENERGY_LOWEST_VOLT_BATTERY_NUM',
+            'cell_idx_highest': 'ENERGY_HIGHEST_VOLT_BATTERY_NUM',
+            'cell_v_lowest': 'ENERGY_SINGLE_BATTERTY_LOWEST_VOLT',
+            'cell_v_highest': 'ENERGY_SINGLE_BATTERTY_HIGHEST_VOLT',
+            'motor_torque': 'ENGINE_DRIVER_MOTOR_TORQUE',
+            'motor_rpm': 'ENGINE_DRIVER_MOTOR_SPEED',
+            'motor_power': 'ENGINE_POWER',
+            'speed': 'STATISTIC_TOTAL_AVERAGE_SPEED_151',
+            'odometer': 'STATISTIC_TOTAL_MILEAGE',
+            'trip_a': 'STATISTIC_DD_MILEAGE1',
+            'trip_b': 'STATISTIC_DD_MILEAGE2',
+            'soc_display': 'STATISTIC_ELEC_PERCENTAGE',
+        }
+        _cg5_ent = []
+        for _src in (_cg_kt_tab, _cg_kt_over):
+            for _m in re.finditer(
+                    r'"\w+\|0x([0-9A-Fa-f]{8})"[^"]{0,80}?'
+                    r'Decoder\(\s*"([a-z0-9_]+)"', _src, re.S):
+                _cg5_ent.append((int(_m.group(1), 16), _m.group(2)))
+        _cg5_absent = [hex(f) for f, _ in _cg5_ent if f not in _cg5_map]
+        _cg5_wrong = [n for f, n in _cg5_ent
+                      if n in _cg5_pairs and f in _cg5_map
+                      and _cg5_pairs[n] not in _cg5_map[f]]
+        if _cg5_ent and not _cg5_absent and not _cg5_wrong and len(
+                _cg5_ent) >= 60:
+            ok('CG5 every decoder entry names a feature id the catalog knows, '
+               'and every approved pair still holds')
+        else:
+            fail('CG5 a decoder entry has no catalog counterpart, or an '
+                 'approved name pair changed: '
+                 + ', '.join(_cg5_absent + _cg5_wrong or ['table not read']))
+
+    # CG6: НОМЕРА КРАЙНИХ ЯЧЕЕК ПОДПИСАНЫ ПО КАТАЛОГУ.
+    #
+    # Отдельно от CG5, потому что это ровно тот случай, который CG5
+    # ловит только вместе со списком пар, а стоил он восьми версий
+    # перекрещенных подписей. Здесь предмет назван поимённо.
+    _cg6_lo = re.search(r'0x45400008"\s*,\s*\n?\s*Decoder\(\s*"([a-z_]+)"',
+                        _cg_kt_tab)
+    _cg6_hi = re.search(r'0x45400028"\s*,\s*\n?\s*Decoder\(\s*"([a-z_]+)"',
+                        _cg_kt_tab)
+    if (_cg6_lo and _cg6_hi and _cg6_lo.group(1) == 'cell_idx_lowest'
+            and _cg6_hi.group(1) == 'cell_idx_highest'):
+        ok('CG6 the extreme-cell numbers carry the names the catalog gives '
+           'their feature ids')
+    else:
+        fail('CG6 the extreme-cell numbers are crossed again')
+
+    # CG7: ПЕРВАЯ СТУПЕНЬ ПОИСКА — ОТДЕЛЬНАЯ И РАНЬШЕ ВТОРОЙ.
+    #
+    # Первая ступень (известные имена) — единственная работающая на
+    # машине; вторая (перечисление хранилища) отказывает всегда. Слейся
+    # они в одну или встань перечисление первым — приём файла перестанет
+    # находиться, и заметить это можно будет только в машине.
+    #
+    # Проверяются три вещи: список известных имён существует и назван
+    # обоими постоянными именами; он стоит РАНЬШЕ перечисления; и он не
+    # холостой — найденное уходит в общий отбор. Без третьей проверки
+    # ступень можно выпотрошить, оставив литерал на месте.
+    _cg7_lit = _cg_imp.find('[kStagedName, kFixedName]')
+    _cg7_i2 = _cg_imp.find('.listSync()')
+    _cg7_use = "await consider(f, n == kStagedName ? 'staged' : 'fixed');"
+    if 0 < _cg7_lit < _cg7_i2 and _cg7_use in _cg_imp:
+        ok('CG7 the known-names stage exists apart from the enumeration and '
+           'is read before it')
+    else:
+        fail('CG7 the known-names stage vanished or fell behind the storage '
+             'enumeration')
+
+    # CG8: ОДИН ПРИЗНАК УСТРОЙСТВА НА ВЕСЬ ЭКРАН.
+    #
+    # Три кнопки зависят от устройства. Спроси каждая по-своему — они
+    # разойдутся, и разойдутся молча. Гейт держит: признак объявлен
+    # ровно один раз, спрашивает ПАРУ (опрос платформы завершается позже
+    # первой отрисовки), и ни одна кнопка не заводит своей проверки.
+    _cg8_decl = re.findall(r'bool\s+isPhone\s*=', _cg_data)
+    _cg8_pair = re.search(
+        r'bool\s+isPhone\s*=\s*hal\.platformProbed\s*&&\s*!hal\.canUseHal',
+        _cg_data)
+    _cg8_extra = len(re.findall(r'canUseHal', _cg_data))
+    if len(_cg8_decl) == 1 and _cg8_pair and _cg8_extra == 1:
+        ok('CG8 the device-dependent buttons all read one flag, and that flag '
+           'waits for the platform probe')
+    else:
+        fail('CG8 the data screen asks about the device in more than one '
+             'place, or its flag does not wait for the platform probe')
+
+    # CG9: КЛЮЧИ ЭТОГО ПАТЧА — В ОБОИХ ЯЗЫКАХ, СНЯТЫЙ — СНЯТ ИЗ ОБОИХ.
+    #
+    # Список ограничен ключами +203 сознательно. В файле есть семь
+    # ключей, живущих только в английском наборе, и все семь старше
+    # этого патча; гейт на весь файл покраснел бы на чужом долге и
+    # приучил бы к красному цвету. Долг записан в передаче окна.
+    def _cg9_keys(name):
+        m = re.search(r'Map<String,\s*String>\s+' + name + r'\s*=\s*'
+                      r'(?:const\s*)?\{', _cg_l10n)
+        if not m:
+            return set()
+        i, depth = m.end(), 1
+        while depth > 0 and i < len(_cg_l10n):
+            if _cg_l10n[i] == '{':
+                depth += 1
+            elif _cg_l10n[i] == '}':
+                depth -= 1
+            i += 1
+        return set(re.findall(r"'([A-Za-z0-9_.]+)':", _cg_l10n[m.end():i]))
+
+    _cg9_en, _cg9_ru = _cg9_keys('_en'), _cg9_keys('_ru')
+    _cg9_added = {'dataexp.pick_title', 'dataimp.step1', 'dataimp.step2',
+                  'dataimp.step3', 'dataimp.help_title', 'dataimp.uid_hint',
+                  'dataimp.phone_note'}
+    _cg9_gone = 'dataimp.intro'
+    _cg9_missing = sorted((_cg9_added - _cg9_en) | (_cg9_added - _cg9_ru))
+    _cg9_left = _cg9_gone in _cg9_en or _cg9_gone in _cg9_ru
+    _cg9_used = all(k in _cg_data for k in _cg9_added)
+    if _cg9_en and _cg9_ru and not _cg9_missing and not _cg9_left and _cg9_used:
+        ok('CG9 every key this patch adds exists in both languages and is '
+           'actually drawn, and the key it removed is gone from both')
+    else:
+        fail('CG9 a new key is missing from one language, unused, or the '
+             'removed key survived in one of them')
+else:
+    ok(f"Part CG skipped (build +{pv}, the catalog era lands in +203)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
