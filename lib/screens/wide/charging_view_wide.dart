@@ -700,7 +700,7 @@ class _BottomSummaryStrip extends StatelessWidget {
         value: chargedKwh != null
             ? '${chargedKwh.toStringAsFixed(2)} kWh'
             : '—',
-        hint: 'ΔSOC × pack kWh',
+        hint: '',
       ),
       _Metric(
         label: S.of('chg.soc_gain'),
@@ -717,7 +717,7 @@ class _BottomSummaryStrip extends StatelessWidget {
       _Metric(
         label: 'COUNTER 0B00',
         value: counterRaw != null ? '$counterRaw' : '—',
-        hint: S.of('chg.counter_raw'),
+        hint: '',
       ),
       _Metric(
         label: 'I-MAX SET',

@@ -100,7 +100,6 @@ class S {
     'settings.section.language': 'Язык / Language',
 
     // Settings — connection
-    'settings.adapter.title': 'ELM327 BLE adapter',
     'settings.adapter.not_connected': 'Not connected',
     'settings.autoconnect.title': 'Auto-connect at startup',
     'settings.autoconnect.subtitle':
@@ -405,9 +404,7 @@ class S {
     'cloud.setup.intro': 'Enter the setup token provided by the bridge owner. '
         'This token can only be used once; the owner will need '
         'to reissue it if you re-register later.',
-    'cloud.setup.token_label': 'Setup token',
     'cloud.setup.advanced': 'Advanced',
-    'cloud.setup.url_label': 'Bridge URL',
     'cloud.setup.failed': 'Setup failed',
     'cloud.setup.no_vehicles.title': 'No vehicles',
     'cloud.setup.no_vehicles.body':
@@ -441,7 +438,6 @@ class S {
         '<device_id>.<secret>. This will REPLACE the current '
         'cloud identity — pushes resume under the restored '
         'device.',
-    'cloud.restore.token_label': 'Client token',
     'cloud.restore.rejected': 'Token rejected',
     'cloud.restore.replace.title': 'Replace cloud identity?',
     'cloud.restore.replace.device': 'Device: {id}',
@@ -915,7 +911,6 @@ class S {
     'soh.need_wider_last': 'charge span {last}% of {min}% needed',
     'trip.chart_error': 'Chart failed to load',
     'trip.charging_power': 'Charging power',
-    'trip.hv_bus_v': 'HV bus voltage',
     'trip.power_profile': 'Power / regen',
     'trip.traction': 'Traction',
     'trip.regen': 'Regen',
@@ -998,6 +993,15 @@ class S {
     'dataexp.hu_note': 'The file lands in the system Downloads folder. '
         'Open it from the built-in file manager and copy it to a USB stick.',
     'dataexp.pick_title': 'What to include ({n} of 5)',
+    // Data management — category names (+204): the storage counters
+    // and the export pick list read these instead of code literals.
+    'datamgmt.cat.trips': 'Trips',
+    'datamgmt.cat.snapshots': 'Snapshots',
+    'datamgmt.cat.raw_samples': 'Raw samples',
+    'datamgmt.cat.hal_samples': 'HAL samples',
+    'datamgmt.cat.sweep_runs': 'Sweep runs',
+    'datamgmt.cat.sweep_results': 'Sweep results',
+    'datamgmt.cat.livelog_sessions': 'Live Log sessions',
     'dataexp.cleanup_warn': 'Deletion is irreversible. Export your data '
         'before clearing.',
     'dataexp.clear_samples': 'Clear raw samples',
@@ -1242,7 +1246,6 @@ class S {
     'chg.log.stop': 'Stop log',
     'chg.session': 'SESSION',
     'chg.session_sub': 'this charging session',
-    'chg.counter_raw': 'raw — for scale calibration',
     'chg.lt1min': '<1 min',
     'chg.eta_m': '~{m} min',
     'chg.dur_m': '{m} min',
@@ -1408,14 +1411,14 @@ class S {
     'dialog.currency.quick': 'Быстрый выбор:',
 
     // Settings — vehicle
+    'settings.dtc.title': 'Диагностика (DTC)',
     'settings.dtc.subtitle': 'Считать коды ошибок со всех ECU (только чтение)',
     'settings.about.title': 'О приложении',
     'settings.about.subtitle': 'Информация, лицензия, дисклеймер',
 
     // Settings — data
     'settings.data.title': 'Данные и экспорт',
-    'settings.data.subtitle':
-        'Экспорт trips/snapshots/samples на флешку или в облако, очистка',
+    'settings.data.subtitle': 'Экспорт поездок, снимков и замеров на флешку или в облако, очистка',
 
     // Settings — advanced
     'settings.advanced.title': 'Расширенные',
@@ -1497,8 +1500,8 @@ class S {
     'account.title': 'Аккаунт',
     'account.settings_subtitle': 'Вход по email, устройства и отзыв доступа',
     'account.intro': 'Войдите по email, чтобы управлять устройствами этого '
-        'bridge-аккаунта. Вход доступен только адресам, разрешённым '
-        'владельцем bridge.',
+        'облачного аккаунта. Вход доступен только адресам, разрешённым '
+        'владельцем сервера.',
     'account.email_hint': 'Email',
     'account.send_code': 'Отправить код',
     'account.code_sent_neutral': 'Если адресу {email} разрешён вход — на '
@@ -1528,11 +1531,10 @@ class S {
     'account.err_invalid_code': 'Код неверный, просроченный (10 минут) или '
         'уже использованный. После 5 ошибок код сгорает — запросите новый.',
     'account.err_not_allowed': 'Этому адресу вход не разрешён. Попросите '
-        'владельца bridge добавить его в список разрешённых.',
+        'владельца сервера добавить его в список разрешённых.',
     'account.err_rate_limited': 'Слишком много запросов — подождите и '
         'повторите (лимит: 5 кодов в час на адрес).',
-    'account.err_not_configured': 'Аккаунты на этом bridge ещё не настроены '
-        '(на сервере). Обратитесь к владельцу.',
+    'account.err_not_configured': 'Аккаунты на сервере ещё не настроены. Обратитесь к владельцу.',
     'account.err_session': 'Сессия завершена (повторное использование или '
         'истечение токена). Войдите заново.',
     'account.err_bad_email': 'Введите корректный email.',
@@ -1547,7 +1549,7 @@ class S {
     'account.claim_invalid': 'Код неизвестен или истёк — получите новый '
         'на устройстве (действует 5 минут).',
     'account.claim_no_vehicle': 'У аккаунта нет автомобиля по умолчанию '
-        '— обратитесь к владельцу bridge.',
+        '— обратитесь к владельцу сервера.',
 
     // Device pairing screen — v0.1.29+127 (C3)
     'pairing.title': 'Привязка устройства',
@@ -1579,18 +1581,18 @@ class S {
 
     // Cloud backup card
     'cloud.title': 'Облачный бэкап',
-    'cloud.intro': 'Сохраняет историю поездок и снимки BMS на bz5-bridge, '
+    'cloud.intro': 'Сохраняет историю поездок и снимки BMS на сервере, '
         'чтобы они переживали переустановку головного устройства. '
-        'Для настройки нужен токен от владельца bridge; для '
-        'восстановления — client_token прежнего устройства.',
+        'Для настройки нужен токен от владельца сервера; для '
+        'восстановления — токен клиента прежнего устройства.',
     'cloud.setup_btn': 'Настроить облачный бэкап',
     'cloud.restore_btn': 'Восстановить из облака',
     'cloud.enabled': 'Включено',
     'cloud.unknown_vehicle': '(неизвестный автомобиль)',
     'cloud.last_sync': 'Последняя синхронизация',
     'cloud.never': 'никогда',
-    'cloud.pending': 'В очереди: {t} trips, {s} snapshots, {w} sweeps, '
-        '{l} live-logs',
+    'cloud.pending': 'В очереди: {t} поездок, {s} снимков, {w} сканирований, {l} сессий '
+        'опроса',
     'cloud.sync_now': 'Синхронизировать',
     'cloud.force_resync': 'Полный ресинк',
     'cloud.backup_token': 'Сохранить токен',
@@ -1643,14 +1645,13 @@ class S {
 
     // Cloud setup dialog
     'cloud.setup.title': 'Облачный бэкап — настройка',
-    'cloud.setup.intro': 'Введите setup-токен от владельца bridge. '
-        'Токен одноразовый: при повторной регистрации владелец '
-        'должен будет выдать новый.',
+    'cloud.setup.intro': 'Введите токен настройки от владельца сервера. Токен одноразовый: при '
+        'повторной регистрации владелец должен будет выдать новый.',
     'cloud.setup.advanced': 'Дополнительно',
     'cloud.setup.failed': 'Ошибка настройки',
     'cloud.setup.no_vehicles.title': 'Нет автомобилей',
     'cloud.setup.no_vehicles.body':
-        'На bridge не настроен ни один автомобиль. Попросите владельца добавить.',
+        'На сервере не настроен ни один автомобиль. Попросите владельца добавить.',
     'cloud.setup.choose_vehicle': 'Выберите автомобиль',
     'cloud.setup.reg_failed': 'Ошибка регистрации',
     'cloud.setup.connected_snack':
@@ -1658,25 +1659,23 @@ class S {
 
     // Force resync dialog
     'cloud.resync.title': 'Полный ресинк?',
-    'cloud.resync.body':
-        'Повторно выгружает все trips, snapshots, sweeps и live-logs '
-        'из локальной БД. Bridge дедуплицирует — записи, уже '
-        'существующие на сервере, не задвоятся. Полезно после '
-        'восстановления Drift. Может занять несколько минут.',
+    'cloud.resync.body': 'Повторно выгружает все поездки, снимки, сканирования и сессии опроса '
+        'из локальной базы. Сервер отбрасывает дубли — записи, уже '
+        'существующие там, не задвоятся. Полезно после восстановления из архива. '
+        'Может занять несколько минут.',
     'cloud.resync.confirm': 'Ресинк',
 
     // Disconnect dialog
-    'cloud.disconnect.title': 'Отключиться от bridge?',
-    'cloud.disconnect.body':
-        'Удаляет сохранённый client token. Локальные данные Drift '
-        'не трогаются. Для повторного подключения понадобится '
-        'новый setup-токен от владельца bridge.',
+    'cloud.disconnect.title': 'Отключиться от облака?',
+    'cloud.disconnect.body': 'Удаляет сохранённый токен клиента. Локальные данные не трогаются. '
+        'Для повторного подключения понадобится новый токен настройки от '
+        'владельца сервера.',
     'cloud.disconnect.confirm': 'Отключить',
 
     // Restore dialog
     'cloud.restore.title': 'Восстановление из облака',
-    'cloud.restore.intro': 'Вставьте client_token прежнего устройства. Владелец '
-        'bridge может посмотреть его на сервере; формат '
+    'cloud.restore.intro': 'Вставьте токен клиента (client_token) прежнего '
+        'устройства. Владелец сервера может его посмотреть; формат '
         '<device_id>.<secret>. Текущая облачная идентичность '
         'будет ЗАМЕНЕНА — выгрузка продолжится от имени '
         'восстановленного устройства.',
@@ -1687,20 +1686,18 @@ class S {
         '  • текущий токен заменяется (текущая регистрация '
         'останется сиротой на сервере — попросите владельца '
         'отозвать при желании)\n'
-        '  • trips + snapshots подтягиваются в локальный Drift '
-        'с дедупликацией\n'
-        '  • push-курсоры сдвигаются за максимальный локальный id, '
-        'чтобы восстановленные строки не выгружались повторно',
+        '  • поездки и снимки подтягиваются с сервера, '
+        'дубли отбрасываются\n'
+        '  • уже восстановленные записи повторно '
+        'не выгружаются',
     'cloud.restore.replace.warning':
         'Если на этой установке уже были поездки после '
         'переустановки приложения, эти локальные записи '
         'останутся в приложении, но НЕ будут выгружены '
         'под восстановленной идентичностью. (Чтобы избежать — '
         'восстанавливайтесь сразу после переустановки.)',
-    'cloud.restore.replace.note':
-        'Sweeps и live-log сессии в этой версии НЕ '
-        'восстанавливаются — они доступны только через '
-        'админ-инспекцию на bridge.',
+    'cloud.restore.replace.note': 'Сканирования и сессии опроса в этой версии НЕ восстанавливаются — '
+        'они доступны только через админ-инспекцию на сервере.',
     'cloud.restore.confirm': 'Восстановить',
     // Restore progress dialog
     'cloud.restore.hdr.validating': 'Проверка токена…',
@@ -1717,12 +1714,12 @@ class S {
 
     // Backup token dialog
     'cloud.token.none.title': 'Нет токена для сохранения',
-    'cloud.token.none.body':
-        'В защищённом хранилище нет активного client token. '
-        'Сначала выполните настройку или восстановление.',
-    'cloud.token.title': 'Сохранить client token',
+    'cloud.token.none.body': 'В защищённом хранилище нет активного токена клиента. Сначала '
+        'выполните настройку или восстановление.',
+    'cloud.token.title': 'Сохранить токен клиента',
     'cloud.token.intro': 'Сохраните этот токен в менеджере паролей. '
-        'Сервер не может его восстановить (хранится sha256-хэш) — '
+        'Сервер хранит только его отпечаток '
+        'и восстановить токен не может — '
         'он понадобится для восстановления после переустановки '
         'на головном устройстве.',
     'cloud.token.length': 'Длина: {n} символов',
@@ -1732,12 +1729,12 @@ class S {
     'cloud.token.copied': 'Токен скопирован в буфер обмена',
 
     // Bridge diagnostic card
-    'bridge.title': 'Bridge-диагностика',
-    'bridge.intro': 'Позволяет владельцу bridge присылать диагностические '
-        'команды на это устройство для sweep / live-log / native probe '
-        'сессий. Использует ту же регистрацию, что и облачный бэкап '
-        'выше — сначала настройте его. По умолчанию выключено.',
-    'bridge.enable': 'Включить bridge-диагностику',
+    'bridge.title': 'Удалённая диагностика',
+    'bridge.intro': 'Позволяет владельцу сервера присылать диагностические '
+        'команды на это устройство: сканирования и опрос датчиков. '
+        'Использует ту же регистрацию, что и облачный бэкап выше — '
+        'сначала настройте его. По умолчанию выключено.',
+    'bridge.enable': 'Включить удалённую диагностику',
     'bridge.stats': 'Выполнено: {a}  ·  Отклонено: {b}',
     'bridge.last': 'Последняя: {kind} ({when})',
     'bridge.status.off': 'Выключено',
@@ -1780,7 +1777,7 @@ class S {
     'dashw.pause_polling': 'Остановить опрос',
     'dashw.start_polling': 'Запустить опрос',
     'dash.range': 'ЗАПАС ХОДА',
-    'dash.packv_live': 'НАПРЯЖЕНИЕ ПАКА (LIVE)',
+    'dash.packv_live': 'НАПРЯЖЕНИЕ ПАКА · СЕЙЧАС',
     'dash.nominal': 'НОМИНАЛ',
     'dash.not_charging': 'Не заряжается',
     'dash.charging': 'ЗАРЯДКА',
@@ -1804,7 +1801,7 @@ class S {
     'dash.pack_extremes': 'ЭКСТРЕМУМЫ ПАКА ({n} ячеек)',
     'dash.cell_n': 'ячейка #{n}',
     'dash.cell_dash': 'ячейка #—',
-    'dash.modules_hdr': '{n} МОДУЛЕЙ · MIN..MAX mV · ТЕМП',
+    'dash.modules_hdr': '{n} МОДУЛЕЙ · МИН..МАКС mV · ТЕМП',
     'dash.no_temp': 'нет темп.',
     'dash.find_hint': 'Настройки → Найти адаптер',
     // v0.1.40+139: стейл-дашборд телефона (последний снапшот).
@@ -1827,7 +1824,7 @@ class S {
     'dash.eta80': 'До 80%',
     'dash.chg_delta': '+{d}% за сессию',
     'dash.this_session_inline': 'Эта сессия: ',
-    'dash.trip_live': 'Поездка #{id} · LIVE',
+    'dash.trip_live': 'Поездка #{id} · идёт',
     'dash.kwh_used': '{e} kWh израсходовано',
     'dash.consumption_s': 'Расход',
     'dash.cells_balance': 'БАЛАНС ЯЧЕЕК',
@@ -2091,9 +2088,8 @@ class S {
 
     // ── trends ──
     'trends.empty_title': 'Нет поездок за этот период',
-    'trends.empty_hint': 'Trends строится по завершённым поездкам. Сделайте '
-        'поездку с подключённым адаптером — итоги, расход и графики появятся '
-        'здесь.',
+    'trends.empty_hint': 'Тренды строятся по завершённым поездкам. Сделайте поездку с '
+        'подключённым адаптером — итоги, расход и графики появятся здесь.',
     'trends.total_fmt': 'итого {km} км · {n} поезд.',
     'trends.cost_total_fmt': 'итого {c} {v} · {n} мес',
     'trends.avg_cons_fmt': 'средн. {x} кВт·ч/100км · {n} поезд.',
@@ -2155,7 +2151,6 @@ class S {
     'soh.need_wider_last': 'охват {last} % из нужных {min} %',
     'trip.chart_error': 'График не загрузился',
     'trip.charging_power': 'Мощность зарядки',
-    'trip.hv_bus_v': 'Напряжение HV bus',
     'trip.power_profile': 'Мощность / реген',
     'trip.traction': 'Тяга',
     'trip.regen': 'Реген',
@@ -2196,7 +2191,7 @@ class S {
     'dtc.scan_hdr': 'СКАН DTC',
     'dtc.scanning_cur': 'Сканирую: {cur}',
     'dtc.last_scan': 'Последний скан: {t}',
-    'dtc.scan_desc': 'Считать коды ошибок с 9 ECU. Read-only.',
+    'dtc.scan_desc': 'Считать коды ошибок с 9 ECU. Только чтение.',
     'dtc.scanning': 'Сканирую…',
     'dtc.run_again': 'Повторить',
     'dtc.run_scan': 'Запустить скан',
@@ -2204,19 +2199,19 @@ class S {
     'dtc.active_found': 'Найдено активных ошибок: {n}',
     'dtc.clean_no_active': 'Чисто (активных ошибок нет)',
     'dtc.all_clean': 'Все ECU чистые',
-    'dtc.summary': '{e} ECU просканировано · {a} активных · {r} readiness · {i} с записями',
+    'dtc.summary': 'Блоков: {e} · активных: {a} · готовность: {r} · с записями: {i}',
     'dtc.n_active': '{n} активных ошибок',
-    'dtc.n_readiness': '{n} readiness-флагов',
+    'dtc.n_readiness': '{n} флагов готовности',
     'dtc.probe_error': 'ошибка пробы',
     'dtc.clean': 'чисто',
-    'dtc.ext_session': 'Extended session не открыта',
+    'dtc.ext_session': 'Расширенная сессия не открыта',
     'dtc.no_dtc': 'Нет DTC',
     'dtc.tap_run': 'Нажмите «Запустить скан», чтобы считать DTC',
-    'dtc.scan_takes': 'Сканирование занимает ~30 секунд. Polling '
-        'приостанавливается на время скана, чтобы не нагружать BLE.',
+    'dtc.scan_takes': 'Сканирование занимает ~30 секунд. Опрос приостанавливается на время '
+        'скана, чтобы не нагружать BLE.',
     'dtc.flags_hdr': 'Значение статус-флагов:',
-    'dtc.flag_active': 'Active fault — реальная ошибка прямо сейчас',
-    'dtc.flag_readiness': 'Readiness — тест ещё не выполнен (не fault)',
+    'dtc.flag_active': 'Активная — ошибка присутствует прямо сейчас',
+    'dtc.flag_readiness': 'Готовность — самопроверка ещё не выполнена (это не ошибка)',
 
     // ── data & export ──
     'dataexp.sec_storage': 'ХРАНИЛИЩЕ',
@@ -2228,49 +2223,54 @@ class S {
         '"Проводник" на флешку, отправить в облако или мессенджер.',
     'dataexp.trips_sub': 'trips.csv — открывается в Excel/Numbers',
     'dataexp.snapshots_sub': 'snapshots.csv — данные для долговременных графиков',
-    'dataexp.samples_sub': 'samples.sqlite — бинарный дамп БД (компактно), '
-        'открывается в DB Browser',
-    'dataexp.livelogs_sub':
-        'live_log_sessions.csv + live_log_entries.csv (time-series)',
+    'dataexp.samples_sub': 'samples.sqlite — компактная копия базы, открывается в DB Browser',
+    'dataexp.livelogs_sub': 'live_log_sessions.csv + live_log_entries.csv (опрос по времени)',
     'dataexp.exporting': 'Экспорт: {stage}...',
-    'dataexp.share_btn': 'Поделиться (Share)',
+    'dataexp.share_btn': 'Поделиться',
     'dataexp.save_btn': 'Сохранить в Downloads',
     'dataexp.hu_note': 'Файл появится в системной папке Downloads. Откройте '
         'его штатным проводником машины и скопируйте на флешку.',
     'dataexp.pick_title': 'Что включить ({n} из 5)',
+    // Страница данных — имена категорий (+204): счётчики хранилища
+    // и список экспорта читают их вместо литералов в коде.
+    'datamgmt.cat.trips': 'Поездки',
+    'datamgmt.cat.snapshots': 'Снимки',
+    'datamgmt.cat.raw_samples': 'Сырые замеры',
+    'datamgmt.cat.hal_samples': 'Замеры HAL',
+    'datamgmt.cat.sweep_runs': 'Запуски сканирования',
+    'datamgmt.cat.sweep_results': 'Результаты сканирования',
+    'datamgmt.cat.livelog_sessions': 'Сессии журнала опроса',
     'dataexp.cleanup_warn': 'Удаление данных безвозвратно. Перед очисткой '
         'рекомендуем сделать экспорт.',
-    'dataexp.clear_samples': 'Очистить raw samples',
-    'dataexp.clear_samples_sub': 'Удалить все детальные measurements (история DID)',
-    'dataexp.clear_samples_q': 'Удалить все raw samples?',
-    'dataexp.clear_samples_desc': 'Trips и Snapshots сохранятся, но '
-        'детальные measurements будут утеряны. Это самая объёмная таблица.',
-    'dataexp.n_samples_deleted': '{n} samples удалено',
-    'dataexp.clear_snapshots': 'Очистить snapshots',
-    'dataexp.clear_snapshots_sub': 'Очистит долговременные графики (Trends)',
-    'dataexp.clear_snapshots_q': 'Удалить все snapshots?',
-    'dataexp.clear_snapshots_desc': 'Trends графики (24h / 7d / 30d / 1y / '
-        'all) будут пустыми. Данные начнут накапливаться заново через 2-10 '
-        'минут.',
-    'dataexp.n_snapshots_deleted': '{n} snapshots удалено',
-    'dataexp.clear_trips': 'Очистить все trips',
-    'dataexp.clear_trips_sub': 'Удаляет trips + связанные samples (cascade)',
-    'dataexp.clear_trips_q': 'Удалить все trips и samples?',
-    'dataexp.clear_trips_desc': 'История поездок и все measurements в них '
-        'будут утеряны. Snapshots останутся.',
-    'dataexp.trips_samples_deleted': '{t} trips и {s} samples удалено',
-    'dataexp.clear_sweeps': 'Очистить sweep results',
-    'dataexp.clear_sweeps_sub': 'Удалит логи всех DID-сканирований',
-    'dataexp.clear_sweeps_q': 'Удалить все sweep results?',
-    'dataexp.clear_sweeps_desc': 'История in-car DID сканирований будет '
-        'утеряна. Может быть полезно если sweep results занимают много места.',
-    'dataexp.runs_results_deleted': '{r} runs и {s} results удалено',
-    'dataexp.clear_livelogs': 'Очистить Live Log sessions',
-    'dataexp.clear_livelogs_sub': 'Удалит все time-series записи',
-    'dataexp.clear_livelogs_q': 'Удалить все Live Log sessions?',
-    'dataexp.clear_livelogs_desc': 'История time-series polling будет '
-        'утеряна. Перед очисткой рекомендуем экспортировать данные.',
-    'dataexp.sessions_entries_deleted': '{a} sessions и {b} entries удалено',
+    'dataexp.clear_samples': 'Очистить сырые замеры',
+    'dataexp.clear_samples_sub': 'Удалить все детальные замеры (история DID)',
+    'dataexp.clear_samples_q': 'Удалить все сырые замеры?',
+    'dataexp.clear_samples_desc': 'Поездки и снимки сохранятся, но детальные замеры будут утеряны. Это '
+        'самая объёмная таблица.',
+    'dataexp.n_samples_deleted': 'Удалено замеров: {n}',
+    'dataexp.clear_snapshots': 'Очистить снимки',
+    'dataexp.clear_snapshots_sub': 'Очистит долговременные графики (Тренды)',
+    'dataexp.clear_snapshots_q': 'Удалить все снимки?',
+    'dataexp.clear_snapshots_desc': 'Графики Трендов (сутки / неделя / месяц / год / всё) будут пустыми. Данные '
+        'начнут накапливаться заново через 2-10 минут.',
+    'dataexp.n_snapshots_deleted': 'Удалено снимков: {n}',
+    'dataexp.clear_trips': 'Очистить все поездки',
+    'dataexp.clear_trips_sub': 'Удаляет поездки и связанные с ними замеры',
+    'dataexp.clear_trips_q': 'Удалить все поездки и замеры?',
+    'dataexp.clear_trips_desc': 'История поездок и все замеры в них будут утеряны. Снимки останутся.',
+    'dataexp.trips_samples_deleted': 'Удалено поездок: {t}, замеров: {s}',
+    'dataexp.clear_sweeps': 'Очистить результаты сканирований',
+    'dataexp.clear_sweeps_sub': 'Удалит журналы всех DID-сканирований',
+    'dataexp.clear_sweeps_q': 'Удалить все результаты сканирований?',
+    'dataexp.clear_sweeps_desc': 'История DID-сканирований в машине будет утеряна. Полезно, если '
+        'результаты занимают много места.',
+    'dataexp.runs_results_deleted': 'Удалено запусков: {r}, результатов: {s}',
+    'dataexp.clear_livelogs': 'Очистить сессии журнала опроса',
+    'dataexp.clear_livelogs_sub': 'Удалит все записи опроса по времени',
+    'dataexp.clear_livelogs_q': 'Удалить все сессии журнала опроса?',
+    'dataexp.clear_livelogs_desc': 'История опроса по времени будет утеряна. Перед очисткой рекомендуем '
+        'экспортировать данные.',
+    'dataexp.sessions_entries_deleted': 'Удалено сессий: {a}, записей: {b}',
     'dataexp.saved_fmt': 'Сохранено ({size}): {summary}\nПуть: {path}',
     'dataexp.shared_fmt': 'Поделено ({size}): {summary}',
     'dataexp.share_cancelled_fmt':
@@ -2455,7 +2455,7 @@ class S {
         'шум квантования '
         '(~7 мин на 2 kW AC, ~3 мин на 7 kW AC, ~20 сек на 50 kW DC)',
     'chg.power_formula':
-        'Мощность = ΔSOC × kWh пака / Δt, интегрируется до 10 мин для точности',
+        'Средняя мощность по росту заряда за время (окно до 10 минут)',
     'chg.analyzing': 'анализ…',
     'chg.cv_phase': 'CV фаза (затухание)',
     'chg.almost_done': 'Почти готово',
@@ -2474,17 +2474,17 @@ class S {
     'chg.c_vs_min': '°C по мин',
     'chg.charged': 'ЗАРЯЖЕНО',
     'chg.soc_gain': 'ПРИРОСТ SOC',
-    'chg.since_plugin': 'с момента plug-in',
+    'chg.since_plugin': 'с момента подключения',
     // v0.1.29+94: per-module UDS charge logger
     'chg.log.idle': 'Лог модулей на заряде',
     'chg.log.active': 'Лог модулей — ИДЁТ ЗАПИСЬ',
-    'chg.log.hint': 'Запусти ДО втыкания (поймает baseline + старт тока)',
+    'chg.log.hint': 'Запусти ДО подключения зарядки (поймает исходный уровень и старт '
+        'тока)',
     'chg.log.stats': '{rows} строк · ~{pass}с на проход модулей',
     'chg.log.start': 'Старт лога',
     'chg.log.stop': 'Стоп лога',
     'chg.session': 'СЕССИЯ',
     'chg.session_sub': 'на текущей зарядке',
-    'chg.counter_raw': 'raw — для калибровки scale',
     'chg.lt1min': '<1 мин',
     'chg.eta_m': '~{m} мин',
     'chg.dur_m': '{m} мин',

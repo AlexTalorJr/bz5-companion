@@ -2723,15 +2723,18 @@ if int(pv) >= 58:
                     ('ru', 'common.cancel', 'Отмена'),
                     ('en', 'common.cancel', 'Cancel'),
                     # key only in _en → ru falls back to en
-                    ('ru', 'settings.adapter.title', en['settings.adapter.title']),
+                    # +204: прежний образец settings.adapter.title удалён
+                    # вместе с мёртвыми ключами; названия языков — только-
+                    # английские по замыслу и навсегда (см. CH1).
+                    ('ru', 'settings.language.en', en['settings.language.en']),
                     # key nowhere → key itself
                     ('ru', 'no.such.key', 'no.such.key'),
                     ('en', 'no.such.key', 'no.such.key'),
                 ]
                 bad = [(l, k) for l, k, exp in cases if of(l, k) != exp]
                 # the only-in-en case must actually be only-in-en
-                if 'settings.adapter.title' in ru:
-                    warn("V3 fallback fixture 'settings.adapter.title' now in _ru — pick another")
+                if 'settings.language.en' in ru:
+                    warn("V3 fallback fixture 'settings.language.en' now in _ru — pick another")
                 if not bad:
                     ok("V3 of() fallback chain logic-port: ru→en→key verified")
                 else:
@@ -3044,8 +3047,10 @@ if int(pv) >= 60:
     # legitimately omit TERM keys (S.of falls back ru→_ru??_en??key by
     # design, +58): the allowlist below names the deliberate en-only
     # keys; anything else missing from _ru is a forgotten translation.
+    # +204 paid off the old debt (dead keys deleted, the live one
+    # translated), so the only deliberate en-only keys left are the two
+    # language names, each written in its own language by design.
     _ru_enonly_ok = {
-        'settings.adapter.title', 'settings.dtc.title',
         'settings.language.en', 'settings.language.ru',
     }
     _miss_en = sorted(k for k in _used if f"'{k}'" not in _en_body)
@@ -11488,10 +11493,10 @@ if int(pv) >= 203:
 
     # CG9: КЛЮЧИ ЭТОГО ПАТЧА — В ОБОИХ ЯЗЫКАХ, СНЯТЫЙ — СНЯТ ИЗ ОБОИХ.
     #
-    # Список ограничен ключами +203 сознательно. В файле есть семь
-    # ключей, живущих только в английском наборе, и все семь старше
-    # этого патча; гейт на весь файл покраснел бы на чужом долге и
-    # приучил бы к красному цвету. Долг записан в передаче окна.
+    # Список ограничен ключами +203 сознательно: на момент его
+    # написания в файле жил долг из семи только-английских ключей, и
+    # гейт на весь файл краснел бы на чужом долге. Долг закрыт в +204,
+    # полный паритет двух наборов с тех пор держит CH1 ниже.
     def _cg9_keys(name):
         m = re.search(r'Map<String,\s*String>\s+' + name + r'\s*=\s*'
                       r'(?:const\s*)?\{', _cg_l10n)
@@ -11522,6 +11527,74 @@ if int(pv) >= 203:
              'removed key survived in one of them')
 else:
     ok(f"Part CG skipped (build +{pv}, the catalog era lands in +203)")
+
+# ═══════════════ Part CH — 0.2.5+204: языковой паритет ═══════════════
+if int(pv) >= 204:
+    # CH1: ПОЛНЫЙ ПАРИТЕТ ДВУХ ЯЗЫКОВЫХ НАБОРОВ. CG9 держал только
+    # ключи одного патча, потому что на файле висел долг из семи
+    # только-английских ключей. В +204 долг закрыт: мёртвые ключи
+    # удалены, живой переведён. С этого места каждый ключ обязан жить
+    # в обоих наборах. Единственное намеренное исключение — названия
+    # языков: каждое по замыслу написано на своём языке и перевода не
+    # имеет. Разборщик собственный и читает файл сам: часть не должна
+    # зависеть от того, отработала ли часть CG на этом дереве.
+    _ch_l10n = (root / 'lib/l10n/strings.dart').read_text()
+
+    def _ch1_keys(name):
+        m = re.search(r'Map<String,\s*String>\s+' + name + r'\s*=\s*'
+                      r'(?:const\s*)?\{', _ch_l10n)
+        if not m:
+            return set()
+        i, depth = m.end(), 1
+        while depth > 0 and i < len(_ch_l10n):
+            if _ch_l10n[i] == '{':
+                depth += 1
+            elif _ch_l10n[i] == '}':
+                depth -= 1
+            i += 1
+        return set(re.findall(r"'([A-Za-z0-9_.]+)':", _ch_l10n[m.end():i]))
+
+    _ch1_allow = {'settings.language.en', 'settings.language.ru'}
+    _ch1_en, _ch1_ru = _ch1_keys('_en'), _ch1_keys('_ru')
+    _ch1_en_only = (_ch1_en - _ch1_ru) - _ch1_allow
+    _ch1_ru_only = _ch1_ru - _ch1_en
+    if _ch1_en and _ch1_ru and not _ch1_en_only and not _ch1_ru_only:
+        ok('CH1 every localisation key lives in both language maps, and '
+           'the only deliberate exceptions are the two language names')
+    else:
+        fail(f'CH1 the language maps diverged — en-only: '
+             f'{sorted(_ch1_en_only)} · ru-only: {sorted(_ch1_ru_only)}')
+
+    # CH2: КЛЮЧИ, УДАЛЁННЫЕ В +204, НЕ ВОЗВРАЩАЮТСЯ. Четыре мёртвых
+    # ключа облака и адаптера, мёртвый ключ напряжения шины (ноль
+    # потребителей) и ключ сырого счётчика зарядки (его единственный
+    # потребитель — исследовательская подсказка — удалён вместе с ним).
+    # Паритет CH1 возврата ПАРЫ не заметит, поэтому отсутствие держит
+    # отдельная часть.
+    _ch2_dead = ('settings.adapter.title', 'cloud.setup.url_label',
+                 'cloud.setup.token_label', 'cloud.restore.token_label',
+                 'trip.hv_bus_v', 'chg.counter_raw')
+    _ch2_back = [k for k in _ch2_dead if ("'" + k + "'") in _ch_l10n]
+    if not _ch2_back:
+        ok('CH2 the six keys deleted in +204 stay deleted')
+    else:
+        fail(f'CH2 deleted keys came back: {_ch2_back}')
+
+    # CH3: НА ЭКРАНЕ ЗАРЯДКИ НЕТ ИССЛЕДОВАТЕЛЬСКИХ ПОДСКАЗОК. Две
+    # подсказки (сырой счётчик для калибровки и формула прироста
+    # заряда) убраны решением владельца от 12.08. Иголки собраны из
+    # частей, текст режется от комментариев — обе привычки для
+    # частей-отсутствий обязательные.
+    _ch3_src = _strip_comments_safe(
+        (root / 'lib/screens/wide/charging_view_wide.dart').read_text())
+    _ch3_needles = ('chg.counter' + '_raw', 'ΔSOC ' + '× pack')
+    _ch3_hit = [n for n in _ch3_needles if n in _ch3_src]
+    if not _ch3_hit:
+        ok('CH3 the charging screen carries no research hints')
+    else:
+        fail(f'CH3 research hints back on the charging screen: {_ch3_hit}')
+else:
+    ok(f"Part CH skipped (build +{pv}, the parity era lands in +204)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)

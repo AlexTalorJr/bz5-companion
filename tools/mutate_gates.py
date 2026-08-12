@@ -71,6 +71,7 @@ DP = 'lib/widgets/driver_panels.dart'
 SC = 'lib/screens/install_update.dart'
 ST = 'lib/screens/settings.dart'
 L10 = 'lib/l10n/strings.dart'
+CW = 'lib/screens/wide/charging_view_wide.dart'
 ARM = 'lib/services/autostart_arm.dart'
 A1 = 'tools/atlas_a1_check.py'
 DD = 'lib/services/diag_dump_file.dart'
@@ -1531,6 +1532,53 @@ MUTATIONS = [
      '    unawaited(refreshInsulationBaseline());\n'
      "    return _heldValue('insulation_resistance', _coreHold);",
      'вернуть побочное действие в геттер, читаемый на каждой перерисовке'),
+
+    # CH1 — полный паритет наборов, +204. Обе стороны: ключ, потерявший
+    # русскую половину, и ключ, потерявший английскую.
+    ('CH1', L10,
+     "    'settings.dtc.title': 'Диагностика (DTC)',",
+     '',
+     'снять русский перевод — ключ снова живёт только в английском '
+     'наборе'),
+    ('CH1', L10,
+     "    'settings.dtc.title': 'Diagnostics (DTC)',",
+     '',
+     'снять английскую половину — русский ключ остаётся без пары'),
+
+    # CH2 — удалённые ключи, +204. Обе карты: возврат в английскую и
+    # возврат в русскую.
+    ('CH2', L10,
+     "    'settings.adapter.not_connected': 'Not connected',",
+     "    'settings.adapter.title': 'ELM327 BLE adapter',\n"
+     "    'settings.adapter.not_connected': 'Not connected',",
+     'вернуть мёртвый ключ в английскую карту'),
+    ('CH2', L10,
+     "    'trip.charging_power': 'Мощность зарядки',",
+     "    'trip.charging_power': 'Мощность зарядки',\n"
+     "    'trip.hv_bus_v': 'Напряжение шины HV',",
+     'вернуть мёртвый ключ в русскую карту'),
+
+    # CH3 — подсказки экрана зарядки, +204. Обе иголки по очереди.
+    ('CH3', CW,
+     "        label: 'COUNTER 0B00',\n"
+     "        value: counterRaw != null ? '$counterRaw' : '—',\n"
+     "        hint: '',",
+     "        label: 'COUNTER 0B00',\n"
+     "        value: counterRaw != null ? '$counterRaw' : '—',\n"
+     "        hint: S.of('chg.counter_raw'),",
+     'вернуть подсказку сырого счётчика на экран зарядки'),
+    ('CH3', CW,
+     "            : '—',\n"
+     "        hint: '',\n"
+     "      ),\n"
+     "      _Metric(\n"
+     "        label: S.of('chg.soc_gain'),",
+     "            : '—',\n"
+     "        hint: 'ΔSOC × pack kWh',\n"
+     "      ),\n"
+     "      _Metric(\n"
+     "        label: S.of('chg.soc_gain'),",
+     'вернуть формулу прироста заряда на видимую плитку'),
 ]
 
 

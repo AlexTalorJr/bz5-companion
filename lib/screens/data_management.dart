@@ -286,7 +286,7 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
             ListTile(
               dense: true,
               leading: const Icon(Icons.route, size: 20),
-              title: const Text('Trips'),
+              title: Text(S.of('datamgmt.cat.trips')),
               trailing: Text('${_counts!['trips']}',
                   style: const TextStyle(
                       fontFeatures: [FontFeature.tabularFigures()])),
@@ -294,7 +294,7 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
             ListTile(
               dense: true,
               leading: const Icon(Icons.timeline, size: 20),
-              title: const Text('Snapshots'),
+              title: Text(S.of('datamgmt.cat.snapshots')),
               trailing: Text('${_counts!['snapshots']}',
                   style: const TextStyle(
                       fontFeatures: [FontFeature.tabularFigures()])),
@@ -302,7 +302,7 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
             ListTile(
               dense: true,
               leading: const Icon(Icons.dns, size: 20),
-              title: const Text('Raw samples'),
+              title: Text(S.of('datamgmt.cat.raw_samples')),
               trailing: Text('${_counts!['samples']}',
                   style: const TextStyle(
                       fontFeatures: [FontFeature.tabularFigures()])),
@@ -310,7 +310,7 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
             ListTile(
               dense: true,
               leading: const Icon(Icons.sensors, size: 20),
-              title: const Text('HAL samples'),
+              title: Text(S.of('datamgmt.cat.hal_samples')),
               trailing: Text('${_counts!['hal_samples']}',
                   style: const TextStyle(
                       fontFeatures: [FontFeature.tabularFigures()])),
@@ -318,7 +318,7 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
             ListTile(
               dense: true,
               leading: const Icon(Icons.search, size: 20),
-              title: const Text('Sweep runs'),
+              title: Text(S.of('datamgmt.cat.sweep_runs')),
               trailing: Text('${_counts!['sweep_runs']}',
                   style: const TextStyle(
                       fontFeatures: [FontFeature.tabularFigures()])),
@@ -326,7 +326,7 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
             ListTile(
               dense: true,
               leading: const Icon(Icons.timeline, size: 20),
-              title: const Text('Live Log sessions'),
+              title: Text(S.of('datamgmt.cat.livelog_sessions')),
               trailing: Text('${_counts!['live_log_sessions']}',
                   style: const TextStyle(
                       fontFeatures: [FontFeature.tabularFigures()])),
@@ -365,7 +365,7 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
             value: _includeTrips,
             onChanged: _exporting ? null : (v) => setState(() => _includeTrips = v),
             secondary: const Icon(Icons.route),
-            title: const Text('Trips'),
+            title: Text(S.of('datamgmt.cat.trips')),
             subtitle: Text(S.of('dataexp.trips_sub')),
             dense: true,
           ),
@@ -375,7 +375,7 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
                 ? null
                 : (v) => setState(() => _includeSnapshots = v),
             secondary: const Icon(Icons.timeline),
-            title: const Text('Snapshots'),
+            title: Text(S.of('datamgmt.cat.snapshots')),
             subtitle: Text(S.of('dataexp.snapshots_sub')),
             dense: true,
           ),
@@ -385,7 +385,7 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
                 ? null
                 : (v) => setState(() => _includeSamples = v),
             secondary: const Icon(Icons.dns),
-            title: const Text('Raw samples'),
+            title: Text(S.of('datamgmt.cat.raw_samples')),
             subtitle: Text(S.of('dataexp.samples_sub')),
             dense: true,
           ),
@@ -393,7 +393,7 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
             value: _includeSweeps,
             onChanged: _exporting ? null : (v) => setState(() => _includeSweeps = v),
             secondary: const Icon(Icons.search),
-            title: const Text('Sweep results'),
+            title: Text(S.of('datamgmt.cat.sweep_results')),
             subtitle: const Text('sweep_runs.csv + sweep_results.csv'),
             dense: true,
           ),
@@ -401,7 +401,7 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
             value: _includeLiveLogs,
             onChanged: _exporting ? null : (v) => setState(() => _includeLiveLogs = v),
             secondary: const Icon(Icons.timeline),
-            title: const Text('Live Log sessions'),
+            title: Text(S.of('datamgmt.cat.livelog_sessions')),
             subtitle: Text(S.of('dataexp.livelogs_sub')),
             dense: true,
           ),
