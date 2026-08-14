@@ -562,6 +562,9 @@ class S {
     'dash.cell_n': 'cell #{n}',
     'dash.cell_dash': 'cell #—',
     'dash.modules_hdr': '{n} MODULES · MIN..MAX mV · TEMP',
+    'dash.gear_hdr': 'GEAR',
+    'dash.min_hdr': 'MIN',
+    'dash.max_hdr': 'MAX',
     'dash.no_temp': 'no temp',
     'dash.find_hint': 'Settings → Find adapter',
     // v0.1.40+139: phone stale dashboard (last known snapshot cards).
@@ -1017,6 +1020,22 @@ class S {
         'all) will be empty. Data starts accumulating again within 2-10 '
         'minutes.',
     'dataexp.n_snapshots_deleted': '{n} snapshots deleted',
+    // HAL samples retention + manual clear (+205).
+    'dataexp.hal_retention': 'HAL samples retention',
+    'dataexp.hal_retention_desc': 'Samples older than the window are '
+        'deleted automatically after each trip. Detailed charts of older '
+        'trips are lost. HAL samples never leave the device.',
+    'dataexp.retention.unlimited': 'No limit',
+    'dataexp.retention.days90': '90 days',
+    'dataexp.retention.days30': '30 days',
+    'dataexp.retention.days7': '7 days',
+    'dataexp.clear_hal': 'Clear HAL samples',
+    'dataexp.clear_hal_sub': 'The largest table; detailed trip charts are '
+        'built from it',
+    'dataexp.clear_hal_q': 'Delete all HAL samples?',
+    'dataexp.clear_hal_desc': 'Detailed trip charts on this device will be '
+        'lost. HAL samples never leave the device.',
+    'dataexp.n_hal_deleted': 'HAL samples deleted: {n}',
     'dataexp.clear_trips': 'Clear all trips',
     'dataexp.clear_trips_sub': 'Deletes trips + linked samples (cascade)',
     'dataexp.clear_trips_q': 'Delete all trips and samples?',
@@ -1246,6 +1265,8 @@ class S {
     'chg.log.stop': 'Stop log',
     'chg.session': 'SESSION',
     'chg.session_sub': 'this charging session',
+    'chg.counter_hdr': 'COUNTER 0B00',
+    'chg.imax_hdr': 'I-MAX SET',
     'chg.lt1min': '<1 min',
     'chg.eta_m': '~{m} min',
     'chg.dur_m': '{m} min',
@@ -1802,6 +1823,9 @@ class S {
     'dash.cell_n': 'ячейка #{n}',
     'dash.cell_dash': 'ячейка #—',
     'dash.modules_hdr': '{n} МОДУЛЕЙ · МИН..МАКС mV · ТЕМП',
+    'dash.gear_hdr': 'ПЕРЕДАЧА',
+    'dash.min_hdr': 'МИН',
+    'dash.max_hdr': 'МАКС',
     'dash.no_temp': 'нет темп.',
     'dash.find_hint': 'Настройки → Найти адаптер',
     // v0.1.40+139: стейл-дашборд телефона (последний снапшот).
@@ -2254,6 +2278,22 @@ class S {
     'dataexp.clear_snapshots_desc': 'Графики Трендов (сутки / неделя / месяц / год / всё) будут пустыми. Данные '
         'начнут накапливаться заново через 2-10 минут.',
     'dataexp.n_snapshots_deleted': 'Удалено снимков: {n}',
+    // Ротация замеров HAL + ручная очистка (+205).
+    'dataexp.hal_retention': 'Хранение замеров HAL',
+    'dataexp.hal_retention_desc': 'Замеры старше окна удаляются '
+        'автоматически после каждой поездки. Детальные графики старых '
+        'поездок пропадут. В облако замеры HAL не выгружаются.',
+    'dataexp.retention.unlimited': 'Без ограничения',
+    'dataexp.retention.days90': '90 суток',
+    'dataexp.retention.days30': '30 суток',
+    'dataexp.retention.days7': '7 суток',
+    'dataexp.clear_hal': 'Очистить замеры HAL',
+    'dataexp.clear_hal_sub': 'Самая объёмная таблица; из неё строятся '
+        'детальные графики поездок',
+    'dataexp.clear_hal_q': 'Удалить все замеры HAL?',
+    'dataexp.clear_hal_desc': 'Детальные графики поездок на этом устройстве '
+        'будут утеряны. В облако замеры HAL не выгружаются.',
+    'dataexp.n_hal_deleted': 'Удалено замеров HAL: {n}',
     'dataexp.clear_trips': 'Очистить все поездки',
     'dataexp.clear_trips_sub': 'Удаляет поездки и связанные с ними замеры',
     'dataexp.clear_trips_q': 'Удалить все поездки и замеры?',
@@ -2485,6 +2525,8 @@ class S {
     'chg.log.stop': 'Стоп лога',
     'chg.session': 'СЕССИЯ',
     'chg.session_sub': 'на текущей зарядке',
+    'chg.counter_hdr': 'СЧЁТЧИК 0B00',
+    'chg.imax_hdr': 'ЛИМИТ ТОКА',
     'chg.lt1min': '<1 мин',
     'chg.eta_m': '~{m} мин',
     'chg.dur_m': '{m} мин',

@@ -453,10 +453,6 @@ class _PackVoltageHero extends StatelessWidget {
                 ),
               ],
             ),
-            const Spacer(),
-            const Text(
-                'live · avg cell × series count  ·  hv bus · 790/0x0015 (post-contactor)',
-                style: TextStyle(fontSize: 11, color: Colors.grey)),
           ],
         ),
       ),
@@ -1111,8 +1107,8 @@ class _GearHero extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('GEAR',
-                      style: TextStyle(
+                  Text(S.of('dash.gear_hdr'),
+                      style: const TextStyle(
                           fontSize: 11,
                           letterSpacing: 1.5,
                           color: Colors.grey)),
@@ -1519,13 +1515,13 @@ class _PackExtremesPanel extends StatelessWidget {
               children: [
                 Expanded(
                     child: _ExtremeTile(
-                  label: 'MIN',
+                  label: S.of('dash.min_hdr'),
                   valueMv: minV!.toInt(),
                   cellIdx: minIdx,
                 )),
                 Expanded(
                     child: _ExtremeTile(
-                  label: 'MAX',
+                  label: S.of('dash.max_hdr'),
                   valueMv: maxV!.toInt(),
                   cellIdx: maxIdx,
                 )),

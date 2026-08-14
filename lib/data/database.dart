@@ -2310,6 +2310,37 @@ class AppDatabase extends _$AppDatabase {
 
   /// Delete ALL samples regardless of age. Use when user explicitly clicks
   /// "clear raw data" in Settings.
+  Future<int> clearAllHalSamples() => delete(halSamples).go();
+
+  /// v0.2.6+205: ротация по сроку хранения. Удаляет hal_samples старше
+  /// [cutoff] ограниченными порциями: берём id на позиции [batch]-1 среди
+  /// старейших подходящих строк, затем удаляем `timestamp < cutoff AND
+  /// id <= граница`. Два запроса на порцию — без гигантских IN-списков,
+  /// без лимита переменных sqlite, без долгой пишущей транзакции.
+  Future<int> rotateHalSamples(DateTime cutoff, {int batch = 20000}) async {
+    var total = 0;
+    while (true) {
+      final boundary = await (selectOnly(halSamples)
+            ..addColumns([halSamples.id])
+            ..where(halSamples.timestamp.isSmallerThanValue(cutoff))
+            ..orderBy([OrderingTerm.asc(halSamples.id)])
+            ..limit(1, offset: batch - 1))
+          .map((r) => r.read(halSamples.id))
+          .getSingleOrNull();
+      if (boundary == null) {
+        total += await (delete(halSamples)
+              ..where((t) => t.timestamp.isSmallerThanValue(cutoff)))
+            .go();
+        return total;
+      }
+      total += await (delete(halSamples)
+            ..where((t) =>
+                t.timestamp.isSmallerThanValue(cutoff) &
+                t.id.isSmallerOrEqualValue(boundary)))
+          .go();
+    }
+  }
+
   Future<int> clearAllSamples() => delete(samples).go();
 
   /// Delete ALL snapshots. Wipes the long-term trends data.

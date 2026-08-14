@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../data/database.dart';
 import '../l10n/strings.dart';
@@ -36,6 +37,8 @@ class DataManagementScreen extends StatefulWidget {
 }
 
 class _DataManagementScreenState extends State<DataManagementScreen> {
+  /// Окно хранения замеров HAL в сутках; 0 = без ограничения (+205).
+  int _retentionDays = 0;
   bool _includeTrips = true;
   bool _includeSnapshots = true;
   bool _includeSamples = true;
@@ -229,8 +232,12 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
       'live_log_sessions': await db.countAllLiveLogSessions(),
     };
     if (!mounted) return;
+    final prefs = await SharedPreferences.getInstance();
+    final retention = prefs.getInt('hal_retention_days') ?? 0;
+    if (!mounted) return;
     setState(() {
       _counts = counts;
+      _retentionDays = retention;
       _loadingCounts = false;
     });
   }
@@ -244,6 +251,63 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
         _includeSweeps,
         _includeLiveLogs,
       ].where((e) => e).length;
+
+  String _retentionLabel(int days) {
+    switch (days) {
+      case 7:
+        return S.of('dataexp.retention.days7');
+      case 30:
+        return S.of('dataexp.retention.days30');
+      case 90:
+        return S.of('dataexp.retention.days90');
+      default:
+        return S.of('dataexp.retention.unlimited');
+    }
+  }
+
+  Future<void> _pickRetention() async {
+    final picked = await showDialog<int>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: Text(S.of('dataexp.hal_retention')),
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
+            child: Text(
+              S.of('dataexp.hal_retention_desc'),
+              style: const TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+          ),
+          for (final d in const [0, 90, 30, 7])
+            RadioListTile<int>(
+              value: d,
+              groupValue: _retentionDays,
+              title: Text(_retentionLabel(d)),
+              onChanged: (v) => Navigator.of(ctx).pop(v),
+            ),
+        ],
+      ),
+    );
+    if (picked == null || picked == _retentionDays) return;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt('hal_retention_days', picked);
+    if (!mounted) return;
+    setState(() => _retentionDays = picked);
+    if (picked > 0) {
+      // Применяем окно сразу, не дожидаясь конца следующей поездки.
+      final svc = context.read<ConnectionService>();
+      final n = await svc.db.rotateHalSamples(
+          DateTime.now().subtract(Duration(days: picked)));
+      if (!mounted) return;
+      if (n > 0) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(S
+                .of('dataexp.n_hal_deleted')
+                .replaceFirst('{n}', '$n'))));
+      }
+      await _refreshCounts();
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -330,6 +394,14 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
               trailing: Text('${_counts!['live_log_sessions']}',
                   style: const TextStyle(
                       fontFeatures: [FontFeature.tabularFigures()])),
+            ),
+            ListTile(
+              dense: true,
+              leading: const Icon(Icons.schedule, size: 20),
+              title: Text(S.of('dataexp.hal_retention')),
+              subtitle: Text(_retentionLabel(_retentionDays)),
+              trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+              onTap: _pickRetention,
             ),
           ],
 
@@ -808,6 +880,21 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
                 final n = await svc.db.clearAllSamples();
                 return S
                     .of('dataexp.n_samples_deleted')
+                    .replaceFirst('{n}', '$n');
+              },
+            ),
+          ),
+          ListTile(
+            leading: const Icon(Icons.delete_outline, color: Colors.orangeAccent),
+            title: Text(S.of('dataexp.clear_hal')),
+            subtitle: Text(S.of('dataexp.clear_hal_sub')),
+            onTap: () => _confirmAndClear(
+              title: S.of('dataexp.clear_hal_q'),
+              description: S.of('dataexp.clear_hal_desc'),
+              action: () async {
+                final n = await svc.db.clearAllHalSamples();
+                return S
+                    .of('dataexp.n_hal_deleted')
                     .replaceFirst('{n}', '$n');
               },
             ),

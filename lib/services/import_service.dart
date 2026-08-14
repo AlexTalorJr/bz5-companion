@@ -161,6 +161,7 @@ class ImportService {
     'soc_source',
     'bridge_diag_enabled',
     'advanced_unlocked',
+    'hal_retention_days',
     'speed_profile_active',
     'speed_profile_archive',
     'speed_profile_session',

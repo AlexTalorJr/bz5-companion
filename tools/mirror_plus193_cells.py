@@ -356,4 +356,10 @@ def main(path):
 
 
 if __name__ == '__main__':
-    sys.exit(main(sys.argv[1] if len(sys.argv) > 1 else 'samples.sqlite'))
+    import os
+    _p = sys.argv[1] if len(sys.argv) > 1 else 'samples.sqlite'
+    if not os.path.exists(_p):
+        # +205: раньше падал с sqlite3.OperationalError на пустом пути.
+        print(f'SKIP — no data ({_p} not found)')
+        sys.exit(0)
+    sys.exit(main(_p))

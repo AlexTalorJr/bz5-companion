@@ -1576,11 +1576,34 @@ class ConnectionService extends ChangeNotifier {
       );
       debugPrint('Trip #$tripId finalized on disconnect '
           '(distance=$distanceKm km, energy=$energyUsedKwh kWh)');
+
+      // v0.2.6+205: ротация замеров HAL — сразу после закрытия поездки
+      // (замеры копятся только пока ГУ бодрствует, так что конец поездки
+      // и есть естественная точка; 0 = хранить всё, поведение по
+      // умолчанию не меняется). Огонь-и-забыл: финализатор зовут с await
+      // и с пути подключения — ротация большой базы не должна держать
+      // ни старт новой поездки, ни очистку _currentTripId в finally.
+      unawaited(_rotateHalRetention());
     } finally {
       // Always clear active trip ID even on DB error — otherwise we'd
       // leave _currentTripId pointing to a half-closed row.
       _currentTripId = null;
       _tripStartedAt = null;
+    }
+  }
+
+  /// v0.2.6+205: применяет окно хранения замеров HAL, если включено.
+  /// Свой try: падение ротации не касается закрытия поездки.
+  Future<void> _rotateHalRetention() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final days = prefs.getInt('hal_retention_days') ?? 0;
+      if (days <= 0) return;
+      final n = await db.rotateHalSamples(
+          DateTime.now().subtract(Duration(days: days)));
+      if (n > 0) debugPrint('HAL retention: deleted $n rows (>$days d)');
+    } catch (e) {
+      debugPrint('HAL retention failed: $e');
     }
   }
 

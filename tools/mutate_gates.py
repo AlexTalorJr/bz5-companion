@@ -1560,13 +1560,14 @@ MUTATIONS = [
 
     # CH3 — подсказки экрана зарядки, +204. Обе иголки по очереди.
     ('CH3', CW,
-     "        label: 'COUNTER 0B00',\n"
+     "        label: S.of('chg.counter_hdr'),\n"
      "        value: counterRaw != null ? '$counterRaw' : '—',\n"
      "        hint: '',",
-     "        label: 'COUNTER 0B00',\n"
+     "        label: S.of('chg.counter_hdr'),\n"
      "        value: counterRaw != null ? '$counterRaw' : '—',\n"
      "        hint: S.of('chg.counter_raw'),",
-     'вернуть подсказку сырого счётчика на экран зарядки'),
+     'вернуть подсказку сырого счётчика на экран зарядки '
+     '(якорь перепришпилен в +205: подпись стала ключом)'),
     ('CH3', CW,
      "            : '—',\n"
      "        hint: '',\n"
@@ -1579,6 +1580,63 @@ MUTATIONS = [
      "      _Metric(\n"
      "        label: S.of('chg.soc_gain'),",
      'вернуть формулу прироста заряда на видимую плитку'),
+
+    # CI1 — цепь ротации, +205. По мутации на каждое звено.
+    ('CI1', CONN,
+     "      unawaited(_rotateHalRetention());",
+     "",
+     'выбить крюк ротации из финализатора поездки'),
+    ('CI1', CONN,
+     "      final n = await db.rotateHalSamples(\n"
+     "          DateTime.now().subtract(Duration(days: days)));",
+     "      final n = 0;",
+     'выбить вызов базы из метода ротации'),
+    ('CI1', DB,
+     "            ..limit(1, offset: batch - 1))",
+     "            )",
+     'сломать граничную порционность — удаление одним запросом'),
+    ('CI1', IS_,
+     "    'hal_retention_days',",
+     "",
+     'выбить ключ настройки из списка переезжающих prefs'),
+
+    # CI2 — расшифровка источника, +205.
+    ('CI2', DW,
+     "                              color: Colors.white54)),\n"
+     "                    ],\n"
+     "                  ],\n"
+     "                ),\n"
+     "              ],\n"
+     "            ),\n"
+     "          ],\n"
+     "        ),\n"
+     "      ),\n"
+     "    );\n"
+     "  }\n"
+     "}",
+     "                              color: Colors.white54)),\n"
+     "                    ],\n"
+     "                  ],\n"
+     "                ),\n"
+     "              ],\n"
+     "            ),\n"
+     "            const Text(\n"
+     "                'live · avg cell × series count  ·  hv bus · "
+     "790/0x0015 (post-contactor)',\n"
+     "                style: TextStyle(fontSize: 11, color: Colors.grey)),\n"
+     "          ],\n"
+     "        ),\n"
+     "      ),\n"
+     "    );\n"
+     "  }\n"
+     "}",
+     'вернуть расшифровку источника под напряжение пака'),
+
+    # CI3 — нарисованность ключей, +205.
+    ('CI3', CW,
+     "        label: S.of('chg.imax_hdr'),",
+     "        label: 'I-MAX SET',",
+     'снять отрисовку ключа — ключ есть в картах, но не рисуется'),
 ]
 
 

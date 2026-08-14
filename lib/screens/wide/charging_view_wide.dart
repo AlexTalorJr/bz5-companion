@@ -715,12 +715,12 @@ class _BottomSummaryStrip extends StatelessWidget {
         hint: S.of('chg.session_sub'),
       ),
       _Metric(
-        label: 'COUNTER 0B00',
+        label: S.of('chg.counter_hdr'),
         value: counterRaw != null ? '$counterRaw' : '—',
         hint: '',
       ),
       _Metric(
-        label: 'I-MAX SET',
+        label: S.of('chg.imax_hdr'),
         value: maxCurrent != null
             ? '${maxCurrent.toStringAsFixed(0)} A'
             : '—',

@@ -11596,6 +11596,61 @@ if int(pv) >= 204:
 else:
     ok(f"Part CH skipped (build +{pv}, the parity era lands in +204)")
 
+# ═══════════ Part CI — 0.2.6+205: ротация HAL и остатки текстов ═══════════
+if int(pv) >= 205:
+    # CI1: РОТАЦИЯ ЗАМЕРОВ HAL — ЦЕПЬ ИЗ ТРЁХ ЗВЕНЬЕВ. Метод с
+    # граничной порционностью в базе, вызов из финализатора поездки и
+    # ключ настройки в списке переезжающих prefs плюс на странице
+    # данных. Порваться может любое звено по отдельности — держим все.
+    _ci_db = _strip_comments_safe(
+        (root / 'lib/data/database.dart').read_text())
+    _ci_conn = _strip_comments_safe(
+        (root / 'lib/services/connection.dart').read_text())
+    _ci_imp = (root / 'lib/services/import_service.dart').read_text()
+    _ci_dm = _strip_comments_safe(
+        (root / 'lib/screens/data_management.dart').read_text())
+    _ci1_bits = [
+        'rotateHalSamples' in _ci_db
+        and 'limit(1, offset: batch - 1)' in _ci_db,
+        'unawaited(_rotateHalRetention' in _ci_conn
+        and 'rotateHalSamples(' in _ci_conn,
+        "'hal_retention_days'" in _ci_imp,
+        "'hal_retention_days'" in _ci_dm
+        and "'hal_retention_days'" in _ci_conn,
+    ]
+    if all(_ci1_bits):
+        ok('CI1 HAL retention: batched delete in db, trip-end hook, '
+           'pref key travels with the device')
+    else:
+        fail(f'CI1 HAL retention chain broken: {_ci1_bits}')
+
+    # CI2: НА ДАШБОРДЕ НЕТ РАСШИФРОВКИ ИСТОЧНИКА НАПРЯЖЕНИЯ. Иголки
+    # собраны из частей, комментарии срезаны — привычки частей-отсутствий.
+    _ci2_src = _strip_comments_safe(
+        (root / 'lib/screens/wide/dashboard_wide.dart').read_text())
+    _ci2_needles = ('post-' + 'contactor', 'avg cell ' + '× series')
+    _ci2_hit = [n for n in _ci2_needles if n in _ci2_src]
+    if not _ci2_hit:
+        ok('CI2 the voltage tile carries no source decode line')
+    else:
+        fail(f'CI2 decode line is back on the dashboard: {_ci2_hit}')
+
+    # CI3: НОВЫЕ КЛЮЧИ +205 НАРИСОВАНЫ. Существование в обеих картах
+    # держит CH1, использование → существование держит X3; существование
+    # → использование не держал никто — отсюда эта часть.
+    _ci3_keys = ('dataexp.hal_retention', 'dataexp.clear_hal',
+                 'dataexp.n_hal_deleted', 'dash.gear_hdr', 'dash.min_hdr',
+                 'dash.max_hdr', 'chg.counter_hdr', 'chg.imax_hdr')
+    _ci3_lib = _ci_dm + _ci2_src + _strip_comments_safe(
+        (root / 'lib/screens/wide/charging_view_wide.dart').read_text())
+    _ci3_miss = [k for k in _ci3_keys if ("'" + k + "'") not in _ci3_lib]
+    if not _ci3_miss:
+        ok('CI3 all +205 keys are drawn on their screens')
+    else:
+        fail(f'CI3 keys never drawn: {_ci3_miss}')
+else:
+    ok(f"Part CI skipped (build +{pv}, retention lands in +205)")
+
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
 print(f"+35→+51 REGRESSION — build +{pv}")
