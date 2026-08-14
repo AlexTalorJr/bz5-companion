@@ -111,6 +111,7 @@ TAB = ('android/app/src/main/kotlin/com/bz5companion/bz5_companion'
        '/hal/TelemetryDecoderTable.kt')
 DSH = 'lib/screens/dashboard.dart'
 HM = 'lib/screens/home.dart'
+HUS = 'lib/screens/wide/head_unit_scaffold.dart'
 OVR = ('android/app/src/main/kotlin/com/bz5companion/bz5_companion'
        '/hal/CompanionDecoderOverrides.kt')
 
@@ -1637,6 +1638,18 @@ MUTATIONS = [
      "        label: S.of('chg.imax_hdr'),",
      "        label: 'I-MAX SET',",
      'снять отрисовку ключа — ключ есть в картах, но не рисуется'),
+
+    # CJ1 — автопоказ зарядки, +206. Обе половины проводки.
+    ('CJ1', HUS,
+     "                autoPushWhenVisible: true,",
+     "                autoPushWhenVisible: _index == 0,",
+     'вернуть ГУ старое условие — автопоказ снова только с «Вождения»'),
+    ('CJ1', HM,
+     "        // Auto-push only when the user is on Dashboard (index 0).\n"
+     "        autoPushWhenVisible: _index == 0,",
+     "        // Auto-push only when the user is on Dashboard (index 0).\n"
+     "        autoPushWhenVisible: true,",
+     'выровнять телефон под ГУ — автопоказ с любой вкладки телефона'),
 ]
 
 

@@ -11,10 +11,11 @@
 //      route. Back button returns to wherever the user was; the banner
 //      stays for the whole session, so "accidentally closed the
 //      auto-popup" is recovered with one tap.
-//   3. Auto-push (once per session): if the user is sitting on the
-//      Driver tab when charging starts, the charging screen opens by
-//      itself — the "plugged the cable in, screen reacted" scenario.
-//      From any other tab we don't yank the user away.
+//   3. Auto-push (once per session). Head unit (v0.2.7+206, owner
+//      decision 2026-08-14): fires from ANY tab — charging implies the
+//      car is parked, so "plugged the cable in, screen reacted" wins
+//      over "don't yank the user away". Phone: Dashboard tab only,
+//      as before.
 //   4. When the session ends, an open charging route pops itself and
 //      the banner disappears.
 //

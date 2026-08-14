@@ -176,10 +176,13 @@ class _HeadUnitScaffoldState extends State<HeadUnitScaffold> {
             const VerticalDivider(thickness: 1, width: 1),
             Expanded(
               // v0.1.29+56: charging banner shows above the active tab
-              // while a session runs; auto-push fires only from the
-              // Driver tab (index 0). See charging_banner.dart.
+              // while a session runs. v0.2.7+206 (решение владельца
+              // 14.08): на ГУ автопоказ срабатывает с ЛЮБОЙ вкладки —
+              // зарядка означает стоянку, и сценарий «воткнул кабель,
+              // экран отреагировал» главный. На телефоне — по-прежнему
+              // только с Dashboard. См. charging_banner.dart.
               child: ChargingAwareBody(
-                autoPushWhenVisible: _index == 0,
+                autoPushWhenVisible: true,
                 // v0.1.62+161 (§6.11): sticky plate above any tab but
                 // «Замеры» — it works in PAIR with the badge, not
                 // instead of it.

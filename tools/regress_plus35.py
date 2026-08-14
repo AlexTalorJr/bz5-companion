@@ -2544,9 +2544,16 @@ if int(pv) >= 56:
     #     (index 0). So home.dart has 2 occurrences from +108 (phone + tall),
     #     HU scaffold still 1.
     _home_autopush_want = 2 if int(pv) >= 108 else 1
+    # +206: на ГУ автопоказ с любой вкладки (решение владельца 14.08);
+    # телефонная половина инварианта не менялась. Новую проводку ГУ
+    # дополнительно держит CJ1 — здесь эра нужна, чтобы U5 не красил
+    # старые деревья.
+    _hus_autopush_needle = ("autoPushWhenVisible: true" if int(pv) >= 206
+                            else "autoPushWhenVisible: _index == 0")
     if home.count("autoPushWhenVisible: _index == 0") == _home_autopush_want and \
-       hus.count("autoPushWhenVisible: _index == 0") == 1:
-        ok("U5 ChargingAwareBody in all scaffolds, auto-push only on tab 0")
+       hus.count(_hus_autopush_needle) == 1:
+        ok("U5 ChargingAwareBody in all scaffolds, auto-push wiring "
+           "matches its era")
     else:
         fail("U5 ChargingAwareBody wiring wrong")
 
@@ -11650,6 +11657,30 @@ if int(pv) >= 205:
         fail(f'CI3 keys never drawn: {_ci3_miss}')
 else:
     ok(f"Part CI skipped (build +{pv}, retention lands in +205)")
+
+# ═══════ Part CJ — 0.2.7+206: автопоказ экрана зарядки на ГУ ═══════
+if int(pv) >= 206:
+    # CJ1: НА ГУ АВТОПОКАЗ С ЛЮБОЙ ВКЛАДКИ, НА ТЕЛЕФОНЕ — ТОЛЬКО С
+    # DASHBOARD. Решение владельца 14.08 отменило часть решения от
+    # 10.06 для ГУ и оставило его для телефона. Держим обе половины:
+    # рефакторинг, «выровнявший» проводку в любую сторону, упадёт.
+    _cj_hu = _strip_comments_safe(
+        (root / 'lib/screens/wide/head_unit_scaffold.dart').read_text())
+    _cj_ph = _strip_comments_safe(
+        (root / 'lib/screens/home.dart').read_text())
+    _cj_bits = [
+        'autoPushWhenVisible: true' in _cj_hu,
+        'autoPushWhenVisible: _index' not in _cj_hu,
+        'autoPushWhenVisible: _index == 0' in _cj_ph,
+        'autoPushWhenVisible: true' not in _cj_ph,
+    ]
+    if all(_cj_bits):
+        ok('CJ1 charging auto-push: any tab on the head unit, '
+           'Dashboard-only on the phone')
+    else:
+        fail(f'CJ1 auto-push wiring drifted: {_cj_bits}')
+else:
+    ok(f"Part CJ skipped (build +{pv}, the auto-push change lands in +206)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
