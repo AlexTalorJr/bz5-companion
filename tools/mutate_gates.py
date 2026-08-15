@@ -112,6 +112,9 @@ TAB = ('android/app/src/main/kotlin/com/bz5companion/bz5_companion'
 DSH = 'lib/screens/dashboard.dart'
 HM = 'lib/screens/home.dart'
 HUS = 'lib/screens/wide/head_unit_scaffold.dart'
+CDO = ('android/app/src/main/kotlin/com/bz5companion/'
+       'bz5_companion/hal/CompanionDecoderOverrides.kt')
+CB = 'lib/widgets/charging_banner.dart'
 OVR = ('android/app/src/main/kotlin/com/bz5companion/bz5_companion'
        '/hal/CompanionDecoderOverrides.kt')
 
@@ -1650,6 +1653,32 @@ MUTATIONS = [
      "        // Auto-push only when the user is on Dashboard (index 0).\n"
      "        autoPushWhenVisible: true,",
      'выровнять телефон под ГУ — автопоказ с любой вкладки телефона'),
+    ('CJ1', HM,
+     "        autoPushWhenVisible: true,\n"
+     "        // v0.1.62+161 (§6.11): sticky plate on every tab but «Замеры».\n"
+     "        showAtlasPlate: _index != 2,",
+     "        autoPushWhenVisible: _index == 0,\n"
+     "        // v0.1.62+161 (§6.11): sticky plate on every tab but «Замеры».\n"
+     "        showAtlasPlate: _index != 2,",
+     'вернуть BZ3 старое условие — высокий каркас снова ждёт «Вождение»'),
+
+    # CK1 — цепь флага кабеля, +207. По мутации на звено.
+    ('CK1', CDO,
+     '        "BYDAutoChargingDevice|0x0A50000D" to Decoder(\n'
+     '            "charger_connect_state", "", ValueSource.INT,\n'
+     '            notes = "CHARGING_CHARGER_CONNECT_STATE; 1=plugged 0=unplugged; recon 20260814_165329"),\n',
+     '',
+     'выбить запись декодера — события снова режутся в drop'),
+    ('CK1', HT,
+     "    'charger_connect_state',",
+     '',
+     'выбить имя из липких — флаг умирает на первом удержании'),
+    ('CK1', CB,
+     '    final charging = svc.isCharging ||\n'
+     '        (hal.halChargerConnected ?? false) ||\n'
+     '        hal.halChargingActive;',
+     '    final charging = svc.isCharging;',
+     'вернуть баннеру один OBD-источник — ГУ снова слепнет'),
 ]
 
 

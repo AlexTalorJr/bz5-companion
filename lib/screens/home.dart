@@ -254,10 +254,10 @@ class _TallHomeScreenState extends State<_TallHomeScreen> {
         .select<SpeedProfileService, int>((s) => s.unrevealedCount);
     return Scaffold(
       body: ChargingAwareBody(
-        // Auto-push charging view only when on the Driver tab (index 0) —
-        // the BZ3 equivalent of "sitting on the main screen when the cable
-        // goes in".
-        autoPushWhenVisible: _index == 0,
+        // v0.2.7+206 (решение владельца 14.08): BZ3 — тоже головное
+        // устройство; автопоказ экрана зарядки с ЛЮБОЙ вкладки, как на
+        // BZ5. Телефонная проводка выше остаётся только с Dashboard.
+        autoPushWhenVisible: true,
         // v0.1.62+161 (§6.11): sticky plate on every tab but «Замеры».
         showAtlasPlate: _index != 2,
         onPlateTap: () => setState(() => _index = 2),

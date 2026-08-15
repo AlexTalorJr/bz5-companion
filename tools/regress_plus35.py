@@ -2550,8 +2550,16 @@ if int(pv) >= 56:
     # старые деревья.
     _hus_autopush_needle = ("autoPushWhenVisible: true" if int(pv) >= 206
                             else "autoPushWhenVisible: _index == 0")
-    if home.count("autoPushWhenVisible: _index == 0") == _home_autopush_want and \
-       hus.count(_hus_autopush_needle) == 1:
+    if int(pv) >= 206:
+        # +206: высокий каркас BZ3 перешёл на автопоказ с любой вкладки,
+        # телефонная точка осталась. Карту «какая точка какая» держит CJ1.
+        _home_autopush_ok = (
+            home.count("autoPushWhenVisible: _index == 0") == 1
+            and home.count("autoPushWhenVisible: true") == 1)
+    else:
+        _home_autopush_ok = (home.count("autoPushWhenVisible: _index == 0")
+                             == _home_autopush_want)
+    if _home_autopush_ok and hus.count(_hus_autopush_needle) == 1:
         ok("U5 ChargingAwareBody in all scaffolds, auto-push wiring "
            "matches its era")
     else:
@@ -11668,11 +11676,16 @@ if int(pv) >= 206:
         (root / 'lib/screens/wide/head_unit_scaffold.dart').read_text())
     _cj_ph = _strip_comments_safe(
         (root / 'lib/screens/home.dart').read_text())
+    # В home.dart ДВЕ точки проводки (телефон и высокий каркас BZ3);
+    # различаем их по соседней строке showAtlasPlate и держим карту
+    # «точка → условие» целиком: перестановка условий местами упадёт.
+    _cj_pairs = set(re.findall(
+        r"autoPushWhenVisible:\s*([^\n,]+),\s*"
+        r"showAtlasPlate:\s*_index != ([^,\s]+),", _cj_ph))
     _cj_bits = [
         'autoPushWhenVisible: true' in _cj_hu,
         'autoPushWhenVisible: _index' not in _cj_hu,
-        'autoPushWhenVisible: _index == 0' in _cj_ph,
-        'autoPushWhenVisible: true' not in _cj_ph,
+        _cj_pairs == {('_index == 0', '_kMeasureIndex'), ('true', '2')},
     ]
     if all(_cj_bits):
         ok('CJ1 charging auto-push: any tab on the head unit, '
@@ -11681,6 +11694,38 @@ if int(pv) >= 206:
         fail(f'CJ1 auto-push wiring drifted: {_cj_bits}')
 else:
     ok(f"Part CJ skipped (build +{pv}, the auto-push change lands in +206)")
+
+# ═══════ Part CK — 0.2.8+207: детектор зарядки получает HAL-топливо ═══════
+if int(pv) >= 207:
+    # CK1: ЦЕПЬ ФЛАГА КАБЕЛЯ — ТРИ ЗВЕНА. Kotlin-декодер называет фид
+    # 0x0A50000D (иначе события режутся в drop), dart держит имя в
+    # липких (событийный флаг без липкости умирает на первом удержании),
+    # баннер читает все три источника ИЛИ (флаг ∨ токовая машина HAL ∨
+    # OBD). Порвётся любое звено — на ГУ детектор снова слепнет.
+    _ck_kt = (root / 'android/app/src/main/kotlin/com/bz5companion/'
+              'bz5_companion/hal/CompanionDecoderOverrides.kt').read_text()
+    _ck_hal_raw = (root / 'lib/services/hal_telemetry_service.dart').read_text()
+    _ck_hal = _strip_comments_safe(_ck_hal_raw)
+    _ck_ban = _strip_comments_safe(
+        (root / 'lib/widgets/charging_banner.dart').read_text())
+    _ck_sticky_m = re.search(r"_stickyNames\s*=\s*\{(.*?)\}",
+                             _ck_hal, re.S)
+    _ck_bits = [
+        '"BYDAutoChargingDevice|0x0A50000D"' in _ck_kt
+        and '"charger_connect_state"' in _ck_kt,
+        _ck_sticky_m is not None
+        and "'charger_connect_state'" in _ck_sticky_m.group(1),
+        "halValue('charger_connect_state')" in _ck_hal,
+        'halChargerConnected' in _ck_ban and 'halChargingActive' in _ck_ban
+        and 'svc.isCharging' in _ck_ban,
+    ]
+    if all(_ck_bits):
+        ok('CK1 charger-connect chain: kotlin decoder entry, sticky name, '
+           'getter, triple-OR banner')
+    else:
+        fail(f'CK1 charger-connect chain broken: {_ck_bits}')
+else:
+    ok(f"Part CK skipped (build +{pv}, the HAL charging fuel lands in +207)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)

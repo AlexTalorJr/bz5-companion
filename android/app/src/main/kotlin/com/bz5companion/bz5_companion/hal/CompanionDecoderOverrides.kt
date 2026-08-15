@@ -105,6 +105,17 @@ object CompanionDecoderOverrides {
         // collects the enum for free. Phase B (sticky getter + session
         // anchoring on gun-connect, OR with the current detector) is a
         // separate patch once the enum is confirmed.
+        // v0.2.8+207 — ФЛАГ КАБЕЛЯ. CHARGING_CHARGER_CONNECT_STATE по
+        // каталогу; recon 14.08 (v0.10.110, session 165329): событие
+        // int=1 в 16:53:59 — за 36 с до первого зарядного тока, int=0
+        // в 17:21 — выдёргивание кабеля. Ровно два события за сессию —
+        // событийный флаг, на dart-стороне обязана быть липкость.
+        // Подписка уже была (TargetRegistry, оба списка) — события
+        // приходили и резались здесь, отсутствием записи.
+        "BYDAutoChargingDevice|0x0A50000D" to Decoder(
+            "charger_connect_state", "", ValueSource.INT,
+            notes = "CHARGING_CHARGER_CONNECT_STATE; 1=plugged 0=unplugged; recon 20260814_165329"),
+
         "BYDAutoChargingDevice|0x2EB00832" to Decoder(
             "charging_gun_connect_candidate", "", ValueSource.INT,
             notes = "CANDIDATE enum collection; log-only — do not wire to any UI card until the enum is confirmed"),

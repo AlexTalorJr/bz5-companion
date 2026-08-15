@@ -86,7 +86,16 @@ class _ChargingAwareBodyState extends State<ChargingAwareBody> {
   @override
   Widget build(BuildContext context) {
     final svc = context.watch<ConnectionService>();
-    final charging = svc.isCharging;
+    final hal = context.watch<HalTelemetryService>();
+    // v0.2.8+207: на ГУ OBD-путь мёртв с рождения (счётчик 0B00 — путь
+    // донгла, HAL его не поставляет; ноль строк за девять дней базы).
+    // Тройное ИЛИ: флаг кабеля (мгновенный старт и честный хвост до
+    // выдёргивания) ∨ токовая машина HAL (+116; страхует рестарт
+    // приложения посреди сессии, когда флаг-событие уже не повторится)
+    // ∨ прежний OBD-путь (телефон с донглом). Никогда ВМЕСТО — только ИЛИ.
+    final charging = svc.isCharging ||
+        (hal.halChargerConnected ?? false) ||
+        hal.halChargingActive;
 
     if (!charging) {
       // Session over: reset the auto-push guard so the next session

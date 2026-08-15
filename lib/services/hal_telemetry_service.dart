@@ -438,6 +438,10 @@ class HalTelemetryService extends ChangeNotifier
     // v0.1.29+75: motor signals held across brief drive-stream gaps so
     // the driver HAL split stays populated (dims via isStale when ageing).
     'motor_rpm', 'motor_torque', 'motor_power',
+    // v0.2.8+207: флаг кабеля — событийный (1 при втыкании, 0 при
+    // выдёргивании, между ними часы тишины); без липкости значение
+    // пропадает на первом же удержании _lastGood.
+    'charger_connect_state',
     // v0.1.29+82: brake_pedal is EDGE-triggered — the framework pushes a
     // frame only on CHANGE (1 on press, 0 on release), nothing while the
     // pedal is held. +81 treated it as a level signal with a 3 s freshness
@@ -1057,6 +1061,15 @@ class HalTelemetryService extends ChangeNotifier
   //    _gearStr mapping so the swap is invisible) ──
 
   double? get halGear => halValue('gear_enum');
+
+  /// v0.2.8+207: кабель зарядки воткнут? null — событие ещё не приходило
+  /// (например, рестарт посреди сессии); тогда решает токовая машина
+  /// [halChargingActive] или OBD-путь ConnectionService.isCharging.
+  bool? get halChargerConnected {
+    final v = halValue('charger_connect_state');
+    return v == null ? null : v >= 0.5;
+  }
+
   bool get useHalForGear => _useHal('gear_enum');
 
   // ── SOC. v0.1.29+90: PREFER the fractional soc_precise (BigData 0x044C,
