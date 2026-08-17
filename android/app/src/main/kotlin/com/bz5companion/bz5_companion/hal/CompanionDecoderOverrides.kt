@@ -116,9 +116,15 @@ object CompanionDecoderOverrides {
             "charger_connect_state", "", ValueSource.INT,
             notes = "CHARGING_CHARGER_CONNECT_STATE; 1=plugged 0=unplugged; recon 20260814_165329"),
 
+        // v0.2.9+208 — КАНДИДАТ ДОЗРЕЛ, enum подтверждён полем:
+        // 3 в 16:53:55 14.08 (секунда в секунду с флагом DC-подключения),
+        // 1 в 17:20:35 (отключение), 2 на старте ночной AC-сессии 15.08.
+        // Итого: 1=отключён, 2=AC, 3=DC. Пять старых строк остаются под
+        // прежним именем charging_gun_connect_candidate — историю читать
+        // по subtype, как с переименованием ячеек в +203.
         "BYDAutoChargingDevice|0x2EB00832" to Decoder(
-            "charging_gun_connect_candidate", "", ValueSource.INT,
-            notes = "CANDIDATE enum collection; log-only — do not wire to any UI card until the enum is confirmed"),
+            "charging_gun_state", "", ValueSource.INT,
+            notes = "1=disconnected 2=AC 3=DC; field-confirmed 14-16.08 (was charging_gun_connect_candidate)"),
     )
 
     /**

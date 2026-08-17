@@ -4249,7 +4249,19 @@ if int(pv) >= 143:
     _screens_clean = all(
         'gun_connect' not in f.read_text()
         for f in (root / 'lib/screens').rglob('*.dart'))
-    if '"BYDAutoChargingDevice|0x2EB00832"' in _ovr6 and \
+    if int(pv) >= 208:
+        # +208: кандидат ДОЗРЕЛ — enum подтверждён полем (1/2/3 =
+        # отключён/AC/DC, сессии 14–16.08), имя стало charging_gun_state,
+        # значение подключено (липкость, страж, геттер, заголовок — цепь
+        # держит CL2). Инвариант этой эры: старого имени в декодере нет,
+        # журнальный крюк следует за новым именем.
+        if '"charging_gun_state"' in _ovr6 and \
+           '"charging_gun_connect_candidate"' not in _ovr6 and \
+           "if (e.name == 'charging_gun_state')" in _hal6:
+            ok('AP4 gun state matured in +208: renamed, hook follows')
+        else:
+            fail('AP4 gun state rename incomplete')
+    elif '"BYDAutoChargingDevice|0x2EB00832"' in _ovr6 and \
        '"charging_gun_connect_candidate"' in _ovr6 and \
        "if (e.name == 'charging_gun_connect_candidate')" in _hal6 and \
        "'charging_gun_connect_candidate': (" not in _hal6 and \
@@ -11359,9 +11371,15 @@ if int(pv) >= 203:
     # сколько замеров, минимум, максимум. Значит имя из списка меток
     # освобождается от проверки ЦЕЛИКОМ, а не по числу случаев, и это
     # записано здесь прямо, чтобы список не рос от удобства: каждое имя
-    # в нём — дыра в приборе. Сегодня оно одно.
+    # в нём — дыра в приборе. Сегодня их два:
+    #   * motor_power — метка 3095 (шесть случаев, экспорт 11.08);
+    #   * cell_temp_lowest (+208) — поле НИКОГДА не давало здравого
+    #     значения: 28 строк за всю историю, все ~1.03e9, мусор
+    #     выравнивания кадра. Страж (-40, 150) существует ровно чтобы
+    #     их резать; сводка 11.08 содержит только этот мусор, и без
+    #     освобождения гейт требовал бы пропускать его в показ.
     _cg3_path = root / 'tools/data/export_summary_20260811.txt'
-    _cg3_known = {'motor_power'}
+    _cg3_known = {'motor_power', 'cell_temp_lowest'}
     if not _cg3_path.exists() or not _cg_r:
         fail('CG3 the reference export summary is missing, or the guard table '
              'could not be read — the guards are unchecked against real data')
@@ -11624,6 +11642,12 @@ if int(pv) >= 205:
     _ci_imp = (root / 'lib/services/import_service.dart').read_text()
     _ci_dm = _strip_comments_safe(
         (root / 'lib/screens/data_management.dart').read_text())
+    # +208: поле 17.08 показало, что крюк в одном ConnectionService —
+    # это ротация, работающая только на телефоне: поездки ГУ закрывает
+    # машина HAL, и её финализатор обязан звать ротацию сам. Пятый бит
+    # держит второй финализатор.
+    _ci_halsvc = _strip_comments_safe(
+        (root / 'lib/services/hal_telemetry_service.dart').read_text())
     _ci1_bits = [
         'rotateHalSamples' in _ci_db
         and 'limit(1, offset: batch - 1)' in _ci_db,
@@ -11632,6 +11656,9 @@ if int(pv) >= 205:
         "'hal_retention_days'" in _ci_imp,
         "'hal_retention_days'" in _ci_dm
         and "'hal_retention_days'" in _ci_conn,
+        'unawaited(_rotateHalRetention' in _ci_halsvc
+        and 'rotateHalSamples(' in _ci_halsvc
+        and "'hal_retention_days'" in _ci_halsvc,
     ]
     if all(_ci1_bits):
         ok('CI1 HAL retention: batched delete in db, trip-end hook, '
@@ -11726,6 +11753,59 @@ if int(pv) >= 207:
         fail(f'CK1 charger-connect chain broken: {_ck_bits}')
 else:
     ok(f"Part CK skipped (build +{pv}, the HAL charging fuel lands in +207)")
+
+# ═══════ Part CL — 0.2.9+208: стражи 29 имён и enum пистолета ═══════
+if int(pv) >= 208:
+    # CL1: СТРАЖИ, СНЯТЫЕ С ПОЛЯ 17.08, СТОЯТ. Держим набор имён и две
+    # смысловые границы: температурная полоса cell_temp_lowest (руб
+    # мусора ~1.03e9 — 28 строк за историю, здравых ноль) и enum-полоса
+    # пистолета. Точные числа остальных границ не пришпиливаем — это
+    # инварианты набора, а не бухгалтерия.
+    _cl_hal = _strip_comments_safe(
+        (root / 'lib/services/hal_telemetry_service.dart').read_text())
+    _cl_range_m = re.search(r"_range\s*=\s*\{(.*?)\n  \};", _cl_hal, re.S)
+    _cl_body = _cl_range_m.group(1) if _cl_range_m else ''
+    _cl_names = ('motor_control_voltage', 'ev_range', 'avg_consumption_50km',
+                 'epb_state', 'cell_temp_lowest', 'charging_gun_state',
+                 'tyre_pressure_fl', 'tyre_pressure_fr', 'tyre_pressure_rl',
+                 'tyre_pressure_rr', 'tyre_temp_fl', 'tyre_temp_fr',
+                 'tyre_temp_rl', 'tyre_temp_rr', 'radar_obstacle_left',
+                 'radar_obstacle_right', 'radar_obstacle_left_front',
+                 'radar_obstacle_right_front', 'radar_obstacle_front_left_mid',
+                 'radar_obstacle_front_right_mid', 'radar_obstacle_left_rear',
+                 'radar_obstacle_right_rear', 'radar_state_left',
+                 'radar_state_right', 'radar_state_left_front',
+                 'radar_state_right_front', 'radar_state_front_left_mid',
+                 'radar_state_front_right_mid', 'radar_state_right_rear')
+    _cl_miss = [n for n in _cl_names if ("'" + n + "'") not in _cl_body]
+    _cl_temp_ok = "'cell_temp_lowest': (-40, 150)," in _cl_body
+    _cl_gun_ok = "'charging_gun_state': (0, 15)," in _cl_body
+    if not _cl_miss and _cl_temp_ok and _cl_gun_ok:
+        ok('CL1 the 29 field-harvested guards stand, temp band kills the '
+           '1e9 junk, gun band holds the enum')
+    else:
+        fail(f'CL1 guards broken: miss={_cl_miss} temp={_cl_temp_ok} '
+             f'gun={_cl_gun_ok}')
+
+    # CL2: ЦЕПЬ ПИСТОЛЕТА. Kotlin-имя, липкость, геттер, заголовок.
+    _cl_kt = (root / 'android/app/src/main/kotlin/com/bz5companion/'
+              'bz5_companion/hal/CompanionDecoderOverrides.kt').read_text()
+    _cl_ban = _strip_comments_safe(
+        (root / 'lib/widgets/charging_banner.dart').read_text())
+    _cl_sticky_m = re.search(r"_stickyNames\s*=\s*\{(.*?)\}", _cl_hal, re.S)
+    _cl2_bits = [
+        '"charging_gun_state"' in _cl_kt,
+        _cl_sticky_m is not None
+        and "'charging_gun_state'" in _cl_sticky_m.group(1),
+        "halValue('charging_gun_state')" in _cl_hal,
+        'halChargerTypeLabel' in _cl_ban,
+    ]
+    if all(_cl2_bits):
+        ok('CL2 gun-state chain: kotlin name, sticky, getter, title')
+    else:
+        fail(f'CL2 gun-state chain broken: {_cl2_bits}')
+else:
+    ok(f"Part CL skipped (build +{pv}, the guards land in +208)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)

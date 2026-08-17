@@ -322,9 +322,15 @@ class _ChargingSessionScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final svc = context.watch<ConnectionService>();
+    // v0.2.9+208: тип пистолета в заголовке — AC или DC, когда известен
+    // (enum 0x2EB00832, подтверждён полем; AC/DC — универсальные
+    // обозначения, локализация не нужна).
+    final gunType = context.watch<HalTelemetryService>().halChargerTypeLabel;
     return Scaffold(
       appBar: AppBar(
-        title: Text(S.of('chg.session_title')),
+        title: Text(gunType == null
+            ? S.of('chg.session_title')
+            : '${S.of('chg.session_title')} · $gunType'),
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
           onPressed: () => Navigator.of(context).maybePop(),

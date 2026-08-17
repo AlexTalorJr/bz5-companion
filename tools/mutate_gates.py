@@ -1679,6 +1679,41 @@ MUTATIONS = [
      '        hal.halChargingActive;',
      '    final charging = svc.isCharging;',
      'вернуть баннеру один OBD-источник — ГУ снова слепнет'),
+
+    # CI1 (+208) — второй финализатор. Обе стороны нового звена.
+    ('CI1', HT,
+     "    unawaited(_rotateHalRetention());",
+     "",
+     'выбить крюк ротации из финализатора машины HAL'),
+    ('CI1', HT,
+     "      final n = await db.rotateHalSamples(\n"
+     "          DateTime.now().subtract(Duration(days: days)));",
+     "      final n = 0;",
+     'выбить вызов базы из метода ротации машины HAL'),
+
+    # CL1 — стражи +208. Снятие и порча смысловой границы.
+    ('CL1', HT,
+     "    'cell_temp_lowest': (-40, 150),",
+     "",
+     'снять страж cell_temp_lowest — мусор 1e9 снова проходит'),
+    ('CL1', HT,
+     "    'cell_temp_lowest': (-40, 150),",
+     "    'cell_temp_lowest': (-40, 2000000000),",
+     'растянуть температурную полосу до мусора'),
+
+    # CL2 — цепь пистолета. Kotlin-имя, липкость, заголовок.
+    ('CL2', CDO,
+     '            "charging_gun_state", "", ValueSource.INT,',
+     '            "charging_gun_connect_candidate", "", ValueSource.INT,',
+     'вернуть кандидатское имя — переименование наполовину'),
+    ('CL2', HT,
+     "    'charging_gun_state',",
+     "",
+     'выбить тип пистолета из липких'),
+    ('CL2', CB,
+     "    final gunType = context.watch<HalTelemetryService>().halChargerTypeLabel;",
+     "    final String? gunType = null;",
+     'отвязать заголовок от типа пистолета'),
 ]
 
 

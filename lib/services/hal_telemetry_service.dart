@@ -407,6 +407,40 @@ class HalTelemetryService extends ChangeNotifier
     // wide sanity band only; the AC charge detector consumes it strictly
     // by derivative (see _trackChargeEnergy). NOT sticky, NOT displayed.
     'charge_energy_kwh': (0, 10000000),
+    // v0.2.9+208 — СТРАЖИ ДЛЯ 29 ИМЁН, ПИСАВШИХСЯ БЕЗ НИХ. Диапазоны
+    // сняты с экспорта 17.08 (518k строк, 12 дней); границы = наблюдённое
+    // с запасом. cell_temp_lowest за всю историю не дал НИ ОДНОГО
+    // здравого значения (28 строк, все ~1.03e9 — мусор выравнивания
+    // кадра); температурная полоса дропает их все, и это задумано.
+    'motor_control_voltage': (0, 600),        // 45…465 набл.
+    'ev_range': (0, 1000),                    // 120…446 км
+    'avg_consumption_50km': (0, 100),         // 12…15.4
+    'epb_state': (0, 15),                     // enum 0…2
+    'cell_temp_lowest': (-40, 150),
+    'charging_gun_state': (0, 15),            // enum 1/2/3, поле 14–16.08
+    'tyre_pressure_fl': (0, 600),             // 275…302 кПа, все четыре
+    'tyre_pressure_fr': (0, 600),
+    'tyre_pressure_rl': (0, 600),
+    'tyre_pressure_rr': (0, 600),
+    'tyre_temp_fl': (-40, 150),
+    'tyre_temp_fr': (-40, 150),
+    'tyre_temp_rl': (-40, 150),
+    'tyre_temp_rr': (-40, 150),
+    'radar_obstacle_left': (0, 1000),         // 127 = «чисто», дм
+    'radar_obstacle_right': (0, 1000),
+    'radar_obstacle_left_front': (0, 1000),
+    'radar_obstacle_right_front': (0, 1000),
+    'radar_obstacle_front_left_mid': (0, 1000),
+    'radar_obstacle_front_right_mid': (0, 1000),
+    'radar_obstacle_left_rear': (0, 1000),
+    'radar_obstacle_right_rear': (0, 1000),
+    'radar_state_left': (0, 15),              // enum 0…3, все семь
+    'radar_state_right': (0, 15),
+    'radar_state_left_front': (0, 15),
+    'radar_state_right_front': (0, 15),
+    'radar_state_front_left_mid': (0, 15),
+    'radar_state_front_right_mid': (0, 15),
+    'radar_state_right_rear': (0, 15),
   };
 
   final Map<String, ({double value, DateTime at})> _latest = {};
@@ -442,6 +476,9 @@ class HalTelemetryService extends ChangeNotifier
     // выдёргивании, между ними часы тишины); без липкости значение
     // пропадает на первом же удержании _lastGood.
     'charger_connect_state',
+    // v0.2.9+208: тип пистолета — тоже событийный (2/3 при втыкании,
+    // 1 при выдёргивании), та же липкость по той же причине.
+    'charging_gun_state',
     // v0.1.29+82: brake_pedal is EDGE-triggered — the framework pushes a
     // frame only on CHANGE (1 on press, 0 on release), nothing while the
     // pedal is held. +81 treated it as a level signal with a 3 s freshness
@@ -1068,6 +1105,17 @@ class HalTelemetryService extends ChangeNotifier
   bool? get halChargerConnected {
     final v = halValue('charger_connect_state');
     return v == null ? null : v >= 0.5;
+  }
+
+  /// v0.2.9+208: тип подключённого пистолета по enum 0x2EB00832
+  /// (1=отключён, 2=AC, 3=DC — подтверждено полем 14–16.08).
+  /// null — событие ещё не приходило либо пистолет отключён.
+  String? get halChargerTypeLabel {
+    final v = halValue('charging_gun_state');
+    if (v == null) return null;
+    if (v >= 2.5) return 'DC';
+    if (v >= 1.5) return 'AC';
+    return null;
   }
 
   bool get useHalForGear => _useHal('gear_enum');
@@ -2310,6 +2358,33 @@ class HalTelemetryService extends ChangeNotifier
         .then((n) => db.updateTripSampleCount(id, n))
         .then((_) => refreshTotalDriveEnergy())
         .catchError((_) {});
+
+    // v0.2.9+208: ротация замеров HAL — второй финализатор. Крюк +205
+    // стоял только в ConnectionService (OBD-путь) и на ГУ без донгла не
+    // выполнялся никогда: поле 17.08 показало ровно ОДНУ чистку — в
+    // момент выбора окна 14.08, и ни одной после поездок 15–17.08.
+    // Поездки ГУ закрывает эта машина — крюк обязан стоять здесь же.
+    unawaited(_rotateHalRetention());
+  }
+
+  /// v0.2.9+208: зеркало одноимённого метода в ConnectionService —
+  /// огонь-и-забыл, свой try, падение ротации не касается закрытия
+  /// поездки. Дублирование сознательное: AA2 запрещает общий импорт.
+  Future<void> _rotateHalRetention() async {
+    final db = _diagDb;
+    if (db == null) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final days = prefs.getInt('hal_retention_days') ?? 0;
+      if (days <= 0) return;
+      final n = await db.rotateHalSamples(
+          DateTime.now().subtract(Duration(days: days)));
+      if (n > 0) {
+        debugPrint('HAL retention (hal trip end): deleted $n rows (>$days d)');
+      }
+    } catch (e) {
+      debugPrint('HAL retention failed: $e');
+    }
   }
 
   void _resetHalTripAggregates() {
@@ -3418,7 +3493,7 @@ class HalTelemetryService extends ChangeNotifier
     // ARE the payload) to hal_samples + the diag journal with a timestamp,
     // so the next AC/DC session collects the enum for free. Phase B (sticky
     // getter + session anchoring) is a separate patch after the enum lands.
-    if (e.name == 'charging_gun_connect_candidate') {
+    if (e.name == 'charging_gun_state') {
       final v = e.value?.toDouble();
       if (v != null && v != _gunConnectLastVal) {
         final prev = _gunConnectLastVal;
