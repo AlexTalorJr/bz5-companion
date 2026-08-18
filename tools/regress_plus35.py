@@ -11743,8 +11743,19 @@ if int(pv) >= 207:
         _ck_sticky_m is not None
         and "'charger_connect_state'" in _ck_sticky_m.group(1),
         "halValue('charger_connect_state')" in _ck_hal,
-        'halChargerConnected' in _ck_ban and 'halChargingActive' in _ck_ban
-        and 'svc.isCharging' in _ck_ban,
+        # +209: не «строки присутствуют», а ЕДИНСТВЕННОСТЬ предиката —
+        # поле 17.08 показало, что присутствие ИЛИ-строки уживается с
+        # голым svc.isCharging в перепроверке автопоказа и в развилке
+        # маршрута. Теперь: помощник определён, все решения через него,
+        # голый предикат ровно один — внутри самого помощника.
+        'bool _chargingSessionNow(' in _ck_ban
+        and _ck_ban.count('svc.isCharging') == 1
+        and _ck_ban.count('_chargingSessionNow(') >= 4
+        and 'halChargerConnected' in _ck_ban
+        and 'halChargingActive' in _ck_ban,
+        # BZ3: значок ⚡ на токовой машине, не на голом OBD.
+        'svc.isCharging || hal.halChargingActive' in _strip_comments_safe(
+            (root / 'lib/screens/driver_view_tall.dart').read_text()),
     ]
     if all(_ck_bits):
         ok('CK1 charger-connect chain: kotlin decoder entry, sticky name, '

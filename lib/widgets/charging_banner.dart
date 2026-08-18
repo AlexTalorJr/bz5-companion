@@ -41,6 +41,20 @@ import '../screens/wide/charging_view_wide.dart';
 /// a charging session is active. Handles the once-per-session auto-push
 /// when [autoPushWhenVisible] is true (Driver tab passes true; all other
 /// tabs false).
+/// v0.2.10+209: ЕДИНСТВЕННЫЙ источник ответа «сессия зарядки есть?» для
+/// баннера, автопоказа и полноэкранного маршрута. +207 перевёл на тройное
+/// ИЛИ только видимость баннера; повторная проверка внутри отложенного
+/// показа и развилка тела маршрута остались на голом svc.isCharging —
+/// поле 17.08: баннер «запуск…» появляется, автопоказа нет (предохранитель
+/// сгорал о ложную перепроверку), тап открывал «Зарядка завершена».
+/// Семантика сессии: кабель воткнут ∨ ток идёт ∨ OBD-путь телефона.
+/// Бейдж дашборда (+116) сознательно НЕ на этом помощнике — его
+/// семантика «ток идёт сейчас», без хвоста «воткнут, но закончил».
+bool _chargingSessionNow(ConnectionService svc, HalTelemetryService hal) =>
+    svc.isCharging ||
+    (hal.halChargerConnected ?? false) ||
+    hal.halChargingActive;
+
 class ChargingAwareBody extends StatefulWidget {
   final Widget child;
 
@@ -87,15 +101,9 @@ class _ChargingAwareBodyState extends State<ChargingAwareBody> {
   Widget build(BuildContext context) {
     final svc = context.watch<ConnectionService>();
     final hal = context.watch<HalTelemetryService>();
-    // v0.2.8+207: на ГУ OBD-путь мёртв с рождения (счётчик 0B00 — путь
-    // донгла, HAL его не поставляет; ноль строк за девять дней базы).
-    // Тройное ИЛИ: флаг кабеля (мгновенный старт и честный хвост до
-    // выдёргивания) ∨ токовая машина HAL (+116; страхует рестарт
-    // приложения посреди сессии, когда флаг-событие уже не повторится)
-    // ∨ прежний OBD-путь (телефон с донглом). Никогда ВМЕСТО — только ИЛИ.
-    final charging = svc.isCharging ||
-        (hal.halChargerConnected ?? false) ||
-        hal.halChargingActive;
+    // v0.2.8+207 ввёл тройное ИЛИ, v0.2.10+209 собрал его в единственный
+    // помощник _chargingSessionNow — историю см. над ним.
+    final charging = _chargingSessionNow(svc, hal);
 
     if (!charging) {
       // Session over: reset the auto-push guard so the next session
@@ -121,7 +129,14 @@ class _ChargingAwareBodyState extends State<ChargingAwareBody> {
     if (widget.autoPushWhenVisible && !_autoPushedThisSession) {
       _autoPushedThisSession = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && svc.isCharging) _openChargingScreen(context);
+        // +209: перепроверка обязана быть ТЕМ ЖЕ предикатом, что и
+        // видимость. Голый svc.isCharging здесь гасил автопоказ на ГУ
+        // и жёг предохранитель до конца сессии.
+        if (mounted &&
+            _chargingSessionNow(context.read<ConnectionService>(),
+                context.read<HalTelemetryService>())) {
+          _openChargingScreen(context);
+        }
       });
     }
 
@@ -325,7 +340,8 @@ class _ChargingSessionScreen extends StatelessWidget {
     // v0.2.9+208: тип пистолета в заголовке — AC или DC, когда известен
     // (enum 0x2EB00832, подтверждён полем; AC/DC — универсальные
     // обозначения, локализация не нужна).
-    final gunType = context.watch<HalTelemetryService>().halChargerTypeLabel;
+    final hal = context.watch<HalTelemetryService>();
+    final gunType = hal.halChargerTypeLabel;
     return Scaffold(
       appBar: AppBar(
         title: Text(gunType == null
@@ -336,7 +352,8 @@ class _ChargingSessionScreen extends StatelessWidget {
           onPressed: () => Navigator.of(context).maybePop(),
         ),
       ),
-      body: svc.isCharging
+      // +209: развилка active/ended — тем же предикатом, что и баннер.
+      body: _chargingSessionNow(svc, hal)
           ? const ChargingViewWide()
           : Center(
               child: Column(

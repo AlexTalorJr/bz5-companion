@@ -115,6 +115,7 @@ HUS = 'lib/screens/wide/head_unit_scaffold.dart'
 CDO = ('android/app/src/main/kotlin/com/bz5companion/'
        'bz5_companion/hal/CompanionDecoderOverrides.kt')
 CB = 'lib/widgets/charging_banner.dart'
+DVT = 'lib/screens/driver_view_tall.dart'
 OVR = ('android/app/src/main/kotlin/com/bz5companion/bz5_companion'
        '/hal/CompanionDecoderOverrides.kt')
 
@@ -1674,11 +1675,31 @@ MUTATIONS = [
      '',
      'выбить имя из липких — флаг умирает на первом удержании'),
     ('CK1', CB,
-     '    final charging = svc.isCharging ||\n'
-     '        (hal.halChargerConnected ?? false) ||\n'
-     '        hal.halChargingActive;',
-     '    final charging = svc.isCharging;',
-     'вернуть баннеру один OBD-источник — ГУ снова слепнет'),
+     'bool _chargingSessionNow(ConnectionService svc, HalTelemetryService hal) =>\n'
+     '    svc.isCharging ||\n'
+     '    (hal.halChargerConnected ?? false) ||\n'
+     '    hal.halChargingActive;',
+     'bool _chargingSessionNow(ConnectionService svc, HalTelemetryService hal) =>\n'
+     '    svc.isCharging;',
+     'ослепить помощник до одного OBD-источника'),
+    ('CK1', CB,
+     '        if (mounted &&\n'
+     '            _chargingSessionNow(context.read<ConnectionService>(),\n'
+     '                context.read<HalTelemetryService>())) {\n'
+     '          _openChargingScreen(context);\n'
+     '        }',
+     '        if (mounted && svc.isCharging) _openChargingScreen(context);',
+     'вернуть перепроверке показа голый OBD-предикат'),
+    ('CK1', CB,
+     '      body: _chargingSessionNow(svc, hal)\n'
+     '          ? const ChargingViewWide()',
+     '      body: svc.isCharging\n'
+     '          ? const ChargingViewWide()',
+     'вернуть развилке маршрута голый OBD-предикат'),
+    ('CK1', DVT,
+     '    final isCharging = svc.isCharging || hal.halChargingActive;',
+     '    final isCharging = svc.isCharging;',
+     'ослепить значок ⚡ на BZ3'),
 
     # CI1 (+208) — второй финализатор. Обе стороны нового звена.
     ('CI1', HT,
@@ -1711,7 +1732,7 @@ MUTATIONS = [
      "",
      'выбить тип пистолета из липких'),
     ('CL2', CB,
-     "    final gunType = context.watch<HalTelemetryService>().halChargerTypeLabel;",
+     "    final gunType = hal.halChargerTypeLabel;",
      "    final String? gunType = null;",
      'отвязать заголовок от типа пистолета'),
 ]

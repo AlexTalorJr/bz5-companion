@@ -186,7 +186,9 @@ class _GearSocCardTall extends StatelessWidget {
             : svc.readNumeric('791', '0009'))
         ?.toInt();
     final parking = svc.parkingPawlEngaged;
-    final isCharging = svc.isCharging;
+    // v0.2.10+209: тот же класс слепоты, что у баннера до +207 — на ГУ
+    // OBD-путь мёртв. Семантика значка ⚡ — «ток идёт», как у бейджа +116.
+    final isCharging = svc.isCharging || hal.halChargingActive;
     final ({String label, Color color}) g;
     if (gear == 1 || parking == true) {
       g = (label: 'P', color: Colors.lightBlueAccent);
