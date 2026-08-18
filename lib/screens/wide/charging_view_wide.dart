@@ -101,6 +101,10 @@ class _ChargingLogBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // v0.2.11+210: лог модулей — это UDS-опрос через донгл; на ГУ без
+    // донгла карточка обещала запись, которой не будет («ИДЁТ ЗАПИСЬ ·
+    // 0 строк» на фото 18.08). Без донгла её нет вовсе.
+    if (!svc.isBleConnected) return const SizedBox.shrink();
     final active = svc.chargingLogActive;
     final rows = svc.chargingLogRowsWritten;
     final pass = svc.chargingBlockAvgPassSeconds;
@@ -205,15 +209,29 @@ class _PowerHero extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final kw = svc.chargingPowerKw;
-    final hv = svc.hvBusV;
+    // v0.2.11+210: на ГУ OBD-мощность вечно 0 — экран показывал «—» при
+    // живых -195 А в базе. Цепочка: OBD -> |V*I| HAL -> наклон
+    // энергосчётчика (AC-фолбэк +145, честное «примерно» — это DC-сторона,
+    // ~15-20 % ниже розетки).
+    final hal = context.watch<HalTelemetryService>();
+    final kwObd = svc.chargingPowerKw;
+    final kwHal = hal.halChargePowerKw;
+    final kwSlope = (kwObd > 0 || kwHal != null)
+        ? null
+        : hal.halEnergySlopePowerKw;
+    final kw = kwObd > 0 ? kwObd : (kwHal ?? kwSlope ?? 0);
+    final approx = kwSlope != null;
+    final hv = svc.hvBusV ??
+        hal.halValue('pack_voltage_fine') ??
+        hal.halValue('pack_voltage');
     // v0.1.26+17: power getter now returns 0 during the first ~7 min
     // of an AC session because precise SOC quantises in ~0.1% steps —
     // we wait for at least 3 quanta of growth before reporting a kW
     // figure to avoid the 4.4 kW phantom we saw at 2.4 kW real input.
     // Tell the user that explicitly when kW==0 but isCharging==true,
     // otherwise the big "—" looks broken.
-    final isCalibrating = kw == 0 && svc.isCharging;
+    final isCalibrating =
+        kw == 0 && (svc.isCharging || hal.halChargingActive);
     return Card(
       color: Colors.amber.shade900.withValues(alpha: 0.12),
       child: Padding(
@@ -234,7 +252,9 @@ class _PowerHero extends StatelessWidget {
               textBaseline: TextBaseline.alphabetic,
               children: [
                 Text(
-                  kw > 0 ? kw.toStringAsFixed(1) : '—',
+                  kw > 0
+                      ? '${approx ? '≈' : ''}${kw.toStringAsFixed(1)}'
+                      : '—',
                   style: TextStyle(
                     // v0.1.29+56: 120 on wide (BZ5), 72 on narrow (BZ3
                     // portrait 720 dp / phone) — 120 would eat half the
@@ -280,11 +300,14 @@ class _PhaseEtaStack extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final phase = svc.chargingPhase;
+    // +210: без донгла ETA считает HAL по средней скорости роста SOC.
     final etaSec = svc.etaToFullSeconds;
     // v0.1.32+131: user-selected SOC source (display / precise).
     final hal = context.watch<HalTelemetryService>();
     final soc = resolveUiSocPct(hal, svc) ?? svc.readNumeric('790', '0005');
-    final gain = svc.socGainedThisChargingSessionPct;
+    final gain =
+        svc.socGainedThisChargingSessionPct ?? hal.halChargeSessionSocDeltaPct;
+    final etaEff = etaSec ?? hal.halEtaToFullSeconds;
 
     final phaseLabel = switch (phase) {
       ChargingPhase.unknown => S.of('chg.analyzing'),
@@ -355,7 +378,7 @@ class _PhaseEtaStack extends StatelessWidget {
                           fontSize: 11, letterSpacing: 2, color: Colors.grey)),
                   const SizedBox(height: 8),
                   Text(
-                    etaSec == null ? '— : —' : _formatEta(etaSec),
+                    etaEff == null ? '— : —' : _formatEta(etaEff),
                     style: const TextStyle(
                         fontSize: 32,
                         fontWeight: FontWeight.w400,
@@ -363,7 +386,7 @@ class _PhaseEtaStack extends StatelessWidget {
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    etaSec == null
+                    etaEff == null
                         ? S.of('chg.need5')
                         : S.of('chg.eta_note'),
                     style: TextStyle(fontSize: 10, color: Colors.grey.shade500),
@@ -396,7 +419,28 @@ class _ChartsRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final hist = svc.chargingHistory;
+    // v0.2.11+210: без донгла OBD-история пуста — графики строятся из
+    // сессионной истории HAL (точка раз в >=60 с). Тот же класс точек,
+    // переложение здесь: виджету можно читать оба сервиса, сервисам друг
+    // друга — нет (AA2).
+    var hist = svc.chargingHistory;
+    if (hist.isEmpty) {
+      final hal = context.watch<HalTelemetryService>();
+      final hh = hal.halChargingHistory;
+      if (hh.isNotEmpty) {
+        hist = [
+          for (final pnt in hh)
+            ChargingSample(
+              time: pnt.t,
+              powerKw: pnt.kw,
+              socPct: pnt.socPct,
+              cellMinMv: pnt.cellMinMv,
+              cellMaxMv: pnt.cellMaxMv,
+              tempC: pnt.tempC,
+            ),
+        ];
+      }
+    }
     if (wide) {
       return Row(
         children: [
@@ -683,9 +727,14 @@ class _BottomSummaryStrip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final chargedKwh = svc.chargedThisChargingSessionKwh;
-    final socGain = svc.socGainedThisChargingSessionPct;
-    final start = svc.chargingSessionStartedAt;
+    // v0.2.11+210: те же величины без донгла считает HAL-трекер сессии —
+    // синяя плитка дашборда живёт им с +143, экран теперь тоже.
+    final hal = context.watch<HalTelemetryService>();
+    final chargedKwh =
+        svc.chargedThisChargingSessionKwh ?? hal.halChargedThisSessionKwh;
+    final socGain =
+        svc.socGainedThisChargingSessionPct ?? hal.halChargeSessionSocDeltaPct;
+    final start = svc.chargingSessionStartedAt ?? hal.halChargeSessionStartedAt;
     final durationStr = start == null
         ? '—'
         : _fmtDuration(DateTime.now().difference(start));
@@ -714,18 +763,22 @@ class _BottomSummaryStrip extends StatelessWidget {
         value: durationStr,
         hint: S.of('chg.session_sub'),
       ),
-      _Metric(
-        label: S.of('chg.counter_hdr'),
-        value: counterRaw != null ? '$counterRaw' : '—',
-        hint: '',
-      ),
-      _Metric(
-        label: S.of('chg.imax_hdr'),
-        value: maxCurrent != null
-            ? '${maxCurrent.toStringAsFixed(0)} A'
-            : '—',
-        hint: '782/000C · CC→CV trigger',
-      ),
+      // +210: счётчик 0B00 и лимит тока — величины UDS-опроса через донгл;
+      // на ГУ они всегда «—», плиток без донгла нет вовсе.
+      if (svc.isBleConnected) ...[
+        _Metric(
+          label: S.of('chg.counter_hdr'),
+          value: counterRaw != null ? '$counterRaw' : '—',
+          hint: '',
+        ),
+        _Metric(
+          label: S.of('chg.imax_hdr'),
+          value: maxCurrent != null
+              ? '${maxCurrent.toStringAsFixed(0)} A'
+              : '—',
+          hint: '782/000C · CC→CV trigger',
+        ),
+      ],
     ];
 
     return Card(

@@ -115,6 +115,7 @@ HUS = 'lib/screens/wide/head_unit_scaffold.dart'
 CDO = ('android/app/src/main/kotlin/com/bz5companion/'
        'bz5_companion/hal/CompanionDecoderOverrides.kt')
 CB = 'lib/widgets/charging_banner.dart'
+ST_ = 'lib/screens/status.dart'
 DVT = 'lib/screens/driver_view_tall.dart'
 OVR = ('android/app/src/main/kotlin/com/bz5companion/bz5_companion'
        '/hal/CompanionDecoderOverrides.kt')
@@ -1565,12 +1566,12 @@ MUTATIONS = [
 
     # CH3 — подсказки экрана зарядки, +204. Обе иголки по очереди.
     ('CH3', CW,
-     "        label: S.of('chg.counter_hdr'),\n"
-     "        value: counterRaw != null ? '$counterRaw' : '—',\n"
-     "        hint: '',",
-     "        label: S.of('chg.counter_hdr'),\n"
-     "        value: counterRaw != null ? '$counterRaw' : '—',\n"
-     "        hint: S.of('chg.counter_raw'),",
+     "          label: S.of('chg.counter_hdr'),\n"
+     "          value: counterRaw != null ? '$counterRaw' : '—',\n"
+     "          hint: '',",
+     "          label: S.of('chg.counter_hdr'),\n"
+     "          value: counterRaw != null ? '$counterRaw' : '—',\n"
+     "          hint: S.of('chg.counter_raw'),",
      'вернуть подсказку сырого счётчика на экран зарядки '
      '(якорь перепришпилен в +205: подпись стала ключом)'),
     ('CH3', CW,
@@ -1735,6 +1736,42 @@ MUTATIONS = [
      "    final gunType = hal.halChargerTypeLabel;",
      "    final String? gunType = null;",
      'отвязать заголовок от типа пистолета'),
+
+    # CM1 — экран зарядки на HAL, +210.
+    ('CM1', CW,
+     '    if (!svc.isBleConnected) return const SizedBox.shrink();',
+     '',
+     'вернуть карточку UDS-лога на ГУ без донгла'),
+    ('CM1', CW,
+     '    final kw = kwObd > 0 ? kwObd : (kwHal ?? kwSlope ?? 0);',
+     '    final kw = kwObd;',
+     'отрезать HAL-цепочку мощности — экран снова показывает тире'),
+    ('CM1', CW,
+     '      final hh = hal.halChargingHistory;',
+     '      final hh = <HalChargePoint>[];',
+     'отрезать HAL-историю — графики снова пустые'),
+    ('CM1', CW,
+     '      if (svc.isBleConnected) ...[',
+     '      ...[',
+     'вернуть донгловые плитки на ГУ'),
+
+    # CM2 — неисправности, +210.
+    ('CM2', ST_,
+     '                    ..._issueLines(status.issueRaw!, fg),',
+     "                    Text(status.issueRaw!,\n"
+     "                        style: TextStyle(\n"
+     "                            fontSize: 12,\n"
+     "                            color: fg,\n"
+     "                            fontFamily: 'monospace')),",
+     'вернуть сырой JSON на экран'),
+
+    # CM3 — пистолет первичен, +210.
+    ('CM3', HT,
+     "    final gun = halValue('charging_gun_state');\n"
+     "    if (gun != null) return gun >= 1.5;\n"
+     "    final v = halValue('charger_connect_state');",
+     "    final v = halValue('charger_connect_state');",
+     'вернуть флаг-первичность — AC-сессии снова без кабельного сигнала'),
 ]
 
 

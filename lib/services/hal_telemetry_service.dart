@@ -122,6 +122,18 @@ typedef _HalJoinTail = ({
   double? maxTempC,
 });
 
+/// v0.2.11+210: точка сессионной истории зарядки для графиков экрана.
+/// Наполняется от зарядных событий с прореживанием >=60 с — переживает
+/// скупой ON-CHANGE на медленной AC (поле 18.08: один замер тока в ~5 мин).
+typedef HalChargePoint = ({
+  DateTime t,
+  double? kw,
+  int? cellMinMv,
+  int? cellMaxMv,
+  double? tempC,
+  double? socPct,
+});
+
 class HalTelemetryService extends ChangeNotifier
     implements HalTelemetrySource {
   final _hal = HalTelemetryChannel.instance;
@@ -818,6 +830,9 @@ class HalTelemetryService extends ChangeNotifier
   bool _halSohSessionAnchored = false;
   DateTime? _halSohChargeConfirmStart;   // debounce clock for charge onset
   DateTime? _halSohStartedAt;            // session start (debounce satisfied)
+  // v0.2.11+210: сессионная история для графиков экрана зарядки.
+  final List<HalChargePoint> _halChargeHist = [];
+  DateTime? _halChargeHistLastAt;
   double? _halSohStartSoc;               // SOC latched at session start
   double _halSohChargeAhAccum = 0.0;     // ∫|I|·dt this session, Ah
   DateTime? _halSohLastIntegrationAt;    // previous integration tick
@@ -1102,7 +1117,58 @@ class HalTelemetryService extends ChangeNotifier
   /// v0.2.8+207: кабель зарядки воткнут? null — событие ещё не приходило
   /// (например, рестарт посреди сессии); тогда решает токовая машина
   /// [halChargingActive] или OBD-путь ConnectionService.isCharging.
+  /// v0.2.11+210: точка истории раз в >=60 с, пока сессия заякорена.
+  /// Потолок 720 точек (12 часов) — ночная AC-сессия 18.08 шла 15 часов,
+  /// старые точки уступают место новым.
+  void _maybeSampleChargeHistory(DateTime now) {
+    if (!_halSohSessionAnchored) return;
+    final last = _halChargeHistLastAt;
+    if (last != null && now.difference(last).inSeconds < 60) return;
+    _halChargeHistLastAt = now;
+    final vLo = halValue('cell_v_lowest');
+    final vHi = halValue('cell_v_highest');
+    _halChargeHist.add((
+      t: now,
+      kw: halChargePowerKw ?? halEnergySlopePowerKw,
+      cellMinMv: vLo == null ? null : (vLo * 1000).round(),
+      cellMaxMv: vHi == null ? null : (vHi * 1000).round(),
+      tempC: halValue('battery_temp_bigdata') ?? halValue('probe_highest_temp'),
+      socPct: halSocForTrip,
+    ));
+    if (_halChargeHist.length > 720) _halChargeHist.removeAt(0);
+  }
+
+  /// История точек текущей сессии для графиков (пусто вне сессии).
+  List<HalChargePoint> get halChargingHistory =>
+      List.unmodifiable(_halChargeHist);
+
+  /// Якорное время сессии — «Сессия N мин» на экране без донгла.
+  DateTime? get halChargeSessionStartedAt =>
+      _halSohSessionAnchored ? _halSohStartedAt : null;
+
+  /// v0.2.11+210: ETA до 100 % по средней скорости роста SOC за сессию.
+  /// Осторожные ворота: >=2 мин наблюдения и >=0.5 % набранного SOC,
+  /// иначе оценка — шум. Дополняет OBD-ETA, никогда не заменяет.
+  int? get halEtaToFullSeconds {
+    final started = halChargeSessionStartedAt;
+    final d = halChargeSessionSocDeltaPct;
+    final cur = halSocForTrip;
+    if (started == null || d == null || cur == null || d < 0.5) return null;
+    final elapsed = DateTime.now().difference(started).inSeconds;
+    if (elapsed < 120) return null;
+    final rate = d / elapsed;
+    if (rate <= 0) return null;
+    final remain = (100.0 - cur) / rate;
+    return remain.isFinite && remain > 0 ? remain.round() : null;
+  }
+
   bool? get halChargerConnected {
+    // v0.2.11+210: пистолет — ПЕРВИЧНЫЙ источник. Поле 18.08: AC-сессия
+    // дала события пистолета (2 при втыкании, 1 при выдёргивании) и НИ
+    // ОДНОГО события флага 0x0A50000D — флаг оказался DC-только. Пистолет
+    // универсален (enum 1/2/3 = отключён/AC/DC), флаг остаётся вторым.
+    final gun = halValue('charging_gun_state');
+    if (gun != null) return gun >= 1.5;
     final v = halValue('charger_connect_state');
     return v == null ? null : v >= 0.5;
   }
@@ -2485,6 +2551,9 @@ class HalTelemetryService extends ChangeNotifier
         _halSohChargeConfirmStart = now;
         _halSohStartedAt = now;
         _halSohStartSoc = anchorSoc;
+        // +210: новая сессия — новая история графиков.
+        _halChargeHist.clear();
+        _halChargeHistLastAt = null;
         _halSohChargeAhAccum = 0.0;
         _halSohLastIntegrationAt = now; // seed only; first dt next frame
         _halSohCoverageLiveSec = 0.0;
@@ -2526,6 +2595,7 @@ class HalTelemetryService extends ChangeNotifier
         // interpolate across).
         if (dtSec > 0 && dtSec <= 30.0) {
           _halSohCoverageTotalSec += dtSec;
+          _maybeSampleChargeHistory(now);
           // pi is guaranteed non-null here (chargingLevel), but re-read defen-
           // sively in case a frame without it slips through a future edit.
           final i = halValue('pack_current');

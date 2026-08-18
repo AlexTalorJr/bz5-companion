@@ -11818,6 +11818,63 @@ if int(pv) >= 208:
 else:
     ok(f"Part CL skipped (build +{pv}, the guards land in +208)")
 
+# ═══════ Part CM — 0.2.11+210: экран зарядки на HAL, неисправности, пистолет ═══════
+if int(pv) >= 210:
+    # CM1: ЭКРАН ЗАРЯДКИ ПИТАЕТСЯ HAL-ИСТОЧНИКАМИ, донгловые куски
+    # спрятаны без донгла. Поле 18.08: живая AC-сессия, экран целиком
+    # пустой — все цепи были OBD-только. Держим: цепочку мощности,
+    # HAL-историю графиков, HAL-величины низа, гейтинг UDS-лога и
+    # донгловых плиток.
+    _cm_view = _strip_comments_safe(
+        (root / 'lib/screens/wide/charging_view_wide.dart').read_text())
+    # Урок мутаций +210 (BLIND с первого прогона): держать надо ЦЕПЬ,
+    # а не имена — имена геттеров переживают отрезание цепочки в мёртвых
+    # переменных. Игла — само выражение выбора.
+    _cm1_bits = [
+        'kwObd > 0 ? kwObd : (kwHal ?? kwSlope ?? 0)' in _cm_view,
+        'halChargingHistory' in _cm_view,
+        'halChargedThisSessionKwh' in _cm_view
+        and 'halChargeSessionStartedAt' in _cm_view,
+        'if (!svc.isBleConnected) return const SizedBox.shrink();'
+        in _cm_view,
+        'if (svc.isBleConnected) ...[' in _cm_view,
+    ]
+    if all(_cm1_bits):
+        ok('CM1 charging view runs on HAL fuel, dongle-only pieces gated')
+    else:
+        fail(f'CM1 charging view HAL wiring broken: {_cm1_bits}')
+
+    # CM2: НЕИСПРАВНОСТИ РАЗОБРАНЫ, сырой JSON — только фолбэк разбора.
+    _cm_status = _strip_comments_safe(
+        (root / 'lib/screens/status.dart').read_text())
+    # Тот же урок: помощник в низу файла переживает отрезанный вызов.
+    # Игла — точка вызова в дереве виджетов.
+    _cm2_bits = [
+        'json.decode' in _cm_status,
+        "'status.issue.line'" in _cm_status,
+        '..._issueLines(status.issueRaw!, fg),' in _cm_status,
+    ]
+    if all(_cm2_bits):
+        ok('CM2 car issues rendered human, raw JSON only as parse fallback')
+    else:
+        fail(f'CM2 issue rendering broken: {_cm2_bits}')
+
+    # CM3: ПИСТОЛЕТ — ПЕРВИЧНЫЙ ИСТОЧНИК halChargerConnected (флаг
+    # 0x0A50000D — DC-только, поле 18.08). Иглы в теле геттера.
+    _cm_hal = _strip_comments_safe(
+        (root / 'lib/services/hal_telemetry_service.dart').read_text())
+    _cm3_m = re.search(
+        r"halChargerConnected \{(.*?)\n  \}", _cm_hal, re.S)
+    _cm3_body = _cm3_m.group(1) if _cm3_m else ''
+    if ("halValue('charging_gun_state')" in _cm3_body
+            and _cm3_body.find("charging_gun_state")
+                < _cm3_body.find("charger_connect_state")):
+        ok('CM3 gun state is the primary cable source, flag secondary')
+    else:
+        fail('CM3 gun-primary ordering broken in halChargerConnected')
+else:
+    ok(f"Part CM skipped (build +{pv}, the HAL screen fuel lands in +210)")
+
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
 print(f"+35→+51 REGRESSION — build +{pv}")

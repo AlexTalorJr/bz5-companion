@@ -16,6 +16,7 @@
 /// unit landscape) → the three summary blocks sit in a row.
 library;
 
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -225,18 +226,18 @@ class _HealthCard extends StatelessWidget {
                   Text(sub,
                       style: TextStyle(
                           fontSize: 13, color: fg.withValues(alpha: 0.85))),
-                  // When there is a fault, show the raw issue list so the
-                  // owner has something concrete to act on.
+                  // v0.2.11+210: сырой JSON [{"mIssueId":8,...}] на
+                  // экране — фото владельца 18.08. Разбираем список и
+                  // показываем «Код N · дата время · уровень C»; таблицы
+                  // расшифровки mIssueId пока нет (вопрос Другу 3) —
+                  // честный код без выдуманных названий. Сырая строка —
+                  // только как фолбэк, если разбор не удался.
                   if (!healthy && !unknown &&
                       (status.issueRaw != null &&
                           status.issueRaw!.trim().isNotEmpty &&
                           status.issueRaw!.trim() != '[]')) ...[
                     const SizedBox(height: 8),
-                    Text(status.issueRaw!,
-                        style: TextStyle(
-                            fontSize: 12,
-                            color: fg,
-                            fontFamily: 'monospace')),
+                    ..._issueLines(status.issueRaw!, fg),
                   ],
                 ],
               ),
@@ -635,5 +636,46 @@ class _PlatformCardState extends State<_PlatformCard> {
         ),
       ),
     );
+  }
+}
+
+
+/// v0.2.11+210: разбор списка неисправностей машины в человеческие строки.
+/// Формат поля: JSON-список объектов {mIssueId, mIssueColor, mIssueTime(мс)}.
+/// Уровень (mIssueColor) — сырое число: семантику цветов машина не
+/// документирует, не выдумываем. Неудачный разбор -> сырая строка.
+List<Widget> _issueLines(String raw, Color fg) {
+  try {
+    final parsed = json.decode(raw);
+    if (parsed is! List || parsed.isEmpty) throw const FormatException();
+    final out = <Widget>[];
+    for (final it in parsed) {
+      if (it is! Map) throw const FormatException();
+      final id = it['mIssueId'];
+      final color = it['mIssueColor'];
+      final ms = it['mIssueTime'];
+      String when = '—';
+      if (ms is num) {
+        final dt =
+            DateTime.fromMillisecondsSinceEpoch(ms.toInt(), isUtc: true)
+                .toLocal();
+        String two(int v) => v.toString().padLeft(2, '0');
+        when = '${two(dt.day)}.${two(dt.month)} ${two(dt.hour)}:${two(dt.minute)}';
+      }
+      out.add(Padding(
+        padding: const EdgeInsets.only(top: 2),
+        child: Text(
+          '${S.of('status.issue.line').replaceFirst('{id}', '$id').replaceFirst('{time}', when)}'
+          ' · ${S.of('status.issue.color').replaceFirst('{c}', '$color')}',
+          style: TextStyle(fontSize: 13, color: fg),
+        ),
+      ));
+    }
+    return out;
+  } catch (_) {
+    return [
+      Text(raw,
+          style: TextStyle(fontSize: 12, color: fg, fontFamily: 'monospace')),
+    ];
   }
 }
