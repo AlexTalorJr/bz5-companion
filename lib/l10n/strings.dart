@@ -1256,6 +1256,10 @@ class S {
     'chg.charged': 'CHARGED',
     'chg.soc_gain': 'SOC GAIN',
     'chg.since_plugin': 'since plug-in',
+    // v0.2.13+212: shown instead of 'since plug-in' when the session anchor
+    // did NOT coincide with a real plug-in (app started or restarted while
+    // the car was already charging). The sums are real, their start is not.
+    'chg.since_app_launch': 'since app launch',
     // v0.1.29+94: per-module UDS charge logger
     'chg.log.idle': 'Module charge log',
     'chg.log.active': 'Module charge log — RECORDING',
@@ -2517,6 +2521,10 @@ class S {
     'chg.charged': 'ЗАРЯЖЕНО',
     'chg.soc_gain': 'ПРИРОСТ SOC',
     'chg.since_plugin': 'с момента подключения',
+    // v0.2.13+212: ставится вместо «с момента подключения», когда якорь
+    // сессии не совпал с втычкой (приложение поднялось или перезапустилось
+    // уже на зарядке). Цифры настоящие, а вот их начало — нет.
+    'chg.since_app_launch': 'с запуска приложения',
     // v0.1.29+94: per-module UDS charge logger
     'chg.log.idle': 'Лог модулей на заряде',
     'chg.log.active': 'Лог модулей — ИДЁТ ЗАПИСЬ',

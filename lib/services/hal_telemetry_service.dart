@@ -828,6 +828,16 @@ class HalTelemetryService extends ChangeNotifier
   // the ΔSOC (latching the start SOC only after the debounce would exclude
   // ~0.7% SOC of DC charge from ΔSOC and understate SOH).
   bool _halSohSessionAnchored = false;
+  // ── v0.2.13+212: честная подпись сумм сессии, HAL-половина ──
+  //
+  // Та же беда, что в connection.dart: якорь ниже встаёт на ПЕРВОМ кадре
+  // зарядного уровня. Если поток поднялся, когда машина уже заряжается,
+  // якорь совпадает не с втычкой, а с началом наблюдения. Решение
+  // владельца (окно №22, 2.4): живую сессию не восстанавливаем, а суммы
+  // подписываем «с запуска приложения». Флаг помнит кадр «не заряжаемся»,
+  // снимок на якоре отдаётся экрану.
+  bool _halSawIdleBeforeCharge = false;
+  bool _halChargeSessionFromStart = false;
   DateTime? _halSohChargeConfirmStart;   // debounce clock for charge onset
   DateTime? _halSohStartedAt;            // session start (debounce satisfied)
   // v0.2.11+210: сессионная история для графиков экрана зарядки.
@@ -1145,6 +1155,11 @@ class HalTelemetryService extends ChangeNotifier
   /// Якорное время сессии — «Сессия N мин» на экране без донгла.
   DateTime? get halChargeSessionStartedAt =>
       _halSohSessionAnchored ? _halSohStartedAt : null;
+
+  /// v0.2.13+212: совпал ли HAL-якорь сессии с настоящей втычкой. false —
+  /// суммы идут с момента, когда поток начал смотреть, и подпись на экране
+  /// говорит это прямо.
+  bool get halChargeSessionFromStart => _halChargeSessionFromStart;
 
   /// v0.2.11+210: ETA до 100 % по средней скорости роста SOC за сессию.
   /// Осторожные ворота: >=2 мин наблюдения и >=0.5 % набранного SOC,
@@ -2513,6 +2528,12 @@ class HalTelemetryService extends ChangeNotifier
         if (_halSohCharging) _finalizeHalSohEstimate();
         _resetHalSohSession();
       }
+      // v0.2.13+212: владение потеряно — мы перестали смотреть, и право
+      // сказать «с втычки» теряется вместе с наблюдением. Следующий якорь
+      // будет честно помечен как «с начала наблюдения». Осторожно в
+      // сторону правды: хуже подписать точную сессию скромнее, чем выдать
+      // подобранную посередине за полную.
+      _halSawIdleBeforeCharge = false;
       return;
     }
 
@@ -2551,6 +2572,9 @@ class HalTelemetryService extends ChangeNotifier
         _halSohChargeConfirmStart = now;
         _halSohStartedAt = now;
         _halSohStartSoc = anchorSoc;
+        // v0.2.13+212: снимок знания ровно на якоре — решение принимает
+        // тот, кто ставит якорь, экран только показывает.
+        _halChargeSessionFromStart = _halSawIdleBeforeCharge;
         // +210: новая сессия — новая история графиков.
         _halChargeHist.clear();
         _halChargeHistLastAt = null;
@@ -2567,6 +2591,10 @@ class HalTelemetryService extends ChangeNotifier
         debugPrint('hal charge anchor: src='
             '${chargingLevel ? (energyRising ? 'both' : 'current') : 'energy'}'
             ' soc=${anchorSoc.toStringAsFixed(1)}'
+            // v0.2.13+212: след для полевой проверки. Экран показывает
+            // подпись сумм, но по одному скриншоту не понять, ПОЧЕМУ она
+            // такая. Здесь видно решение прямо на якоре.
+            ' fromStart=$_halChargeSessionFromStart'
             ' counter=${_halSohStartChargeEnergy?.toStringAsFixed(2) ?? '—'}');
         return;
       }
@@ -2623,6 +2651,9 @@ class HalTelemetryService extends ChangeNotifier
         unawaited(_persistPendingSohSession());
       }
     } else {
+      // v0.2.13+212: кадр «не заряжаемся» увиден при живом владении —
+      // следующий якорь совпадёт с настоящей втычкой.
+      _halSawIdleBeforeCharge = true;
       // Not charging this frame. If a session was anchored, the charge has
       // ended (unplugged / driving away). Finalize only if it ever confirmed
       // past the debounce; either way reset so the next charge starts clean.
@@ -2993,6 +3024,10 @@ class HalTelemetryService extends ChangeNotifier
     // total shared across sessions).
     _halSohStartChargeEnergy = null;
     _halSohSessionAnchored = false;
+    // v0.2.13+212: пометка «с втычки» — свойство КОНКРЕТНОЙ сессии, умирает
+    // с ней. Наблюдение (`_halSawIdleBeforeCharge`) тут не трогаем: его
+    // владелец — сам цикл, он же и решает, видит ли ещё поток.
+    _halChargeSessionFromStart = false;
     _halSohChargeConfirmStart = null;
     _halSohStartedAt = null;
     _halSohStartSoc = null;

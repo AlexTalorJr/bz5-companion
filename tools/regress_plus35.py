@@ -11837,7 +11837,15 @@ if int(pv) >= 210:
         and 'halChargeSessionStartedAt' in _cm_view,
         'if (!svc.isBleConnected) return const SizedBox.shrink();'
         in _cm_view,
-        'if (svc.isBleConnected) ...[' in _cm_view,
+        # v0.2.13+212: игла была дословной строкой `if (svc.isBleConnected)
+        # ...[`, и +212 покрасил CM1, ничего не сломав: условие РАСШИРИЛОСЬ
+        # памятью сессии (2.6), предмет CM1 остался цел. Предмет CM1 —
+        # «донгловые плитки стоят ПОД условием», то есть на ГУ без донгла их
+        # нет. Кто именно входит в условие — предмет CO2. Поэтому здесь
+        # теперь шаблон: расширение условия проходит, снятие условия
+        # красит. Две проверки больше не дерутся за одну строку.
+        re.search(r'if \(svc\.isBleConnected[^)]*\) \.\.\.\[', _cm_view)
+        is not None,
     ]
     if all(_cm1_bits):
         ok('CM1 charging view runs on HAL fuel, dongle-only pieces gated')
@@ -11905,6 +11913,55 @@ if int(pv) >= 211:
         fail(f'CN2 per-element issue parsing broken: {_cn2_bits}')
 else:
     ok(f"Part CN skipped (build +{pv}, the +210 review fixes land in +211)")
+
+# ═══════ Part CO — 0.2.13+212: решения владельца по 2.4 и 2.6 ═══════
+if int(pv) >= 212:
+    _co_view = _strip_comments_safe(
+        (root / 'lib/screens/wide/charging_view_wide.dart').read_text())
+    _co_conn = _strip_comments_safe(
+        (root / 'lib/services/connection.dart').read_text())
+    _co_hal = _strip_comments_safe(
+        (root / 'lib/services/hal_telemetry_service.dart').read_text())
+    _co_l10n = (root / 'lib/l10n/strings.dart').read_text()
+
+    # CO1: СУММЫ ПОДПИСАНЫ ЧЕСТНО. Живую сессию через рестарт не
+    # восстанавливаем (решение владельца, окно №22) — вместо этого экран
+    # говорит «с запуска приложения», когда якорь не совпал с втычкой.
+    # Держим ЦЕПЬ, а не имена (урок CM): наблюдение → снимок на якоре в
+    # ОБОИХ источниках → выбор источника на экране → подпись → ключ в двух
+    # локалях. Откат любого звена красит гейт.
+    _co1_bits = [
+        '_chargingSessionFromStart = _sawIdleBeforeCharge;' in _co_conn,
+        '_halChargeSessionFromStart = _halSawIdleBeforeCharge;' in _co_hal,
+        '? svc.chargingSessionFromStart' in _co_view,
+        'hal.halChargeSessionFromStart' in _co_view,
+        "final String sinceLaunchHint = S.of('chg.since_app_launch');"
+        in _co_view,
+        "hint: fromStart ? '' : sinceLaunchHint," in _co_view,
+        "hint: fromStart ? S.of('chg.session_sub') : sinceLaunchHint,"
+        in _co_view,
+        _co_l10n.count("'chg.since_app_launch':") == 2,
+    ]
+    if all(_co1_bits):
+        ok('CO1 session sums are labelled from-launch when anchor is not plug-in')
+    else:
+        fail(f'CO1 honest session-sum labelling broken: {_co1_bits}')
+
+    # CO2: ПЛИТКИ ДОНГЛА НЕ МИГАЮТ на слабом BLE. Присутствие плиток решает
+    # память сессии, а не мгновенный isBleConnected; сам флаг ставится в
+    # сервисе на кадре зарядки. Игла — оба звена: экранное ИЛИ и запись
+    # флага. Без записи флаг вечно ложен, и ИЛИ вырождается в старое
+    # поведение, оставаясь на месте — поэтому одного звена мало.
+    _co2_bits = [
+        'svc.isBleConnected || svc.chargingSessionSawDongle' in _co_view,
+        'if (isBleConnected) _chargingSessionSawDongle = true;' in _co_conn,
+    ]
+    if all(_co2_bits):
+        ok('CO2 dongle tiles held by session memory, not the flapping BLE flag')
+    else:
+        fail(f'CO2 sticky dongle tiles broken: {_co2_bits}')
+else:
+    ok(f"Part CO skipped (build +{pv}, the owner's 2.4/2.6 calls land in +212)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)

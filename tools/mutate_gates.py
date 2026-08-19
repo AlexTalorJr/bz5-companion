@@ -1750,8 +1750,11 @@ MUTATIONS = [
      '      final hh = hal.halChargingHistory;',
      '      final hh = <HalChargePoint>[];',
      'отрезать HAL-историю — графики снова пустые'),
+    # v0.2.13+212: анкер переписан вслед за расширением условия в +212
+    # (память сессии по 2.6). Предмет мутации тот же — СНЯТЬ условие
+    # целиком, а не сузить его; сужение проверяет CO2.
     ('CM1', CW,
-     '      if (svc.isBleConnected) ...[',
+     '      if (svc.isBleConnected || svc.chargingSessionSawDongle) ...[',
      '      ...[',
      'вернуть донгловые плитки на ГУ'),
 
@@ -1784,6 +1787,31 @@ MUTATIONS = [
      '    if (it is! Map) continue;',
      '    if (it is! Map) throw const FormatException();',
      'вернуть общий throw — одна битая метка роняет весь список в сырой JSON'),
+
+    # CO1 — честная подпись сумм сессии, +212. Два конца одной цепи:
+    # снимок в сервисе и выбор источника на экране.
+    ('CO1', CONN,
+     '      _chargingSessionFromStart = _sawIdleBeforeCharge;',
+     '      _chargingSessionFromStart = true;',
+     'вернуть слепой якорь — суммы после рестарта снова притворяются '
+     '«с момента подключения»'),
+
+    ('CO1', CW,
+     "    final String sinceLaunchHint = S.of('chg.since_app_launch');",
+     "    final String sinceLaunchHint = S.of('chg.since_plugin');",
+     'подменить подпись обратно — экран снова врёт о начале сумм'),
+
+    # CO2 — липкие плитки донгла, +212. Экранное ИЛИ и запись флага.
+    ('CO2', CW,
+     '      if (svc.isBleConnected || svc.chargingSessionSawDongle) ...[',
+     '      if (svc.isBleConnected) ...[',
+     'вернуть мгновенный BLE в условие — плитки донгла снова мигают'),
+
+    ('CO2', CONN,
+     '    if (isBleConnected) _chargingSessionSawDongle = true;',
+     '    if (false) _chargingSessionSawDongle = true;',
+     'перестать запоминать донгл — память сессии пуста, ИЛИ вырождается '
+     'в прежнее мигание'),
 ]
 
 

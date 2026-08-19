@@ -739,10 +739,28 @@ class _BottomSummaryStrip extends StatelessWidget {
         svc.chargedThisChargingSessionKwh ?? hal.halChargedThisSessionKwh;
     final socGain =
         svc.socGainedThisChargingSessionPct ?? hal.halChargeSessionSocDeltaPct;
-    final start = svc.chargingSessionStartedAt ?? hal.halChargeSessionStartedAt;
+    // v0.2.13+212: выбор источника сессии сделан ОДИН раз. До этого рядом
+    // стояли два независимых выражения — одно для якоря, другое для
+    // подписи; они совпадали лишь по договорённости, и правка одного молча
+    // разъехалась бы с другим (подпись про один якорь, цифры про другой).
+    final bool svcOwnsSession = svc.chargingSessionStartedAt != null;
+    final start = svcOwnsSession
+        ? svc.chargingSessionStartedAt
+        : hal.halChargeSessionStartedAt;
     final durationStr = start == null
         ? '—'
         : _fmtDuration(DateTime.now().difference(start));
+    // v0.2.13+212 (развилка 2.4, решение владельца): живую сессию через
+    // рестарт НЕ восстанавливаем — вместо этого подписываем суммы честно.
+    // Спрашиваем ТОТ ЖЕ источник, что дал якорь выше (правило +209 «один
+    // вопрос — один отвечающий»). Якоря нет вовсе → значения и так «—»,
+    // подпись оставляем обычную.
+    final bool fromStart = svcOwnsSession
+        ? svc.chargingSessionFromStart
+        : (hal.halChargeSessionStartedAt != null
+            ? hal.halChargeSessionFromStart
+            : true);
+    final String sinceLaunchHint = S.of('chg.since_app_launch');
     final counterRaw = svc.readNumeric('790', '0B00')?.toInt();
     final maxCurrent = svc.readNumeric('782', '000C');
 
@@ -754,23 +772,28 @@ class _BottomSummaryStrip extends StatelessWidget {
         value: chargedKwh != null
             ? '${chargedKwh.toStringAsFixed(2)} kWh'
             : '—',
-        hint: '',
+        hint: fromStart ? '' : sinceLaunchHint,
       ),
       _Metric(
         label: S.of('chg.soc_gain'),
         value: socGain != null
             ? '+${socGain.toStringAsFixed(2)}%'
             : '—',
-        hint: S.of('chg.since_plugin'),
+        hint: fromStart ? S.of('chg.since_plugin') : sinceLaunchHint,
       ),
       _Metric(
         label: S.of('chg.session'),
         value: durationStr,
-        hint: S.of('chg.session_sub'),
+        hint: fromStart ? S.of('chg.session_sub') : sinceLaunchHint,
       ),
       // +210: счётчик 0B00 и лимит тока — величины UDS-опроса через донгл;
       // на ГУ они всегда «—», плиток без донгла нет вовсе.
-      if (svc.isBleConnected) ...[
+      // v0.2.13+212 (2.6): к живому донглу добавлена память сессии. На слабом
+      // BLE isBleConnected мигает, и раньше плитки прыгали вместе с ним;
+      // теперь достаточно, что донгл БЫЛ в этой сессии — цифры уходят в «—»,
+      // а разметка стоит. На ГУ без донгла оба слагаемых ложны, плиток
+      // по-прежнему нет вовсе.
+      if (svc.isBleConnected || svc.chargingSessionSawDongle) ...[
         _Metric(
           label: S.of('chg.counter_hdr'),
           value: counterRaw != null ? '$counterRaw' : '—',

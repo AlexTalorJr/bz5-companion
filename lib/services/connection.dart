@@ -252,6 +252,26 @@ class ConnectionService extends ChangeNotifier {
   static const Duration _chargingHistoryMaxAge = Duration(minutes: 60);
   static const Duration _chargingHistoryInterval = Duration(seconds: 5);
   bool _wasCharging = false;
+  // ── v0.2.13+212: честная подпись сумм сессии ──
+  //
+  // Якорь сессии ниже ставится на переходе «не заряжаемся → заряжаемся».
+  // Но `_wasCharging` при старте прогона опроса = false: если приложение
+  // поднялось УЖЕ на зарядке, переход ложный, и якорь встаёт на момент
+  // запуска, а не на втычку. Суммы при этом подписаны «с момента
+  // подключения» — то есть врут.
+  //
+  // Решение владельца (окно №22, развилка 2.4): живую сессию через
+  // рестарт НЕ восстанавливаем. Вместо этого экран честно подписывает
+  // суммы «с запуска приложения». `_sawIdleBeforeCharge` помнит, видел ли
+  // ЭТОТ прогон опроса кадр «не заряжаемся» до якоря;
+  // `_chargingSessionFromStart` — снимок этого знания на самом якоре.
+  bool _sawIdleBeforeCharge = false;
+  bool _chargingSessionFromStart = false;
+  // v0.2.13+212 (2.6): «донгл был в этой сессии». На слабом BLE
+  // isBleConnected мигает, и донгловые плитки экрана зарядки то
+  // появлялись, то исчезали. Флаг держит плитку на месте: значение уходит
+  // в «—», сама плитка не прыгает. Живёт ровно столько, сколько сессия.
+  bool _chargingSessionSawDongle = false;
   DateTime? _lastChargingSampleAt;
   DateTime? _chargingSessionStartedAt;
   int? _chargingSessionStartCounter;
@@ -1714,6 +1734,13 @@ class ConnectionService extends ChangeNotifier {
     // fresh polling session doesn't show stale charging chart data.
     _chargingHistory.clear();
     _wasCharging = false;
+    // v0.2.13+212: якоря и знание о них сбрасываются ОДНОВРЕМЕННО. Новый
+    // прогон опроса ещё не видел кадра «не заряжаемся», поэтому первый же
+    // якорь честно пометится как «не с втычки» — суммы и подпись
+    // начинаются в одной точке.
+    _sawIdleBeforeCharge = false;
+    _chargingSessionFromStart = false;
+    _chargingSessionSawDongle = false;
     _lastChargingSampleAt = null;
     _chargingSessionStartedAt = null;
     _chargingSessionStartCounter = null;
@@ -3103,6 +3130,10 @@ class ConnectionService extends ChangeNotifier {
     final charging = isCharging;
 
     if (!charging) {
+      // v0.2.13+212: этот прогон опроса своими глазами видел «не
+      // заряжаемся». Значит следующий якорь совпадёт с настоящей втычкой,
+      // и суммы можно подписывать «с момента подключения».
+      _sawIdleBeforeCharge = true;
       if (_wasCharging) {
         // v0.1.29+104: finalize the coulomb-counted SOH estimate BEFORE the
         // session anchors are cleared below. Validity gates: SOC span ≥
@@ -3115,6 +3146,11 @@ class ConnectionService extends ChangeNotifier {
         _chargingSessionStartedAt = null;
         _chargingSessionStartCounter = null;
         _chargingSessionStartSocPct = null;
+        // v0.2.13+212: сессионные пометки умирают вместе с якорями.
+        // `_sawIdleBeforeCharge` тут НЕ трогаем — мы как раз в кадре «не
+        // заряжаемся», он только что стал верным.
+        _chargingSessionFromStart = false;
+        _chargingSessionSawDongle = false;
         _wasCharging = false;
         // v0.1.29+104: reset the SOH integral state for the next session.
         _sohChargeAhAccum = 0.0;
@@ -3128,11 +3164,27 @@ class ConnectionService extends ChangeNotifier {
       return;
     }
 
+    // v0.2.13+212 (2.6): пока идёт зарядка, запоминаем сам факт живого
+    // донгла. Ставится каждый кадр, снимается только вместе с сессией —
+    // поэтому просадка BLE больше не гасит донгловые плитки экрана.
+    if (isBleConnected) _chargingSessionSawDongle = true;
+
     if (!_wasCharging) {
       // Just transitioned into charging — anchor session metadata.
       _chargingSessionStartedAt = now;
       _chargingSessionStartCounter = currentCounter;
       _chargingSessionStartSocPct = socPrecisePct ?? readNumeric('790', '0005');
+      // v0.2.13+212: снимок знания ровно на якоре. Читаем один раз здесь, а
+      // не в экране: решение «откуда считаются суммы» принимает тот, кто
+      // ставит якорь (правило +209 «один вопрос — один отвечающий»).
+      _chargingSessionFromStart = _sawIdleBeforeCharge;
+      // v0.2.13+212: у UDS-якоря диагностики не было вовсе. Одна строка на
+      // сессию, тот же след, что у HAL-якоря — иначе подпись на экране
+      // нечем перепроверить после факта.
+      debugPrint('uds charge anchor:'
+          ' soc=${_chargingSessionStartSocPct?.toStringAsFixed(1) ?? '—'}'
+          ' fromStart=$_chargingSessionFromStart'
+          ' dongle=$isBleConnected');
       _wasCharging = true;
       // v0.1.29+104: (re)arm the SOH integral. Start clean; the first tick
       // below just seeds _sohLastIntegrationAt (no dt yet), so no spurious Ah.
@@ -3858,6 +3910,16 @@ class ConnectionService extends ChangeNotifier {
   /// Wall-clock time the current charging session started, or null if
   /// not currently charging.
   DateTime? get chargingSessionStartedAt => _chargingSessionStartedAt;
+
+  /// v0.2.13+212: совпал ли якорь сессии с настоящей втычкой. false — суммы
+  /// считаются с момента, когда приложение начало смотреть (запуск или
+  /// рестарт посреди зарядки), и экран подписывает их именно так.
+  bool get chargingSessionFromStart => _chargingSessionFromStart;
+
+  /// v0.2.13+212: был ли донгл живым хоть раз в этой сессии зарядки.
+  /// Донгловые плитки держатся по этому флагу, а не по мигающему
+  /// [isBleConnected].
+  bool get chargingSessionSawDongle => _chargingSessionSawDongle;
 
   /// Energy delivered since the start of the current charging session,
   /// in kWh.
