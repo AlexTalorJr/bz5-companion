@@ -1772,6 +1772,18 @@ MUTATIONS = [
      "    final v = halValue('charger_connect_state');",
      "    final v = halValue('charger_connect_state');",
      'вернуть флаг-первичность — AC-сессии снова без кабельного сигнала'),
+
+    # CN1 — ворот 0.0 на экране мощности, +211.
+    ('CN1', CW,
+     '    final kwHal = (kwHalRaw != null && kwHalRaw > 0) ? kwHalRaw : null;',
+     '    final kwHal = kwHalRaw;',
+     'вернуть живой 0.0 в цепь — наклон снова гасится, экран мигает «—»'),
+
+    # CN2 — поэлементный разбор неисправностей, +211.
+    ('CN2', ST_,
+     '    if (it is! Map) continue;',
+     '    if (it is! Map) throw const FormatException();',
+     'вернуть общий throw — одна битая метка роняет весь список в сырой JSON'),
 ]
 
 

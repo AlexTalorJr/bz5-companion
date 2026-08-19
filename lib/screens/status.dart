@@ -645,37 +645,57 @@ class _PlatformCardState extends State<_PlatformCard> {
 /// Уровень (mIssueColor) — сырое число: семантику цветов машина не
 /// документирует, не выдумываем. Неудачный разбор -> сырая строка.
 List<Widget> _issueLines(String raw, Color fg) {
+  List<dynamic> parsed;
   try {
-    final parsed = json.decode(raw);
-    if (parsed is! List || parsed.isEmpty) throw const FormatException();
-    final out = <Widget>[];
-    for (final it in parsed) {
-      if (it is! Map) throw const FormatException();
-      final id = it['mIssueId'];
-      final color = it['mIssueColor'];
-      final ms = it['mIssueTime'];
-      String when = '—';
-      if (ms is num) {
-        final dt =
-            DateTime.fromMillisecondsSinceEpoch(ms.toInt(), isUtc: true)
-                .toLocal();
-        String two(int v) => v.toString().padLeft(2, '0');
-        when = '${two(dt.day)}.${two(dt.month)} ${two(dt.hour)}:${two(dt.minute)}';
-      }
-      out.add(Padding(
-        padding: const EdgeInsets.only(top: 2),
-        child: Text(
-          '${S.of('status.issue.line').replaceFirst('{id}', '$id').replaceFirst('{time}', when)}'
-          ' · ${S.of('status.issue.color').replaceFirst('{c}', '$color')}',
-          style: TextStyle(fontSize: 13, color: fg),
-        ),
-      ));
-    }
-    return out;
+    final decoded = json.decode(raw);
+    if (decoded is! List || decoded.isEmpty) throw const FormatException();
+    parsed = decoded;
   } catch (_) {
+    // Не список / не JSON — показываем сырую строку целиком.
     return [
       Text(raw,
           style: TextStyle(fontSize: 12, color: fg, fontFamily: 'monospace')),
     ];
   }
+  // v0.2.12+211: разбираем КАЖДЫЙ элемент отдельно. Раньше общий catch
+  // ронял ВЕСЬ список в сырой JSON от одной битой метки времени. Теперь
+  // кривой элемент пропускаем. Пустые поля показываем прочерком, а не
+  // словом «null». Метку принимаем только в окне 2000..2100 — иначе
+  // секунды вместо мс или переполнение молча дали бы 1970-й / далёкий год.
+  final out = <Widget>[];
+  for (final it in parsed) {
+    if (it is! Map) continue;
+    final id = it['mIssueId'];
+    final color = it['mIssueColor'];
+    final ms = it['mIssueTime'];
+    final idStr = id == null ? '—' : '$id';
+    final colorStr = color == null ? '—' : '$color';
+    String when = '—';
+    if (ms is num) {
+      final v = ms.toInt();
+      if (v >= 946684800000 && v <= 4102444800000) {
+        final dt =
+            DateTime.fromMillisecondsSinceEpoch(v, isUtc: true).toLocal();
+        String two(int x) => x.toString().padLeft(2, '0');
+        when = '${two(dt.day)}.${two(dt.month)} ${two(dt.hour)}:${two(dt.minute)}';
+      }
+    }
+    out.add(Padding(
+      padding: const EdgeInsets.only(top: 2),
+      child: Text(
+        '${S.of('status.issue.line').replaceFirst('{id}', idStr).replaceFirst('{time}', when)}'
+        ' · ${S.of('status.issue.color').replaceFirst('{c}', colorStr)}',
+        style: TextStyle(fontSize: 13, color: fg),
+      ),
+    ));
+  }
+  // Ни один элемент не разобрался в человеческий вид — сырая строка,
+  // чтобы владелец хоть что-то увидел.
+  if (out.isEmpty) {
+    return [
+      Text(raw,
+          style: TextStyle(fontSize: 12, color: fg, fontFamily: 'monospace')),
+    ];
+  }
+  return out;
 }

@@ -215,7 +215,12 @@ class _PowerHero extends StatelessWidget {
     // ~15-20 % ниже розетки).
     final hal = context.watch<HalTelemetryService>();
     final kwObd = svc.chargingPowerKw;
-    final kwHal = hal.halChargePowerKw;
+    // v0.2.12+211: halChargePowerKw может вернуть 0.0 — ток в моменте ноль
+    // при активной зарядке. Ноль это «нет данных», а не «известный ноль»:
+    // иначе он гасил запасной путь по наклону и экран мигал «—» вместо
+    // «≈X». Чистим до null на нуле; строка выбора ниже остаётся прежней.
+    final kwHalRaw = hal.halChargePowerKw;
+    final kwHal = (kwHalRaw != null && kwHalRaw > 0) ? kwHalRaw : null;
     final kwSlope = (kwObd > 0 || kwHal != null)
         ? null
         : hal.halEnergySlopePowerKw;

@@ -11875,6 +11875,37 @@ if int(pv) >= 210:
 else:
     ok(f"Part CM skipped (build +{pv}, the HAL screen fuel lands in +210)")
 
+# ═══════ Part CN — 0.2.12+211: правки ревизии +210 ═══════
+if int(pv) >= 211:
+    # CN1: НА ЭКРАНЕ МОЩНОСТИ живой 0.0 от halChargePowerKw больше не
+    # гасит запасной путь по наклону. Игла — само выражение очистки в
+    # мёртвую переменную (не имя геттера: имя переживёт откат чистки).
+    # Урок CM (Notion, окно №20): держать надо ЦЕПЬ, а не присутствие
+    # имён. Строка выбора kw ниже намеренно осталась прежней, её держит
+    # CM1 — здесь стережём именно ворот 0.0.
+    _cn_view = _strip_comments_safe(
+        (root / 'lib/screens/wide/charging_view_wide.dart').read_text())
+    if '(kwHalRaw != null && kwHalRaw > 0) ? kwHalRaw : null' in _cn_view:
+        ok('CN1 power hero cleans a live 0.0 to null so slope survives')
+    else:
+        fail('CN1 power 0.0-guard broken — slope fallback can be suppressed')
+
+    # CN2: НЕИСПРАВНОСТИ разбираются поэлементно. Одна битая метка времени
+    # не роняет ВЕСЬ список в сырой JSON. Игла — пропуск кривого элемента
+    # (continue), а не общий throw, плюс окно допустимой метки времени.
+    _cn_status = _strip_comments_safe(
+        (root / 'lib/screens/status.dart').read_text())
+    _cn2_bits = [
+        'if (it is! Map) continue;' in _cn_status,
+        '946684800000' in _cn_status and '4102444800000' in _cn_status,
+    ]
+    if all(_cn2_bits):
+        ok('CN2 issues parsed per-element, one bad row cannot drop the list')
+    else:
+        fail(f'CN2 per-element issue parsing broken: {_cn2_bits}')
+else:
+    ok(f"Part CN skipped (build +{pv}, the +210 review fixes land in +211)")
+
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
 print(f"+35→+51 REGRESSION — build +{pv}")
