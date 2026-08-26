@@ -71,3 +71,93 @@ String formatSocPct(double v, {int maxDecimals = 1}) {
   if (v == v.roundToDouble()) return v.toStringAsFixed(0);
   return v.toStringAsFixed(maxDecimals);
 }
+
+// ══════════ v0.2.14+213: мощность и фаза зарядки — по одному ответчику ══════════
+//
+// ПОЧЕМУ ЭТО ПЕРЕЕХАЛО СЮДА. Поле 24.08 привезло два снимка: баннер писал
+// «Зарядка · запуск…», а фаза висела в «анализ…» — при живых 2.5 kW и
+// 40.2 % на том же экране. Причина одна на оба места: они спрашивали
+// ТОЛЬКО путь через донгл, которого на голове нет. +210 научил читать HAL
+// герой-строку, историю и суммы, но баннер и фаза остались на прежнем
+// пути.
+//
+// Латать их по отдельности было нельзя: цепочка выбора мощности жила
+// внутри `_PowerHero`, и копия в баннере плюс копия в фазе дали бы ТРИ
+// ответа на вопрос «сколько сейчас киловатт». Ровно та поломка, которую
+// +209 лечил для предиката сессии. Поэтому цепочка и правило фазы стоят
+// здесь, рядом с `resolveUiSocPct`, а экран, баннер и фаза их читают.
+//
+// Файл уже видит оба сервиса, так что новых связей не появилось.
+
+/// Мощность зарядки и признак «это оценка, а не измерение».
+typedef ChargePowerReading = ({double kw, bool approx});
+
+/// Единственное место, где решается «сколько сейчас киловатт».
+///
+/// Порядок: UDS через донгл → HAL |V×I| → наклон энергосчётчика. Ноль от
+/// HAL чистится до null (правка +211: в моменте ток бывает нулевым при
+/// живой зарядке, и ноль гасил запасной путь по наклону). `approx` истинно
+/// только на наклоне: это DC-сторона, она ниже розетки на 15-20 %, и
+/// экран обязан честно поставить знак «≈».
+ChargePowerReading resolveChargePowerKw(
+    HalTelemetryService hal, ConnectionService svc) {
+  final kwObd = svc.chargingPowerKw;
+  final kwHalRaw = hal.halChargePowerKw;
+  final kwHal = (kwHalRaw != null && kwHalRaw > 0) ? kwHalRaw : null;
+  final kwSlope =
+      (kwObd > 0 || kwHal != null) ? null : hal.halEnergySlopePowerKw;
+  return (
+    kw: kwObd > 0 ? kwObd : (kwHal ?? kwSlope ?? 0),
+    approx: kwSlope != null,
+  );
+}
+
+/// Фаза зарядки, считаемая от любого живого источника.
+///
+/// Правило то же, что жило в `ConnectionService.chargingPhase`, но входы
+/// больше не привязаны к донглу: активность — UDS ∨ HAL, мощность — через
+/// [resolveChargePowerKw], SOC — через [resolveUiSocPct], максимум ячейки
+/// из UDS либо из HAL (там вольты, здесь милливольты).
+///
+/// Порог в три точки истории оставлен: без него пик мощности не с чем
+/// сравнивать, и CV нельзя отличить от CC. Историю берём ту, которая
+/// реально наполняется — на голове это HAL.
+ChargingPhase resolveChargingPhase(
+    HalTelemetryService hal, ConnectionService svc) {
+  if (!(svc.isCharging || hal.halChargingActive)) {
+    return ChargingPhase.unknown;
+  }
+
+  final udsHist = svc.chargingHistory;
+  final halHist = hal.halChargingHistory;
+  final useHal = udsHist.length < 3;
+  final int points = useHal ? halHist.length : udsHist.length;
+  if (points < 3) return ChargingPhase.unknown;
+
+  final soc = resolveUiSocPct(hal, svc);
+  final powerKw = resolveChargePowerKw(hal, svc).kw;
+
+  if ((soc != null && soc >= 95) || (powerKw > 0 && powerKw < 3.0)) {
+    return ChargingPhase.almostDone;
+  }
+
+  final cellHighV = hal.halCellVHighest;
+  final maxCellMv = svc.globalMaxCellMv ??
+      (cellHighV != null ? (cellHighV * 1000).round() : null);
+  if (maxCellMv != null && maxCellMv >= 3400) {
+    double peak = 0;
+    if (useHal) {
+      for (final p in halHist) {
+        final v = p.kw ?? 0;
+        if (v > peak) peak = v;
+      }
+    } else {
+      for (final s in udsHist) {
+        final v = s.powerKw ?? 0;
+        if (v > peak) peak = v;
+      }
+    }
+    if (peak > 0 && powerKw < peak * 0.8) return ChargingPhase.cv;
+  }
+  return ChargingPhase.cc;
+}

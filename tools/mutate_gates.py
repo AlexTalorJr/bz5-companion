@@ -115,6 +115,8 @@ HUS = 'lib/screens/wide/head_unit_scaffold.dart'
 CDO = ('android/app/src/main/kotlin/com/bz5companion/'
        'bz5_companion/hal/CompanionDecoderOverrides.kt')
 CB = 'lib/widgets/charging_banner.dart'
+SR = 'lib/services/soc_resolver.dart'
+RSP = 'lib/widgets/responsive.dart'
 ST_ = 'lib/screens/status.dart'
 DVT = 'lib/screens/driver_view_tall.dart'
 OVR = ('android/app/src/main/kotlin/com/bz5companion/bz5_companion'
@@ -1742,9 +1744,12 @@ MUTATIONS = [
      '    if (!svc.isBleConnected) return const SizedBox.shrink();',
      '',
      'вернуть карточку UDS-лога на ГУ без донгла'),
-    ('CM1', CW,
-     '    final kw = kwObd > 0 ? kwObd : (kwHal ?? kwSlope ?? 0);',
-     '    final kw = kwObd;',
+    # v0.2.14+213: анкер переехал из экрана в `resolveChargePowerKw` вместе
+    # с самой цепочкой — её ждали баннер и фаза. Предмет мутации тот же:
+    # отрезать HAL от выбора мощности.
+    ('CM1', SR,
+     '    kw: kwObd > 0 ? kwObd : (kwHal ?? kwSlope ?? 0),',
+     '    kw: kwObd,',
      'отрезать HAL-цепочку мощности — экран снова показывает тире'),
     ('CM1', CW,
      '      final hh = hal.halChargingHistory;',
@@ -1777,9 +1782,10 @@ MUTATIONS = [
      'вернуть флаг-первичность — AC-сессии снова без кабельного сигнала'),
 
     # CN1 — ворот 0.0 на экране мощности, +211.
-    ('CN1', CW,
-     '    final kwHal = (kwHalRaw != null && kwHalRaw > 0) ? kwHalRaw : null;',
-     '    final kwHal = kwHalRaw;',
+    # v0.2.14+213: ворот переехал туда же, что и цепочка. Предмет тот же.
+    ('CN1', SR,
+     '  final kwHal = (kwHalRaw != null && kwHalRaw > 0) ? kwHalRaw : null;',
+     '  final kwHal = kwHalRaw;',
      'вернуть живой 0.0 в цепь — наклон снова гасится, экран мигает «—»'),
 
     # CN2 — поэлементный разбор неисправностей, +211.
@@ -1812,6 +1818,53 @@ MUTATIONS = [
      '    if (false) _chargingSessionSawDongle = true;',
      'перестать запоминать донгл — память сессии пуста, ИЛИ вырождается '
      'в прежнее мигание'),
+
+    # CP1 — баннер перестал читать донгл, +213. Два конца: подключение
+    # живых источников и отсутствие мёртвого вызова.
+    ('CP1', CB,
+     '    final power = resolveChargePowerKw(hal, svc);',
+     '    final power = (kw: svc.chargingPowerKw, approx: false);',
+     'вернуть баннеру мощность только через донгл — на голове снова '
+     '«запуск…»'),
+
+    ('CP1', CB,
+     '    final soc = resolveUiSocPct(hal, svc);',
+     "    final soc = svc.readNumeric('790', '0005');",
+     'вернуть SOC через мёртвый UDS-вызов'),
+
+    # CP2 — фаза живёт на любом источнике, +213.
+    ('CP2', CW,
+     '    final phase = resolveChargingPhase(hal, svc);',
+     '    final phase = svc.chargingPhase;',
+     'вернуть фазу на путь через донгл — вечный «анализ…» на голове'),
+
+    ('CP2', SR,
+     '      for (final p in halHist) {',
+     '      for (final p in <HalChargePoint>[]) {',
+     'отрезать HAL-историю от пика мощности — CV не отличить от CC'),
+
+    # CP3 — высоты из замера и честный канон, +213.
+    ('CP3', CW,
+     '            final raw = box.maxHeight - chip - gaps - _kBottomStripH;',
+     '            final raw = 800.0 - 196.0;',
+     'вернуть выдуманную высоту из макета вместо замеренной'),
+
+    ('CP3', CW,
+     '                : (free * _kHeroShare)\n                    .clamp(_kHeroMinH, free - _kChartsMinH);',
+     '                : free * _kHeroShare;',
+     'снять нижние пороги — при мелком холсте графики уходят в минус'),
+
+    ('CP3', RSP,
+     '///   - HEAD UNIT LANDSCAPE (e.g. BZ5): 1280 × 656 dp at dpr 1.5, 15.6".',
+     '///   - HEAD UNIT LANDSCAPE (e.g. BZ5): 2175 × 1224 dp, 15.6" 16:9 2.5K.',
+     'вернуть в канон завышенный размер — следующий читатель снова '
+     'посчитает от него'),
+
+    # CP4 — текст не обрезается и читается, +213.
+    ('CP4', CW,
+     '        reservedSize: 54,',
+     '        reservedSize: 38,',
+     'вернуть тесную ось — метки милливольт снова лезут на линии'),
 ]
 
 

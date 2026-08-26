@@ -3911,6 +3911,11 @@ class ConnectionService extends ChangeNotifier {
   /// not currently charging.
   DateTime? get chargingSessionStartedAt => _chargingSessionStartedAt;
 
+  /// v0.2.14+213: SOC на якоре сессии. Нужен плитке «ЗАРЯД» — она
+  /// подписывает, откуда шёл рост. Поле существовало с +17, наружу не
+  /// отдавалось: экран считал прирост, но не показывал точку отсчёта.
+  double? get chargingSessionStartSocPct => _chargingSessionStartSocPct;
+
   /// v0.2.13+212: совпал ли якорь сессии с настоящей втычкой. false — суммы
   /// считаются с момента, когда приложение начало смотреть (запуск или
   /// рестарт посреди зарядки), и экран подписывает их именно так.

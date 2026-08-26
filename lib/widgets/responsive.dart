@@ -5,7 +5,14 @@ import 'package:flutter/widgets.dart';
 /// We have three distinct form factors:
 ///   - PHONE (portrait or landscape): ~360-960 dp on either axis.
 ///     Uses BottomNavigationBar.
-///   - HEAD UNIT LANDSCAPE (e.g. BZ5): 2175 × 1224 dp, 15.6" 16:9 2.5K.
+///   - HEAD UNIT LANDSCAPE (e.g. BZ5): 1280 × 656 dp at dpr 1.5, 15.6".
+///     ИЗМЕРЕНО, А НЕ ВЫВЕДЕНО. v0.2.14+213. До этого патча здесь стояло
+///     2175 × 1224 dp — ширина завышена в 1.7 раза, высота почти вдвое.
+///     Настоящие три числа приехали в `metadata.json` экспорта 26.08:
+///     1280 × 656 dp, dpr 1.5, то есть физические 1920 × 984 px. Спор об
+///     этом размере тянулся с 05.08 (см. `export_service.dart`) и стоил
+///     одного присланного макета редизайна, посчитанного от чужой высоты.
+///     Число менять только по свежему `metadata.json`, не по фотографии.
 ///     Uses NavigationRail + multi-pane wide layouts.
 ///   - HEAD UNIT PORTRAIT (e.g. BZ3): 12.8" central screen mounted vertically,
 ///     typically ~720 × 1280 dp in portrait. Visually too tall for the

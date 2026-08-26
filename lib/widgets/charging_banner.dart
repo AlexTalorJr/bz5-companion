@@ -33,6 +33,7 @@ import 'package:provider/provider.dart';
 import '../l10n/strings.dart';
 import '../services/connection.dart';
 import '../services/hal_telemetry_service.dart';
+import '../services/soc_resolver.dart';
 import '../services/speed_profile_service.dart';
 import '../theme/atlas_tokens.dart';
 import '../screens/wide/charging_view_wide.dart';
@@ -182,13 +183,21 @@ class _ChargingBanner extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final svc = context.watch<ConnectionService>();
-    final kw = svc.chargingPowerKw;  // non-nullable; 0.0 while calibrating
-    final soc = svc.readNumeric('790', '0005');
-    final etaSec = svc.etaToFullSeconds;
+    // v0.2.14+213: поле 24.08 — баннер писал «запуск…» при живых 2.5 kW и
+    // 40.2 % на том же экране. Все три слагаемых он брал у `svc`, то есть
+    // у пути через донгл, которого на голове нет: список оставался пустым
+    // и включалась запасная надпись — навсегда, сколько бы ни прошло
+    // времени. Теперь мощность и SOC идут через общие определители, а ETA
+    // получила тот же запасной путь по HAL, что уже стоит на экране фазы.
+    final hal = context.watch<HalTelemetryService>();
+    final power = resolveChargePowerKw(hal, svc);
+    final kw = power.kw;
+    final soc = resolveUiSocPct(hal, svc);
+    final etaSec = svc.etaToFullSeconds ?? hal.halEtaToFullSeconds;
 
     final parts = <String>[];
     if (kw > 0) {
-      parts.add('${kw.toStringAsFixed(1)} kW');
+      parts.add('${power.approx ? '≈' : ''}${kw.toStringAsFixed(1)} kW');
     }
     if (soc != null) {
       parts.add('${soc.toStringAsFixed(0)}%');

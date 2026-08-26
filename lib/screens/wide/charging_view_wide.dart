@@ -40,6 +40,36 @@ import '../../services/locale_service.dart';
 /// vertically inside a scroll view: hero stack, then the three charts
 /// stacked full-width (240 dp tall each), then the summary strip.
 /// One widget tree, two arrangements — no duplicate screens.
+// ══════════ v0.2.14+213: РАЗМЕРЫ ОТ ЗАМЕРЕННОГО ХОЛСТА ══════════
+//
+// ЧИСЛО ПРИЕХАЛО ИЗ `metadata.json` ЭКСПОРТА 26.08: 1280 x 656 dp, dpr 1.5.
+// Это физические 1920 x 984 px. Канон в `responsive.dart` держал
+// 2175 x 1224 dp — ширина завышена в 1.7 раза, высота почти вдвое. На том
+// же неверном числе стоял и вывод dpr 0.875 из отношения 1920/2175:
+// настоящее отношение 1920/1280 = 1.5, то есть та же плотность, что у BZ3.
+//
+// ПОЧЕМУ ВЫСОТЫ НЕ ЗАБИТЫ ЧИСЛАМИ. Присланный макет редизайна считал
+// раскладку от 800 dp и дал сумму 782 — при настоящих 656 это перелёт на
+// 126 dp, то есть обрезанный низ. Канон 2175 прожил месяцы и обманул всех,
+// включая дизайнера. Поэтому высоты берутся из `LayoutBuilder`, а числа
+// ниже задают только ДОЛЮ и НИЖНИЕ ПОРОГИ: ошибись замер снова — раскладка
+// сожмётся, но не порвётся, а гейт CQ1 поймает расхождение арифметики.
+//
+// Доля 0.385 = 168 / (168 + 268) из пересчёта макета под 656 dp.
+const double _kPadWide = 12;
+const double _kGapWide = 12;
+const double _kLogChipH = 48;
+const double _kBottomStripH = 88;
+const double _kHeroMinH = 150;
+const double _kChartsMinH = 190;
+const double _kHeroShare = 0.385;
+
+/// Высота плитки герой-ряда в узкой ветке (BZ3 / телефон).
+///
+/// Там ветка живёт в прокрутке, высота не ограничена, а `Spacer` внутри
+/// плитки требует границы — поэтому число явное, как у графиков рядом.
+const double _kHeroTileNarrowH = 170;
+
 class ChargingViewWide extends StatelessWidget {
   const ChargingViewWide({super.key});
 
@@ -52,18 +82,47 @@ class ChargingViewWide extends StatelessWidget {
 
     if (wide) {
       return Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            _ChargingLogBar(svc: svc),
-            const SizedBox(height: 12),
-            Expanded(flex: 4, child: _TopHeroRow(svc: svc, wide: true)),
-            const SizedBox(height: 12),
-            Expanded(flex: 5, child: _ChartsRow(svc: svc, wide: true)),
-            const SizedBox(height: 12),
-            _BottomSummaryStrip(svc: svc),
-          ],
+        padding: const EdgeInsets.all(_kPadWide),
+        child: LayoutBuilder(
+          builder: (context, box) {
+            // Гейт CQ1 смотрит окрестность этого счёта — комментарий держим
+            // ВПЛОТНУЮ, без пустых строк между ним и предметом.
+            final chip = svc.isBleConnected ? _kLogChipH : 0.0;
+            final gaps = _kGapWide * (chip > 0 ? 3 : 2);
+            final raw = box.maxHeight - chip - gaps - _kBottomStripH;
+            final free = raw < 0 ? 0.0 : raw;
+            // ПОРЯДОК ЗДЕСЬ НЕ КОСМЕТИКА. При холсте меньше суммы порогов
+            // потолок `free - _kChartsMinH` опускается НИЖЕ порога
+            // `_kHeroMinH`, а `clamp` с потолком ниже порога бросает
+            // ArgumentError — то есть экран падает вместо того, чтобы
+            // сжаться. Ревизия перед выдачей поймала это на расчёте:
+            // ландшафтный телефон 900 x 420 dp даёт free 224 при сумме
+            // порогов 340. В таком случае делим по доле, и оба ряда
+            // сжимаются вместе.
+            final hero = free <= (_kHeroMinH + _kChartsMinH)
+                ? (free * _kHeroShare).clamp(0.0, free)
+                : (free * _kHeroShare)
+                    .clamp(_kHeroMinH, free - _kChartsMinH);
+            final charts = free - hero;
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                if (chip > 0) ...[
+                  SizedBox(height: chip, child: _ChargingLogBar(svc: svc)),
+                  const SizedBox(height: _kGapWide),
+                ],
+                SizedBox(
+                    height: hero, child: _TopHeroRow(svc: svc, wide: true)),
+                const SizedBox(height: _kGapWide),
+                SizedBox(
+                    height: charts, child: _ChartsRow(svc: svc, wide: true)),
+                const SizedBox(height: _kGapWide),
+                SizedBox(
+                    height: _kBottomStripH,
+                    child: _BottomSummaryStrip(svc: svc)),
+              ],
+            );
+          },
         ),
       );
     }
@@ -108,10 +167,14 @@ class _ChargingLogBar extends StatelessWidget {
     final active = svc.chargingLogActive;
     final rows = svc.chargingLogRowsWritten;
     final pass = svc.chargingBlockAvgPassSeconds;
+    // v0.2.14+213: карточка тратила около 72 dp полного размера на
+    // служебную функцию, и из-за неё высоты не хватало ни герой-ряду, ни
+    // графикам. Тот же смысл умещается в чип высотой 48 dp.
     return Card(
+      margin: EdgeInsets.zero,
       color: active ? Colors.green.shade900.withValues(alpha: 0.35) : null,
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
         child: Row(
           children: [
             Icon(
@@ -128,6 +191,8 @@ class _ChargingLogBar extends StatelessWidget {
                     active
                         ? S.of('chg.log.active')
                         : S.of('chg.log.idle'),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                     style: TextStyle(
                       fontSize: 13,
                       fontWeight: FontWeight.w600,
@@ -141,14 +206,18 @@ class _ChargingLogBar extends StatelessWidget {
                           .replaceFirst('{rows}', '$rows')
                           .replaceFirst(
                               '{pass}', pass?.toStringAsFixed(1) ?? '—'),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
-                          fontSize: 11, color: Colors.grey),
+                          fontSize: 13, color: Colors.grey),
                     )
                   else
                     Text(
                       S.of('chg.log.hint'),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
-                          fontSize: 11, color: Colors.grey),
+                          fontSize: 13, color: Colors.grey),
                     ),
                 ],
               ),
@@ -172,125 +241,98 @@ class _ChargingLogBar extends StatelessWidget {
 
 // ─────────────────────────── Top hero row ───────────────────────────
 
-class _TopHeroRow extends StatelessWidget {
-  final ConnectionService svc;
-  final bool wide;
-  const _TopHeroRow({required this.svc, required this.wide});
+/// Одна плитка герой-ряда с её долей ширины.
+typedef _HeroSlot = ({int flex, Widget child});
+
+/// Плитка герой-ряда: заголовок сверху, число в середине, подписи снизу.
+///
+/// v0.2.14+213. До этого патча фаза и ETA жили в `_PhaseEtaStack` — двух
+/// карточках, сложенных ВЕРТИКАЛЬНО внутри той же доли высоты, что одна
+/// карточка мощности. На замеренных 656 dp каждой доставалось около 90 dp
+/// при потребности примерно 120, и подписи уходили под границу карточки:
+/// на фото 24.08 срезаны строка под «анализ…» и строка под «ДО 100 %».
+///
+/// Здесь плитки стоят в ОДИН ряд, поэтому каждая получает полную высоту
+/// герой-ряда, а не половину. Дополнительно: выравнивание сверху вместо
+/// центрирования, каждая строка в одну строку с многоточием, шрифты не
+/// ниже 13 dp (ниже с водительского места не читается).
+class _HeroTile extends StatelessWidget {
+  final String caption;
+  final Color captionColor;
+  final String value;
+  final double valueSize;
+  final Color valueColor;
+  final String? unit;
+  final List<String> notes;
+  final Color? cardColor;
+  final Widget? extra;
+  const _HeroTile({
+    required this.caption,
+    required this.value,
+    required this.valueSize,
+    required this.valueColor,
+    this.captionColor = Colors.grey,
+    this.unit,
+    this.notes = const [],
+    this.cardColor,
+    this.extra,
+  });
 
   @override
   Widget build(BuildContext context) {
-    if (wide) {
-      return Row(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Expanded(flex: 3, child: _PowerHero(svc: svc, wide: true)),
-          const SizedBox(width: 16),
-          Expanded(flex: 2, child: _PhaseEtaStack(svc: svc)),
-        ],
-      );
-    }
-    // Narrow: hero and phase stack vertically; unbounded height inside
-    // the scroll view, so no Expanded here.
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        _PowerHero(svc: svc, wide: false),
-        const SizedBox(height: 12),
-        _PhaseEtaStack(svc: svc),
-      ],
-    );
-  }
-}
-
-class _PowerHero extends StatelessWidget {
-  final ConnectionService svc;
-  final bool wide;
-  const _PowerHero({required this.svc, this.wide = true});
-
-  @override
-  Widget build(BuildContext context) {
-    // v0.2.11+210: на ГУ OBD-мощность вечно 0 — экран показывал «—» при
-    // живых -195 А в базе. Цепочка: OBD -> |V*I| HAL -> наклон
-    // энергосчётчика (AC-фолбэк +145, честное «примерно» — это DC-сторона,
-    // ~15-20 % ниже розетки).
-    final hal = context.watch<HalTelemetryService>();
-    final kwObd = svc.chargingPowerKw;
-    // v0.2.12+211: halChargePowerKw может вернуть 0.0 — ток в моменте ноль
-    // при активной зарядке. Ноль это «нет данных», а не «известный ноль»:
-    // иначе он гасил запасной путь по наклону и экран мигал «—» вместо
-    // «≈X». Чистим до null на нуле; строка выбора ниже остаётся прежней.
-    final kwHalRaw = hal.halChargePowerKw;
-    final kwHal = (kwHalRaw != null && kwHalRaw > 0) ? kwHalRaw : null;
-    final kwSlope = (kwObd > 0 || kwHal != null)
-        ? null
-        : hal.halEnergySlopePowerKw;
-    final kw = kwObd > 0 ? kwObd : (kwHal ?? kwSlope ?? 0);
-    final approx = kwSlope != null;
-    final hv = svc.hvBusV ??
-        hal.halValue('pack_voltage_fine') ??
-        hal.halValue('pack_voltage');
-    // v0.1.26+17: power getter now returns 0 during the first ~7 min
-    // of an AC session because precise SOC quantises in ~0.1% steps —
-    // we wait for at least 3 quanta of growth before reporting a kW
-    // figure to avoid the 4.4 kW phantom we saw at 2.4 kW real input.
-    // Tell the user that explicitly when kW==0 but isCharging==true,
-    // otherwise the big "—" looks broken.
-    final isCalibrating =
-        kw == 0 && (svc.isCharging || hal.halChargingActive);
     return Card(
-      color: Colors.amber.shade900.withValues(alpha: 0.12),
+      color: cardColor,
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Text(S.of('chg.power_hdr'),
-                style: const TextStyle(
-                    fontSize: 12,
+            Text(caption,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                    fontSize: 14,
                     letterSpacing: 2,
-                    color: Colors.amberAccent,
+                    color: captionColor,
                     fontWeight: FontWeight.w500)),
-            const SizedBox(height: 8),
+            const Spacer(),
             Row(
               crossAxisAlignment: CrossAxisAlignment.baseline,
               textBaseline: TextBaseline.alphabetic,
               children: [
-                Text(
-                  kw > 0
-                      ? '${approx ? '≈' : ''}${kw.toStringAsFixed(1)}'
-                      : '—',
-                  style: TextStyle(
-                    // v0.1.29+56: 120 on wide (BZ5), 72 on narrow (BZ3
-                    // portrait 720 dp / phone) — 120 would eat half the
-                    // viewport height there.
-                    fontSize: wide ? 120 : 72,
-                    height: 1,
-                    fontWeight: FontWeight.w300,
-                    color: kw > 0 ? Colors.amberAccent : Colors.grey,
-                    fontFeatures: const [FontFeature.tabularFigures()],
-                  ),
+                Flexible(
+                  child: Text(value,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: valueSize,
+                        height: 1,
+                        fontWeight: FontWeight.w300,
+                        color: valueColor,
+                        fontFeatures: const [FontFeature.tabularFigures()],
+                      )),
                 ),
-                const SizedBox(width: 12),
-                const Text('kW',
-                    style: TextStyle(
-                        fontSize: 28,
-                        color: Colors.amberAccent,
-                        fontWeight: FontWeight.w300)),
+                if (unit != null) ...[
+                  const SizedBox(width: 8),
+                  Text(unit!,
+                      maxLines: 1,
+                      style: TextStyle(
+                          fontSize: 22,
+                          color: valueColor,
+                          fontWeight: FontWeight.w300)),
+                ],
               ],
             ),
-            const SizedBox(height: 8),
-            Text(
-              hv != null ? 'HV bus ${hv.toStringAsFixed(1)} V' : 'HV bus —',
-              style: TextStyle(fontSize: 14, color: Colors.grey.shade400),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              isCalibrating
-                  ? S.of('chg.calc_note')
-                  : S.of('chg.power_formula'),
-              style: TextStyle(fontSize: 10, color: Colors.grey.shade600),
-            ),
+            if (extra != null) ...[
+              const SizedBox(height: 8),
+              extra!,
+            ],
+            const Spacer(),
+            for (final n in notes)
+              Text(n,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 13, color: Colors.grey.shade400)),
           ],
         ),
       ),
@@ -298,25 +340,58 @@ class _PowerHero extends StatelessWidget {
   }
 }
 
-class _PhaseEtaStack extends StatelessWidget {
+class _TopHeroRow extends StatelessWidget {
   final ConnectionService svc;
-  const _PhaseEtaStack({required this.svc});
+  final bool wide;
+  const _TopHeroRow({required this.svc, required this.wide});
 
   @override
   Widget build(BuildContext context) {
-    final phase = svc.chargingPhase;
-    // +210: без донгла ETA считает HAL по средней скорости роста SOC.
-    final etaSec = svc.etaToFullSeconds;
-    // v0.1.32+131: user-selected SOC source (display / precise).
     final hal = context.watch<HalTelemetryService>();
-    final soc = resolveUiSocPct(hal, svc) ?? svc.readNumeric('790', '0005');
-    final gain =
-        svc.socGainedThisChargingSessionPct ?? hal.halChargeSessionSocDeltaPct;
-    final etaEff = etaSec ?? hal.halEtaToFullSeconds;
+    final slots = _slots(context, hal);
+    if (wide) {
+      return Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          for (var i = 0; i < slots.length; i++) ...[
+            if (i > 0) const SizedBox(width: _kGapWide),
+            Expanded(flex: slots[i].flex, child: slots[i].child),
+          ],
+        ],
+      );
+    }
+    // Узкая ветка (BZ3 720 dp / телефон): плитки одна под другой, высота
+    // явная — прокрутка не даёт границы, а `Spacer` внутри плитки её
+    // требует. Тот же приём, что у графиков ниже.
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        for (var i = 0; i < slots.length; i++) ...[
+          if (i > 0) const SizedBox(height: 12),
+          SizedBox(height: _kHeroTileNarrowH, child: slots[i].child),
+        ],
+      ],
+    );
+  }
 
+  List<_HeroSlot> _slots(BuildContext context, HalTelemetryService hal) {
+    // v0.2.14+213: цепочка выбора мощности переехала в
+    // `resolveChargePowerKw` — баннеру и фазе нужна ТА ЖЕ мощность, и три
+    // копии одной цепочки дали бы три разных ответа на один вопрос.
+    final power = resolveChargePowerKw(hal, svc);
+    final kw = power.kw;
+    final hv = svc.hvBusV ??
+        hal.halValue('pack_voltage_fine') ??
+        hal.halValue('pack_voltage');
+    // v0.1.26+17: мощность держит 0 первые ~7 минут AC-сессии — точный SOC
+    // растёт шагами по 0.1 %, и до трёх шагов роста числу верить нельзя.
+    // Большое «—» без объяснения выглядит поломкой, поэтому подпись меняем.
+    final isCalibrating = kw == 0 && (svc.isCharging || hal.halChargingActive);
+
+    final phase = resolveChargingPhase(hal, svc);
     final phaseLabel = switch (phase) {
       ChargingPhase.unknown => S.of('chg.analyzing'),
-      ChargingPhase.cc => 'CC phase',
+      ChargingPhase.cc => S.of('chg.cc_phase'),
       ChargingPhase.cv => S.of('chg.cv_phase'),
       ChargingPhase.almostDone => S.of('chg.almost_done'),
     };
@@ -327,82 +402,96 @@ class _PhaseEtaStack extends StatelessWidget {
       ChargingPhase.almostDone => Colors.lightBlueAccent,
     };
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Expanded(
-          child: Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Text(S.of('chg.phase'),
-                      style: const TextStyle(
-                          fontSize: 11, letterSpacing: 2, color: Colors.grey)),
-                  const SizedBox(height: 8),
-                  Text(phaseLabel,
-                      style: TextStyle(
-                          fontSize: 26,
-                          fontWeight: FontWeight.w400,
-                          color: phaseColor)),
-                  const SizedBox(height: 8),
-                  Text(
-                    soc != null
-                        // v0.1.32+131: integral (display mode) → "80";
-                        // fractional keeps the historical two decimals.
-                        ? 'SOC ${formatSocPct(soc, maxDecimals: soc < 100 ? 2 : 1)}%'
-                        : 'SOC —',
-                    style: const TextStyle(fontSize: 14, color: Colors.grey),
-                  ),
-                  if (gain != null)
-                    Text(
-                      S
-                          .of('chg.gain_since')
-                          .replaceFirst('{n}', gain.toStringAsFixed(2)),
-                      style: TextStyle(
-                          fontSize: 11, color: Colors.greenAccent.shade400),
-                    ),
-                ],
+    final soc = resolveUiSocPct(hal, svc) ?? svc.readNumeric('790', '0005');
+    final gain =
+        svc.socGainedThisChargingSessionPct ?? hal.halChargeSessionSocDeltaPct;
+    final etaEff = svc.etaToFullSeconds ?? hal.halEtaToFullSeconds;
+    final startSoc =
+        svc.chargingSessionStartSocPct ?? hal.halChargeSessionStartSoc;
+
+    final phaseNotes = <String>[
+      if (gain != null)
+        S.of('chg.gain_since').replaceFirst('{n}', gain.toStringAsFixed(2)),
+    ];
+
+    return [
+      (
+        flex: 34,
+        child: _HeroTile(
+          caption: S.of('chg.power_hdr'),
+          captionColor: Colors.amberAccent,
+          cardColor: Colors.amber.shade900.withValues(alpha: 0.12),
+          value: kw > 0
+              ? '${power.approx ? '≈' : ''}${kw.toStringAsFixed(1)}'
+              : '—',
+          // Макет просил 112 dp, но в плитку высотой около 168 dp при
+          // отступах, заголовке и подписях столько не влезает — остаётся
+          // примерно 80. Берём 76: число всё равно самое крупное на
+          // экране, вторые по величине идут 32.
+          valueSize: wide ? 76 : 64,
+          valueColor: kw > 0 ? Colors.amberAccent : Colors.grey,
+          unit: 'kW',
+          notes: [
+            hv != null ? 'HV bus ${hv.toStringAsFixed(1)} V' : 'HV bus —',
+            isCalibrating
+                ? S.of('chg.calc_note')
+                : S.of('chg.power_formula'),
+          ],
+        ),
+      ),
+      (
+        flex: 22,
+        child: _HeroTile(
+          caption: S.of('chg.phase'),
+          value: phaseLabel,
+          valueSize: 30,
+          valueColor: phaseColor,
+          notes: phaseNotes,
+        ),
+      ),
+      (
+        flex: 22,
+        child: _HeroTile(
+          caption: S.of('chg.eta100'),
+          value: etaEff == null ? '— : —' : _formatEta(etaEff),
+          valueSize: 30,
+          valueColor: Colors.lightBlueAccent,
+          notes: [
+            etaEff == null ? S.of('chg.need5') : S.of('chg.eta_note'),
+          ],
+        ),
+      ),
+      // ЧЕСТНОСТЬ: плитка заряда существует только когда SOC реально идёт.
+      // Пустая рамка с прочерком обещала бы данные, которых нет.
+      if (soc != null)
+        (
+          flex: 22,
+          child: _HeroTile(
+            caption: S.of('chg.charge_hdr'),
+            value: formatSocPct(soc, maxDecimals: soc < 100 ? 1 : 0),
+            valueSize: 30,
+            valueColor: Colors.white,
+            unit: '%',
+            extra: ClipRRect(
+              borderRadius: BorderRadius.circular(3),
+              child: LinearProgressIndicator(
+                value: (soc / 100).clamp(0.0, 1.0),
+                minHeight: 6,
+                backgroundColor: Colors.white24,
+                valueColor:
+                    const AlwaysStoppedAnimation<Color>(Colors.lightBlueAccent),
               ),
             ),
+            notes: [
+              startSoc != null
+                  ? S
+                      .of('chg.soc_start')
+                      .replaceFirst('{n}', startSoc.toStringAsFixed(1))
+                  : S.of('chg.soc_target'),
+            ],
           ),
         ),
-        const SizedBox(height: 12),
-        Expanded(
-          child: Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Text(S.of('chg.eta100'),
-                      style: const TextStyle(
-                          fontSize: 11, letterSpacing: 2, color: Colors.grey)),
-                  const SizedBox(height: 8),
-                  Text(
-                    etaEff == null ? '— : —' : _formatEta(etaEff),
-                    style: const TextStyle(
-                        fontSize: 32,
-                        fontWeight: FontWeight.w400,
-                        color: Colors.lightBlueAccent),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    etaEff == null
-                        ? S.of('chg.need5')
-                        : S.of('chg.eta_note'),
-                    style: TextStyle(fontSize: 10, color: Colors.grey.shade500),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      ],
-    );
+    ];
   }
 
   static String _formatEta(int seconds) {
@@ -495,29 +584,53 @@ class _ChartCard extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
                 style: const TextStyle(
-                    fontSize: 11, letterSpacing: 2, color: Colors.grey)),
+                    fontSize: 14, letterSpacing: 2, color: Colors.grey)),
             const SizedBox(height: 2),
-            Text(subtitle,
-                style:
-                    TextStyle(fontSize: 10, color: Colors.grey.shade600)),
+            // v0.2.14+213: строка «накопление… (1 сэмплов)» рисовалась по
+            // центру пустого графика и читалась как оторванный текст поверх
+            // соседней карточки (фото 24.08). Её место — подзаголовок: она
+            // отвечает на вопрос «почему пусто» ровно там, где обычно стоит
+            // объяснение оси, и исчезает сама, когда график ожил.
+            Text(
+                sampleCount < 2
+                    ? S
+                        .of('chg.collecting_sub')
+                        .replaceFirst('{n}', '$sampleCount')
+                    : subtitle,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: 13, color: Colors.grey.shade600)),
             const SizedBox(height: 8),
             Expanded(
-              child: sampleCount < 2
-                  ? Center(
-                      child: Text(
-                          S
-                              .of('chg.collecting')
-                              .replaceFirst('{n}', '$sampleCount'),
-                          style: TextStyle(
-                              fontSize: 12,
-                              color: Colors.grey.shade600)),
-                    )
-                  : chartBuilder(),
+              child:
+                  sampleCount < 2 ? const _EmptyChartGrid() : chartBuilder(),
             ),
           ],
         ),
       ),
+    );
+  }
+}
+
+/// Приглушённая сетка на месте графика, пока точек меньше двух.
+///
+/// v0.2.14+213. Пустая карточка выглядела сломанной, а центрированный текст
+/// поверх неё — оторванным. Сетка сообщает «место занято, данные будут»,
+/// ничего не обещая о значениях.
+class _EmptyChartGrid extends StatelessWidget {
+  const _EmptyChartGrid();
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+      children: [
+        for (var i = 0; i < 4; i++)
+          Container(height: 1, color: Colors.white.withValues(alpha: 0.05)),
+      ],
     );
   }
 }
@@ -549,9 +662,25 @@ class _PowerChart extends StatelessWidget {
         LineChartData(
           minY: 0,
           maxY: maxKw * 1.1 + 1,
-          gridData: const FlGridData(show: false),
+          // v0.2.14+213: горизонтальная сетка и рамка слева-снизу — без них
+          // значение не привязано ни к чему. Вертикальные линии не рисуем:
+          // ось времени и так подписана снизу.
+          gridData: FlGridData(
+            show: true,
+            drawVerticalLine: false,
+            getDrawingHorizontalLine: (_) => FlLine(
+                color: Colors.white.withValues(alpha: 0.05), strokeWidth: 1),
+          ),
           titlesData: _axisTitles(unit: ''),
-          borderData: FlBorderData(show: false),
+          borderData: FlBorderData(
+            show: true,
+            border: Border(
+              left: BorderSide(
+                  color: Colors.white.withValues(alpha: 0.10), width: 1),
+              bottom: BorderSide(
+                  color: Colors.white.withValues(alpha: 0.10), width: 1),
+            ),
+          ),
           lineBarsData: [
             LineChartBarData(
               spots: spots,
@@ -609,9 +738,25 @@ class _CellVChart extends StatelessWidget {
         LineChartData(
           minY: lo - pad,
           maxY: hi + pad,
-          gridData: const FlGridData(show: false),
+          // v0.2.14+213: горизонтальная сетка и рамка слева-снизу — без них
+          // значение не привязано ни к чему. Вертикальные линии не рисуем:
+          // ось времени и так подписана снизу.
+          gridData: FlGridData(
+            show: true,
+            drawVerticalLine: false,
+            getDrawingHorizontalLine: (_) => FlLine(
+                color: Colors.white.withValues(alpha: 0.05), strokeWidth: 1),
+          ),
           titlesData: _axisTitles(unit: ''),
-          borderData: FlBorderData(show: false),
+          borderData: FlBorderData(
+            show: true,
+            border: Border(
+              left: BorderSide(
+                  color: Colors.white.withValues(alpha: 0.10), width: 1),
+              bottom: BorderSide(
+                  color: Colors.white.withValues(alpha: 0.10), width: 1),
+            ),
+          ),
           lineBarsData: [
             LineChartBarData(
               spots: minSpots,
@@ -670,9 +815,25 @@ class _TempChart extends StatelessWidget {
         LineChartData(
           minY: lo - pad,
           maxY: hi + pad,
-          gridData: const FlGridData(show: false),
+          // v0.2.14+213: горизонтальная сетка и рамка слева-снизу — без них
+          // значение не привязано ни к чему. Вертикальные линии не рисуем:
+          // ось времени и так подписана снизу.
+          gridData: FlGridData(
+            show: true,
+            drawVerticalLine: false,
+            getDrawingHorizontalLine: (_) => FlLine(
+                color: Colors.white.withValues(alpha: 0.05), strokeWidth: 1),
+          ),
           titlesData: _axisTitles(unit: ''),
-          borderData: FlBorderData(show: false),
+          borderData: FlBorderData(
+            show: true,
+            border: Border(
+              left: BorderSide(
+                  color: Colors.white.withValues(alpha: 0.10), width: 1),
+              bottom: BorderSide(
+                  color: Colors.white.withValues(alpha: 0.10), width: 1),
+            ),
+          ),
           lineBarsData: [
             LineChartBarData(
               spots: spots,
@@ -697,23 +858,31 @@ FlTitlesData _axisTitles({required String unit}) {
     rightTitles:
         const AxisTitles(sideTitles: SideTitles(showTitles: false)),
     topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+    // v0.2.14+213: место под метку было 38 dp при шрифте 10. Четырёхзначные
+    // милливольты (3285, 3290) в него не влезали и лезли в поле данных — на
+    // фото 24.08 ось наехала на линии. Сетки не было вовсе, поэтому
+    // непонятно, к какому уровню относится значение. 54 dp при шрифте 13:
+    // ниже 13 dp с водительского места не читается.
     leftTitles: AxisTitles(
       sideTitles: SideTitles(
         showTitles: true,
-        reservedSize: 38,
+        reservedSize: 54,
         getTitlesWidget: (v, _) => Text(
           v.toStringAsFixed(v.abs() < 10 ? 1 : 0),
-          style: const TextStyle(fontSize: 10, color: Colors.grey),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(fontSize: 13, color: Colors.grey),
         ),
       ),
     ),
     bottomTitles: AxisTitles(
       sideTitles: SideTitles(
         showTitles: true,
-        reservedSize: 16,
+        reservedSize: 24,
         getTitlesWidget: (v, _) => Text(
           v.toStringAsFixed(0),
-          style: const TextStyle(fontSize: 9, color: Colors.grey),
+          maxLines: 1,
+          style: const TextStyle(fontSize: 13, color: Colors.grey),
         ),
       ),
     ),
@@ -853,18 +1022,29 @@ class _Metric extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        // v0.2.14+213: подписи были 10 и 9 dp — с водительского места
+        // нечитаемы, и обрезались первыми. Мерка теперь по самой длинной
+        // подписи «с запуска приложения» из +212, а не по короткой
+        // «с момента подключения»: она длиннее и вылезает при рестарте
+        // посреди зарядки, то есть реже и оттого незаметнее.
         Text(label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
             style: const TextStyle(
-                fontSize: 10, letterSpacing: 1.5, color: Colors.grey)),
+                fontSize: 13, letterSpacing: 1.5, color: Colors.grey)),
         const SizedBox(height: 4),
         Text(value,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
             style: const TextStyle(
-                fontSize: 20,
+                fontSize: 22,
                 fontWeight: FontWeight.w400,
                 fontFeatures: [FontFeature.tabularFigures()])),
         const SizedBox(height: 2),
         Text(hint,
-            style: TextStyle(fontSize: 9, color: Colors.grey.shade600)),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(fontSize: 13, color: Colors.grey.shade600)),
       ],
     );
   }

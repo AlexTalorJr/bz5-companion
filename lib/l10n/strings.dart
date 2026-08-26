@@ -1256,6 +1256,12 @@ class S {
     'chg.charged': 'CHARGED',
     'chg.soc_gain': 'SOC GAIN',
     'chg.since_plugin': 'since plug-in',
+    // v0.2.14+213: charging-screen redesign strings.
+    'chg.cc_phase': 'CC phase',
+    'chg.charge_hdr': 'CHARGE',
+    'chg.soc_start': 'start {n} %',
+    'chg.soc_target': 'target 100 %',
+    'chg.collecting_sub': 'collecting data · {n} of 2 samples',
     // v0.2.13+212: shown instead of 'since plug-in' when the session anchor
     // did NOT coincide with a real plug-in (app started or restarted while
     // the car was already charging). The sums are real, their start is not.
@@ -2521,6 +2527,12 @@ class S {
     'chg.charged': 'ЗАРЯЖЕНО',
     'chg.soc_gain': 'ПРИРОСТ SOC',
     'chg.since_plugin': 'с момента подключения',
+    // v0.2.14+213: строки редизайна экрана зарядки.
+    'chg.cc_phase': 'CC фаза',
+    'chg.charge_hdr': 'ЗАРЯД',
+    'chg.soc_start': 'старт {n} %',
+    'chg.soc_target': 'цель 100 %',
+    'chg.collecting_sub': 'сбор данных · {n} из 2 сэмплов',
     // v0.2.13+212: ставится вместо «с момента подключения», когда якорь
     // сессии не совпал с втычкой (приложение поднялось или перезапустилось
     // уже на зарядке). Цифры настоящие, а вот их начало — нет.

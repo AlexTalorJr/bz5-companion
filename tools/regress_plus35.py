@@ -2639,25 +2639,42 @@ if int(pv) >= 56:
     cvw = open("lib/screens/wide/charging_view_wide.dart").read()
     adaptive_bits = [
         "SingleChildScrollView",          # narrow root scrolls
-        "wide ? 120 : 72",                # hero font shrinks
+        # v0.2.14+213: игла была дословной «wide ? 120 : 72». +213 сменил
+        # числа на 76/64 (в плитку высотой ~168 dp при замеренных 656 dp
+        # герой 120 не влезает), и U11 покраснел, ничего не сломав. Предмет
+        # U11 — «на узкой ветке герой МЕНЬШЕ, чем на широкой», а не
+        # конкретные кегли. Шаблон: перенастройка проходит, снос ветки
+        # красит.
+        None,  # заменено шаблоном ниже
         "SizedBox(height: 240",           # charts get explicit height
         "_ChartsRow(svc: svc, wide: false)",  # column branch wired
         ": Wrap(",                        # summary metrics reflow
     ]
-    missing = [b for b in adaptive_bits if b not in cvw]
+    missing = [b for b in adaptive_bits if b is not None and b not in cvw]
+    if re.search(r'wide \? \d+ : \d+', cvw) is None:
+        missing.append('hero font wide/narrow split')
     if not missing:
         ok("U11 ChargingViewWide adaptive for BZ3/narrow (scroll+stack+font+wrap)")
     else:
         fail(f"U11 charging view not narrow-safe, missing: {missing}")
 
-    # U12. Wide branch preserved 1:1 — BZ5 keeps the original flex
-    #      layout (three charts side-by-side in a Row, hero at 120).
+    # U12. ПРЕДМЕТ ЗАМЕНЁН СОЗНАТЕЛЬНО. v0.2.14+213.
+    #
+    # Старый предмет: «широкая ветка сохранена один к одному, flex 4/5 на
+    # месте, герой 120». Именно это владелец и попросил изменить: flex
+    # делил ПРОПОРЦИЮ неизвестной высоты, из-за чего фаза и ETA получали
+    # ~90 dp при потребности ~120 и обрезались (фото 24.08). Держать такую
+    # иглу дальше значило бы охранять поломку.
+    #
+    # Новый предмет: широкая ветка по-прежнему ставит три графика в ряд, а
+    # высоты берёт из ЗАМЕРЕННЫХ ограничений, а не из выдуманной пропорции.
     if "_ChartsRow(svc: svc, wide: true)" in cvw and \
        "Expanded(child: _PowerChart(history: hist))" in cvw and \
-       "Expanded(flex: 4, child: _TopHeroRow(svc: svc, wide: true))" in cvw:
-        ok("U12 BZ5 wide charging layout preserved (flex rows intact)")
+       "LayoutBuilder(" in cvw and \
+       "SizedBox(\n                    height: hero" in cvw:
+        ok("U12 BZ5 wide charging layout sizes from measured constraints")
     else:
-        fail("U12 wide charging layout damaged by the adaptive refactor")
+        fail("U12 wide charging layout lost its measured-height sizing")
 
 else:
     ok(f"Part U skipped (build +{pv}, navigation cleanup lands in +56)")
@@ -11830,8 +11847,15 @@ if int(pv) >= 210:
     # Урок мутаций +210 (BLIND с первого прогона): держать надо ЦЕПЬ,
     # а не имена — имена геттеров переживают отрезание цепочки в мёртвых
     # переменных. Игла — само выражение выбора.
+    # v0.2.14+213: цепочка мощности уехала из экрана в
+    # `resolveChargePowerKw` — её ждали баннер и фаза, а три копии одной
+    # цепочки дали бы три ответа на один вопрос. Предмет CM1 не изменился
+    # («экран питается HAL-топливом»), сменился только адрес цепочки.
+    _cm_res = _strip_comments_safe(
+        (root / 'lib/services/soc_resolver.dart').read_text())
     _cm1_bits = [
-        'kwObd > 0 ? kwObd : (kwHal ?? kwSlope ?? 0)' in _cm_view,
+        'kwObd > 0 ? kwObd : (kwHal ?? kwSlope ?? 0)' in _cm_res
+        and 'resolveChargePowerKw(hal, svc)' in _cm_view,
         'halChargingHistory' in _cm_view,
         'halChargedThisSessionKwh' in _cm_view
         and 'halChargeSessionStartedAt' in _cm_view,
@@ -11891,8 +11915,11 @@ if int(pv) >= 211:
     # Урок CM (Notion, окно №20): держать надо ЦЕПЬ, а не присутствие
     # имён. Строка выбора kw ниже намеренно осталась прежней, её держит
     # CM1 — здесь стережём именно ворот 0.0.
+    # v0.2.14+213: ворот переехал вместе с цепочкой в
+    # `resolveChargePowerKw`. Предмет тот же — живой 0.0 чистится до null,
+    # иначе он гасит запасной путь по наклону; сменился только файл.
     _cn_view = _strip_comments_safe(
-        (root / 'lib/screens/wide/charging_view_wide.dart').read_text())
+        (root / 'lib/services/soc_resolver.dart').read_text())
     if '(kwHalRaw != null && kwHalRaw > 0) ? kwHalRaw : null' in _cn_view:
         ok('CN1 power hero cleans a live 0.0 to null so slope survives')
     else:
@@ -11962,6 +11989,98 @@ if int(pv) >= 212:
         fail(f'CO2 sticky dongle tiles broken: {_co2_bits}')
 else:
     ok(f"Part CO skipped (build +{pv}, the owner's 2.4/2.6 calls land in +212)")
+
+# ═══════ Part CP — 0.2.14+213: мёртвые пути и замеренный холст ═══════
+if int(pv) >= 213:
+    _cp_view = _strip_comments_safe(
+        (root / 'lib/screens/wide/charging_view_wide.dart').read_text())
+    _cp_res = _strip_comments_safe(
+        (root / 'lib/services/soc_resolver.dart').read_text())
+    _cp_ban = _strip_comments_safe(
+        (root / 'lib/widgets/charging_banner.dart').read_text())
+    _cp_resp = (root / 'lib/widgets/responsive.dart').read_text()
+    _cp_l10n = (root / 'lib/l10n/strings.dart').read_text()
+
+    # CP1: БАННЕР БОЛЬШЕ НЕ ЧИТАЕТ ДОНГЛ. Поле 24.08: «Зарядка · запуск…»
+    # при живых 2.5 kW и 40.2 % на том же экране. Все три слагаемых брались
+    # у `svc`, список оставался пустым, включалась запасная надпись —
+    # навсегда. Держим ЦЕПЬ: определители подключены И мёртвый вызов ушёл.
+    # Без второй половины можно дописать HAL рядом, оставив OBD первым, и
+    # баннер снова замолчит на голове.
+    _cp1_bits = [
+        'resolveChargePowerKw(hal, svc)' in _cp_ban,
+        'resolveUiSocPct(hal, svc)' in _cp_ban,
+        'hal.halEtaToFullSeconds' in _cp_ban,
+        "svc.readNumeric('790', '0005')" not in _cp_ban,
+    ]
+    if all(_cp1_bits):
+        ok('CP1 charging banner speaks from live sources, not the dead dongle path')
+    else:
+        fail(f'CP1 banner still leans on the dongle-only path: {_cp1_bits}')
+
+    # CP2: ФАЗА ЖИВЁТ НА ЛЮБОМ ИСТОЧНИКЕ. Прежний `svc.chargingPhase` требовал
+    # историю UDS-опроса и мощность через донгл — на голове оба условия
+    # невыполнимы, то есть «анализ…» был не задержкой, а тупиком. Держим:
+    # правило вынесено, экран его зовёт, внутри есть HAL-история и
+    # HAL-максимум ячейки.
+    _cp2_bits = [
+        'ChargingPhase resolveChargingPhase(' in _cp_res,
+        # Мутация «отрезать HAL-историю от пика» прошла мимо имени
+        # геттера: ссылка на него оставалась в присваивании, а цикл был
+        # выпотрошен. Тот же урок, что поймал CM в окне №20 — держать надо
+        # ЦЕПЬ. Игла теперь на самом обходе истории.
+        'hal.halChargingHistory' in _cp_res
+        and 'for (final p in halHist) {' in _cp_res,
+        'hal.halCellVHighest' in _cp_res,
+        'resolveChargingPhase(hal, svc)' in _cp_view,
+        'svc.chargingPhase' not in _cp_view,
+    ]
+    if all(_cp2_bits):
+        ok('CP2 charging phase resolves from whichever source is actually alive')
+    else:
+        fail(f'CP2 phase still pinned to the dongle-only path: {_cp2_bits}')
+
+    # CP3: ВЫСОТЫ ИЗ ЗАМЕРА, КАНОН ИСПРАВЛЕН. Присланный макет считал от
+    # 800 dp и дал сумму 782; замер 26.08 — 656 dp, то есть перелёт на 126
+    # и обрезанный низ. Держим: расчёт от ограничений, нижние пороги на
+    # месте, и в каноне больше нет старого числа. Последняя игла —
+    # отрицательная: пока 2175 x 1224 лежит в `responsive.dart`, следующий
+    # читатель снова посчитает от него.
+    _cp3_bits = [
+        'LayoutBuilder(' in _cp_view,
+        'box.maxHeight - chip - gaps - _kBottomStripH' in _cp_view,
+        '.clamp(_kHeroMinH, free - _kChartsMinH)' in _cp_view,
+        '1280' in _cp_resp and '656' in _cp_resp,
+        # Игла ловит форму ОБЪЯВЛЕНИЯ, а не любое упоминание: в пояснении
+        # старое число названо намеренно — иначе следующий читатель не
+        # поймёт, почему канон сменился. Запрещено объявлять его снова.
+        'BZ5): 2175' not in _cp_resp,
+    ]
+    if all(_cp3_bits):
+        ok('CP3 wide heights come from the measured canvas, canon no longer lies')
+    else:
+        fail(f'CP3 measured-canvas sizing broken: {_cp3_bits}')
+
+    # CP4: ТЕКСТ НЕ ОБРЕЗАЕТСЯ И ЧИТАЕТСЯ. Фото 24.08: подписи под «анализ…»
+    # и под «ДО 100 %» срезаны, ось наехала на линии. Держим три причины
+    # сразу: плитка обрезает многоточием, ось получила место и кегль,
+    # пустое состояние ушло в подзаголовок вместо текста поверх карточки.
+    # Мерка — самая длинная подпись из +212, иначе поплывёт реже и
+    # незаметнее.
+    _cp4_bits = [
+        'overflow: TextOverflow.ellipsis' in _cp_view,
+        'reservedSize: 54' in _cp_view,
+        'fontSize: 13, color: Colors.grey)' in _cp_view,
+        "'chg.collecting_sub'" in _cp_view,
+        _cp_l10n.count("'chg.collecting_sub':") == 2,
+        "'chg.since_app_launch'" in _cp_view,
+    ]
+    if all(_cp4_bits):
+        ok('CP4 charging text clips with ellipsis and axes have room to breathe')
+    else:
+        fail(f'CP4 overflow protection incomplete: {_cp4_bits}')
+else:
+    ok(f"Part CP skipped (build +{pv}, the dead paths and measured canvas land in +213)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
