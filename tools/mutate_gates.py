@@ -116,6 +116,7 @@ CDO = ('android/app/src/main/kotlin/com/bz5companion/'
        'bz5_companion/hal/CompanionDecoderOverrides.kt')
 CB = 'lib/widgets/charging_banner.dart'
 SR = 'lib/services/soc_resolver.dart'
+HTS = 'lib/services/hal_telemetry_service.dart'
 RSP = 'lib/widgets/responsive.dart'
 ST_ = 'lib/screens/status.dart'
 DVT = 'lib/screens/driver_view_tall.dart'
@@ -1865,6 +1866,35 @@ MUTATIONS = [
      '        reservedSize: 54,',
      '        reservedSize: 38,',
      'вернуть тесную ось — метки милливольт снова лезут на линии'),
+
+    # CQ1 — событийный ток и видимое удержание, +214.
+    ('CQ1', HTS,
+     "    'pack_current',\n  };",
+     '  };',
+     'вернуть току срок годности 90 с — на AC мощность снова гаснет между '
+     'редкими событиями'),
+
+    ('CQ1', CW,
+     '            if (!power.approx && hal.halPackCurrentHeld)',
+     '            if (false)',
+     'спрятать признак удержания — минутной давности ток выглядит свежим'),
+
+    # CQ2 — фаза судит по заряду, а не по мощности, +214.
+    ('CQ2', SR,
+     '  if (soc != null && soc >= 95) {',
+     '  if ((soc != null && soc >= 95) || (powerKw > 0 && powerKw < 3.0)) {',
+     'вернуть порог по мощности — «Почти готово» снова при 17 % на AC'),
+
+    # CQ3 — шаг меток и честная подпись, +214.
+    ('CQ3', CW,
+     '        interval: (maxY - minY) <= 0 ? null : (maxY - minY) / 4,',
+     '        interval: null,',
+     'снять шаг меток — подписи осей снова дублируются и налезают'),
+
+    ('CQ3', L10,
+     "    'chg.power_formula': 'Среднее по росту заряда · окно 5 мин',",
+     "    'chg.power_formula':\n        'Средняя мощность по росту заряда за время (окно до 10 минут)',",
+     'вернуть подпись, обещающую окно 10 минут при константе 5'),
 ]
 
 

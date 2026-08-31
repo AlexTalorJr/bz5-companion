@@ -326,6 +326,24 @@ class HalTelemetryService extends ChangeNotifier
     // того, что следующий кадр задержался. Прежняя запись в
     // _continuousWindow (30 с) убрана — она противоречила этой.
     'insulation_resistance',
+    // ── v0.2.15+214: ток пака событийный, и это доказано полем ──
+    //
+    // AC-сессия 28.08 21:16-21:23 (экспорт 31.08): ток пришёл ТРИ раза за
+    // семь минут — −6.0 A, −6.5 A, −6.6 A, разрывы 221 и 121 секунда.
+    // Окно _coreHold = 90 с короче обоих, поэтому `_useHal('pack_current')`
+    // возвращал false, `halPowerKw` отдавал null, и экран падал на
+    // заниженную оценку по счётчику: на фото 2.9 kW без знака в 21:16,
+    // дальше ≈1.7 до конца сессии.
+    //
+    // Причина редкости — не смерть потока, а природа сигнала: на AC ток
+    // около −6 A и почти не меняется, событиям неоткуда взяться. У разведки
+    // на DC −190 A с колебаниями, события идут часто, разрывы короткие.
+    // Одно поведение при разной величине тока.
+    //
+    // Возраст значения теперь виден наружу через [halPackCurrentHeld] —
+    // бессрочное удержание без такого признака показывало бы минутной
+    // давности число как сегодняшнее.
+    'pack_current',
   };
 
   // Range guards per name — same role as the 0..220 speed guard from the
@@ -1278,12 +1296,45 @@ class HalTelemetryService extends ChangeNotifier
   //    sign semantics of instantPowerKw carry over unchanged. ──
 
   double? get halPowerKw {
-    if (!_useHal('pack_current') || !_useHal('pack_voltage')) return null;
+    if (!_useHal('pack_current')) return null;
     final i = halValue('pack_current');
-    final v = halValue('pack_voltage');
-    if (i == null || v == null) return null;
+    if (i == null) return null;
+    // v0.2.15+214: напряжение берём ТОЧНОЕ. На той же AC-сессии грубый
+    // pack_voltage дал 56 точек с разрывом до 199 с, а pack_voltage_fine —
+    // 206 точек с разрывом 38 с. Требовать грубый канал свежим значило
+    // держать второе узкое место после тока. Грубый остаётся запасным: тот
+    // же физический сигнал, только реже.
+    final v = _useHal('pack_voltage_fine')
+        ? halValue('pack_voltage_fine')
+        : (_useHal('pack_voltage') ? halValue('pack_voltage') : null);
+    if (v == null) return null;
     return v * i / 1000.0;
   }
+
+  /// v0.2.15+214: сколько секунд назад пришёл ток пака. null — не приходил.
+  int? get halPackCurrentAgeSec {
+    final s = _lastGood['pack_current'];
+    if (s == null) return null;
+    return DateTime.now().difference(s.at).inSeconds;
+  }
+
+  /// v0.2.15+214: правда ли, что ток сейчас УДЕРЖИВАЕТСЯ, а не измеряется.
+  ///
+  /// Бессрочное удержание событийного тока чинит провал на оценку, но само
+  /// по себе опасно: без признака экран показал бы минутной давности число
+  /// как сегодняшнее. Здесь ответ на вопрос «оно ещё измеряется?» — экран
+  /// подписывает возраст вместо того, чтобы притворяться.
+  ///
+  /// Порог 20 с выбран по данным: медианный период тока на AC-сессии 3 с,
+  /// то есть 20 с заведомо больше обычного интервала и заведомо меньше
+  /// наблюдавшихся разрывов 121 и 221 с.
+  bool get halPackCurrentHeld {
+    final s = _lastGood['pack_current'];
+    if (s == null) return false;
+    return DateTime.now().difference(s.at) > _kCurrentFreshFor;
+  }
+
+  static const Duration _kCurrentFreshFor = Duration(seconds: 20);
 
   /// Flow direction mirroring ConnectionService.powerFlowDirection
   /// (1 discharge / −1 regen-or-charge / 0 near zero). Same ±3 A
@@ -1364,8 +1415,19 @@ class HalTelemetryService extends ChangeNotifier
   }
 
   /// v0.1.46+145 (K1): AC power FALLBACK — windowed dE/dt over the
-  /// charge_energy_kwh counter, the one signal that survives a whole AC
-  /// session after the V×I streams die ~90 s in (field export 17.07).
+  /// charge_energy_kwh counter.
+  ///
+  /// v0.2.15+214 — ЗДЕСЬ БЫЛО НЕВЕРНОЕ ОБЪЯСНЕНИЕ. Строка утверждала, что
+  /// потоки V×I «умирают через ~90 с» после начала AC-сессии, и читалась как
+  /// факт о машине. Факт другой: 90 с — наша собственная константа
+  /// удержания, и она была короче обычных событийных разрывов тока (221 и
+  /// 121 с на AC-сессии 28.08). Сигнал жил всю сессию. Ток переведён в
+  /// событийные, так что этот путь снова стал тем, чем задуман, — редким
+  /// запасным, а не основным.
+  ///
+  /// Проверено полем и в другую сторону: за ту же сессию счётчик прошёл
+  /// 0.001 → 0.203 kWh за 7 мин 1 с, то есть 1.73 kW. Экран показывал
+  /// ≈1.7 — оценка считает верно, занижения в ней нет.
   /// Explicitly a fallback (Alex, 17.07: "только когда недоступен"):
   /// callers chain `halChargePowerKw ?? halEnergySlopePowerKw`. Null until
   /// the window spans ≥[_kHalSlopeMinSpan] AND ≥[_kHalSlopeMinDeltaKwh]

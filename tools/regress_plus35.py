@@ -10693,17 +10693,33 @@ if int(pv) >= 199:
     # встречается в таблице у десятка сигналов, и подмена источника
     # значения ИМЕННО у этого канала гейт не роняла. Сторожим свою строку
     # целиком: неверный источник даёт тихий ноль, а не отказ.
+    # v0.2.15+214: ПРЕДМЕТ ИСПОЛНИЛСЯ И ПОТОМУ ЗАМЕНЁН.
+    #
+    # Последняя игла ждала, что потребителей у точного канала НЕТ, пока он не
+    # сверен на своих данных. Сверка состоялась: экспорт 31.08, AC-сессия
+    # 28.08 21:16-21:23 — pack_voltage_fine 206 точек, медианный период 3 с,
+    # макс. разрыв 38 с против 56 точек и 199 с у грубого. Ждать больше
+    # нечего, и держать иглу «не потреблять» значило бы охранять худший
+    # канал.
+    #
+    # Новый предмет — то, что теперь легко испортить: точный канал ведёт, а
+    # грубый ОСТАЁТСЯ запасным (тот же физический сигнал, только реже), и
+    # мощность больше не требует грубый канал свежим — именно это требование
+    # гасило её на AC.
     _cc5 = ('Decoder("pack_voltage_fine", "V", ValueSource.DOUBLE,'
             in _cc_tab and
             "'pack_voltage_fine': (250, 500)," in _cc_hal and
             "'pack_voltage_fine': Duration(seconds: 6)," in _cc_hal and
-            "halValue('pack_voltage_fine')" not in _cc_hal)
+            "_useHal('pack_voltage_fine')" in _cc_hal and
+            "(_useHal('pack_voltage') ? halValue('pack_voltage') : null)"
+            in _cc_hal and
+            "!_useHal('pack_current') || !_useHal('pack_voltage')"
+            not in _cc_hal)
     if _cc5:
-        ok('CC5 fractional pack voltage is decoded under its own name and no '
-           'consumer moved onto it before it was cross-checked')
+        ok('CC5 fine pack voltage leads, coarse stays as fallback, and power '
+           'no longer demands the coarse channel fresh')
     else:
-        fail('CC5 the fractional channel is missing, or a consumer already '
-             'trusts it unverified')
+        fail('CC5 the fine/coarse voltage chain is broken')
 else:
     ok(f"Part CC skipped (build +{pv}, the insulation tile lands in +199)")
 
@@ -12081,6 +12097,70 @@ if int(pv) >= 213:
         fail(f'CP4 overflow protection incomplete: {_cp4_bits}')
 else:
     ok(f"Part CP skipped (build +{pv}, the dead paths and measured canvas land in +213)")
+
+# ═══════ Part CQ — 0.2.15+214: событийный ток, честная фаза, читаемые оси ═══════
+if int(pv) >= 214:
+    _cq_hal = _strip_comments_safe(
+        (root / 'lib/services/hal_telemetry_service.dart').read_text())
+    _cq_res = _strip_comments_safe(
+        (root / 'lib/services/soc_resolver.dart').read_text())
+    _cq_view = _strip_comments_safe(
+        (root / 'lib/screens/wide/charging_view_wide.dart').read_text())
+    _cq_l10n = (root / 'lib/l10n/strings.dart').read_text()
+
+    # CQ1: ТОК УДЕРЖИВАЕТСЯ БЕССРОЧНО, И ЭКРАН ОБ ЭТОМ ГОВОРИТ. Поле 28.08:
+    # ток пришёл трижды за 7 минут, разрывы 221 и 121 с против окна 90 с —
+    # мощность гасла и падала на оценку. Держим ЦЕПЬ целиком: имя в
+    # событийных, признак наружу, и экран его ПОКАЗЫВАЕТ. Без последнего
+    # звена бессрочное удержание опаснее прежнего: минутной давности число
+    # выглядело бы как свежее.
+    _cq1_bits = [
+        "'pack_current',\n  };" in _cq_hal,
+        'bool get halPackCurrentHeld' in _cq_hal,
+        'int? get halPackCurrentAgeSec' in _cq_hal,
+        'hal.halPackCurrentHeld' in _cq_view,
+        "'chg.current_held'" in _cq_view,
+        _cq_l10n.count("'chg.current_held':") == 2,
+    ]
+    if all(_cq1_bits):
+        ok('CQ1 event-driven pack current is held indefinitely and the screen says so')
+    else:
+        fail(f'CQ1 held-current chain broken: {_cq1_bits}')
+
+    # CQ2: ФАЗА БОЛЬШЕ НЕ СУДИТ ПО МОЩНОСТИ. Порог «ниже 3 kW значит почти
+    # готово» писался под быструю зарядку; на домашней AC 2.9 kW — режим с
+    # первой секунды, и экран показывал «Почти готово» при 17.2 % заряда.
+    # Игла отрицательная по самому пороговому выражению плюс положительная
+    # по замене: судим по уровню заряда.
+    _cq2_bits = [
+        'powerKw < 3.0' not in _cq_res,
+        'if (soc != null && soc >= 95) {' in _cq_res,
+        'return ChargingPhase.almostDone;' in _cq_res,
+    ]
+    if all(_cq2_bits):
+        ok('CQ2 charging phase judges by charge level, not by an AC-blind power threshold')
+    else:
+        fail(f'CQ2 phase threshold regression: {_cq2_bits}')
+
+    # CQ3: ОСИ ЧИТАЕМЫ, ПОДПИСЬ НЕ ВРЁТ. Без шага fl_chart дублировал метки
+    # («4.2» поверх «4.0», «23 23 22 22»). И строка формулы обещала окно
+    # 10 минут при константе 5, а на 13 dp обрезалась ровно на этом числе.
+    _cq3_bits = [
+        'interval: (maxY - minY) <= 0 ? null : (maxY - minY) / 4,' in _cq_view,
+        'required double minY,' in _cq_view,
+        'окно 5 мин' in _cq_l10n,
+        '5 min window' in _cq_l10n,
+        # Игла на ФОРМУ ОБЪЯВЛЕНИЯ, а не на любое упоминание: в комментарии
+        # старое «окно до 10 минут» названо намеренно — иначе не понять, что
+        # именно разошлось с кодом. Запрещено объявлять его снова значением.
+        "'chg.power_formula': 'Среднее по росту заряда · окно 5 мин'," in _cq_l10n,
+    ]
+    if all(_cq3_bits):
+        ok('CQ3 axis labels get a step and the power note matches the real window')
+    else:
+        fail(f'CQ3 axis/label regression: {_cq3_bits}')
+else:
+    ok(f"Part CQ skipped (build +{pv}, the event-driven current lands in +214)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)

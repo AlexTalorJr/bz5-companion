@@ -433,9 +433,17 @@ class _TopHeroRow extends StatelessWidget {
           unit: 'kW',
           notes: [
             hv != null ? 'HV bus ${hv.toStringAsFixed(1)} V' : 'HV bus —',
-            isCalibrating
-                ? S.of('chg.calc_note')
-                : S.of('chg.power_formula'),
+            // v0.2.15+214: ток пака теперь удерживается бессрочно (он
+            // событийный), поэтому экран обязан сказать, когда показывает
+            // удержанное, а не измеренное. Молча держать — значит выдавать
+            // минутной давности число за сегодняшнее.
+            if (!power.approx && hal.halPackCurrentHeld)
+              S.of('chg.current_held').replaceFirst(
+                  '{n}', '${hal.halPackCurrentAgeSec ?? 0}')
+            else if (isCalibrating)
+              S.of('chg.calc_note')
+            else
+              S.of('chg.power_formula'),
           ],
         ),
       ),
@@ -662,6 +670,8 @@ class _PowerChart extends StatelessWidget {
         LineChartData(
           minY: 0,
           maxY: maxKw * 1.1 + 1,
+          // v0.2.15+214: границы передаём в хелпер осей — шаг меток считается
+          // от них, иначе fl_chart дублирует подписи на узком диапазоне.
           // v0.2.14+213: горизонтальная сетка и рамка слева-снизу — без них
           // значение не привязано ни к чему. Вертикальные линии не рисуем:
           // ось времени и так подписана снизу.
@@ -671,7 +681,8 @@ class _PowerChart extends StatelessWidget {
             getDrawingHorizontalLine: (_) => FlLine(
                 color: Colors.white.withValues(alpha: 0.05), strokeWidth: 1),
           ),
-          titlesData: _axisTitles(unit: ''),
+          titlesData:
+              _axisTitles(unit: '', minY: 0, maxY: maxKw * 1.1 + 1),
           borderData: FlBorderData(
             show: true,
             border: Border(
@@ -747,7 +758,8 @@ class _CellVChart extends StatelessWidget {
             getDrawingHorizontalLine: (_) => FlLine(
                 color: Colors.white.withValues(alpha: 0.05), strokeWidth: 1),
           ),
-          titlesData: _axisTitles(unit: ''),
+          titlesData:
+              _axisTitles(unit: '', minY: lo - pad, maxY: hi + pad),
           borderData: FlBorderData(
             show: true,
             border: Border(
@@ -824,7 +836,8 @@ class _TempChart extends StatelessWidget {
             getDrawingHorizontalLine: (_) => FlLine(
                 color: Colors.white.withValues(alpha: 0.05), strokeWidth: 1),
           ),
-          titlesData: _axisTitles(unit: ''),
+          titlesData:
+              _axisTitles(unit: '', minY: lo - pad, maxY: hi + pad),
           borderData: FlBorderData(
             show: true,
             border: Border(
@@ -853,7 +866,11 @@ class _TempChart extends StatelessWidget {
   }
 }
 
-FlTitlesData _axisTitles({required String unit}) {
+FlTitlesData _axisTitles({
+  required String unit,
+  required double minY,
+  required double maxY,
+}) {
   return FlTitlesData(
     rightTitles:
         const AxisTitles(sideTitles: SideTitles(showTitles: false)),
@@ -867,6 +884,13 @@ FlTitlesData _axisTitles({required String unit}) {
       sideTitles: SideTitles(
         showTitles: true,
         reservedSize: 54,
+        // v0.2.15+214: шага не было, и fl_chart расставлял метки по своему
+        // усмотрению — при узком диапазоне выходили ДУБЛИ, налезающие друг
+        // на друга: «4.2» поверх «4.0» на мощности, «3262» поверх «3260» на
+        // ячейках, «23 23 22 22» на температуре (фото 28.08). Шаг в четверть
+        // диапазона даёт пять уровней и гарантирует, что соседние метки
+        // различаются после округления.
+        interval: (maxY - minY) <= 0 ? null : (maxY - minY) / 4,
         getTitlesWidget: (v, _) => Text(
           v.toStringAsFixed(v.abs() < 10 ? 1 : 0),
           maxLines: 1,

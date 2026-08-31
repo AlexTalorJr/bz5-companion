@@ -1235,8 +1235,11 @@ class S {
     'chg.calc_note': 'Calculating… need ≥0.3% SOC growth to overcome '
         'quantization noise '
         '(~7 min at 2 kW AC, ~3 min at 7 kW AC, ~20 sec at 50 kW DC)',
-    'chg.power_formula':
-        'Power = ΔSOC × pack kWh / Δt, integrated over up to 10 min for accuracy',
+    // v0.2.15+214: said "up to 10 min" while _kHalSlopeMaxSpan is 5 — text
+    // and code had drifted apart. Also shortened: at 13 dp the old wording
+    // was clipped mid-word by the +213 ellipsis ("окно до 10…" in the field
+    // photo), so the one number that mattered never made it to the screen.
+    'chg.power_formula': 'Average by charge growth · 5 min window',
     'chg.analyzing': 'analyzing…',
     'chg.cv_phase': 'CV phase (tapering)',
     'chg.almost_done': 'Almost done',
@@ -1258,6 +1261,9 @@ class S {
     'chg.since_plugin': 'since plug-in',
     // v0.2.14+213: charging-screen redesign strings.
     'chg.cc_phase': 'CC phase',
+    // v0.2.15+214: shown instead of the formula note when pack current is
+    // being HELD (event-driven signal, gaps of minutes are normal).
+    'chg.current_held': 'current held · {n} s ago',
     'chg.charge_hdr': 'CHARGE',
     'chg.soc_start': 'start {n} %',
     'chg.soc_target': 'target 100 %',
@@ -2506,8 +2512,11 @@ class S {
     'chg.calc_note': 'Расчёт… нужен прирост SOC ≥0.3%, чтобы перекрыть '
         'шум квантования '
         '(~7 мин на 2 kW AC, ~3 мин на 7 kW AC, ~20 сек на 50 kW DC)',
-    'chg.power_formula':
-        'Средняя мощность по росту заряда за время (окно до 10 минут)',
+    // v0.2.15+214: было «окно до 10 минут» при константе 5 — текст и код
+    // разошлись. И укорочено: на 13 dp прежняя формулировка обрезалась
+    // многоточием из +213 ровно на числе («окно до 10…» на фото), то есть
+    // единственное важное в ней до экрана не доходило.
+    'chg.power_formula': 'Среднее по росту заряда · окно 5 мин',
     'chg.analyzing': 'анализ…',
     'chg.cv_phase': 'CV фаза (затухание)',
     'chg.almost_done': 'Почти готово',
@@ -2529,6 +2538,9 @@ class S {
     'chg.since_plugin': 'с момента подключения',
     // v0.2.14+213: строки редизайна экрана зарядки.
     'chg.cc_phase': 'CC фаза',
+    // v0.2.15+214: ставится вместо строки формулы, когда ток пака
+    // УДЕРЖИВАЕТСЯ (сигнал событийный, разрывы в минуты — норма).
+    'chg.current_held': 'ток удерживается · {n} с назад',
     'chg.charge_hdr': 'ЗАРЯД',
     'chg.soc_start': 'старт {n} %',
     'chg.soc_target': 'цель 100 %',
