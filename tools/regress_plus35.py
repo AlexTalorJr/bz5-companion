@@ -12325,7 +12325,7 @@ if int(pv) >= 216:
     # который никто больше не звал.
     _cs3_bits = [
         'int? resolveEtaSeconds(HalTelemetryService hal, ConnectionService svc,' in _cs_res,
-        '/ 100 * ConnectionService.batteryCapacityKwh / kw;' in _cs_res,
+        '/ 100 * Bz5Model.batteryCapacityKwh / kw;' in _cs_res,
         'final etaEff = resolveEtaSeconds(hal, svc);' in _cs_view,
         'final etaSec = resolveEtaSeconds(hal, svc);' in _cs_ban,
         'etaSec100: resolveEtaSeconds(hal, svc),' in _cs_dash
@@ -12379,6 +12379,51 @@ if int(pv) >= 216:
         ok('CS5 gain sits under CHARGE, battery voltage is named plainly, calc note is one phrase')
     else:
         fail(f'CS5 label placement regression: {_cs5_bits}')
+    # CS6 (+217): СТАТИЧЕСКИЕ ОБРАЩЕНИЯ РАЗРЕШАЮТСЯ. +216 упал в CI на
+    # `ConnectionService.batteryCapacityKwh` — константа живёт в Bz5Model в
+    # том же файле, и ни один текстовый гейт этого не видел: Dart-компилятора
+    # в песочнице нет. Проверка по устройству: каждое `Class.member` в
+    # файлах экрана зарядки обязано найти `static ... member` внутри тела
+    # именно этого класса где-нибудь в lib/. Иглы на весь класс ошибок, а не
+    # на одну константу.
+    _cs6_lib = {}
+    for _f in sorted((root / 'lib').rglob('*.dart')):
+        _cs6_lib[_f] = _strip_comments_safe(_f.read_text())
+    def _cs6_class_body(cls):
+        for _src in _cs6_lib.values():
+            _m = re.search(r'\n(?:abstract )?class ' + re.escape(cls) +
+                           r'\b[^{]*\{', _src)
+            if not _m:
+                continue
+            _i, _depth = _m.end(), 1
+            while _i < len(_src) and _depth:
+                _depth += {'{': 1, '}': -1}.get(_src[_i], 0)
+                _i += 1
+            return _src[_m.end():_i]
+        return None
+    _cs6_files = [_cs_res, _cs_view, _cs_ban, _cs_dash, _cs_dw, _cs_hal]
+    _cs6_bad = []
+    _cs6_seen = set()
+    for _src in _cs6_files:
+        for _cls, _mem in re.findall(r'\b([A-Z][A-Za-z0-9]*)\.([a-z][A-Za-z0-9]*)\b',
+                                     _src):
+            if (_cls, _mem) in _cs6_seen:
+                continue
+            _cs6_seen.add((_cls, _mem))
+            _body = _cs6_class_body(_cls)
+            if _body is None:
+                continue  # enum, Flutter/Dart class, typedef — не наш предмет
+            if not re.search(r'static\s+(?:const\s+|final\s+)?[\w<>?,\s]*\b'
+                             + re.escape(_mem) + r'\b', _body) \
+               and not re.search(r'static\s+[\w<>?]+\s+get\s+' + re.escape(_mem)
+                                 + r'\b', _body) \
+               and not re.search(r'static\s+[\w<>?]+\s+' + re.escape(_mem)
+                                 + r'\s*\(', _body):
+                _cs6_bad.append(f'{_cls}.{_mem}')
+    if not _cs6_bad and ('Bz5Model', 'batteryCapacityKwh') in _cs6_seen:
+        ok(f'CS6 every Class.member static reference on the charging screens resolves ({len(_cs6_seen)} checked)')
+    else:
+        fail(f'CS6 static references that do not resolve: {_cs6_bad or "Bz5Model.batteryCapacityKwh unseen"}')
 else:
     ok(f"Part CS skipped (build +{pv}, the driver-language charging screen lands in +216)")
 

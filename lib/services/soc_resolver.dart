@@ -122,7 +122,9 @@ double resolveChargePowerKw(HalTelemetryService hal, ConnectionService svc) {
 ///
 /// SOC берётся ТОЧНЫЙ, не тот, что выбран для показа (+131): это
 /// арифметика, а не цифра на экране. null — нет мощности или заряда, либо
-/// цель уже достигнута. Оценка линейная и к концу занижает: в CV ток
+/// цель уже достигнута. Ёмкость — [Bz5Model.batteryCapacityKwh] (+217:
+/// в +216 стояло `ConnectionService.batteryCapacityKwh`, такого члена нет,
+/// сборка упала; текстовые ворота статическое обращение не проверяли). Оценка линейная и к концу занижает: в CV ток
 /// падает, подпись на экране об этом говорит.
 int? resolveEtaSeconds(HalTelemetryService hal, ConnectionService svc,
     {double targetPct = 100}) {
@@ -133,7 +135,7 @@ int? resolveEtaSeconds(HalTelemetryService hal, ConnectionService svc,
       : (svc.socPrecisePct ?? svc.readNumeric('790', '0005'));
   if (soc == null || soc >= targetPct) return null;
   final hours =
-      (targetPct - soc) / 100 * ConnectionService.batteryCapacityKwh / kw;
+      (targetPct - soc) / 100 * Bz5Model.batteryCapacityKwh / kw;
   return (hours * 3600).round();
 }
 
