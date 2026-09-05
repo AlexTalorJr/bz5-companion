@@ -750,18 +750,14 @@ class _Connected extends StatelessWidget {
           _ChargingBanner(
             svc: svc,
             chargedSession: chargedSession,
-            // v0.1.29+116: dongle-free fallbacks — power from HAL |V×I|.
+            // v0.2.16+215: мощность берётся ГОТОВОЙ из resolveChargePowerKw —
+            // прежде панель держала третью копию цепочки (UDS → HAL → наклон
+            // счётчика) рядом с широким экраном и баннером, и +213, сводя две
+            // из них, эту пропустил. Наклон убран отовсюду, знак «≈» с ним.
+            powerKw: resolveChargePowerKw(hal, svc),
             // v0.1.32+131: deliberately NOT resolveUiSocPct — this value
             // feeds the remaining-kWh/ETA math, and math stays on precise
             // regardless of the display setting.
-            // v0.1.46+145 (K1): third link — windowed dE/dt over the energy
-            // counter, the only power signal alive through a whole AC
-            // session. STRICTLY a fallback (Alex 17.07: slope only when V×I
-            // unavailable); powerIsEstimate marks it '≈' (DC-side figure).
-            halPowerKw: hal.halChargePowerKw ?? hal.halEnergySlopePowerKw,
-            powerIsEstimate: svc.chargingPowerKw <= 0.1 &&
-                hal.halChargePowerKw == null &&
-                hal.halEnergySlopePowerKw != null,
             socOverridePct:
                 hal.useHalForSoc ? hal.halSocPct : svc.socPrecisePct,
             // v0.1.44+143 §A3: live session stats — Δ from the HAL session
@@ -1304,16 +1300,11 @@ class _TallSocCard extends StatelessWidget {
 class _ChargingBanner extends StatelessWidget {
   final ConnectionService svc;
   final double? chargedSession;
-  // v0.1.29+116: dongle-free inputs. halPowerKw = |pack V × I| from HAL,
-  // non-null only while HAL-charging; socOverridePct = the resolved SOC the
-  // SOC card already shows. Both null → identical to the old UDS-only path.
-  final double? halPowerKw;
+  // v0.2.16+215: powerKw — уже РЕШЁННАЯ мощность из resolveChargePowerKw
+  // (UDS → HAL |V×I|), 0 = числа нет. socOverridePct = the resolved SOC the
+  // SOC card already shows; null → identical to the old UDS-only path.
+  final double powerKw;
   final double? socOverridePct;
-  // v0.1.46+145 (K1): true when the shown power is the energy-counter
-  // slope (DC-side estimate) rather than a direct measurement — rendered
-  // with an '≈' prefix. Honesty marker, computed at the call site where
-  // all three chain links are visible.
-  final bool powerIsEstimate;
   // v0.1.44+143 §A3: live session stats, all honesty-nulls — a row renders
   // ONLY when its value is live. socDeltaPct = SOC gained since the HAL
   // session anchor; current/voltage are freshness-gated (6 s) at the call
@@ -1326,9 +1317,8 @@ class _ChargingBanner extends StatelessWidget {
   const _ChargingBanner({
     required this.svc,
     this.chargedSession,
-    this.halPowerKw,
+    required this.powerKw,
     this.socOverridePct,
-    this.powerIsEstimate = false,
     this.socDeltaPct,
     this.chargeCurrentA,
     this.packVoltageV,
@@ -1337,8 +1327,7 @@ class _ChargingBanner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final udsPower = svc.chargingPowerKw;
-    final power = udsPower > 0.1 ? udsPower : (halPowerKw ?? 0.0);
+    final power = powerKw;
     final socReal = socOverridePct ?? svc.readNumeric('790', '0005');
     final soc = socReal ?? 0;
     final remainingKwh = (100 - soc) / 100 * 65.28;
@@ -1377,9 +1366,7 @@ class _ChargingBanner extends StatelessWidget {
                               letterSpacing: 1.5, color: Colors.amber)),
                       Text(
                           power > 0.1
-                              // v0.1.46+145 (K1): '≈' = energy-counter slope
-                              // (DC-side, ~15-20% under the wall figure).
-                              ? '${powerIsEstimate ? '≈' : ''}${power.toStringAsFixed(1)} kW'
+                              ? '${power.toStringAsFixed(1)} kW'
                               : S.of('dash.connected'),
                           style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w500)),
                     ],
@@ -1512,7 +1499,7 @@ class _TripCard extends StatelessWidget {
 
 /// Bump when changing the diagnostic format — helps cross-reference
 /// screenshots to specific app versions while iterating.
-const String _kDiagVersion = 'v0.2.15+214';
+const String _kDiagVersion = 'v0.2.16+215';
 
 /// v0.1.29+94: public alias of the build version string for display outside
 /// dashboard (e.g. the About screen's APP card). Single literal source — the

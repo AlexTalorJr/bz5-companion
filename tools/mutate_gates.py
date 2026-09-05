@@ -1748,9 +1748,11 @@ MUTATIONS = [
     # v0.2.14+213: анкер переехал из экрана в `resolveChargePowerKw` вместе
     # с самой цепочкой — её ждали баннер и фаза. Предмет мутации тот же:
     # отрезать HAL от выбора мощности.
+    # v0.2.16+215: выражение стало возвратом числа — наклон ушёл, запись
+    # тоже. Предмет тот же.
     ('CM1', SR,
-     '    kw: kwObd > 0 ? kwObd : (kwHal ?? kwSlope ?? 0),',
-     '    kw: kwObd,',
+     '  return kwObd > 0 ? kwObd : (kwHal ?? 0);',
+     '  return kwObd;',
      'отрезать HAL-цепочку мощности — экран снова показывает тире'),
     ('CM1', CW,
      '      final hh = hal.halChargingHistory;',
@@ -1823,8 +1825,8 @@ MUTATIONS = [
     # CP1 — баннер перестал читать донгл, +213. Два конца: подключение
     # живых источников и отсутствие мёртвого вызова.
     ('CP1', CB,
-     '    final power = resolveChargePowerKw(hal, svc);',
-     '    final power = (kw: svc.chargingPowerKw, approx: false);',
+     '    final kw = resolveChargePowerKw(hal, svc);',
+     '    final kw = svc.chargingPowerKw;',
      'вернуть баннеру мощность только через донгл — на голове снова '
      '«запуск…»'),
 
@@ -1875,7 +1877,7 @@ MUTATIONS = [
      'редкими событиями'),
 
     ('CQ1', CW,
-     '            if (!power.approx && hal.halPackCurrentHeld)',
+     '            if (hal.halPackCurrentHeld)',
      '            if (false)',
      'спрятать признак удержания — минутной давности ток выглядит свежим'),
 
@@ -1891,10 +1893,49 @@ MUTATIONS = [
      '        interval: null,',
      'снять шаг меток — подписи осей снова дублируются и налезают'),
 
+    # v0.2.16+215: подпись стала «напряжение × ток пака» — окна нет вовсе.
+    # Предмет тот же: подпись не должна описывать несуществующий источник.
     ('CQ3', L10,
+     "    'chg.power_formula': 'напряжение × ток пака',",
      "    'chg.power_formula': 'Среднее по росту заряда · окно 5 мин',",
-     "    'chg.power_formula':\n        'Средняя мощность по росту заряда за время (окно до 10 минут)',",
-     'вернуть подпись, обещающую окно 10 минут при константе 5'),
+     'вернуть подпись про окно счётчика, которого больше нет'),
+
+    # CR1 — точное напряжение липкое и любое _useHal-имя имеет держатель,
+    # +215. Первая мутация роняет и CC5, и CR1, и CR3 — это ожидаемо: три
+    # гейта смотрят на одну дыру с трёх сторон (имя, устройство, поток).
+    ('CR1', HTS,
+     "    'pack_voltage_fine',\n    // v0.1.29+82: brake_pedal is EDGE-triggered",
+     "    // v0.1.29+82: brake_pedal is EDGE-triggered",
+     'выбить точное напряжение из липких — мощность снова живёт от '
+     'всплесков грубого канала'),
+    ('CR1', HTS,
+     "    final v = _useHal('pack_voltage_fine')",
+     "    final v = _useHal('pack_voltage_fine_x')",
+     'спросить через _useHal имя без держателя — разрешение без значения'),
+
+    # CR2 — в цепочке мощности два звена и ни одного «≈», +215.
+    ('CR2', SR,
+     '  return kwObd > 0 ? kwObd : (kwHal ?? 0);',
+     '  final kwSlope = kwHal == null ? hal.halEnergySlopePowerKw : null;\n'
+     '  return kwObd > 0 ? kwObd : (kwHal ?? kwSlope ?? 0);',
+     'вернуть наклон счётчика третьим звеном'),
+    ('CR2', CW,
+     "          value: kw > 0 ? kw.toStringAsFixed(1) : '—',",
+     "          value: kw > 0 ? '≈${kw.toStringAsFixed(1)}' : '—',",
+     'вернуть знак приблизительности на экран'),
+    ('CR2', HTS,
+     '      kw: halChargePowerKw,',
+     '      kw: halChargePowerKw ?? halEnergySlopePowerKw,',
+     'вернуть наклон в точки истории графика'),
+
+    # CR3 — зеркало на реальном потоке, +215. Мутация ломает предмет
+    # зеркала — окно удержания напряжения — и после этого модель «как
+    # стало» перестаёт покрывать 100 % минут.
+    ('CR3', HTS,
+     '  static const _coreHold = Duration(seconds: 90);',
+     '  static const _coreHold = Duration(seconds: 9);',
+     'сузить окно удержания в КОДЕ — зеркало читает его оттуда, покрытие '
+     'падает'),
 ]
 
 

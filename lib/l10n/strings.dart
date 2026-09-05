@@ -1239,7 +1239,7 @@ class S {
     // and code had drifted apart. Also shortened: at 13 dp the old wording
     // was clipped mid-word by the +213 ellipsis ("окно до 10…" in the field
     // photo), so the one number that mattered never made it to the screen.
-    'chg.power_formula': 'Average by charge growth · 5 min window',
+    'chg.power_formula': 'pack voltage × current',
     'chg.analyzing': 'analyzing…',
     'chg.cv_phase': 'CV phase (tapering)',
     'chg.almost_done': 'Almost done',
@@ -2516,7 +2516,7 @@ class S {
     // разошлись. И укорочено: на 13 dp прежняя формулировка обрезалась
     // многоточием из +213 ровно на числе («окно до 10…» на фото), то есть
     // единственное важное в ней до экрана не доходило.
-    'chg.power_formula': 'Среднее по росту заряда · окно 5 мин',
+    'chg.power_formula': 'напряжение × ток пака',
     'chg.analyzing': 'анализ…',
     'chg.cv_phase': 'CV фаза (затухание)',
     'chg.almost_done': 'Почти готово',

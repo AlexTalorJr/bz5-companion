@@ -23,7 +23,6 @@
 library;
 
 import 'dart:async';
-import 'dart:collection';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 
@@ -432,10 +431,11 @@ class HalTelemetryService extends ChangeNotifier
     'soh': (0, 100),
     'battery_temp_bigdata': (-40, 150),
     // v0.1.44+143: accumulated charge energy (BYDAutoChargingDevice|
-    // 0x2C100818, recon p084 — verified live on AC). A MONOTONIC lifetime
-    // total in kWh that never resets between sessions, so the guard is a
-    // wide sanity band only; the AC charge detector consumes it strictly
-    // by derivative (see _trackChargeEnergy). NOT sticky, NOT displayed.
+    // 0x2C100818, recon p084 — verified live on AC). v0.2.16+215: НЕ
+    // пожизненный и НЕ kWh 1:1 — см. заметку у _kHalEnergyRiseWindow. Страж
+    // остаётся широкой полосой здравого смысла; детектор потребляет его
+    // строго по производной (см. _trackChargeEnergy). NOT sticky, NOT
+    // displayed.
     'charge_energy_kwh': (0, 10000000),
     // v0.2.9+208 — СТРАЖИ ДЛЯ 29 ИМЁН, ПИСАВШИХСЯ БЕЗ НИХ. Диапазоны
     // сняты с экспорта 17.08 (518k строк, 12 дней); границы = наблюдённое
@@ -509,6 +509,23 @@ class HalTelemetryService extends ChangeNotifier
     // v0.2.9+208: тип пистолета — тоже событийный (2/3 при втыкании,
     // 1 при выдёргивании), та же липкость по той же причине.
     'charging_gun_state',
+    // ── v0.2.16+215: ТОЧНОЕ НАПРЯЖЕНИЕ НАКОНЕЦ ДОХОДИТ ДО МОЩНОСТИ ──
+    //
+    // +214 объявил «точный канал ведёт», но `halPowerKw` спрашивает
+    // _useHal по точному имени, а тот для непрерывных имён читает
+    // `_lastGood` — куда пишут только имена из этого набора. Имени здесь
+    // не было, ветка была мертва с рождения, мощность по-прежнему жила
+    // от грубого `pack_voltage`. Тот на AC-сессии 05.09 (2 ч 31 мин,
+    // сборка 0.2.15.289) пришёл семью всплесками и замолчал в 19:01: из
+    // 151 снимка мощность записана в 19, и ровно в тех, где грубый канал
+    // моложе 90 с — совпадение 151 из 151. Остальные полтора часа экран
+    // показывал оценку по счётчику, 1.7 kW при 2.9 на щитке.
+    //
+    // Тот же случай, что insulation_resistance в +202 и пара ячеек в +103:
+    // разрешение читать есть, значения нет. Гейт CR1 теперь сторожит это
+    // по устройству: любое непрерывное имя, спрошенное через _useHal,
+    // обязано быть здесь.
+    'pack_voltage_fine',
     // v0.1.29+82: brake_pedal is EDGE-triggered — the framework pushes a
     // frame only on CHANGE (1 on press, 0 on release), nothing while the
     // pedal is held. +81 treated it as a level signal with a 3 s freshness
@@ -673,35 +690,37 @@ class HalTelemetryService extends ChangeNotifier
   // Single-phase AC (~3.5 kW) lands at ~−8…−9 A after the OBC at 350–400 V —
   // structurally BELOW _kHalChargeCurrentA, so the current detector above
   // never fires on slow AC (field complaint, 15.07). The counter
-  // (BYDAutoChargingDevice|0x2C100818, recon p084) is a MONOTONIC lifetime
-  // total that only rises while charging and NEVER resets between sessions →
+  // (BYDAutoChargingDevice|0x2C100818, recon p084) only rises while charging →
   // detection is strictly by DERIVATIVE (an increase observed within the
   // window), never by level; per-session energy is a delta from the value
   // latched at the session anchor. The window doubles as both the detect
   // hold (counter LSBs land sparsely on slow AC) and the session-end
   // latency: once the counter stops rising the detect decays after
   // _kHalEnergyRiseWindow and the SOH machine finalizes.
+  //
+  // ── v0.2.16+215: ЧТО СЧЁТЧИК УМЕЕТ И ЧЕГО НЕ УМЕЕТ ──
+  //
+  // Экспорт 05.09, AC-сессия 18:08–20:39. Счётчик шагал ровно 0.002 каждые
+  // 4 с, во всех пятнадцати десятиминутках 1.716–1.728 «kWh»/ч без единого
+  // отклонения — при том, что V×I по HAL гуляло 2.83–2.98 kW и в среднем
+  // дало 2.93, щиток машины показывал 2.9, а ΔSOC 25→35 % за 2.5 ч даёт
+  // ≈2.8. Три величины сходятся, счётчик на 41 % ниже и на колебания
+  // мощности не отвечает. Что бы он ни считал, это не kWh в батарею в
+  // масштабе 1:1. Плюс он СБРОСИЛСЯ в ноль при перетыке (20:39:29,
+  // 4.353 → 0.000) — прежняя запись «пожизненный монотонный» неверна;
+  // ветка «пошёл назад — переякориться» в _trackChargeEnergy это уже
+  // держала, теперь она описана как штатный случай, а не как мусор.
+  //
+  // Решение владельца (окно №23): счётчик ОСТАЁТСЯ детектором зарядки —
+  // растёт он только на зарядке и стабильно, здесь он честен — и УХОДИТ из
+  // цепочки мощности: геттер halEnergySlopePowerKw, кольцо _halEnergyPts и
+  // константы _kHalSlope* удалены, флаг approx и знак «≈» на экранах сняты.
+  // Без V×I экран показывает отсутствие числа, а не заниженное. Прежнее
+  // оправдание запасного пути — «потоки V×I умирают через ~90 с» — было
+  // нашей константой, а не машиной (+214), и держалось на мёртвой ветке
+  // точного напряжения (см. _stickyNames).
   static const Duration _kHalEnergyRiseWindow = Duration(seconds: 180);
   static const double _kHalEnergyRiseEpsKwh = 0.001; // counter LSB noise floor
-  // v0.1.46+145 (K1): windowed dE/dt over the counter — the AC power
-  // fallback. Field evidence (AC session 17.07 21:15, export
-  // bz5_export_20260717-211753): pack_current died at 21:16:31 and
-  // pack_voltage at 21:16:53 (~90 s into the session) while the energy
-  // counter kept ticking every ~4 s to the end — so V×I power (and with it
-  // both ETAs) vanished ~2 min in, and the UDS SOC-derived path needs
-  // ~9 min at 2 kW for its first figure. The counter is the only power
-  // signal that provably survives a whole AC session. The single-increment
-  // dE/dt (+143, _halChargeEnergyRiseRateKw) is too noisy for display
-  // (LSB 0.002 kWh per ~4 s → timing jitter swings it ±30%); this ring
-  // integrates over ≥[_kHalSlopeMinSpan] for a stable figure. Points are
-  // appended only on an ACCEPTED rise (same eps as the detector), evicted
-  // past [_kHalSlopeMaxSpan], and cleared on the counter-went-backwards
-  // re-anchor so a junk read can't bridge two sessions.
-  static const Duration _kHalSlopeMinSpan = Duration(seconds: 45);
-  static const Duration _kHalSlopeMaxSpan = Duration(minutes: 5);
-  static const double _kHalSlopeMinDeltaKwh = 0.004; // ≥4 LSB above eps noise
-  final ListQueue<({DateTime at, double kwh})> _halEnergyPts =
-      ListQueue<({DateTime at, double kwh})>();
   // v0.1.46+145 (K2): self-calibrated series cell count for the cells→pack-V
   // fallback. NOT a per-model const (BZ3 has a different topology — a
   // hard-coded 136 would render ~453 V on a ~280 V pack and sail through any
@@ -1157,7 +1176,7 @@ class HalTelemetryService extends ChangeNotifier
     final vHi = halValue('cell_v_highest');
     _halChargeHist.add((
       t: now,
-      kw: halChargePowerKw ?? halEnergySlopePowerKw,
+      kw: halChargePowerKw,
       cellMinMv: vLo == null ? null : (vLo * 1000).round(),
       cellMaxMv: vHi == null ? null : (vHi * 1000).round(),
       tempC: halValue('battery_temp_bigdata') ?? halValue('probe_highest_temp'),
@@ -1412,41 +1431,6 @@ class HalTelemetryService extends ChangeNotifier
     final p = halPowerKw;
     if (p == null) return null;
     return p.abs();
-  }
-
-  /// v0.1.46+145 (K1): AC power FALLBACK — windowed dE/dt over the
-  /// charge_energy_kwh counter.
-  ///
-  /// v0.2.15+214 — ЗДЕСЬ БЫЛО НЕВЕРНОЕ ОБЪЯСНЕНИЕ. Строка утверждала, что
-  /// потоки V×I «умирают через ~90 с» после начала AC-сессии, и читалась как
-  /// факт о машине. Факт другой: 90 с — наша собственная константа
-  /// удержания, и она была короче обычных событийных разрывов тока (221 и
-  /// 121 с на AC-сессии 28.08). Сигнал жил всю сессию. Ток переведён в
-  /// событийные, так что этот путь снова стал тем, чем задуман, — редким
-  /// запасным, а не основным.
-  ///
-  /// Проверено полем и в другую сторону: за ту же сессию счётчик прошёл
-  /// 0.001 → 0.203 kWh за 7 мин 1 с, то есть 1.73 kW. Экран показывал
-  /// ≈1.7 — оценка считает верно, занижения в ней нет.
-  /// Explicitly a fallback (Alex, 17.07: "только когда недоступен"):
-  /// callers chain `halChargePowerKw ?? halEnergySlopePowerKw`. Null until
-  /// the window spans ≥[_kHalSlopeMinSpan] AND ≥[_kHalSlopeMinDeltaKwh]
-  /// accumulated — the banner shows "Подключено" for the first ~minute of
-  /// a session, then a stable figure (vs ~9 min for the UDS path at 2 kW).
-  /// HONESTY: this is the DC-side (post-OBC) figure — reads ~15-20% below
-  /// the wall draw; the banner marks it with '≈'.
-  double? get halEnergySlopePowerKw {
-    if (!_halEnergyRising(DateTime.now())) return null;
-    if (_halEnergyPts.length < 2) return null;
-    final last = _halEnergyPts.last;
-    // Oldest point still inside the max window (eviction maintains this)
-    // that is at least minSpan older than the newest — maximises dt.
-    final first = _halEnergyPts.first;
-    final dt = last.at.difference(first.at);
-    if (dt < _kHalSlopeMinSpan) return null;
-    final dKwh = last.kwh - first.kwh;
-    if (dKwh < _kHalSlopeMinDeltaKwh) return null;
-    return dKwh / (dt.inMilliseconds / 3.6e6);
   }
 
   /// v0.1.46+145 (K2): pack voltage from the HAL cell extremes — the
@@ -2767,13 +2751,6 @@ class HalTelemetryService extends ChangeNotifier
       _halChargeEnergyRiseAt = now;
       _halChargeEnergyLast = e;
       _halChargeEnergyLastAt = now;
-      // v0.1.46+145 (K1): windowed-slope ring — accepted rises only, so the
-      // eps filter above doubles as the ring's noise floor.
-      _halEnergyPts.addLast((at: now, kwh: e));
-      while (_halEnergyPts.isNotEmpty &&
-          now.difference(_halEnergyPts.first.at) > _kHalSlopeMaxSpan) {
-        _halEnergyPts.removeFirst();
-      }
       // Diag: log the rise onset immediately, then at most once per 60 s.
       if (!wasRising ||
           _halChargeEnergyRiseLogAt == null ||
@@ -2784,16 +2761,15 @@ class HalTelemetryService extends ChangeNotifier
             '(dE/dt ≈ ${_halChargeEnergyRiseRateKw.toStringAsFixed(2)} kW)');
       }
     } else if (e < last - 0.5) {
-      // The counter went BACKWARDS by a non-trivial amount — impossible for
-      // a monotonic total, so treat it as junk / a re-init and re-anchor
-      // silently. Sub-eps jitter and equal values leave the anchor alone so
-      // a slow counter still registers a rise the moment the next LSB lands
-      // (the dt then spans the true inter-increment interval → honest dE/dt).
+      // The counter went BACKWARDS by a non-trivial amount. v0.2.16+215:
+      // это ШТАТНО, а не мусор — счётчик посессионный и обнуляется при
+      // перетыке (05.09 20:39:29: 4.353 → 0.000 вслед за пистолетом
+      // 1 → 2). Переякориваемся молча. Sub-eps jitter and equal values
+      // leave the anchor alone so a slow counter still registers a rise
+      // the moment the next LSB lands (the dt then spans the true
+      // inter-increment interval → honest dE/dt).
       _halChargeEnergyLast = e;
       _halChargeEnergyLastAt = now;
-      // v0.1.46+145 (K1): a re-anchor invalidates the slope window too — a
-      // junk read must not bridge into the next session's figure.
-      _halEnergyPts.clear();
     }
   }
 

@@ -190,14 +190,13 @@ class _ChargingBanner extends StatelessWidget {
     // времени. Теперь мощность и SOC идут через общие определители, а ETA
     // получила тот же запасной путь по HAL, что уже стоит на экране фазы.
     final hal = context.watch<HalTelemetryService>();
-    final power = resolveChargePowerKw(hal, svc);
-    final kw = power.kw;
+    final kw = resolveChargePowerKw(hal, svc);
     final soc = resolveUiSocPct(hal, svc);
     final etaSec = svc.etaToFullSeconds ?? hal.halEtaToFullSeconds;
 
     final parts = <String>[];
     if (kw > 0) {
-      parts.add('${power.approx ? '≈' : ''}${kw.toStringAsFixed(1)} kW');
+      parts.add('${kw.toStringAsFixed(1)} kW');
     }
     if (soc != null) {
       parts.add('${soc.toStringAsFixed(0)}%');

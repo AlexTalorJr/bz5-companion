@@ -378,8 +378,7 @@ class _TopHeroRow extends StatelessWidget {
     // v0.2.14+213: цепочка выбора мощности переехала в
     // `resolveChargePowerKw` — баннеру и фазе нужна ТА ЖЕ мощность, и три
     // копии одной цепочки дали бы три разных ответа на один вопрос.
-    final power = resolveChargePowerKw(hal, svc);
-    final kw = power.kw;
+    final kw = resolveChargePowerKw(hal, svc);
     final hv = svc.hvBusV ??
         hal.halValue('pack_voltage_fine') ??
         hal.halValue('pack_voltage');
@@ -421,9 +420,7 @@ class _TopHeroRow extends StatelessWidget {
           caption: S.of('chg.power_hdr'),
           captionColor: Colors.amberAccent,
           cardColor: Colors.amber.shade900.withValues(alpha: 0.12),
-          value: kw > 0
-              ? '${power.approx ? '≈' : ''}${kw.toStringAsFixed(1)}'
-              : '—',
+          value: kw > 0 ? kw.toStringAsFixed(1) : '—',
           // Макет просил 112 dp, но в плитку высотой около 168 dp при
           // отступах, заголовке и подписях столько не влезает — остаётся
           // примерно 80. Берём 76: число всё равно самое крупное на
@@ -437,7 +434,7 @@ class _TopHeroRow extends StatelessWidget {
             // событийный), поэтому экран обязан сказать, когда показывает
             // удержанное, а не измеренное. Молча держать — значит выдавать
             // минутной давности число за сегодняшнее.
-            if (!power.approx && hal.halPackCurrentHeld)
+            if (hal.halPackCurrentHeld)
               S.of('chg.current_held').replaceFirst(
                   '{n}', '${hal.halPackCurrentAgeSec ?? 0}')
             else if (isCalibrating)

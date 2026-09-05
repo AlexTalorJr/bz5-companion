@@ -90,26 +90,24 @@ String formatSocPct(double v, {int maxDecimals = 1}) {
 // Файл уже видит оба сервиса, так что новых связей не появилось.
 
 /// Мощность зарядки и признак «это оценка, а не измерение».
-typedef ChargePowerReading = ({double kw, bool approx});
 
 /// Единственное место, где решается «сколько сейчас киловатт».
 ///
-/// Порядок: UDS через донгл → HAL |V×I| → наклон энергосчётчика. Ноль от
-/// HAL чистится до null (правка +211: в моменте ток бывает нулевым при
-/// живой зарядке, и ноль гасил запасной путь по наклону). `approx` истинно
-/// только на наклоне: это DC-сторона, она ниже розетки на 15-20 %, и
-/// экран обязан честно поставить знак «≈».
-ChargePowerReading resolveChargePowerKw(
-    HalTelemetryService hal, ConnectionService svc) {
+/// Порядок: UDS через донгл → HAL |V×I|. Ноль от HAL чистится до null
+/// (правка +211: в моменте ток бывает нулевым при живой зарядке). Ноль на
+/// выходе значит «числа нет», и экраны рисуют тире.
+///
+/// v0.2.16+215: третье звено — наклон энергосчётчика — УБРАНО вместе с
+/// флагом `approx`. Экспорт 05.09 (AC, 2 ч 31 мин): счётчик давал 1.72 при
+/// 2.93 по V×I, 2.9 на щитке и ≈2.8 по ΔSOC, устойчиво на 41 % ниже и без
+/// реакции на колебания мощности. Знак «≈» перед заведомо неверным числом
+/// не честность, а оправдание. Счётчик остался детектором зарядки — там он
+/// честен (решение владельца, окно №23).
+double resolveChargePowerKw(HalTelemetryService hal, ConnectionService svc) {
   final kwObd = svc.chargingPowerKw;
   final kwHalRaw = hal.halChargePowerKw;
   final kwHal = (kwHalRaw != null && kwHalRaw > 0) ? kwHalRaw : null;
-  final kwSlope =
-      (kwObd > 0 || kwHal != null) ? null : hal.halEnergySlopePowerKw;
-  return (
-    kw: kwObd > 0 ? kwObd : (kwHal ?? kwSlope ?? 0),
-    approx: kwSlope != null,
-  );
+  return kwObd > 0 ? kwObd : (kwHal ?? 0);
 }
 
 /// Фаза зарядки, считаемая от любого живого источника.
@@ -135,7 +133,7 @@ ChargingPhase resolveChargingPhase(
   if (points < 3) return ChargingPhase.unknown;
 
   final soc = resolveUiSocPct(hal, svc);
-  final powerKw = resolveChargePowerKw(hal, svc).kw;
+  final powerKw = resolveChargePowerKw(hal, svc);
 
   // ── v0.2.15+214: ПОРОГ ПО МОЩНОСТИ УБРАН ──
   //

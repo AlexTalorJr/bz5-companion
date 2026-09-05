@@ -13,6 +13,7 @@ Run from repo root:  python3 tools/regress_plus35.py
 Exit 0 = clean, 1 = any FAIL.
 """
 import re
+import subprocess
 import sys
 import pathlib
 
@@ -4293,25 +4294,29 @@ else:
 if int(pv) >= 145:
     _hal7 = (root / 'lib/services/hal_telemetry_service.dart').read_text()
     _dash7 = (root / 'lib/screens/dashboard.dart').read_text()
-    # AQ1: slope getter exists, is rise-gated, and enforces BOTH the
-    # min-span and the min-delta floor (a slope from 2 adjacent LSBs is
-    # exactly the +143 noise this getter exists to avoid).
-    if 'double? get halEnergySlopePowerKw' in _hal7 and \
-       '_halEnergyRising(DateTime.now())) return null' in _hal7 and \
-       'if (dt < _kHalSlopeMinSpan) return null;' in _hal7 and \
-       'if (dKwh < _kHalSlopeMinDeltaKwh) return null;' in _hal7:
-        ok('AQ1 energy-slope getter gated (rising + span + delta floors)')
+    # AQ1/AQ2 — v0.2.16+215: ПРЕДМЕТ УДАЛЁН, ИГЛЫ ПЕРЕВЁРНУТЫ. Обе держали
+    # наклон счётчика как источник мощности. Экспорт 05.09 показал: счётчик
+    # даёт 1.72 при 2.93 по V×I и 2.9 на щитке, на 41 % ниже и без реакции
+    # на колебания. Решение владельца: счётчик — детектор зарядки, не число.
+    # Теперь AQ1 держит ОТСУТСТВИЕ геттера и кольца, AQ2 — что детектор
+    # (_halEnergyRising, _trackChargeEnergy) при этом жив. Игла на форму
+    # объявления, а не на упоминание: в комментариях старые имена названы.
+    _aq_hal_code = _strip_comments_safe(_hal7)
+    if 'double? get halEnergySlopePowerKw' not in _aq_hal_code and \
+       '_halEnergyPts' not in _aq_hal_code and \
+       '_kHalSlopeMinSpan' not in _aq_hal_code and \
+       '_kHalSlopeMaxSpan' not in _aq_hal_code and \
+       '_kHalSlopeMinDeltaKwh' not in _aq_hal_code:
+        ok('AQ1 the energy counter is no longer a power source (no slope getter, no ring)')
     else:
-        fail('AQ1 energy-slope getter missing or floor(s) dropped')
-    # AQ2: ring hygiene — points appended ONLY in the accepted-rise branch,
-    # evicted past max span, and CLEARED on the counter re-anchor (junk
-    # read must not bridge sessions).
-    if '_halEnergyPts.addLast((at: now, kwh: e));' in _hal7 and \
-       '> _kHalSlopeMaxSpan' in _hal7 and \
-       '_halEnergyPts.clear();' in _hal7:
-        ok('AQ2 slope ring: rise-only append, span evict, re-anchor clear')
+        fail('AQ1 energy-counter slope crept back into the power chain')
+    if 'bool _halEnergyRising(DateTime now)' in _aq_hal_code and \
+       'void _trackChargeEnergy(DateTime now)' in _aq_hal_code and \
+       'if (e > last + _kHalEnergyRiseEpsKwh) {' in _aq_hal_code and \
+       'return _halEnergyRising(DateTime.now());' in _aq_hal_code:
+        ok('AQ2 the energy counter still drives charge DETECTION (rise tracker + halChargingActive)')
     else:
-        fail('AQ2 slope ring hygiene broken')
+        fail('AQ2 charge detection by counter rise broken')
     # AQ3: K2 — no hard-coded series count. The fallback must be gated on
     # the latched estimate (BZ3 topology rule) and the latch must divide
     # live pack_voltage by live cell avg, never assume 136.
@@ -4322,14 +4327,19 @@ if int(pv) >= 145:
         ok('AQ3 cells→packV fallback latch-gated (no per-model const)')
     else:
         fail('AQ3 series-count latch missing or hard-coded')
-    # AQ4: banner chain order — slope strictly the LAST link (Alex 17.07:
-    # only when V×I unavailable), and the estimate marker is wired.
-    if 'hal.halChargePowerKw ?? hal.halEnergySlopePowerKw' in _dash7 and \
-       'powerIsEstimate:' in _dash7 and \
-       "powerIsEstimate ? '≈' : ''" in _dash7:
-        ok('AQ4 banner: slope last in chain, ≈ marker rendered')
+    # AQ4 — v0.2.16+215: ПРЕДМЕТ СМЕНИЛСЯ. Панель дэшборда держала ТРЕТЬЮ
+    # копию цепочки мощности (UDS → HAL → наклон) и знак «≈»; +213 свёл две
+    # копии в resolveChargePowerKw, эту пропустил. Теперь панель берёт число
+    # готовым, своей цепочки не имеет, «≈» нет.
+    _aq_dash_code = _strip_comments_safe(_dash7)
+    if 'powerKw: resolveChargePowerKw(hal, svc),' in _aq_dash_code and \
+       'final power = powerKw;' in _aq_dash_code and \
+       'halEnergySlopePowerKw' not in _aq_dash_code and \
+       'powerIsEstimate' not in _aq_dash_code and \
+       '≈' not in _aq_dash_code:
+        ok('AQ4 dashboard banner takes power from the one resolver, no private chain, no ≈')
     else:
-        fail('AQ4 banner power chain/marker wrong')
+        fail('AQ4 dashboard banner still runs its own power chain or renders ≈')
     # AQ5: Pack V card + banner live-line both pick up the cells fallback.
     if 'svc.packVoltageFromCells ?? hal.halPackVoltageFromCells' in _dash7 and \
        ': hal.halPackVoltageFromCells,' in _dash7:
@@ -10706,10 +10716,19 @@ if int(pv) >= 199:
     # грубый ОСТАЁТСЯ запасным (тот же физический сигнал, только реже), и
     # мощность больше не требует грубый канал свежим — именно это требование
     # гасило её на AC.
+    # v0.2.16+215: ДОБАВЛЕНО ЗВЕНО, БЕЗ КОТОРОГО ВСЁ ОСТАЛЬНОЕ БЫЛО МЁРТВО.
+    # `_useHal` для непрерывных имён читает _lastGood, а туда пишут только
+    # _stickyNames. Имени там не было — «точный ведёт» не срабатывало ни
+    # разу (экспорт 05.09: 19 снимков с мощностью из 151, ровно там, где
+    # грубый канал моложе 90 с). Эта игла держит липкость; CR1 сторожит
+    # то же по устройству для любого имени.
+    _cc5_sticky = re.search(r'_stickyNames = \{(.*?)\n  \};', _cc_hal, re.S)
     _cc5 = ('Decoder("pack_voltage_fine", "V", ValueSource.DOUBLE,'
             in _cc_tab and
             "'pack_voltage_fine': (250, 500)," in _cc_hal and
             "'pack_voltage_fine': Duration(seconds: 6)," in _cc_hal and
+            _cc5_sticky is not None and
+            "'pack_voltage_fine'" in _cc5_sticky.group(1) and
             "_useHal('pack_voltage_fine')" in _cc_hal and
             "(_useHal('pack_voltage') ? halValue('pack_voltage') : null)"
             in _cc_hal and
@@ -11870,7 +11889,7 @@ if int(pv) >= 210:
     _cm_res = _strip_comments_safe(
         (root / 'lib/services/soc_resolver.dart').read_text())
     _cm1_bits = [
-        'kwObd > 0 ? kwObd : (kwHal ?? kwSlope ?? 0)' in _cm_res
+        'return kwObd > 0 ? kwObd : (kwHal ?? 0);' in _cm_res
         and 'resolveChargePowerKw(hal, svc)' in _cm_view,
         'halChargingHistory' in _cm_view,
         'halChargedThisSessionKwh' in _cm_view
@@ -12148,19 +12167,99 @@ if int(pv) >= 214:
     _cq3_bits = [
         'interval: (maxY - minY) <= 0 ? null : (maxY - minY) / 4,' in _cq_view,
         'required double minY,' in _cq_view,
-        'окно 5 мин' in _cq_l10n,
-        '5 min window' in _cq_l10n,
-        # Игла на ФОРМУ ОБЪЯВЛЕНИЯ, а не на любое упоминание: в комментарии
-        # старое «окно до 10 минут» названо намеренно — иначе не понять, что
-        # именно разошлось с кодом. Запрещено объявлять его снова значением.
-        "'chg.power_formula': 'Среднее по росту заряда · окно 5 мин'," in _cq_l10n,
+        # v0.2.16+215: окна больше нет вовсе — наклон убран, подпись под
+        # мощностью говорит, что это V×I пака. Игла на ФОРМУ ОБЪЯВЛЕНИЯ:
+        # в комментариях старые подписи названы намеренно.
+        "'chg.power_formula': 'напряжение × ток пака'," in _cq_l10n,
+        "'chg.power_formula': 'pack voltage × current'," in _cq_l10n,
     ]
     if all(_cq3_bits):
-        ok('CQ3 axis labels get a step and the power note matches the real window')
+        ok('CQ3 axis labels get a step and the power note names its real source (V×I)')
     else:
         fail(f'CQ3 axis/label regression: {_cq3_bits}')
 else:
     ok(f"Part CQ skipped (build +{pv}, the event-driven current lands in +214)")
+
+# ═══════ Part CR — 0.2.16+215: точное напряжение доходит до мощности, счётчик ═══════
+# ═══════ только детектор, зеркало на реальном потоке ═══════
+if int(pv) >= 215:
+    _cr_hal = _strip_comments_safe(
+        (root / 'lib/services/hal_telemetry_service.dart').read_text())
+    _cr_res = _strip_comments_safe(
+        (root / 'lib/services/soc_resolver.dart').read_text())
+    _cr_view = _strip_comments_safe(
+        (root / 'lib/screens/wide/charging_view_wide.dart').read_text())
+    _cr_ban = _strip_comments_safe(
+        (root / 'lib/widgets/charging_banner.dart').read_text())
+    _cr_dash = _strip_comments_safe(
+        (root / 'lib/screens/dashboard.dart').read_text())
+
+    # CR1: ПО УСТРОЙСТВУ, А НЕ ПО ИМЕНИ. Любое имя, спрошенное через
+    # `_useHal('x')`, либо событийное (читается из _lastGood по флагу), либо
+    # непрерывное — и тогда `_heldValue` читает _lastGood[x], куда пишут
+    # только _stickyNames. Имя вне обоих наборов — разрешение без значения:
+    # ровно так умерла ветка pack_voltage_fine в +214 (и insulation в +202,
+    # и ячейки в +103). Игла перечисляет все литералы и требует членства.
+    _cr1_sticky = re.search(r'_stickyNames = \{(.*?)\n  \};', _cr_hal, re.S)
+    _cr1_event = re.search(r'_eventDriven = \{(.*?)\n  \};', _cr_hal, re.S)
+    _cr1_names = sorted(set(re.findall(r"_useHal\('([a-z_0-9]+)'\)", _cr_hal)))
+    _cr1_orphans = []
+    if _cr1_sticky and _cr1_event:
+        _cr1_pool = _cr1_sticky.group(1) + _cr1_event.group(1)
+        _cr1_orphans = [n for n in _cr1_names if f"'{n}'" not in _cr1_pool]
+    if _cr1_sticky and _cr1_event and _cr1_names and not _cr1_orphans:
+        ok(f'CR1 every _useHal name is sticky or event-driven ({len(_cr1_names)} names checked)')
+    else:
+        fail(f'CR1 _useHal names without a held value (permission but no number): {_cr1_orphans or "sets unreadable"}')
+
+    # CR2: ЦЕПОЧКА МОЩНОСТИ — ДВА ЗВЕНА, БЕЗ ОЦЕНКИ И БЕЗ «≈». Определитель
+    # возвращает число, не запись; ни один экран не рисует знак
+    # приблизительности, потому что приблизительного источника не осталось.
+    _cr2_bits = [
+        'double resolveChargePowerKw(HalTelemetryService hal, ConnectionService svc)'
+        in _cr_res,
+        'return kwObd > 0 ? kwObd : (kwHal ?? 0);' in _cr_res,
+        'kwSlope' not in _cr_res and 'approx' not in _cr_res,
+        'halEnergySlopePowerKw' not in _cr_res,
+        # Сам знак, не строка «'≈'»: мутация `'≈${kw}'` первую редакцию иглы
+        # обошла (BLIND в первом прогоне CR).
+        '≈' not in _cr_view and '≈' not in _cr_ban and '≈' not in _cr_dash,
+        'final kw = resolveChargePowerKw(hal, svc);' in _cr_view,
+        'final kw = resolveChargePowerKw(hal, svc);' in _cr_ban,
+        'kw: halChargePowerKw,' in _cr_hal,
+    ]
+    if all(_cr2_bits):
+        ok('CR2 power chain is UDS → HAL V×I only; no counter slope, no ≈ anywhere')
+    else:
+        fail(f'CR2 power chain regression: {_cr2_bits}')
+
+    # CR3: ЗЕРКАЛО НА РЕАЛЬНОМ ПОТОКЕ. Текстовые иглы выше не отличают живую
+    # ветку от мёртвой — это и был провал +214. Зеркало гоняет записанную
+    # AC-сессию 05.09 через логику удержания: модель «как было» обязана
+    # совпасть со снимками приложения 1:1 (иначе зеркало врёт), модель
+    # «как стало» — дать число ≥99 % минут.
+    _cr3_script = root / 'tools/mirror_plus215_power.py'
+    _cr3_fix = root / 'tools/data/ac_session_20260905_power.csv'
+    if _cr3_script.exists() and _cr3_fix.exists():
+        try:
+            _cr3 = subprocess.run([sys.executable, str(_cr3_script)],
+                                  cwd=root, capture_output=True, text=True,
+                                  timeout=120)
+            _cr3_out = (_cr3.stdout or '') + (_cr3.stderr or '')
+        except subprocess.TimeoutExpired:
+            _cr3, _cr3_out = None, '(timeout)'
+        if _cr3 is not None and _cr3.returncode == 0 and \
+           'MIRROR PASS' in _cr3_out and \
+           'предсказано верно 151/151' in _cr3_out and \
+           '154/154 = 100.0%' in _cr3_out:
+            ok('CR3 replaying the real AC stream: before matches app snapshots 151/151, after has power 100% of minutes')
+        else:
+            fail('CR3 mirror on the real AC stream failed: ' +
+                 ' | '.join(l for l in _cr3_out.splitlines() if l.strip())[-400:])
+    else:
+        fail('CR3 mirror script or fixture missing')
+else:
+    ok(f"Part CR skipped (build +{pv}, the sticky fine voltage lands in +215)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
