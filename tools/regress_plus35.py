@@ -12045,7 +12045,9 @@ if int(pv) >= 213:
     _cp1_bits = [
         'resolveChargePowerKw(hal, svc)' in _cp_ban,
         'resolveUiSocPct(hal, svc)' in _cp_ban,
-        'hal.halEtaToFullSeconds' in _cp_ban,
+        # v0.2.17+216: ETA баннера — из единого определителя, а не из
+        # пары UDS ?? HAL; предмет CP1 тот же: живой источник, не донгл.
+        'resolveEtaSeconds(hal, svc)' in _cp_ban,
         "svc.readNumeric('790', '0005')" not in _cp_ban,
     ]
     if all(_cp1_bits):
@@ -12170,8 +12172,9 @@ if int(pv) >= 214:
         # v0.2.16+215: окна больше нет вовсе — наклон убран, подпись под
         # мощностью говорит, что это V×I пака. Игла на ФОРМУ ОБЪЯВЛЕНИЯ:
         # в комментариях старые подписи названы намеренно.
-        "'chg.power_formula': 'напряжение × ток пака'," in _cq_l10n,
-        "'chg.power_formula': 'pack voltage × current'," in _cq_l10n,
+        # v0.2.17+216: «пак» → «батарея», водителю так понятнее.
+        "'chg.power_formula': 'напряжение × ток батареи'," in _cq_l10n,
+        "'chg.power_formula': 'battery voltage × current'," in _cq_l10n,
     ]
     if all(_cq3_bits):
         ok('CQ3 axis labels get a step and the power note names its real source (V×I)')
@@ -12260,6 +12263,124 @@ if int(pv) >= 215:
         fail('CR3 mirror script or fixture missing')
 else:
     ok(f"Part CR skipped (build +{pv}, the sticky fine voltage lands in +215)")
+
+# ═══════ Part CS — 0.2.17+216: экран зарядки глазами водителя ═══════
+if int(pv) >= 216:
+    _cs_hal = _strip_comments_safe(
+        (root / 'lib/services/hal_telemetry_service.dart').read_text())
+    _cs_res = _strip_comments_safe(
+        (root / 'lib/services/soc_resolver.dart').read_text())
+    _cs_conn = _strip_comments_safe(
+        (root / 'lib/services/connection.dart').read_text())
+    _cs_view = _strip_comments_safe(
+        (root / 'lib/screens/wide/charging_view_wide.dart').read_text())
+    _cs_ban = _strip_comments_safe(
+        (root / 'lib/widgets/charging_banner.dart').read_text())
+    _cs_dash = _strip_comments_safe(
+        (root / 'lib/screens/dashboard.dart').read_text())
+    _cs_dw = _strip_comments_safe(
+        (root / 'lib/screens/wide/dashboard_wide.dart').read_text())
+    _cs_l10n = (root / 'lib/l10n/strings.dart').read_text()
+
+    # CS1: ПОМЕТКА УДЕРЖАНИЯ МОЛЧИТ ПРИ ШТАТНОМ РИТМЕ. На сессии 05.09 порог
+    # 20 с горел бы 85 % времени с числами до «1146 с назад»; водитель
+    # читает это как поломку. Порог 5 минут, минуты вместо секунд.
+    _cs1_bits = [
+        'static const Duration _kCurrentFreshFor = Duration(minutes: 5);' in _cs_hal,
+        'int? get halPackCurrentAgeMin' in _cs_hal,
+        "'${hal.halPackCurrentAgeMin ?? 0}'" in _cs_view,
+        'halPackCurrentAgeSec ?? 0' not in _cs_view,
+        "'chg.current_held': 'данные тока {n} мин назад'," in _cs_l10n,
+        "'chg.current_held': 'current data {n} min old'," in _cs_l10n,
+    ]
+    if all(_cs1_bits):
+        ok('CS1 held-current note fires only after 5 min and speaks in minutes')
+    else:
+        fail(f'CS1 held-current note regression: {_cs1_bits}')
+
+    # CS2: ФАЗА ПО-ВОДИТЕЛЬСКИ И БЕЗ ОЦЕНОЧНОГО ЦВЕТА. «CC/CV» водителю
+    # ничего не говорят; зелёный/оранжевый читались как «хорошо/внимание»
+    # (И3). Иглы на форму объявления строк и на сам switch цвета.
+    _cs2_color = re.search(r'final phaseColor = switch \(phase\) \{(.*?)\};',
+                           _cs_view, re.S)
+    _cs2_bits = [
+        "'chg.cc_phase': 'Полная мощность'," in _cs_l10n,
+        "'chg.cv_phase': 'Дозаряд · мощность снижается'," in _cs_l10n,
+        "'chg.analyzing': 'определяем…'," in _cs_l10n,
+        "'chg.cc_phase': 'Full power'," in _cs_l10n,
+        "'chg.cv_phase': 'Tapering · power is dropping'," in _cs_l10n,
+        _cs2_color is not None
+        and 'greenAccent' not in _cs2_color.group(1)
+        and 'orangeAccent' not in _cs2_color.group(1)
+        and 'ChargingPhase.almostDone => Colors.lightBlueAccent' in _cs2_color.group(1),
+    ]
+    if all(_cs2_bits):
+        ok('CS2 phase labels speak driver language and carry no evaluative color')
+    else:
+        fail(f'CS2 phase label/color regression: {_cs2_bits}')
+
+    # CS3: ОДНО ВРЕМЯ НА ВСЕХ ЭКРАНАХ. Четыре формулы в четырёх местах
+    # давали два разных времени. Один определитель, четыре потребителя,
+    # прежние формулы и геттеры удалены — включая UDS etaToFullSeconds,
+    # который никто больше не звал.
+    _cs3_bits = [
+        'int? resolveEtaSeconds(HalTelemetryService hal, ConnectionService svc,' in _cs_res,
+        '/ 100 * ConnectionService.batteryCapacityKwh / kw;' in _cs_res,
+        'final etaEff = resolveEtaSeconds(hal, svc);' in _cs_view,
+        'final etaSec = resolveEtaSeconds(hal, svc);' in _cs_ban,
+        'etaSec100: resolveEtaSeconds(hal, svc),' in _cs_dash
+        and 'etaSec80: resolveEtaSeconds(hal, svc, targetPct: 80),' in _cs_dash,
+        'final etaS80 = resolveEtaSeconds(hal, svc, targetPct: 80);' in _cs_dw
+        and 'final chargingPower = resolveChargePowerKw(hal, svc);' in _cs_dw,
+        '65.28 / power' not in _cs_dash and '65.28 / powerKw' not in _cs_dw,
+        'int? get halEtaToFullSeconds' not in _cs_hal,
+        'int? get etaToFullSeconds' not in _cs_conn,
+        'halEtaToFullSeconds' not in _cs_view and 'etaToFullSeconds' not in _cs_ban,
+        "'chg.eta_note': 'по текущей мощности · к концу медленнее'," in _cs_l10n,
+        "'chg.eta_wait'" in _cs_view and _cs_l10n.count("'chg.eta_wait':") == 2,
+    ]
+    if all(_cs3_bits):
+        ok('CS3 one ETA resolver feeds the wide screen, the banner and both dashboards; old formulas gone')
+    else:
+        fail(f'CS3 ETA still split or stale: {_cs3_bits}')
+
+    # CS4: ПАУЗА ЗАРЯДНИКА НЕ ОБНУЛЯЕТ СЕССИЮ. Повод — перетык 05.09 20:39
+    # (пистолет 1 → 2 за 20 с, счётчик в ноль); его старый код пережил бы
+    # сам за счёт 180 с детектора, а вот паузу в 3–6 минут — нет: первый
+    # кадр без зарядки закрывал сессию и «старт N %» обнулялся. Льготное
+    # окно 3 минуты сверх детектора; пауза сбрасывается на возобновлении
+    # и на сбросе сессии.
+    _cs4_bits = [
+        'DateTime? _halChargePausedAt;' in _cs_hal,
+        'static const Duration _kHalChargeReplugGrace = Duration(minutes: 3);' in _cs_hal,
+        '_halChargePausedAt ??= now;' in _cs_hal,
+        'if (now.difference(_halChargePausedAt!) < _kHalChargeReplugGrace) {' in _cs_hal,
+        "debugPrint('hal charge resume: paused=${pausedSec}s'" in _cs_hal,
+        _cs_hal.count('_halChargePausedAt = null;') >= 3,
+    ]
+    if all(_cs4_bits):
+        ok('CS4 a short re-plug keeps the session anchor; only a 3-min pause ends it')
+    else:
+        fail(f'CS4 re-plug grace regression: {_cs4_bits}')
+
+    # CS5: ПОДПИСИ НА СВОИХ МЕСТАХ. Прирост стоит под ЗАРЯДОМ, не под ФАЗОЙ;
+    # «HV bus» ушёл; текст «определяем мощность…» вместо абзаца.
+    _cs5_gain = _cs_view.find("S.of('chg.gain_since')")
+    _cs5_charge = _cs_view.find("caption: S.of('chg.charge_hdr')")
+    _cs5_bits = [
+        -1 < _cs5_charge < _cs5_gain,
+        _cs_view.count("S.of('chg.gain_since')") == 1,
+        'phaseNotes' not in _cs_view,
+        'HV bus' not in _cs_view,
+        "S.of('chg.batt_v')" in _cs_view and _cs_l10n.count("'chg.batt_v':") == 2,
+        "'chg.calc_note': 'определяем мощность…'," in _cs_l10n,
+    ]
+    if all(_cs5_bits):
+        ok('CS5 gain sits under CHARGE, battery voltage is named plainly, calc note is one phrase')
+    else:
+        fail(f'CS5 label placement regression: {_cs5_bits}')
+else:
+    ok(f"Part CS skipped (build +{pv}, the driver-language charging screen lands in +216)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)

@@ -1896,7 +1896,7 @@ MUTATIONS = [
     # v0.2.16+215: подпись стала «напряжение × ток пака» — окна нет вовсе.
     # Предмет тот же: подпись не должна описывать несуществующий источник.
     ('CQ3', L10,
-     "    'chg.power_formula': 'напряжение × ток пака',",
+     "    'chg.power_formula': 'напряжение × ток батареи',",
      "    'chg.power_formula': 'Среднее по росту заряда · окно 5 мин',",
      'вернуть подпись про окно счётчика, которого больше нет'),
 
@@ -1936,6 +1936,53 @@ MUTATIONS = [
      '  static const _coreHold = Duration(seconds: 9);',
      'сузить окно удержания в КОДЕ — зеркало читает его оттуда, покрытие '
      'падает'),
+
+    # CS1 — пометка удержания после 5 минут и в минутах, +216.
+    ('CS1', HTS,
+     '  static const Duration _kCurrentFreshFor = Duration(minutes: 5);',
+     '  static const Duration _kCurrentFreshFor = Duration(seconds: 20);',
+     'вернуть порог 20 с — пометка горит 85 % времени на AC'),
+    ('CS1', CW,
+     "                  '{n}', '${hal.halPackCurrentAgeMin ?? 0}')",
+     "                  '{n}', '${hal.halPackCurrentAgeSec ?? 0}')",
+     'вернуть секунды — «1146 с назад» на экране'),
+
+    # CS2 — фаза по-водительски, без оценочного цвета, +216.
+    ('CS2', L10,
+     "    'chg.cc_phase': 'Полная мощность',",
+     "    'chg.cc_phase': 'CC фаза',",
+     'вернуть инженерный «CC фаза»'),
+    ('CS2', CW,
+     '      ChargingPhase.cv => Colors.white,',
+     '      ChargingPhase.cv => Colors.orangeAccent,',
+     'вернуть оранжевый CV — норма выглядит предупреждением'),
+
+    # CS3 — одно время на всех экранах, +216.
+    ('CS3', CW,
+     '    final etaEff = resolveEtaSeconds(hal, svc);',
+     '    final etaEff = hal.halEtaToFullSeconds;',
+     'вернуть экрану свой ETA по темпу SOC — два времени на двух экранах'),
+    ('CS3', 'lib/screens/wide/dashboard_wide.dart',
+     "      if (etaH100 != null) '→100% ${fmtH(etaH100!)}',",
+     "      if (powerKw > 0.1 && socPct != null)\n"
+     "        '→100% ${fmtH((100 - socPct!) / 100 * 65.28 / powerKw)}',",
+     'вернуть широкому дэшборду свою формулу'),
+
+    # CS4 — перетык не обнуляет сессию, +216.
+    ('CS4', HTS,
+     '        if (now.difference(_halChargePausedAt!) < _kHalChargeReplugGrace) {\n'
+     '          return;\n        }',
+     '',
+     'закрывать сессию первым кадром без зарядки — пауза зарядника '
+     'обнуляет «старт N %»'),
+
+    # CS5 — подписи на своих местах, +216.
+    ('CS5', CW,
+     "              if (gain != null)\n"
+     "                S.of('chg.gain_since').replaceFirst('{n}', gain.toStringAsFixed(2)),\n"
+     "            ],\n          ),\n        ),\n    ];",
+     "            ],\n          ),\n        ),\n    ];",
+     'убрать прирост с плитки ЗАРЯД'),
 ]
 
 

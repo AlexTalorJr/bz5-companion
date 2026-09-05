@@ -213,8 +213,11 @@ class _LeftColumn extends StatelessWidget {
     // debounce-confirmed detector from the SOH machine; power falls back to
     // |pack V × I| from HAL when the UDS value is dead.
     final isCharging = svc.isCharging || hal.halChargingActive;
-    final chargingPower =
-        svc.isCharging ? svc.chargingPowerKw : (hal.halChargePowerKw ?? 0.0);
+    // v0.2.17+216: четвёртая копия цепочки мощности ушла в определитель,
+    // время — из него же (панель считала сама по 65.28 / мощность).
+    final chargingPower = resolveChargePowerKw(hal, svc);
+    final etaS80 = resolveEtaSeconds(hal, svc, targetPct: 80);
+    final etaS100 = resolveEtaSeconds(hal, svc);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -240,6 +243,8 @@ class _LeftColumn extends StatelessWidget {
           child: _ChargingPanel(
             isCharging: isCharging,
             powerKw: chargingPower,
+            etaH80: etaS80 == null ? null : etaS80 / 3600.0,
+            etaH100: etaS100 == null ? null : etaS100 / 3600.0,
             // v0.1.44+143 §A2: dongle-free fallback — same ΔSOC×capacity
             // formula from the HAL session anchor when the UDS figure is
             // dead (no dongle).
@@ -474,10 +479,15 @@ class _ChargingPanel extends StatelessWidget {
   final double? chargeCurrentA;
   final double? packVoltageV;
   final double? batteryTempC;
+  // v0.2.17+216: часы до 80 % и 100 % из resolveEtaSeconds, null = нет.
+  final double? etaH80;
+  final double? etaH100;
   const _ChargingPanel({
     required this.isCharging,
     required this.powerKw,
     this.chargedSession,
+    this.etaH80,
+    this.etaH100,
     this.socPct,
     this.socDeltaPct,
     this.chargeCurrentA,
@@ -509,8 +519,8 @@ class _ChargingPanel extends StatelessWidget {
       );
     }
 
-    // v0.1.44+143 §A3: ETA to 80% (Q1 yes) and 100% from the live power +
-    // real SOC — both gated on a real SOC (no fabricated 0%).
+    // v0.1.44+143 §A3: ETA to 80% (Q1 yes) and 100%. v0.2.17+216: числа
+    // приходят из resolveEtaSeconds, здесь только формат.
     String fmtH(double h) {
       final hours = h.floor();
       final mins = ((h - hours) * 60).round();
@@ -524,10 +534,8 @@ class _ChargingPanel extends StatelessWidget {
       if (chargeCurrentA != null) '${chargeCurrentA!.toStringAsFixed(1)} A',
       if (packVoltageV != null) '${packVoltageV!.toStringAsFixed(0)} V',
       if (batteryTempC != null) '${batteryTempC!.toStringAsFixed(0)}°C',
-      if (powerKw > 0.1 && socPct != null && socPct! < 80)
-        '→80% ${fmtH((80 - socPct!) / 100 * 65.28 / powerKw)}',
-      if (powerKw > 0.1 && socPct != null)
-        '→100% ${fmtH((100 - socPct!) / 100 * 65.28 / powerKw)}',
+      if (etaH80 != null) '→80% ${fmtH(etaH80!)}',
+      if (etaH100 != null) '→100% ${fmtH(etaH100!)}',
     ];
     final statsLine = parts.isEmpty ? null : parts.join(' · ');
 

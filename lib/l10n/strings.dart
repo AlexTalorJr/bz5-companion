@@ -1232,22 +1232,30 @@ class S {
     'hist.pack_voltage': 'Pack voltage',
 
     'chg.power_hdr': 'CHARGING POWER',
-    'chg.calc_note': 'Calculating… need ≥0.3% SOC growth to overcome '
-        'quantization noise '
-        '(~7 min at 2 kW AC, ~3 min at 7 kW AC, ~20 sec at 50 kW DC)',
+    // v0.2.17+216: the paragraph about quantization noise and three charger
+    // types was engineering text at 13 dp; on the head unit power appears
+    // within the 20 s debounce, so the line lives seconds and said the
+    // wrong thing. Driver language now.
+    'chg.calc_note': 'measuring power…',
     // v0.2.15+214: said "up to 10 min" while _kHalSlopeMaxSpan is 5 — text
     // and code had drifted apart. Also shortened: at 13 dp the old wording
     // was clipped mid-word by the +213 ellipsis ("окно до 10…" in the field
     // photo), so the one number that mattered never made it to the screen.
-    'chg.power_formula': 'pack voltage × current',
-    'chg.analyzing': 'analyzing…',
-    'chg.cv_phase': 'CV phase (tapering)',
+    'chg.power_formula': 'battery voltage × current',
+    // v0.2.17+216: driver language for the phase. "CC"/"CV" mean nothing
+    // to a driver; what they need is whether the car is at full power or
+    // already tapering.
+    'chg.analyzing': 'checking…',
+    'chg.cv_phase': 'Tapering · power is dropping',
     'chg.almost_done': 'Almost done',
     'chg.phase': 'PHASE',
     'chg.gain_since': '+{n}% since plug-in',
     'chg.eta100': 'ETA TO 100%',
-    'chg.need5': 'need ≥5 min of data',
-    'chg.eta_note': 'linear extrapolation · curves to longer in CV',
+    // v0.2.17+216: ETA comes from power now, no data-collection wait.
+    'chg.eta_wait': 'waiting for power and charge level',
+    'chg.eta_note': 'at current power · slower near the end',
+    'chg.batt_v': 'battery {v} V',
+    'chg.batt_v_none': 'battery —',
     'chg.collecting': 'collecting… ({n} samples)',
     'chg.power': 'POWER',
     'chg.kw_vs_min': 'kW vs minutes',
@@ -1260,10 +1268,10 @@ class S {
     'chg.soc_gain': 'SOC GAIN',
     'chg.since_plugin': 'since plug-in',
     // v0.2.14+213: charging-screen redesign strings.
-    'chg.cc_phase': 'CC phase',
+    'chg.cc_phase': 'Full power',
     // v0.2.15+214: shown instead of the formula note when pack current is
     // being HELD (event-driven signal, gaps of minutes are normal).
-    'chg.current_held': 'current held · {n} s ago',
+    'chg.current_held': 'current data {n} min old',
     'chg.charge_hdr': 'CHARGE',
     'chg.soc_start': 'start {n} %',
     'chg.soc_target': 'target 100 %',
@@ -2509,22 +2517,30 @@ class S {
     'hist.pack_voltage': 'Напряжение пака',
 
     'chg.power_hdr': 'МОЩНОСТЬ ЗАРЯДКИ',
-    'chg.calc_note': 'Расчёт… нужен прирост SOC ≥0.3%, чтобы перекрыть '
-        'шум квантования '
-        '(~7 мин на 2 kW AC, ~3 мин на 7 kW AC, ~20 сек на 50 kW DC)',
+    // v0.2.17+216: абзац про шум квантования и три типа зарядки — инженерный
+    // текст в 13 dp; на голове мощность появляется за 20 с дебаунса, строка
+    // живёт секунды и говорит не о том. Теперь по-водительски.
+    'chg.calc_note': 'определяем мощность…',
     // v0.2.15+214: было «окно до 10 минут» при константе 5 — текст и код
     // разошлись. И укорочено: на 13 dp прежняя формулировка обрезалась
     // многоточием из +213 ровно на числе («окно до 10…» на фото), то есть
     // единственное важное в ней до экрана не доходило.
-    'chg.power_formula': 'напряжение × ток пака',
-    'chg.analyzing': 'анализ…',
-    'chg.cv_phase': 'CV фаза (затухание)',
+    'chg.power_formula': 'напряжение × ток батареи',
+    // v0.2.17+216: фаза по-водительски. «CC»/«CV» водителю ничего не
+    // говорят; ему нужно знать, идёт ли зарядка полной мощностью или уже
+    // сбавляет.
+    'chg.analyzing': 'определяем…',
+    'chg.cv_phase': 'Дозаряд · мощность снижается',
     'chg.almost_done': 'Почти готово',
     'chg.phase': 'ФАЗА',
     'chg.gain_since': '+{n}% с подключения',
     'chg.eta100': 'ДО 100%',
-    'chg.need5': 'нужно ≥5 минут данных',
-    'chg.eta_note': 'линейная экстраполяция · в CV дольше',
+    // v0.2.17+216: время считается по мощности, накопления данных нет.
+    'chg.eta_wait': 'ждём мощность и уровень заряда',
+    'chg.eta_note': 'по текущей мощности · к концу медленнее',
+    // Единицы латиницей, как везде в приложении (kW, V, A, mV).
+    'chg.batt_v': 'батарея {v} V',
+    'chg.batt_v_none': 'батарея —',
     'chg.collecting': 'накопление… ({n} сэмплов)',
     'chg.power': 'МОЩНОСТЬ',
     'chg.kw_vs_min': 'kW по минутам',
@@ -2537,10 +2553,10 @@ class S {
     'chg.soc_gain': 'ПРИРОСТ SOC',
     'chg.since_plugin': 'с момента подключения',
     // v0.2.14+213: строки редизайна экрана зарядки.
-    'chg.cc_phase': 'CC фаза',
+    'chg.cc_phase': 'Полная мощность',
     // v0.2.15+214: ставится вместо строки формулы, когда ток пака
     // УДЕРЖИВАЕТСЯ (сигнал событийный, разрывы в минуты — норма).
-    'chg.current_held': 'ток удерживается · {n} с назад',
+    'chg.current_held': 'данные тока {n} мин назад',
     'chg.charge_hdr': 'ЗАРЯД',
     'chg.soc_start': 'старт {n} %',
     'chg.soc_target': 'цель 100 %',

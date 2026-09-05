@@ -865,6 +865,18 @@ class HalTelemetryService extends ChangeNotifier
   // the ΔSOC (latching the start SOC only after the debounce would exclude
   // ~0.7% SOC of DC charge from ΔSOC and understate SOH).
   bool _halSohSessionAnchored = false;
+  // v0.2.17+216: момент, с которого заякоренная сессия НЕ видит зарядки.
+  // null — зарядка идёт. Сессия закрывается только если пауза пережила
+  // _kHalChargeReplugGrace. Повод — перетык 05.09 20:39:29 (пистолет
+  // 1 → 2 за 20 с, счётчик 4.353 → 0). ЧЕСТНО: тот конкретный перетык
+  // пережил бы и старый код — детектор по счётчику сам держит 180 с после
+  // последнего роста, и до кадра «не заряжаемся» дело не дошло. Окно здесь
+  // защищает паузы длиннее: зарядник, который замолчал на 3–6 минут
+  // (расписание, просадка сети), больше не обнуляет «старт N %» и прирост
+  // после часов зарядки. Суммарно сессия переживает ≈6 минут тишины:
+  // 180 с детектора плюс 3 минуты окна.
+  DateTime? _halChargePausedAt;
+  static const Duration _kHalChargeReplugGrace = Duration(minutes: 3);
   // ── v0.2.13+212: честная подпись сумм сессии, HAL-половина ──
   //
   // Та же беда, что в connection.dart: якорь ниже встаёт на ПЕРВОМ кадре
@@ -1201,19 +1213,6 @@ class HalTelemetryService extends ChangeNotifier
   /// v0.2.11+210: ETA до 100 % по средней скорости роста SOC за сессию.
   /// Осторожные ворота: >=2 мин наблюдения и >=0.5 % набранного SOC,
   /// иначе оценка — шум. Дополняет OBD-ETA, никогда не заменяет.
-  int? get halEtaToFullSeconds {
-    final started = halChargeSessionStartedAt;
-    final d = halChargeSessionSocDeltaPct;
-    final cur = halSocForTrip;
-    if (started == null || d == null || cur == null || d < 0.5) return null;
-    final elapsed = DateTime.now().difference(started).inSeconds;
-    if (elapsed < 120) return null;
-    final rate = d / elapsed;
-    if (rate <= 0) return null;
-    final remain = (100.0 - cur) / rate;
-    return remain.isFinite && remain > 0 ? remain.round() : null;
-  }
-
   bool? get halChargerConnected {
     // v0.2.11+210: пистолет — ПЕРВИЧНЫЙ источник. Поле 18.08: AC-сессия
     // дала события пистолета (2 при втыкании, 1 при выдёргивании) и НИ
@@ -1344,16 +1343,27 @@ class HalTelemetryService extends ChangeNotifier
   /// как сегодняшнее. Здесь ответ на вопрос «оно ещё измеряется?» — экран
   /// подписывает возраст вместо того, чтобы притворяться.
   ///
-  /// Порог 20 с выбран по данным: медианный период тока на AC-сессии 3 с,
-  /// то есть 20 с заведомо больше обычного интервала и заведомо меньше
-  /// наблюдавшихся разрывов 121 и 221 с.
+  /// v0.2.17+216: порог поднят с 20 с до 5 минут. Прежние 20 с выбирались
+  /// по медиане 3 с с сессии 28.08; на сессии 05.09 разрывы тока кратны
+  /// 30 с, медиана 60 с, и пометка горела бы 85 % времени с числами до
+  /// «1146 с назад». Для машины это штатный ритм, значение верно всю
+  /// сессию — а водитель читает такую строку как неисправность. Пять минут
+  /// молчания это уже 28 % времени и действительно долгий разрыв; ниже
+  /// экран молчит. Возраст наружу отдаётся в минутах ([halPackCurrentAgeMin]),
+  /// секунды на экране не читаются.
   bool get halPackCurrentHeld {
     final s = _lastGood['pack_current'];
     if (s == null) return false;
     return DateTime.now().difference(s.at) > _kCurrentFreshFor;
   }
 
-  static const Duration _kCurrentFreshFor = Duration(seconds: 20);
+  /// Возраст удерживаемого тока в целых минутах для подписи на экране.
+  int? get halPackCurrentAgeMin {
+    final s = halPackCurrentAgeSec;
+    return s == null ? null : s ~/ 60;
+  }
+
+  static const Duration _kCurrentFreshFor = Duration(minutes: 5);
 
   /// Flow direction mirroring ConnectionService.powerFlowDirection
   /// (1 discharge / −1 regen-or-charge / 0 near zero). Same ±3 A
@@ -2596,6 +2606,18 @@ class HalTelemetryService extends ChangeNotifier
     final chargingNow = stationary && (chargingLevel || energyRising);
 
     if (chargingNow) {
+      // v0.2.17+216: зарядка вернулась внутри льготного окна — сессия та же,
+      // якорь и суммы живут дальше. Запись в журнал, чтобы по экспорту
+      // было видно склеивание, а не гадать по «старт N %».
+      if (_halChargePausedAt != null) {
+        final pausedSec = now.difference(_halChargePausedAt!).inSeconds;
+        _halChargePausedAt = null;
+        if (_halSohSessionAnchored) {
+          debugPrint('hal charge resume: paused=${pausedSec}s'
+              ' anchor kept, counter='
+              '${halValue('charge_energy_kwh')?.toStringAsFixed(2) ?? '—'}');
+        }
+      }
       // Anchor on the FIRST charge-level frame so the start SOC and the
       // integral both begin at plug-in, not 20 s later. _halSohChargeConfirm
       // then gates VALIDITY (a brief glitch that doesn't last the debounce is
@@ -2705,6 +2727,17 @@ class HalTelemetryService extends ChangeNotifier
       // past the debounce; either way reset so the next charge starts clean.
       // A glitch that anchored but never confirmed is dropped silently.
       if (_halSohSessionAnchored) {
+        // v0.2.17+216: не закрывать сессию первым же кадром без зарядки.
+        // Сюда попадаем уже ПОСЛЕ того, как детектор молчал 180 с; пауза
+        // короче _kHalChargeReplugGrace сверх этого — перетык или пауза
+        // зарядника, якорь остаётся. Экран при этом честен сам по себе:
+        // halChargingActive уже погас по ритму счётчика, от якоря он не
+        // зависит. Дольше окна — настоящий конец.
+        _halChargePausedAt ??= now;
+        if (now.difference(_halChargePausedAt!) < _kHalChargeReplugGrace) {
+          return;
+        }
+        _halChargePausedAt = null;
         // v0.1.44+143 diag: session end with the counter delta from the
         // anchor — an independent third figure next to the Ah integral and
         // the ΔSOC path for the first-AC export cross-check.
@@ -3057,6 +3090,7 @@ class HalTelemetryService extends ChangeNotifier
   /// Clear the HAL SOH session state for the next charge.
   void _resetHalSohSession() {
     _halSohCharging = false;
+    _halChargePausedAt = null;
     // v0.1.44+143: per-session counter anchor dies with the session; the
     // derivative tracker state itself persists (the counter is a lifetime
     // total shared across sessions).

@@ -110,6 +110,33 @@ double resolveChargePowerKw(HalTelemetryService hal, ConnectionService svc) {
   return kwObd > 0 ? kwObd : (kwHal ?? 0);
 }
 
+/// Единственное место, где решается «сколько ждать».
+///
+/// v0.2.17+216: до этого время до полного считалось ЧЕТЫРЬМЯ способами в
+/// четырёх местах — панели дэшбордов делили остаток kWh на мощность и
+/// отвечали сразу, широкий экран и баннер ждали ≥0.5 % роста SOC и две
+/// минуты, потом делили темп роста (в подписи при этом стояло «нужно ≥5
+/// минут», хотя 0.5 % на 2.9 kW набегает за семь). Водитель видел два
+/// разных времени на двух экранах. Теперь мощность V×I надёжна всю сессию
+/// (+215), и ждать нечего: остаток ёмкости до цели, делённый на мощность.
+///
+/// SOC берётся ТОЧНЫЙ, не тот, что выбран для показа (+131): это
+/// арифметика, а не цифра на экране. null — нет мощности или заряда, либо
+/// цель уже достигнута. Оценка линейная и к концу занижает: в CV ток
+/// падает, подпись на экране об этом говорит.
+int? resolveEtaSeconds(HalTelemetryService hal, ConnectionService svc,
+    {double targetPct = 100}) {
+  final kw = resolveChargePowerKw(hal, svc);
+  if (kw <= 0.1) return null;
+  final soc = hal.useHalForSoc
+      ? hal.halSocPct
+      : (svc.socPrecisePct ?? svc.readNumeric('790', '0005'));
+  if (soc == null || soc >= targetPct) return null;
+  final hours =
+      (targetPct - soc) / 100 * ConnectionService.batteryCapacityKwh / kw;
+  return (hours * 3600).round();
+}
+
 /// Фаза зарядки, считаемая от любого живого источника.
 ///
 /// Правило то же, что жило в `ConnectionService.chargingPhase`, но входы

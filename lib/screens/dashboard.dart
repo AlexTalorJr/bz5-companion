@@ -755,9 +755,12 @@ class _Connected extends StatelessWidget {
             // счётчика) рядом с широким экраном и баннером, и +213, сводя две
             // из них, эту пропустил. Наклон убран отовсюду, знак «≈» с ним.
             powerKw: resolveChargePowerKw(hal, svc),
+            // v0.2.17+216: время до 100 % и 80 % — из единого определителя,
+            // как на широком экране и в баннере. Панель считала сама.
+            etaSec100: resolveEtaSeconds(hal, svc),
+            etaSec80: resolveEtaSeconds(hal, svc, targetPct: 80),
             // v0.1.32+131: deliberately NOT resolveUiSocPct — this value
-            // feeds the remaining-kWh/ETA math, and math stays on precise
-            // regardless of the display setting.
+            // is the SOC the panel prints, math lives in the resolver.
             socOverridePct:
                 hal.useHalForSoc ? hal.halSocPct : svc.socPrecisePct,
             // v0.1.44+143 §A3: live session stats — Δ from the HAL session
@@ -1304,6 +1307,8 @@ class _ChargingBanner extends StatelessWidget {
   // (UDS → HAL |V×I|), 0 = числа нет. socOverridePct = the resolved SOC the
   // SOC card already shows; null → identical to the old UDS-only path.
   final double powerKw;
+  final int? etaSec100;
+  final int? etaSec80;
   final double? socOverridePct;
   // v0.1.44+143 §A3: live session stats, all honesty-nulls — a row renders
   // ONLY when its value is live. socDeltaPct = SOC gained since the HAL
@@ -1318,6 +1323,8 @@ class _ChargingBanner extends StatelessWidget {
     required this.svc,
     this.chargedSession,
     required this.powerKw,
+    this.etaSec100,
+    this.etaSec80,
     this.socOverridePct,
     this.socDeltaPct,
     this.chargeCurrentA,
@@ -1329,15 +1336,12 @@ class _ChargingBanner extends StatelessWidget {
   Widget build(BuildContext context) {
     final power = powerKw;
     final socReal = socOverridePct ?? svc.readNumeric('790', '0005');
-    final soc = socReal ?? 0;
-    final remainingKwh = (100 - soc) / 100 * 65.28;
-    final etaHours = power > 0.1 ? remainingKwh / power : null;
     // v0.1.44+143 §A3 (Q1 yes): ETA to 80% next to ETA to 100% — the DC
-    // etiquette figure. Gated on a REAL SOC below 80 (no `?? 0` here: a
-    // fabricated 0% would show a bogus 80%-ETA on every UDS-only charge).
-    final etaHours80 = (power > 0.1 && socReal != null && socReal < 80)
-        ? (80 - socReal) / 100 * 65.28 / power
-        : null;
+    // etiquette figure. v0.2.17+216: оба числа приходят готовыми из
+    // resolveEtaSeconds (цель 80 там сама отсекает SOC ≥ 80 и отсутствие
+    // заряда) — здесь только перевод в часы для формата.
+    final etaHours = etaSec100 == null ? null : etaSec100! / 3600.0;
+    final etaHours80 = etaSec80 == null ? null : etaSec80! / 3600.0;
     // Compact live line: current · voltage · battery temp, present parts
     // only (honesty — no dashes for dead values).
     final liveParts = <String>[
@@ -1499,7 +1503,7 @@ class _TripCard extends StatelessWidget {
 
 /// Bump when changing the diagnostic format — helps cross-reference
 /// screenshots to specific app versions while iterating.
-const String _kDiagVersion = 'v0.2.16+215';
+const String _kDiagVersion = 'v0.2.17+216';
 
 /// v0.1.29+94: public alias of the build version string for display outside
 /// dashboard (e.g. the About screen's APP card). Single literal source — the

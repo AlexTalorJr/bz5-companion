@@ -4115,37 +4115,9 @@ class ConnectionService extends ChangeNotifier {
     return ChargingPhase.cc;
   }
 
-  /// ETA to 100% SOC in seconds, or null if the rate of SOC change can't
-  /// be confidently extrapolated yet (too few samples, or SOC not rising).
-  ///
-  /// Uses simple linear regression on the last ~5 minutes of SOC samples
-  /// in [_chargingHistory]. Falls back to null on degenerate input.
-  ///
-  /// CAVEAT: linear extrapolation overestimates remaining time in the CV
-  /// taper region — real SOC vs time on LFP starts to curve below ~95%
-  /// as current drops. UI labels this ETA as "~minutes" rather than
-  /// pretending to be precise.
-  int? get etaToFullSeconds {
-    if (_chargingHistory.length < 6) return null;
-    final soc = socPrecisePct ?? readNumeric('790', '0005');
-    if (soc == null || soc >= 99.9) return null;
-
-    // Use last 5 minutes of samples.
-    final cutoff = DateTime.now().subtract(const Duration(minutes: 5));
-    final recent =
-        _chargingHistory.where((s) => s.time.isAfter(cutoff) && s.socPct != null).toList();
-    if (recent.length < 4) return null;
-
-    final first = recent.first;
-    final last = recent.last;
-    final socDelta = (last.socPct ?? 0) - (first.socPct ?? 0);
-    final dtSec = last.time.difference(first.time).inSeconds.toDouble();
-    if (dtSec < 30 || socDelta <= 0.05) return null;
-
-    final ratePctPerSec = socDelta / dtSec;
-    final remainingPct = 100.0 - soc;
-    return (remainingPct / ratePctPerSec).round();
-  }
+  // v0.2.17+216: `etaToFullSeconds` (темп роста SOC за 5 минут) удалён —
+  // время до полного считает resolveEtaSeconds в soc_resolver.dart по
+  // мощности, одинаково для всех экранов. Здесь его никто не звал.
 
   /// v0.1.26: take a manual point-in-time snapshot of key BMS/VCU values
   /// into both the DB Snapshots table and a returned map (for clipboard

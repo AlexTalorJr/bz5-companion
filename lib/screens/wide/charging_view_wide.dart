@@ -31,9 +31,9 @@ import '../../services/locale_service.dart';
 /// is active. Charts gracefully render as "collecting…" when fewer
 /// than 2 points are present (start of session).
 ///
-/// Phase / ETA logic lives in [ConnectionService] (`chargingPhase`,
-/// `etaToFullSeconds`) so the heuristics can be unit-tested separately
-/// and reused later (e.g. in a status banner on the phone view).
+/// Phase / power / ETA logic lives in soc_resolver.dart
+/// (`resolveChargingPhase`, `resolveChargePowerKw`, `resolveEtaSeconds`),
+/// shared with the banner and both dashboards — one answer per question.
 /// v0.1.29+56: layout is adaptive. On wide (≥840 dp: BZ5 head unit)
 /// the original three-row flex layout renders as designed. On narrow
 /// (phone, BZ3 tall portrait at 720 dp) the same content reflows
@@ -394,24 +394,27 @@ class _TopHeroRow extends StatelessWidget {
       ChargingPhase.cv => S.of('chg.cv_phase'),
       ChargingPhase.almostDone => S.of('chg.almost_done'),
     };
+    // v0.2.17+216: цвет фазы нейтральный. Зелёный CC / оранжевый CV читались
+    // как «хорошо / внимание», а CV — норма, не предупреждение (И3: никакой
+    // оценочной окраски). Выделяется только «Почти готово» — это событие для
+    // водителя, а не оценка процесса.
     final phaseColor = switch (phase) {
       ChargingPhase.unknown => Colors.grey,
-      ChargingPhase.cc => Colors.greenAccent,
-      ChargingPhase.cv => Colors.orangeAccent,
+      ChargingPhase.cc => Colors.white,
+      ChargingPhase.cv => Colors.white,
       ChargingPhase.almostDone => Colors.lightBlueAccent,
     };
 
     final soc = resolveUiSocPct(hal, svc) ?? svc.readNumeric('790', '0005');
     final gain =
         svc.socGainedThisChargingSessionPct ?? hal.halChargeSessionSocDeltaPct;
-    final etaEff = svc.etaToFullSeconds ?? hal.halEtaToFullSeconds;
+    // v0.2.17+216: время до полного из единого определителя — прежде экран
+    // ждал 0.5 % роста SOC и две минуты, панель дэшборда отвечала сразу
+    // по мощности, и на двух экранах стояли два разных времени.
+    final etaEff = resolveEtaSeconds(hal, svc);
     final startSoc =
         svc.chargingSessionStartSocPct ?? hal.halChargeSessionStartSoc;
 
-    final phaseNotes = <String>[
-      if (gain != null)
-        S.of('chg.gain_since').replaceFirst('{n}', gain.toStringAsFixed(2)),
-    ];
 
     return [
       (
@@ -429,14 +432,19 @@ class _TopHeroRow extends StatelessWidget {
           valueColor: kw > 0 ? Colors.amberAccent : Colors.grey,
           unit: 'kW',
           notes: [
-            hv != null ? 'HV bus ${hv.toStringAsFixed(1)} V' : 'HV bus —',
+            // v0.2.17+216: «HV bus» — жаргон; водителю это напряжение батареи.
+            hv != null
+                ? S.of('chg.batt_v').replaceFirst('{v}', hv.toStringAsFixed(0))
+                : S.of('chg.batt_v_none'),
             // v0.2.15+214: ток пака теперь удерживается бессрочно (он
             // событийный), поэтому экран обязан сказать, когда показывает
             // удержанное, а не измеренное. Молча держать — значит выдавать
             // минутной давности число за сегодняшнее.
+            // v0.2.17+216: минуты, не секунды, и только после 5 минут
+            // тишины — на AC ток штатно молчит по минуте, это не событие.
             if (hal.halPackCurrentHeld)
               S.of('chg.current_held').replaceFirst(
-                  '{n}', '${hal.halPackCurrentAgeSec ?? 0}')
+                  '{n}', '${hal.halPackCurrentAgeMin ?? 0}')
             else if (isCalibrating)
               S.of('chg.calc_note')
             else
@@ -451,7 +459,7 @@ class _TopHeroRow extends StatelessWidget {
           value: phaseLabel,
           valueSize: 30,
           valueColor: phaseColor,
-          notes: phaseNotes,
+          notes: const [],
         ),
       ),
       (
@@ -462,7 +470,7 @@ class _TopHeroRow extends StatelessWidget {
           valueSize: 30,
           valueColor: Colors.lightBlueAccent,
           notes: [
-            etaEff == null ? S.of('chg.need5') : S.of('chg.eta_note'),
+            etaEff == null ? S.of('chg.eta_wait') : S.of('chg.eta_note'),
           ],
         ),
       ),
@@ -487,12 +495,16 @@ class _TopHeroRow extends StatelessWidget {
                     const AlwaysStoppedAnimation<Color>(Colors.lightBlueAccent),
               ),
             ),
+            // v0.2.17+216: прирост переехал сюда из плитки ФАЗА — он про
+            // заряд и стоит рядом со «старт N %», из которого вырос.
             notes: [
               startSoc != null
                   ? S
                       .of('chg.soc_start')
                       .replaceFirst('{n}', startSoc.toStringAsFixed(1))
                   : S.of('chg.soc_target'),
+              if (gain != null)
+                S.of('chg.gain_since').replaceFirst('{n}', gain.toStringAsFixed(2)),
             ],
           ),
         ),

@@ -22,7 +22,7 @@
 // History note: ChargingViewWide (v0.1.26) was originally activated by
 // conditional substitution inside DriverViewWideScreen. That wiring was
 // silently lost in a later refactor — the screen became an orphan while
-// its data plumbing (chargingHistory, chargingPhase, etaToFullSeconds)
+// its data plumbing (chargingHistory, chargingPhase, the ETA of the day)
 // kept running in ConnectionService. The banner approach is deliberately
 // LOUD in the widget tree (a visible wrapper at scaffold level) so a
 // future refactor can't drop it without someone noticing the diff.
@@ -192,7 +192,8 @@ class _ChargingBanner extends StatelessWidget {
     final hal = context.watch<HalTelemetryService>();
     final kw = resolveChargePowerKw(hal, svc);
     final soc = resolveUiSocPct(hal, svc);
-    final etaSec = svc.etaToFullSeconds ?? hal.halEtaToFullSeconds;
+    // v0.2.17+216: единый определитель времени — тот же, что на экране.
+    final etaSec = resolveEtaSeconds(hal, svc);
 
     final parts = <String>[];
     if (kw > 0) {
