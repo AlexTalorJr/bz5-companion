@@ -2058,7 +2058,9 @@ class HalTelemetryService extends ChangeNotifier
               idleSeconds: a.idleSecs,
               regenEnergyKwh: a.regenKwh,
             )
-            .catchError((_) {});
+            .catchError((Object err) {
+          _noteDbFailure('touchTripAlive', err);
+        });
       }
     }
 
@@ -2197,8 +2199,12 @@ class HalTelemetryService extends ChangeNotifier
             '${join.start.toIso8601String()} → ${join.end.toIso8601String()}, '
             '${join.distanceKm.toStringAsFixed(1)} км, строк $n');
       }
-    } catch (_) {
-      // best-effort — no DB row, history just won't include this drive
+    } catch (e) {
+      // best-effort — no DB row, so history will not include this drive.
+      // +218: it used to happen without a word; now the ring carries the
+      // exception. Which call threw (startTrip, the tail join, the
+      // stamping) is not named — only the database's own message is.
+      _noteDbFailure('openHalTripRow', e);
     }
   }
 
@@ -2350,8 +2356,9 @@ class HalTelemetryService extends ChangeNotifier
         startSoc: _halTripStartSoc,
         startOdo: _halTripStartOdo,
       );
-    } catch (_) {
-      // best-effort
+    } catch (e) {
+      // best-effort; logged since +218
+      _noteDbFailure('updateTripStartAnchors', e);
     }
   }
 
@@ -2494,7 +2501,9 @@ class HalTelemetryService extends ChangeNotifier
         .then((_) => db.countHalSamplesForTrip(id))
         .then((n) => db.updateTripSampleCount(id, n))
         .then((_) => refreshTotalDriveEnergy())
-        .catchError((_) {});
+        .catchError((Object err) {
+      _noteDbFailure('closeHalTrip', err);
+    });
 
     // v0.2.9+208: ротация замеров HAL — второй финализатор. Крюк +205
     // стоял только в ConnectionService (OBD-путь) и на ГУ без донгла не
@@ -3688,7 +3697,7 @@ class HalTelemetryService extends ChangeNotifier
                 name: e.name,
                 numeric: v,
               )
-              .catchError((_) => 0);
+              .catchError((Object err) => _noteDbFailure('insertHalSignal', err));
         }
       }
       return;
@@ -3824,6 +3833,43 @@ class HalTelemetryService extends ChangeNotifier
   static const Duration _halDiagThrottle = Duration(seconds: 3);
   final Map<String, DateTime> _halDiagLastLog = {};
 
+  // ── DB write failures are logged, one line per operation per 30 s (+218) ──
+  //
+  // Every fire-and-forget write in this service used to end in an empty
+  // catch or a handler returning a dummy value: a trip row that failed to
+  // open, aggregates that never landed, a signal row that never got in — all
+  // silent, and the head unit has no ADB. The lines now go through
+  // debugPrint into AppDiagLog, which +218 also ships inside every export.
+  // Throttled per operation because a dying database fails every write of
+  // the 3-second signal logger, and unthrottled that would push everything
+  // else out of the 1500-line ring within minutes. Suppressed repeats are
+  // counted in one shared counter (not per operation) and reported on the
+  // next line that gets through, whichever operation that is.
+  static const Duration _kDbFailLogGap = Duration(seconds: 30);
+  // Monotonic on purpose: the head unit's wall clock jumps at boot when
+  // GPS time arrives minutes after start. Measured against DateTime.now()
+  // a backward jump would mute this log for the length of the jump; a
+  // Stopwatch cannot jump.
+  final Stopwatch _dbFailClock = Stopwatch()..start();
+  final Map<String, Duration> _dbFailLastLog = {};
+  int _dbFailSuppressed = 0;
+
+  /// Returns 0 so it can stand in as the value of a failed `Future<int>`.
+  int _noteDbFailure(String op, Object e) {
+    final now = _dbFailClock.elapsed;
+    final last = _dbFailLastLog[op];
+    if (last != null && now - last < _kDbFailLogGap) {
+      _dbFailSuppressed++;
+      return 0;
+    }
+    _dbFailLastLog[op] = now;
+    final suppressed = _dbFailSuppressed;
+    _dbFailSuppressed = 0;
+    debugPrint('HAL db write failed: $op — $e'
+        '${suppressed > 0 ? ' (+$suppressed suppressed)' : ''}');
+    return 0;
+  }
+
   /// Split a canonical key "targetKey|0xSUBTYPE" into its parts.
   /// Returns ('targetKey', 'SUBTYPE') or (key, '') if it doesn't match.
   (String, String) _splitKey(String key) {
@@ -3845,7 +3891,9 @@ class HalTelemetryService extends ChangeNotifier
     // such timestamp as the real end-of-drive). Fall back to the OBD2 trip
     // id (the +91 behaviour) when there's a dongle trip but no HAL row.
     final tid = _halTripDbId ?? _currentTripId?.call();
-    // Fire-and-forget; never let a logging failure disturb the stream.
+    // Fire-and-forget; never let a logging failure disturb the stream —
+    // but say so (+218): this is the 3-second logger, the write that
+    // fails once per active signal name every 3 s when the database is gone.
     db
         .insertHalSignal(
           tripId: tid,
@@ -3854,7 +3902,7 @@ class HalTelemetryService extends ChangeNotifier
           name: e.name,
           numeric: value,
         )
-        .catchError((_) => 0);
+        .catchError((Object err) => _noteDbFailure('insertHalSignal', err));
   }
 
   /// v0.1.29+88: log a raw BigData frame (source='bigdata'). NOT throttled —
@@ -3875,7 +3923,7 @@ class HalTelemetryService extends ChangeNotifier
           canId: canId,
           rawHex: buf,
         )
-        .catchError((_) => 0);
+        .catchError((Object err) => _noteDbFailure('insertBigDataFrame', err));
   }
 
   Timer? _notifyTimer;

@@ -1,3 +1,5 @@
+import 'dart:ui' show PlatformDispatcher;
+
 import 'package:flutter/material.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -27,6 +29,24 @@ void main() async {
   // HAL engine selection, locale resolution) are readable on the
   // ADB-less head unit via Settings → App log & sync state.
   AppDiagLog.instance.install();
+  // v0.2.19+218: uncaught asynchronous errors reach the ring too. Widget
+  // errors already do — FlutterError.dumpErrorToConsole prints through
+  // debugPrint, which the ring wraps. An exception escaping a Timer, a
+  // stream callback or an un-awaited Future does NOT: the engine logs it
+  // to logcat and the head unit has no ADB, so on the car it simply never
+  // happened. Return true = handled; debugPrint still forwards to logcat
+  // for anyone who does have adb, so nothing is lost on the phone.
+  PlatformDispatcher.instance.onError = (Object error, StackTrace stack) {
+    // The handler must not become a source of errors itself: a foreign
+    // toString() may throw, and that would land right back here.
+    try {
+      final frames = stack.toString().split('\n').take(6).join('\n');
+      debugPrint('UNCAUGHT ${error.runtimeType}: $error\n$frames');
+    } catch (_) {
+      debugPrint('UNCAUGHT error: details could not be printed');
+    }
+    return true;
+  };
   // v0.1.29+49: initialize the ru locale for intl BEFORE any DateFormat
   // call. Without this, `DateFormat.MMM('ru').format(...)` throws a
   // LocaleDataException at the first render. In debug that surfaces as

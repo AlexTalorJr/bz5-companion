@@ -12427,6 +12427,136 @@ if int(pv) >= 216:
 else:
     ok(f"Part CS skipped (build +{pv}, the driver-language charging screen lands in +216)")
 
+# ═══════ Part CT — 0.2.19+218: тихие отказы становятся слышны ═══════
+if int(pv) >= 218:
+    _ct_main = _strip_comments_safe((root / 'lib/main.dart').read_text())
+    _ct_exp = _strip_comments_safe(
+        (root / 'lib/services/export_service.dart').read_text())
+    _ct_hal = _strip_comments_safe(
+        (root / 'lib/services/hal_telemetry_service.dart').read_text())
+    _ct_conn = _strip_comments_safe(
+        (root / 'lib/services/connection.dart').read_text())
+
+    def _ct_yaml_code(text):
+        """YAML: полные строки-комментарии (`#` первым непробельным) убраны,
+        остальное как есть. Тот же принцип, что _strip_comments_safe для
+        Dart — гейт читает код, а не пояснения к нему."""
+        return '\n'.join('' if ln.lstrip().startswith('#') else ln
+                         for ln in text.split('\n'))
+    _ct_by = _ct_yaml_code(
+        (root / '.github/workflows/build.yml').read_text())
+
+    # CT1: НЕОБРАБОТАННЫЕ АСИНХРОННЫЕ ОШИБКИ ПОПАДАЮТ В КОЛЬЦО. Ошибки
+    # виджетов туда шли и раньше (FlutterError печатает через debugPrint);
+    # ошибка из Timer / стрима / не-await'нутого Future уходила в движок и
+    # на голове без ADB исчезала. Хук стоит ПОСЛЕ установки кольца (иначе
+    # первая же строка ушла бы мимо) и ДО runApp.
+    _ct1_hook = ('PlatformDispatcher.instance.onError = '
+                 '(Object error, StackTrace stack) {')
+    _ct1_i_install = _ct_main.find('AppDiagLog.instance.install();')
+    _ct1_i_hook = _ct_main.find(_ct1_hook)
+    _ct1_i_run = _ct_main.find('runApp(')
+    _ct1_body = (_ct_main[_ct1_i_hook:_ct1_i_run]
+                 if -1 < _ct1_i_hook < _ct1_i_run else '')
+    _ct1_bits = [
+        "import 'dart:ui' show PlatformDispatcher;" in _ct_main,
+        -1 < _ct1_i_install < _ct1_i_hook < _ct1_i_run,
+        r"debugPrint('UNCAUGHT ${error.runtimeType}: $error\n$frames');"
+        in _ct1_body,
+        'return true;' in _ct1_body,
+    ]
+    if all(_ct1_bits):
+        ok('CT1 uncaught async errors are written to the in-app ring: hook after the ring install, before runApp, returns handled')
+    else:
+        fail(f'CT1 uncaught-error hook missing or misplaced: {_ct1_bits}')
+
+    # CT2: КОЛЬЦО ЕДЕТ В КАЖДОМ ЭКСПОРТЕ. Файл app_log.txt пишется всегда,
+    # как prefs.json — вне флагов include*, между настройками и metadata;
+    # объём и потери — в metadata.json и в counts (экран экспорта печатает
+    # counts>0 как сводку, водитель видит app_log=N без компьютера).
+    _ct2_i_prefs = _ct_exp.find('ImportService.kPrefsEntry,')
+    _ct2_i_log = _ct_exp.find(
+        'archive.addFile(ArchiveFile(kAppLogEntry, logBytes.length, logBytes));')
+    _ct2_i_meta = _ct_exp.find("onProgress?.call('metadata');")
+    _ct2_bits = [
+        "import 'app_diag_log.dart';" in _ct_exp,
+        "static const String kAppLogEntry = 'app_log.txt';" in _ct_exp,
+        'final log = AppDiagLog.instance;' in _ct_exp,
+        'final logBytes = utf8.encode(log.exportText());' in _ct_exp,
+        -1 < _ct2_i_prefs < _ct2_i_log < _ct2_i_meta,
+        "counts['app_log'] = appLogLines;" in _ct_exp,
+        "'app_log_lines': appLogLines," in _ct_exp,
+        "'app_log_dropped': appLogDropped," in _ct_exp,
+    ]
+    if all(_ct2_bits):
+        ok('CT2 the debugPrint ring ships in every export as app_log.txt with lines/dropped in metadata and counts')
+    else:
+        fail(f'CT2 app log missing from the export or its bookkeeping: {_ct2_bits}')
+
+    # CT3: НИ ОДНА ЗАПИСЬ В БАЗУ ИЗ HAL-СЕРВИСА НЕ ПАДАЕТ МОЛЧА. Семь мест
+    # (открытие строки поездки, back-fill старта, alive-flush агрегатов,
+    # закрытие поездки, два insertHalSignal, insertBigDataFrame) идут через
+    # _noteDbFailure с паузой 30 с на операцию — иначе умирающая база
+    # 3-секундным логгером вытеснила бы из кольца всё остальное. Плюс
+    # единственная тихая запись зарядного лога в connection.dart.
+    _ct3_i_helper = _ct_hal.find('int _noteDbFailure(String op, Object e) {')
+    _ct3_helper = _ct_hal[_ct3_i_helper:_ct3_i_helper + 900] \
+        if _ct3_i_helper > -1 else ''
+    _ct3_i_row = _ct_conn.find("text: 'pack_v_sum_of_cells',")
+    _ct3_i_row_end = _ct_conn.find('_chargingLogRowsWritten += wrote;',
+                                   max(_ct3_i_row, 0))
+    _ct3_row = (_ct_conn[_ct3_i_row:_ct3_i_row_end]
+                if -1 < _ct3_i_row < _ct3_i_row_end else '')
+    _ct3_bits = [
+        _ct3_i_helper > -1,
+        'static const Duration _kDbFailLogGap = Duration(seconds: 30);' in _ct_hal,
+        'final Stopwatch _dbFailClock = Stopwatch()..start();' in _ct_hal,
+        'final now = _dbFailClock.elapsed;' in _ct3_helper,
+        'if (last != null && now - last < _kDbFailLogGap) {' in _ct3_helper,
+        '_dbFailSuppressed++;' in _ct3_helper,
+        '.catchError((_) => 0)' not in _ct_hal,
+        '.catchError((_) {})' not in _ct_hal,
+        _ct_hal.count("_noteDbFailure('insertHalSignal', err)") >= 2,
+        "_noteDbFailure('insertBigDataFrame', err)" in _ct_hal,
+        "_noteDbFailure('touchTripAlive', err)" in _ct_hal,
+        "_noteDbFailure('closeHalTrip', err)" in _ct_hal,
+        "_noteDbFailure('openHalTripRow', e)" in _ct_hal,
+        "_noteDbFailure('updateTripStartAnchors', e)" in _ct_hal,
+        "debugPrint('charging log: pack_v_sum_of_cells write failed: $e');"
+        in _ct3_row,
+        'catch (_) {}' not in _ct3_row,
+    ]
+    if all(_ct3_bits):
+        ok('CT3 every fire-and-forget DB write in the HAL service reports its failure, throttled 30 s per operation; the charging-log pack-V row too')
+    else:
+        fail(f'CT3 a DB write went silent again: {_ct3_bits}')
+
+    # CT4: ANALYZE В CI, ТОЛЬКО ОШИБКИ, МЯГКО. Шаг стоит после генерации
+    # Drift (иначе database.g.dart не существует и всё красное) и до сборки
+    # APK; info/warning не роняют; continue-on-error — решение владельца
+    # для первых прогонов; область — lib и test, старый scaffold не в счёт.
+    # Мягкий шаг не красит прогон, поэтому красный analyze обязан оставлять
+    # аннотацию на странице прогона — шаг-вердикт по outcome.
+    _ct4_i_gen = _ct_by.find('- name: Generate Drift code')
+    _ct4_i_an = _ct_by.find('- name: Analyze (errors only, advisory)')
+    _ct4_i_build = _ct_by.find('- name: Build APK')
+    _ct4_step = (_ct_by[_ct4_i_an:_ct4_i_build]
+                 if -1 < _ct4_i_an < _ct4_i_build else '')
+    _ct4_bits = [
+        -1 < _ct4_i_gen < _ct4_i_an < _ct4_i_build,
+        'run: flutter analyze --no-fatal-infos --no-fatal-warnings lib test'
+        in _ct4_step,
+        'continue-on-error: true' in _ct4_step,
+        'id: analyze' in _ct4_step,
+        "if: steps.analyze.outcome == 'failure'" in _ct4_step,
+    ]
+    if all(_ct4_bits):
+        ok('CT4 build.yml runs an errors-only advisory flutter analyze after Drift generation and before the APK build')
+    else:
+        fail(f'CT4 analyze step missing, misplaced or made fatal: {_ct4_bits}')
+else:
+    ok(f"Part CT skipped (build +{pv}, silent failures start speaking in +218)")
+
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
 print(f"+35→+51 REGRESSION — build +{pv}")

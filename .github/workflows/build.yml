@@ -257,6 +257,34 @@ jobs:
       - name: Generate Drift code
         run: dart run build_runner build --delete-conflicting-outputs
 
+      # v0.2.19+218: static analysis, errors only, advisory.
+      #
+      # +216 referenced a static member that did not exist. Every text gate
+      # in the repo passed; the APK build failed on it ten minutes later,
+      # because the sandbox that writes the patches has no Dart compiler.
+      # The analyzer sees exactly that class of mistake in about a minute
+      # and runs here, before the long build step, so a red run is cheap.
+      #
+      # Infos and warnings are made non-fatal on purpose: lint.yml was
+      # switched off at +12 because the code base carries hundreds of them
+      # from before any linter existed, and they bury the signal. Only
+      # analyzer errors remain. The step is advisory for its first field
+      # runs (continue-on-error) — a red analysis is reported in the run
+      # but does not withhold the APK; tighten once it has stayed green.
+      # Scoped to lib/ and test/: bz5_companion_native_scaffold/ holds old
+      # copies that are not part of the app and must not colour this step.
+      - name: Analyze (errors only, advisory)
+        id: analyze
+        continue-on-error: true
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings lib test
+
+      # Advisory keeps the job green, and a green job is never opened. A red
+      # analysis therefore leaves a warning annotation on the run summary,
+      # visible without expanding any step log.
+      - name: Analyze verdict
+        if: steps.analyze.outcome == 'failure'
+        run: echo "::warning title=flutter analyze::analyzer reported errors - open the Analyze step"
+
       - name: Build APK
         env:
           STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}

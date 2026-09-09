@@ -11,6 +11,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../data/database.dart';
+import 'app_diag_log.dart';
 import 'import_service.dart';
 
 /// v0.1.11: bundles all app data into one timestamped zip and hands it off
@@ -80,6 +81,11 @@ class ScreenGeometry {
 class ExportService {
   final AppDatabase db;
   ExportService(this.db);
+
+  /// v0.2.19+218: archive entry with the in-app debugPrint ring
+  /// ([AppDiagLog]). Named here, not in ImportService, because the import
+  /// never reads it — it is for the person opening the zip.
+  static const String kAppLogEntry = 'app_log.txt';
 
   /// Public method: build zip + open system share sheet.
   /// Works on phones (Telegram, Drive, Email etc.).
@@ -291,12 +297,37 @@ class ExportService {
       debugPrint('Export: settings skipped — $e');
     }
 
+    // v0.2.19+218: the in-app debugPrint ring rides along, always, like the
+    // settings above. Until now the ring left the device only by hand from
+    // the App Diagnostics screen — a separate step nobody takes while the
+    // car is being packed up. Every field export is analysed off-device
+    // anyway, so the last [AppDiagLog.capacity] lines belong next to the
+    // tables they explain: a trip row that failed to open, a sync that was
+    // refused, an uncaught error. Lines/dropped go to metadata so the
+    // reader knows how much of the window the ring actually covers.
+    // Counted in `counts` too: the export screen prints counts>0 as its
+    // summary, so the driver sees app_log=N without opening the zip.
+    var appLogLines = 0;
+    var appLogDropped = 0;
+    try {
+      final log = AppDiagLog.instance;
+      appLogLines = log.length;
+      appLogDropped = log.dropped;
+      final logBytes = utf8.encode(log.exportText());
+      archive.addFile(ArchiveFile(kAppLogEntry, logBytes.length, logBytes));
+      counts['app_log'] = appLogLines;
+    } catch (e) {
+      debugPrint('Export: app log skipped — $e');
+    }
+
     onProgress?.call('metadata');
     final metadata = {
       'app': 'BZ5 Companion',
       'schema_version': db.schemaVersion,
       'prefs_count': prefsCount,
       'prefs_format': ImportService.kPrefsFormat,
+      'app_log_lines': appLogLines,
+      'app_log_dropped': appLogDropped,
       'exported_at': DateTime.now().toIso8601String(),
       // v0.1.97+196: ключа нет, пока экран ни разу не собирался.
       if (ScreenGeometry.snapshot() != null)

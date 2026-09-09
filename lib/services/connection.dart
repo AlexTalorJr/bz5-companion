@@ -3580,7 +3580,12 @@ class ConnectionService extends ChangeNotifier {
           text: 'pack_v_sum_of_cells',
         );
         wrote++;
-      } catch (_) {}
+      } catch (e) {
+        // +218: the rows above share one try with a DID read, where a
+        // timeout is routine and silence is the right call. This row has no
+        // read — its catch can only ever hide a failed write, so it speaks.
+        debugPrint('charging log: pack_v_sum_of_cells write failed: $e');
+      }
     }
 
     _chargingLogRowsWritten += wrote;

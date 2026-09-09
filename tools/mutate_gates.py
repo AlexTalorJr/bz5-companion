@@ -65,6 +65,7 @@ MA = KT + 'MainActivity.kt'
 AI = KT + 'ApkInstall.kt'
 FP = KT + 'ApkFileProvider.kt'
 MF = 'android/app/src/main/AndroidManifest.xml'
+BY = '.github/workflows/build.yml'
 ES = 'lib/services/export_service.dart'
 AG = 'lib/widgets/atlas_grid.dart'
 DP = 'lib/widgets/driver_panels.dart'
@@ -1578,17 +1579,17 @@ MUTATIONS = [
      'вернуть подсказку сырого счётчика на экран зарядки '
      '(якорь перепришпилен в +205: подпись стала ключом)'),
     ('CH3', CW,
-     "            : '—',\n"
-     "        hint: '',\n"
+     "        hint: fromStart ? '' : sinceLaunchHint,\n"
      "      ),\n"
      "      _Metric(\n"
      "        label: S.of('chg.soc_gain'),",
-     "            : '—',\n"
      "        hint: 'ΔSOC × pack kWh',\n"
      "      ),\n"
      "      _Metric(\n"
      "        label: S.of('chg.soc_gain'),",
-     'вернуть формулу прироста заряда на видимую плитку'),
+     'вернуть формулу прироста заряда на видимую плитку (якорь '
+     'перепришпилен в +218: подсказка плитки «заряжено» стала условной '
+     'в +212, серии CH–CL с тех пор не прогонялись)'),
 
     # CI1 — цепь ротации, +205. По мутации на каждое звено.
     ('CI1', CONN,
@@ -1990,6 +1991,64 @@ MUTATIONS = [
      '      (targetPct - soc) / 100 * Bz5Model.batteryCapacityKwh / kw;',
      '      (targetPct - soc) / 100 * ConnectionService.batteryCapacityKwh / kw;',
      'вернуть обращение к члену, которого нет в классе — сборка снова падает'),
+
+    # CT1 — необработанные асинхронные ошибки идут в кольцо, +218.
+    ('CT1', MN,
+     '  PlatformDispatcher.instance.onError = (Object error, StackTrace stack) {',
+     '  final unusedHook = (Object error, StackTrace stack) {',
+     'снять хук — ошибки снова уходят в движок мимо кольца'),
+
+    # CT2 — кольцо едет в каждом экспорте, +218.
+    ('CT2', ES,
+     '      archive.addFile(ArchiveFile(kAppLogEntry, logBytes.length, logBytes));',
+     '      // app log entry dropped from the archive',
+     'убрать файл из архива, оставив подсчёт — экспорт молчит о журнале'),
+    ('CT2', ES,
+     "      'app_log_lines': appLogLines,\n",
+     '',
+     'убрать объём кольца из metadata — читатель не знает, что покрыто'),
+
+    # CT3 — ни одна запись в базу из HAL-сервиса не падает молча, +218.
+    ('CT3', HTS,
+     '          numeric: value,\n'
+     '        )\n'
+     "        .catchError((Object err) => _noteDbFailure('insertHalSignal', err));",
+     '          numeric: value,\n'
+     '        )\n'
+     '        .catchError((_) => 0);',
+     'вернуть 3-секундному логгеру глотание отказа'),
+    ('CT3', HTS,
+     "      _noteDbFailure('openHalTripRow', e);",
+     '      // silent again',
+     'открытие строки поездки снова падает без слова'),
+    ('CT3', HTS,
+     '    if (last != null && now - last < _kDbFailLogGap) {',
+     '    if (last == null && now - now < _kDbFailLogGap) {',
+     'снять паузу 30 с — умирающая база затапливает кольцо'),
+    ('CT3', HTS,
+     '    final now = _dbFailClock.elapsed;',
+     '    final now = DateTime.now().difference(DateTime(2026));',
+     'вернуть паузе стенные часы — прыжок времени на старте глушит лог'),
+    ('CT3', CONN,
+     "        debugPrint('charging log: pack_v_sum_of_cells write failed: $e');",
+     '',
+     'зарядный лог: запись pack V снова молчит'),
+
+    # CT4 — analyze в CI: только ошибки, мягко, до сборки, +218.
+    ('CT4', BY,
+     '        run: flutter analyze --no-fatal-infos --no-fatal-warnings lib test',
+     '        run: flutter analyze lib test',
+     'снять флаги — сотни info делают шаг красным всегда'),
+    ('CT4', BY,
+     '        continue-on-error: true\n'
+     '        run: flutter analyze',
+     '        run: flutter analyze',
+     'сделать шаг жёстким против решения владельца'),
+    ('CT4', BY,
+     "        if: steps.analyze.outcome == 'failure'\n",
+     '',
+     'снять условие вердикта — аннотация не появляется, красный analyze '
+     'невидим'),
 ]
 
 
