@@ -169,6 +169,16 @@ class Elm327Client {
 
     final results = <EcuResponse>[];
     groups.forEach((rxId, frames) {
+      // v0.2.20+219: a slow ECU first answers `7F <svc> 78`
+      // (responsePending) and the real answer follows as a further frame
+      // under the same RX. _assembleIsoTp reads only the first single
+      // frame, so the pending notice used to be recorded and the real
+      // answer thrown away. Drop leading pending frames while another
+      // frame follows; a pending frame with nothing after it stays and is
+      // recorded as 7FXX78.
+      while (frames.length > 1 && _isPendingFrame(frames.first)) {
+        frames.removeAt(0);
+      }
       final assembled = _assembleIsoTp(frames);
       String? err;
       if (assembled.startsWith('7F') && assembled.length >= 6) {
@@ -183,6 +193,15 @@ class Elm327Client {
     });
     return results;
   }
+
+  /// v0.2.20+219: true for a single ISO-TP frame carrying a negative
+  /// response with NRC 0x78 (requestCorrectlyReceived-ResponsePending):
+  /// PCI `03`, then `7F`, service byte, `78`.
+  static bool _isPendingFrame(String frame) =>
+      frame.length >= 8 &&
+      frame.startsWith('03') &&
+      frame.substring(2, 4) == '7F' &&
+      frame.substring(6, 8) == '78';
 
   static String _assembleIsoTp(List<String> frames) {
     if (frames.isEmpty) return '';

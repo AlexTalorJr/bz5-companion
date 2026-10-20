@@ -4283,7 +4283,75 @@ class ConnectionService extends ChangeNotifier {
   /// ble_dropped / watchdog_stall / loop_exception.
   String? _sweepExitReason;
 
-  bool get sweepRunning => _sweepRunning;
+  /// v0.2.20+219: true while ANY sweep work is in flight — a single run
+  /// or a multi-ECU queue, including the short gap between two queued
+  /// runs. Every mutual-exclusion check (Live Log, DTC scan, CAN monitor,
+  /// bridge diag) reads this getter, so nothing else can grab the BLE
+  /// channel in that gap.
+  bool get sweepRunning => _sweepRunning || _sweepQueueRunning;
+
+  // ────── v0.2.20+219: multi-ECU sweep queue ──────
+  //
+  // One DID range swept over a list of TX addresses, one after another.
+  // Each ECU gets its own SweepRun row (the export schema is unchanged);
+  // the queue position is written into that run's notes.
+  bool _sweepQueueRunning = false;
+  bool _sweepQueueCancelled = false;
+  int _sweepQueueIndex = 0; // 1-based position of the ECU being swept
+  int _sweepQueueTotal = 0;
+  String _sweepQueueTx = '';
+
+  bool get sweepQueueRunning => _sweepQueueRunning;
+  int get sweepQueueIndex => _sweepQueueIndex;
+  int get sweepQueueTotal => _sweepQueueTotal;
+  String get sweepQueueTx => _sweepQueueTx;
+
+  /// v0.2.20+219: a sweep run stops early (exit=silent_ecu) after this
+  /// many SILENT rows in a row. Silent = NO_DATA (the adapter's own
+  /// "nobody answered", after ~200 ms — the usual form of silence) or
+  /// TIMEOUT (our 1.5 s bound — adapter itself stuck). An ECU that
+  /// answers `7F 22 31` on every DID is alive and saying "no such DID":
+  /// any ECU answer, negative or not, resets the counter.
+  static const int kSweepSilentEcuProbes = 16;
+
+  /// v0.2.20+219: Live Log DID limit. One constant for the service check
+  /// and for the screen's add button (the screen stopped at 7 while the
+  /// service accepted 10).
+  static const int kLiveLogMaxDids = 10;
+
+  /// Standard BZ5 UDS addressing: RX = TX + 8 (790→798, 791→799,
+  /// 740→748; every ECU in `allBz5Ecus` follows it). Moved here from the
+  /// Live Log screen in v0.2.20+219 so the screen form and the sweep
+  /// queue derive RX the same way. Returns null if [tx] is shorter than
+  /// 3 characters or is not hex. Output width matches TX width.
+  static String? rxForTx(String tx) {
+    if (tx.length < 3) return null;
+    final clean = tx.toUpperCase();
+    final n = int.tryParse(clean, radix: 16);
+    if (n == null) return null;
+    return (n + 8).toRadixString(16).toUpperCase().padLeft(clean.length, '0');
+  }
+
+  /// v0.2.20+219: parse a comma/space separated TX list ("732, 760 777")
+  /// into upper-case 3-digit hex addresses in 0x700..0x7FF, de-duplicated,
+  /// order kept. Returns null if the list is empty or any item is invalid
+  /// — the caller shows one error instead of silently dropping an item.
+  static List<String>? parseTxList(String text) {
+    final items = text
+        .split(RegExp(r'[\s,;]+'))
+        .map((t) => t.trim().toUpperCase())
+        .where((t) => t.isNotEmpty)
+        .toList();
+    if (items.isEmpty) return null;
+    final out = <String>[];
+    for (final t in items) {
+      if (t.length != 3) return null;
+      final n = int.tryParse(t, radix: 16);
+      if (n == null || n < 0x700 || n > 0x7FF) return null;
+      if (!out.contains(t)) out.add(t);
+    }
+    return out;
+  }
   int? get currentSweepRunId => _currentSweepRunId;
   int get sweepDone => _sweepDone;
   int get sweepTotal => _sweepTotal;
@@ -4336,6 +4404,7 @@ class ConnectionService extends ChangeNotifier {
   /// against a wedged sweep now react in milliseconds rather than
   /// staying stuck — the failure mode observed in Cycle 9.
   void cancelSweep() {
+    if (_sweepQueueRunning) _sweepQueueCancelled = true;
     if (_sweepRunning) {
       _sweepCancelled = true;
       final ks = _sweepKillSignal;
@@ -4351,7 +4420,115 @@ class ConnectionService extends ChangeNotifier {
   /// midway. SweepRun.endedAt is set on completion or cancellation.
   ///
   /// Pauses normal polling for the entire sweep duration.
+  ///
+  /// [periodMs] does NOT set the pace: the gap between probes is a fixed
+  /// 30 ms and the pace is the ECU + BLE round trip. [periodMs] only sets
+  /// the per-probe timeout, max(1500 ms, 2 × periodMs). It is stored in
+  /// sweep_runs.period_ms as recorded.
+  ///
+  /// v0.2.20+219: refused while a sweep queue is running — the queue owns
+  /// the BLE channel between its runs (see [runSweepQueue]).
   Future<int?> runSweep({
+    required String txEcu,
+    required String rxEcu,
+    required String startDidHex,
+    required String endDidHex,
+    int periodMs = 250,
+    String? carState,
+    String? notes,
+    void Function(int done, int total, String currentDid)? onProgress,
+  }) {
+    if (_sweepQueueRunning) return Future.value(null);
+    return _runSweepOne(
+      txEcu: txEcu,
+      rxEcu: rxEcu,
+      startDidHex: startDidHex,
+      endDidHex: endDidHex,
+      periodMs: periodMs,
+      carState: carState,
+      notes: notes,
+      onProgress: onProgress,
+    );
+  }
+
+  /// v0.2.20+219: sweep one DID range over several ECUs, one after
+  /// another. RX for each TX is [rxForTx] (TX + 8). Each ECU gets its own
+  /// SweepRun row with `queue i/n` in its notes, so the export needs no
+  /// new columns.
+  ///
+  /// Moves to the next ECU when a run ends `completed` or `silent_ecu`.
+  /// Stops the whole queue on cancel, BLE drop, watchdog stall, loop
+  /// exception, or a run that could not start (another BLE operation
+  /// took the channel). Returns the run ids created, in queue order;
+  /// returns null if the queue could not start at all.
+  Future<List<int>?> runSweepQueue({
+    required List<String> txList,
+    required String startDidHex,
+    required String endDidHex,
+    String? carState,
+    String? notes,
+  }) async {
+    if (txList.isEmpty) return null;
+    if (_client == null) return null;
+    if (sweepRunning || _liveLogRunning || _dtcScanRunning ||
+        _canMonitorRunning) {
+      return null;
+    }
+    final rxList = <String>[];
+    for (final tx in txList) {
+      final rx = rxForTx(tx);
+      if (rx == null) return null;
+      rxList.add(rx);
+    }
+
+    _sweepQueueRunning = true;
+    _sweepQueueCancelled = false;
+    _sweepQueueTotal = txList.length;
+    _sweepQueueIndex = 0;
+    _sweepQueueTx = '';
+    notifyListeners();
+
+    final runIds = <int>[];
+    String stopReason = 'completed';
+    try {
+      for (int i = 0; i < txList.length; i++) {
+        if (_sweepQueueCancelled) {
+          stopReason = 'cancelled';
+          break;
+        }
+        _sweepQueueIndex = i + 1;
+        _sweepQueueTx = txList[i];
+        final tag = 'queue ${i + 1}/${txList.length}';
+        final runId = await _runSweepOne(
+          txEcu: txList[i],
+          rxEcu: rxList[i],
+          startDidHex: startDidHex,
+          endDidHex: endDidHex,
+          carState: carState,
+          notes: notes != null ? '$notes | $tag' : tag,
+        );
+        if (runId == null) {
+          stopReason = 'start_refused';
+          break;
+        }
+        runIds.add(runId);
+        final exit = _sweepExitReason;
+        if (exit != 'completed' && exit != 'silent_ecu') {
+          stopReason = exit ?? 'unknown';
+          break;
+        }
+      }
+    } finally {
+      debugPrint('runSweepQueue: ${runIds.length}/${txList.length} runs, '
+          'stop=$stopReason');
+      _sweepQueueRunning = false;
+      _sweepQueueCancelled = false;
+      notifyListeners();
+    }
+    return runIds;
+  }
+
+  Future<int?> _runSweepOne({
     required String txEcu,
     required String rxEcu,
     required String startDidHex,
@@ -4414,6 +4591,8 @@ class ConnectionService extends ChangeNotifier {
 
     int validCount = 0;
     int sequence = 0;
+    // v0.2.20+219: silent rows in a row; see [kSweepSilentEcuProbes].
+    int consecutiveSilent = 0;
 
     // v0.1.29+24: kill-signal infrastructure for the sweep loop. Mirrors
     // the +22 livelog hardening — see [_sweepKillSignal] doc. The
@@ -4516,7 +4695,12 @@ class ConnectionService extends ChangeNotifier {
             // Now requires rawHex to be non-empty and start with '62'.
             final raw = r.rawHex;
             final rawUp = raw.toUpperCase();
-            if (rawUp.startsWith('7F')) {
+            if (r.error == 'NO DATA') {
+              // v0.2.20+219: the adapter got no answer from the ECU.
+              // Recorded apart from EMPTY (garbled/empty BLE read) because
+              // it is the silence the silent-ECU stop counts.
+              errorCode = 'NO_DATA';
+            } else if (rawUp.startsWith('7F')) {
               errorCode = raw;
             } else if (rawUp.startsWith('62') && raw.length >= 6) {
               // v0.1.16: validate echoed DID (see runLiveLog for rationale).
@@ -4570,6 +4754,22 @@ class ConnectionService extends ChangeNotifier {
 
         _sweepDone++;
         onProgress?.call(_sweepDone, _sweepTotal, didHex);
+
+        // v0.2.20+219: an ECU that answers nothing still costs a full
+        // NO DATA wait per DID. Stop after kSweepSilentEcuProbes silent
+        // rows (NO_DATA or TIMEOUT) in a row. Any ECU answer — including
+        // a 7F NRC — and EMPTY / NULL_RESPONSE / MALFORMED reset it.
+        consecutiveSilent =
+            (errorCode == 'NO_DATA' || errorCode == 'TIMEOUT')
+                ? consecutiveSilent + 1
+                : 0;
+        if (consecutiveSilent >= kSweepSilentEcuProbes) {
+          _sweepExitReason = 'silent_ecu';
+          debugPrint('runSweep: $txEcu silent — $consecutiveSilent '
+              'silent probes in a row, stop at $didHex');
+          notifyListeners();
+          break;
+        }
 
         // Notify UI every 8 probes to avoid hammering the rebuild loop —
         // 8 * 250ms = 2s smooth-enough updates without thrash.
@@ -4677,7 +4877,7 @@ class ConnectionService extends ChangeNotifier {
     if (_client == null || _ble == null) return null;
     if (_canMonitorRunning) return null;
     // Mutually exclusive with all other BLE-channel users.
-    if (_sweepRunning) return null;
+    if (sweepRunning) return null;
     if (_liveLogRunning) return null;
     if (_dtcScanRunning) return null;
     if (durationSec < 1 || durationSec > 600) return null;
@@ -5266,11 +5466,11 @@ class ConnectionService extends ChangeNotifier {
     if (_client == null) return null;
     if (_liveLogRunning) return null;
     // v0.1.15: mutual exclusion with sweep — see runSweep for rationale.
-    if (_sweepRunning) return null;
+    if (sweepRunning) return null;
     if (_dtcScanRunning) return null;
     // v0.1.29+28: also exclude CAN passive monitor.
     if (_canMonitorRunning) return null;
-    if (didSpecs.isEmpty || didSpecs.length > 10) return null;
+    if (didSpecs.isEmpty || didSpecs.length > kLiveLogMaxDids) return null;
 
     _liveLogRunning = true;
     _liveLogCancelled = false;
@@ -5763,7 +5963,7 @@ class ConnectionService extends ChangeNotifier {
     // v0.1.15: DTC scan also uses single BLE channel — refuse if sweep
     // or liveLog active. Returns empty list rather than null because
     // method signature is non-nullable.
-    if (_sweepRunning || _liveLogRunning) {
+    if (sweepRunning || _liveLogRunning) {
       return [];
     }
     // v0.1.29+28: also exclude CAN passive monitor.

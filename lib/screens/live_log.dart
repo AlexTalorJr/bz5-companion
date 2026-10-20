@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
+import '../data/ecu_registry.dart';
 import '../l10n/strings.dart';
 import '../services/connection.dart';
 import '../services/locale_service.dart';
@@ -10,13 +11,14 @@ import 'live_log_results.dart';
 
 /// v0.1.15: Live Log launcher.
 ///
-/// Time-series polling of up to 7 user-selected (TX_ECU, RX_ECU, DID) triples.
+/// Time-series polling of up to [ConnectionService.kLiveLogMaxDids]
+/// user-selected (TX_ECU, RX_ECU, DID) triples.
 /// Unlike Sweep (which probes each DID once across a huge range), Live Log
 /// repeatedly polls a small fixed set with each cycle producing one row
 /// per DID, so we can correlate values with vehicle behaviour over time.
 ///
 /// UI flow:
-///   1. User adds up to 7 DIDs via the form below (TX/RX ECU + DID hex).
+///   1. User adds up to 10 DIDs via the form below (TX/RX ECU + DID hex).
 ///   2. Optional carState + notes annotation.
 ///   3. Start → progress view (cycle counter, last value per DID, Cancel).
 ///   4. Cancel or BLE disconnect → finalize session → tap "Open" to view results.
@@ -39,27 +41,6 @@ class _DidEntry {
       txEcu.length >= 3 && rxEcu.length >= 3 && did.isNotEmpty && did.length <= 4;
 
   String get label => '$txEcu/$did';
-}
-
-/// v0.1.20: standard UDS request→response ECU address mapping.
-///
-/// All known BZ5 ECUs follow the convention RX = TX + 8 (i.e. 790→798,
-/// 791→799, 740→748). The form previously required the user to update
-/// RX manually after changing TX, which was a regular source of mistakes
-/// (e.g. leaving rx=799 after changing tx from 791 to 790, producing
-/// silent timeouts that looked like missing DIDs).
-///
-/// Returns null if [tx] is too short or doesn't parse as hex — caller
-/// should leave the existing RX value untouched in that case.
-String? _autoRxForTx(String tx) {
-  if (tx.length < 3) return null;
-  final clean = tx.toUpperCase();
-  final n = int.tryParse(clean, radix: 16);
-  if (n == null) return null;
-  final rx = n + 8;
-  // Match TX width: 3-char TX → 3-char RX, 4-char → 4-char.
-  final width = clean.length;
-  return rx.toRadixString(16).toUpperCase().padLeft(width, '0');
 }
 
 class _LiveLogScreenState extends State<LiveLogScreen> {
@@ -237,6 +218,19 @@ class _LiveLogScreenState extends State<LiveLogScreen> {
                 label: const Text('GPS in motion'),
                 onPressed: () => _applyPreset(_LivelogPreset.gpsInMotion),
               ),
+              // v0.2.20+219: part number (0105) of every registry ECU that
+              // has no confirmed name yet, in chunks of kLiveLogMaxDids.
+              for (final p in const [
+                _LivelogPreset.identity1,
+                _LivelogPreset.identity2,
+                _LivelogPreset.identity3,
+              ])
+                if (p.entries.isNotEmpty)
+                  ActionChip(
+                    avatar: const Icon(Icons.badge_outlined, size: 16),
+                    label: Text(p.chipLabel),
+                    onPressed: () => _applyPreset(p),
+                  ),
             ],
           ),
         ),
@@ -260,13 +254,16 @@ class _LiveLogScreenState extends State<LiveLogScreen> {
                 : null,
           );
         }),
-        if (_entries.length < 7)
+        if (_entries.length < ConnectionService.kLiveLogMaxDids)
           Padding(
             padding: const EdgeInsets.all(8),
             child: OutlinedButton.icon(
               icon: const Icon(Icons.add),
               label: Text(
-                  S.of('ll.add_did').replaceFirst('{n}', '${_entries.length}')),
+                  S.of('ll.add_did')
+                      .replaceFirst('{n}', '${_entries.length}')
+                      .replaceFirst(
+                          '{m}', '${ConnectionService.kLiveLogMaxDids}')),
               onPressed: () => setState(
                   () => _entries.add(_DidEntry(txEcu: '791', rxEcu: '799'))),
             ),
@@ -501,7 +498,7 @@ class _DidEntryRowState extends State<_DidEntryRow> {
                   // so user doesn't have to update both. They can still
                   // override RX manually after if needed — we only fire this
                   // on TX change, not on every keystroke in the RX field.
-                  final autoRx = _autoRxForTx(upper);
+                  final autoRx = ConnectionService.rxForTx(upper);
                   if (autoRx != null && autoRx != _rxCtrl.text) {
                     _rxCtrl.text = autoRx;
                     widget.entry.rxEcu = autoRx;
@@ -590,11 +587,34 @@ enum _LivelogPreset {
   /// dead-reckoning. If 0120/0121/0122 stay null in motion, escalate
   /// to ECU discovery. See handoff doc → pending sweeps.
   gpsInMotion,
+
+  /// v0.2.20+219: read part number DID 0105 from every ECU in
+  /// `allBz5Ecus` without a detailed spec (24 ECUs: all except 702, 740,
+  /// 757, 782, 790, 791), split 10 + 10 + 4. The list is built from the
+  /// registry, so a new detailed spec removes that ECU from these presets
+  /// automatically. Goal: real names instead of the guessed labels;
+  /// looking for the A/C compressor driver and the right body controller.
+  identity1,
+  identity2,
+  identity3,
 }
+
+/// v0.2.20+219: registry ECUs whose part number is not read yet.
+final List<EcuRegistryEntry> _unnamedEcus =
+    allBz5Ecus.where((e) => e.detailed == null).toList();
+
+List<(String, String, String)> _identityChunk(int chunk) => _unnamedEcus
+    .skip(chunk * ConnectionService.kLiveLogMaxDids)
+    .take(ConnectionService.kLiveLogMaxDids)
+    .map((e) => (e.txId, e.rxId, '0105'))
+    .toList();
 
 extension _LivelogPresetX on _LivelogPreset {
   /// (TX, RX, DID) triples populating the form entry list.
   List<(String, String, String)> get entries => switch (this) {
+        _LivelogPreset.identity1 => _identityChunk(0),
+        _LivelogPreset.identity2 => _identityChunk(1),
+        _LivelogPreset.identity3 => _identityChunk(2),
         _LivelogPreset.dcCharging => const [
             ('790', '798', '1FFD'), // Precise SOC (0.01% resolution)
             ('790', '798', '0015'), // HV bus
@@ -632,7 +652,24 @@ extension _LivelogPresetX on _LivelogPreset {
           ],
       };
 
+  /// Chip text for the identity presets: "ECU identity 1/3 (701..732)".
+  String get chipLabel {
+    final e = entries;
+    final n = switch (this) {
+      _LivelogPreset.identity1 => 1,
+      _LivelogPreset.identity2 => 2,
+      _LivelogPreset.identity3 => 3,
+      _ => 0,
+    };
+    // Only called for a non-empty preset (the chip is hidden otherwise).
+    return 'ECU identity $n/3 (${e.first.$1}..${e.last.$1})';
+  }
+
   String get carState => switch (this) {
+        _LivelogPreset.identity1 ||
+        _LivelogPreset.identity2 ||
+        _LivelogPreset.identity3 =>
+          'P+Ready, A/C on',
         _LivelogPreset.dcCharging => 'DC charging',
         _LivelogPreset.chargeStateHunt => 'AC plug/unplug toggle',
         _LivelogPreset.defaultDriving => 'driving',
@@ -640,6 +677,11 @@ extension _LivelogPresetX on _LivelogPreset {
       };
 
   String get notes => switch (this) {
+        _LivelogPreset.identity1 ||
+        _LivelogPreset.identity2 ||
+        _LivelogPreset.identity3 =>
+          'ECU identity: part number 0105 on unnamed registry ECUs. '
+              'Two or three cycles are enough.',
         _LivelogPreset.dcCharging => 'DC charging — calibration session',
         _LivelogPreset.chargeStateHunt =>
             'Hunt for direct charge-connected DID. Toggle plug 3–5× with ~30s on / 10s off. Look for a DID flipping synchronously with cable events.',

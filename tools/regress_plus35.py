@@ -12557,6 +12557,179 @@ if int(pv) >= 218:
 else:
     ok(f"Part CT skipped (build +{pv}, silent failures start speaking in +218)")
 
+# ═══════ Part CU — 0.2.20+219: стоянка «компрессор» — очередь Sweep ═══════
+if int(pv) >= 219:
+    _cu_conn = _strip_comments_safe(
+        (root / 'lib/services/connection.dart').read_text())
+    _cu_cli = _strip_comments_safe(
+        (root / 'lib/ble/elm327_client.dart').read_text())
+    _cu_ll = _strip_comments_safe(
+        (root / 'lib/screens/live_log.dart').read_text())
+    _cu_sw = _strip_comments_safe(
+        (root / 'lib/screens/sweep.dart').read_text())
+    _cu_reg = _strip_comments_safe(
+        (root / 'lib/data/ecu_registry.dart').read_text())
+    _cu_str = (root / 'lib/l10n/strings.dart').read_text()
+
+    # CU1: МОЛЧАЩИЙ ECU ПРОПУСКАЕТСЯ, ОТКАЗ — НЕТ. Молчание = NO_DATA
+    # (адаптер сам ответил «никто не ответил», обычная форма) или TIMEOUT.
+    # NO DATA пишется отдельным кодом, а не EMPTY. Любой ответ ECU (7F NRC)
+    # и EMPTY/NULL_RESPONSE счётчик обнуляют.
+    # Проверка стоит после записи строки и до паузы 30 мс, причина выхода
+    # пишется присваиванием, а итоговое `??=` её не затирает.
+    _cu1_i_done = _cu_conn.find('_sweepDone++;\n        onProgress?.call(_sweepDone, _sweepTotal, didHex);')
+    _cu1_i_cnt = _cu_conn.find("(errorCode == 'NO_DATA' || errorCode == 'TIMEOUT')\n                ? consecutiveSilent + 1\n                : 0;")
+    _cu1_i_stop = _cu_conn.find('if (consecutiveSilent >= kSweepSilentEcuProbes) {')
+    _cu1_i_nd = _cu_conn.find("if (r.error == 'NO DATA') {")
+    _cu1_i_ndw = _cu_conn.find("errorCode = 'NO_DATA';", max(_cu1_i_nd, 0))
+    _cu1_i_7f = _cu_conn.find("} else if (rawUp.startsWith('7F')) {", max(_cu1_i_nd, 0))
+    _cu1_i_gap = _cu_conn.find('Future<void>.delayed(const Duration(milliseconds: 30)),')
+    _cu1_bits = [
+        'static const int kSweepSilentEcuProbes = 16;' in _cu_conn,
+        -1 < _cu1_i_nd < _cu1_i_ndw < _cu1_i_7f < _cu1_i_done,
+        -1 < _cu1_i_done < _cu1_i_cnt < _cu1_i_stop < _cu1_i_gap,
+        "_sweepExitReason = 'silent_ecu';" in _cu_conn[_cu1_i_stop:_cu1_i_gap],
+        _cu_conn.count('int consecutiveSilent = 0;') == 1,
+        _cu_conn.count('consecutiveSilent =') == 2,
+        "_sweepExitReason ??=\n          _sweepCancelled ? 'cancelled' : 'completed';" in _cu_conn,
+    ]
+    if all(_cu1_bits):
+        ok('CU1 sweep stops on 16 silent probes (NO_DATA/TIMEOUT) in a row, exit=silent_ecu; any ECU answer incl. 7F resets the count')
+    else:
+        fail(f'CU1 silent-ECU stop missing or counts refusals: {_cu1_bits}')
+
+    # CU2: ОЧЕРЕДЬ ВЛАДЕЕТ КАНАЛОМ. RX выводится в одном месте (rxForTx),
+    # очередь идёт дальше только после completed/silent_ecu, одиночный
+    # runSweep отказывает во время очереди, все взаимоисключения читают
+    # геттер, который видит и паузу между запусками. Экран Sweep ходит
+    # только через очередь.
+    _cu2_i_q = _cu_conn.find('Future<List<int>?> runSweepQueue({')
+    _cu2_i_one = _cu_conn.find('Future<int?> _runSweepOne({')
+    _cu2_q = _cu_conn[_cu2_i_q:_cu2_i_one] if -1 < _cu2_i_q < _cu2_i_one else ''
+    _cu2_bits = [
+        'bool get sweepRunning => _sweepRunning || _sweepQueueRunning;' in _cu_conn,
+        'if (_sweepQueueRunning) return Future.value(null);' in _cu_conn,
+        'if (_sweepQueueRunning) _sweepQueueCancelled = true;' in _cu_conn,
+        'final rx = rxForTx(tx);' in _cu2_q,
+        "if (exit != 'completed' && exit != 'silent_ecu') {" in _cu2_q,
+        "final tag = 'queue ${i + 1}/${txList.length}';" in _cu2_q,
+        'if (_sweepQueueCancelled) {' in _cu2_q,
+        _cu_conn.count('if (_sweepRunning) return null;') == 1,
+        _cu_conn.count('if (sweepRunning) return null;') == 2,
+        'if (sweepRunning || _liveLogRunning) {' in _cu_conn,
+        'await svc.runSweepQueue(' in _cu_sw,
+        'svc.runSweep(' not in _cu_sw,
+        'final txList = ConnectionService.parseTxList(_txCtrl.text);' in _cu_sw,
+        "txList: ['752', '753']," in _cu_sw,
+    ]
+    if all(_cu2_bits):
+        ok('CU2 multi-ECU sweep queue owns the BLE channel; RX = TX + 8 from one helper; screen sweeps only via the queue')
+    else:
+        fail(f'CU2 sweep queue broken or split: {_cu2_bits}')
+
+    # CU3: ОТВЕТ ПОСЛЕ «ПОДОЖДИ» НЕ ТЕРЯЕТСЯ. Ведущие кадры 7F xx 78 снимаются,
+    # пока за ними есть другой кадр, — до сборки ISO-TP.
+    _cu3_i_drop = _cu_cli.find('while (frames.length > 1 && _isPendingFrame(frames.first)) {')
+    _cu3_i_asm = _cu_cli.find('final assembled = _assembleIsoTp(frames);')
+    _cu3_i_fn = _cu_cli.find('static bool _isPendingFrame(String frame) =>')
+    _cu3_fn = _cu_cli[_cu3_i_fn:_cu3_i_fn + 300] if _cu3_i_fn > -1 else ''
+    _cu3_bits = [
+        -1 < _cu3_i_drop < _cu3_i_asm,
+        "frame.startsWith('03') &&" in _cu3_fn,
+        "frame.substring(2, 4) == '7F' &&" in _cu3_fn,
+        "frame.substring(6, 8) == '78';" in _cu3_fn,
+    ]
+    if all(_cu3_bits):
+        ok('CU3 responsePending (7F xx 78) frames are dropped before ISO-TP assembly when a real answer follows')
+    else:
+        fail(f'CU3 answer after 7F xx 78 is lost again: {_cu3_bits}')
+
+    # CU4: ПРЕСЕТЫ ИМЁН ECU СТРОЯТСЯ ИЗ РЕЕСТРА, ЛИМИТ ОДИН НА СЕРВИС И
+    # ЭКРАН. Данные: в реестре 24 ECU без подробной спецификации → 10+10+4.
+    _cu4_entries = re.findall(r"EcuRegistryEntry\(txId: '([0-9A-F]{3})', rxId: '([0-9A-F]{3})', label: '[^']*'(, detailed: \w+)?\)", _cu_reg)
+    _cu4_unnamed = [e for e in _cu4_entries if not e[2]]
+    _cu4_rx_ok = all(int(rx, 16) == int(tx, 16) + 8 for tx, rx, _ in _cu4_entries)
+    _cu4_bits = [
+        len(_cu4_entries) == 30,
+        len(_cu4_unnamed) == 24,
+        _cu4_rx_ok,
+        'static const int kLiveLogMaxDids = 10;' in _cu_conn,
+        'didSpecs.length > kLiveLogMaxDids' in _cu_conn,
+        'if (_entries.length < ConnectionService.kLiveLogMaxDids)' in _cu_ll,
+        'allBz5Ecus.where((e) => e.detailed == null).toList();' in _cu_ll,
+        ".map((e) => (e.txId, e.rxId, '0105'))" in _cu_ll,
+        '.take(ConnectionService.kLiveLogMaxDids)' in _cu_ll,
+        all(f'_LivelogPreset.identity{k + 1} => _identityChunk({k}),' in _cu_ll
+            for k in range(3)),
+        'ConnectionService.rxForTx(upper)' in _cu_ll,
+        '_autoRxForTx' not in _cu_ll,
+    ]
+    if all(_cu4_bits):
+        ok('CU4 three ECU-identity presets (0105) built from the 24 unnamed registry ECUs, 10+10+4; one Live Log limit for service and screen')
+    else:
+        fail(f'CU4 identity presets or Live Log limit drifted: {_cu4_bits}')
+
+    # CU5: НОВЫЕ СТРОКИ В ОБОИХ ЯЗЫКАХ.
+    _cu5_keys = ['sw.tx_list', 'sw.rx_auto', 'sw.queue_fmt', 'sw.runs_fmt',
+                 'sw.tx_list_invalid']
+    _cu5_bits = [_cu_str.count(f"'{k}':") == 2 for k in _cu5_keys] + [
+        _cu_str.count("'ll.add_did': 'Add DID ({n}/{m})',") == 1,
+        _cu_str.count("'ll.add_did': 'Добавить DID ({n}/{m})',") == 1,
+        "'sw.tx_rx_required'" not in _cu_str,
+    ]
+    if all(_cu5_bits):
+        ok('CU5 sweep-queue and Live Log limit strings present in EN and RU')
+    else:
+        fail(f'CU5 l10n keys missing in a language: {_cu5_bits}')
+
+    # CU6: AC-КАНДИДАТЫ ПО КАТАЛОГУ ДРУГА 3. Семь fid класса Ac, которые уже
+    # в подписке, но были без декодера, получают имена ровно из каталога
+    # BYDAutoFeatureIds (tools/data/feature_ids.txt) в слое companion —
+    # вендоренная таблица не тронута. В Dart все ac_* — кандидаты: ни одного
+    # в _range, каждое изменение значения пишется в hal_samples, и ветка
+    # стоит ДО проверки _range.
+    _cu_ovr = _strip_comments_safe((root / 'android/app/src/main/kotlin/'
+        'com/bz5companion/bz5_companion/hal/CompanionDecoderOverrides.kt')
+        .read_text())
+    _cu_hts = _strip_comments_safe(
+        (root / 'lib/services/hal_telemetry_service.dart').read_text())
+    _cu6_cat = {}
+    for _ln in (root / 'tools/data/feature_ids.txt').read_text().split('\n'):
+        _p = _ln.split()
+        if len(_p) >= 2 and _p[0].startswith('0x'):
+            _cu6_cat[int(_p[0], 16)] = _p[1:]
+    _cu6_ac = re.findall(r'"BYDAutoAcDevice\|0x([0-9A-F]{8})" to Decoder\(\s*"(ac_[a-z_]+)"', _cu_ovr)
+    _cu6_want = {'2FC00009', '2FC0000A', '2FC0000B', '2FC0000C', '2FC00016',
+                 '2FA0000C', '2FA00026'}
+    _cu6_names_ok = all(n.upper() in _cu6_cat.get(int(f, 16), [])
+                        for f, n in _cu6_ac)
+    _cu6_i_gun = _cu_hts.find("if (e.name == 'charging_gun_state') {")
+    _cu6_i_ac = _cu_hts.find("if (e.name.startsWith('ac_')) {")
+    _cu6_i_rng = _cu_hts.find('final guard = _range[e.name];')
+    _cu6_i_map = _cu_hts.find('static const Map<String, (double, double)> _range = {')
+    _cu6_i_mend = _cu_hts.find('\n  };', max(_cu6_i_map, 0))
+    _cu6_range = _cu_hts[_cu6_i_map:_cu6_i_mend] if -1 < _cu6_i_map < _cu6_i_mend else ''
+    _cu6_i_fn = _cu_hts.find('void _logAcChange(HalEvent e) {')
+    _cu6_fn = _cu_hts[_cu6_i_fn:_cu6_i_fn + 900] if _cu6_i_fn > -1 else ''
+    _cu6_bits = [
+        {f for f, _ in _cu6_ac} == _cu6_want,
+        len(_cu6_ac) == 7,
+        _cu6_names_ok,
+        -1 < _cu6_i_gun < _cu6_i_ac < _cu6_i_rng,
+        "_logAcChange(e);\n      return;" in _cu_hts[_cu6_i_ac:_cu6_i_rng],
+        _cu6_range != '' and "'ac_" not in _cu6_range,
+        'if (v == null || _acLastVal[e.name] == v) return;' in _cu6_fn,
+        '_acLastVal[e.name] = v;' in _cu6_fn,
+        '.insertHalSignal(' in _cu6_fn,
+        "_noteDbFailure('insertHalSignal', err)" in _cu6_fn,
+    ]
+    if all(_cu6_bits):
+        ok('CU6 seven AC fids get catalog-exact candidate decoders in the companion layer; every ac_* change is logged to hal_samples and none reaches _range')
+    else:
+        fail(f'CU6 AC candidates drifted from the catalog or leaked into consumption: {_cu6_bits}')
+else:
+    ok(f"Part CU skipped (build +{pv}, sweep queue lands in +219)")
+
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
 print(f"+35→+51 REGRESSION — build +{pv}")

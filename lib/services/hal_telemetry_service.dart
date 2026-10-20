@@ -749,6 +749,9 @@ class HalTelemetryService extends ChangeNotifier
   // consumed signal. See the dedicated branch in _onEvent.
   double? _gunConnectLastVal;
 
+  /// v0.2.20+219: last logged value per `ac_*` name — see [_logAcChange].
+  final Map<String, double> _acLastVal = {};
+
   bool _halTripActive = false;
   DateTime? _halTripStartedAt;
   double? _halTripStartSoc;     // latched start SOC (whole %, smoothed via EMA)
@@ -3702,6 +3705,16 @@ class HalTelemetryService extends ChangeNotifier
       }
       return;
     }
+    // v0.2.20+219: every AC signal (ac_*: the eight catalog names in the
+    // shared table plus seven candidates in CompanionDecoderOverrides) is
+    // a CANDIDATE — values unverified. Never in _range, so no widget can
+    // read it; every VALUE CHANGE goes to hal_samples + the diag journal
+    // with a timestamp, so the stationary climate test lands in the
+    // export without depending on the recon build.
+    if (e.name.startsWith('ac_')) {
+      _logAcChange(e);
+      return;
+    }
     // v0.1.29+66: consume the overlapping-wave allowlist (speed,
     // pack_voltage, pack_current, gear_enum, soc_display, soc_battery).
     // v0.1.29+72: + battery/drive temps (probe_highest_temp, motor_temp,
@@ -3868,6 +3881,31 @@ class HalTelemetryService extends ChangeNotifier
     debugPrint('HAL db write failed: $op — $e'
         '${suppressed > 0 ? ' (+$suppressed suppressed)' : ''}');
     return 0;
+  }
+
+  /// v0.2.20+219: log one `ac_*` event if its value differs from the last
+  /// logged value of that name. Not time-throttled on purpose: AC fids are
+  /// event-driven (a press = one event), and two presses inside one second
+  /// must both land. Volume is bounded by how often the value changes.
+  void _logAcChange(HalEvent e) {
+    final v = e.value?.toDouble();
+    if (v == null || _acLastVal[e.name] == v) return;
+    final prev = _acLastVal[e.name];
+    _acLastVal[e.name] = v;
+    debugPrint('ac candidate: ${e.name}=$v'
+        '${prev == null ? '' : ' (was $prev)'} [${e.key}]');
+    final db = _diagDb;
+    if (db == null) return;
+    final (target, subtypeHex) = _splitKey(e.key);
+    db
+        .insertHalSignal(
+          tripId: _halTripDbId ?? _currentTripId?.call(),
+          targetKey: target,
+          subtype: subtypeHex,
+          name: e.name,
+          numeric: v,
+        )
+        .catchError((Object err) => _noteDbFailure('insertHalSignal', err));
   }
 
   /// Split a canonical key "targetKey|0xSUBTYPE" into its parts.

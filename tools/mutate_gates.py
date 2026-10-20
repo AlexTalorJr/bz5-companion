@@ -2049,6 +2049,97 @@ MUTATIONS = [
      '',
      'снять условие вердикта — аннотация не появляется, красный analyze '
      'невидим'),
+
+    # CU1 — молчащий ECU пропускается, отказ — нет, +219.
+    ('CU1', CONN,
+     "            (errorCode == 'NO_DATA' || errorCode == 'TIMEOUT')",
+     "            (errorCode != null)",
+     'считать отказ 7F молчанием — живой ECU с «нет такого DID» пропускается'),
+    ('CU1', CONN,
+     "            if (r.error == 'NO DATA') {\n"
+     "              // v0.2.20+219: the adapter got no answer from the ECU.\n",
+     "            if (false) {\n"
+     "              // v0.2.20+219: the adapter got no answer from the ECU.\n",
+     'NO DATA снова пишется как EMPTY — молчащий ECU не пропускается никогда'),
+    ('CU1', CONN,
+     "          _sweepExitReason = 'silent_ecu';",
+     "          _sweepExitReason ??= 'completed';",
+     'выход по молчанию маскируется под completed — в notes не видно'),
+    ('CU1', CONN,
+     '  static const int kSweepSilentEcuProbes = 16;',
+     '  static const int kSweepSilentEcuProbes = 1;',
+     'порог 1 — первый же TIMEOUT выкидывает ECU'),
+
+    # CU2 — очередь владеет каналом, +219.
+    ('CU2', CONN,
+     '  bool get sweepRunning => _sweepRunning || _sweepQueueRunning;',
+     '  bool get sweepRunning => _sweepRunning;',
+     'геттер не видит паузу между запусками — Live Log влезает в очередь'),
+    ('CU2', CONN,
+     "        if (exit != 'completed' && exit != 'silent_ecu') {",
+     "        if (exit != 'completed') {",
+     'молчащий ECU обрывает всю очередь'),
+    ('CU2', CONN,
+     '    if (_sweepQueueRunning) _sweepQueueCancelled = true;\n',
+     '',
+     'отмена останавливает один ECU, очередь едет дальше'),
+    ('CU2', CONN,
+     '    // v0.1.15: mutual exclusion with sweep — see runSweep for rationale.\n'
+     '    if (sweepRunning) return null;',
+     '    // v0.1.15: mutual exclusion with sweep — see runSweep for rationale.\n'
+     '    if (_sweepRunning) return null;',
+     'Live Log снова читает поле, а не геттер очереди'),
+    ('CU2', 'lib/screens/sweep.dart',
+     "      txList: ['752', '753'],",
+     "      txList: ['752'],",
+     'BMS Slaves снова опрашивает один 752 при описании «752, 753»'),
+
+    # CU3 — ответ после 7F xx 78 не теряется, +219.
+    ('CU3', 'lib/ble/elm327_client.dart',
+     '      while (frames.length > 1 && _isPendingFrame(frames.first)) {',
+     '      while (false && _isPendingFrame(frames.first)) {',
+     'снова собирать «подожди» вместо настоящего ответа'),
+    ('CU3', 'lib/ble/elm327_client.dart',
+     "      frame.substring(6, 8) == '78';",
+     "      frame.substring(6, 8) == '31';",
+     'выкидывать «нет такого DID» вместо «подожди»'),
+
+    # CU4 — пресеты имён из реестра, общий лимит, +219.
+    ('CU4', 'lib/screens/live_log.dart',
+     '    allBz5Ecus.where((e) => e.detailed == null).toList();',
+     '    allBz5Ecus.toList();',
+     'опрашивать и уже названные ECU — 30 вместо 24'),
+    ('CU4', 'lib/screens/live_log.dart',
+     '        if (_entries.length < ConnectionService.kLiveLogMaxDids)',
+     '        if (_entries.length < 7)',
+     'экран снова режет до 7 при лимите сервиса 10'),
+    ('CU4', 'lib/data/ecu_registry.dart',
+     "  EcuRegistryEntry(txId: '732', rxId: '73A', label: 'Aux #1'),",
+     "  EcuRegistryEntry(txId: '732', rxId: '739', label: 'Aux #1'),",
+     'RX в реестре перестал быть TX + 8'),
+
+    # CU6 — AC-кандидаты по каталогу, только журнал, +219.
+    ('CU6', 'android/app/src/main/kotlin/com/bz5companion/bz5_companion/hal/CompanionDecoderOverrides.kt',
+     '            "ac_compressor_mode", "", ValueSource.INT,',
+     '            "ac_defrost", "", ValueSource.INT,',
+     'вернуть старое догадочное имя на fid кнопки A/C'),
+    ('CU6', 'android/app/src/main/kotlin/com/bz5companion/bz5_companion/hal/CompanionDecoderOverrides.kt',
+     '        "BYDAutoAcDevice|0x2FA00026" to Decoder(\n',
+     '        "BYDAutoAcDevice|0x2FA00027" to Decoder(\n',
+     'декодер повешен на соседний fid — прогрев PTC снова молчит'),
+    ('CU6', 'lib/services/hal_telemetry_service.dart',
+     "    if (e.name.startsWith('ac_')) {\n      _logAcChange(e);\n      return;\n    }\n",
+     '',
+     'снять ветку — климат-тест не попадает в экспорт'),
+    ('CU6', 'lib/services/hal_telemetry_service.dart',
+     '    if (v == null || _acLastVal[e.name] == v) return;',
+     '    if (v == null) return;',
+     'писать каждое событие, а не изменение — журнал растёт без меры'),
+    # CU5 — строки в обоих языках, +219.
+    ('CU5', 'lib/l10n/strings.dart',
+     "    'sw.queue_fmt': 'ECU {i} из {n}: {tx}',\n",
+     '',
+     'строка очереди пропала в русском'),
 ]
 
 

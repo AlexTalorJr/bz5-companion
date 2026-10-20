@@ -1185,7 +1185,11 @@ class S {
     'sw.start_custom': 'Start custom sweep',
     'sw.confirm_note': 'Normal polling will be paused during the sweep. '
         'Screen stays awake. Cancel anytime.',
-    'sw.tx_rx_required': 'TX and RX are required',
+    'sw.tx_list_invalid': 'Enter one or more TX addresses: 3 hex digits each, 700..7FF',
+    'sw.tx_list': 'TX ECUs (hex, comma-separated)',
+    'sw.rx_auto': 'RX = TX + 8 for every ECU; swept one after another',
+    'sw.queue_fmt': 'ECU {i} of {n}: {tx}',
+    'sw.runs_fmt': 'Runs #{a} .. #{b}',
     'sw.bad_range': 'Invalid DID range',
     'sw.start_failed': 'Failed to start sweep',
     'll.prev_sessions': 'Previous live-log sessions',
@@ -1196,7 +1200,7 @@ class S {
     'll.cycle_note': 'One cycle = one request to each DID in turn. With 5 '
         'DIDs a cycle is ~1.2 s (~0.8 Hz overall). Entries stream into the '
         'DB — cancelling loses no data.',
-    'll.add_did': 'Add DID ({n}/7)',
+    'll.add_did': 'Add DID ({n}/{m})',
     'll.annotations': 'Annotations',
     'll.car_state': 'Car state',
     'll.fill_all': 'Fill in all fields: TX, RX (3+ hex), DID (1-4 hex, padded automatically).',
@@ -2470,7 +2474,11 @@ class S {
     'sw.start_custom': 'Запустить custom sweep',
     'sw.confirm_note': 'Обычный polling будет приостановлен на время sweep. '
         'Экран не погаснет. Можно отменить в любой момент.',
-    'sw.tx_rx_required': 'TX и RX обязательны',
+    'sw.tx_list_invalid': 'Укажите один или несколько TX: по 3 hex-цифры, 700..7FF',
+    'sw.tx_list': 'TX ECU (hex, через запятую)',
+    'sw.rx_auto': 'RX = TX + 8 для каждого ECU; опрашиваются по очереди',
+    'sw.queue_fmt': 'ECU {i} из {n}: {tx}',
+    'sw.runs_fmt': 'Запуски #{a} .. #{b}',
     'sw.bad_range': 'Некорректный диапазон DID',
     'sw.start_failed': 'Не удалось запустить sweep',
     'll.prev_sessions': 'Предыдущие live-log сессии',
@@ -2481,7 +2489,7 @@ class S {
     'll.cycle_note': 'Один цикл = один запрос к каждому DID подряд. С 5 DIDs '
         'цикл ~1.2 сек (~0.8 Hz общая частота). Записи в БД stream-ом — '
         'отмена не потеряет данные.',
-    'll.add_did': 'Добавить DID ({n}/7)',
+    'll.add_did': 'Добавить DID ({n}/{m})',
     'll.annotations': 'Аннотации',
     'll.car_state': 'Состояние машины',
     'll.fill_all': 'Заполните все поля: TX, RX (3+ hex), DID (1-4 hex, padded автоматически).',

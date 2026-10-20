@@ -125,6 +125,38 @@ object CompanionDecoderOverrides {
         "BYDAutoChargingDevice|0x2EB00832" to Decoder(
             "charging_gun_state", "", ValueSource.INT,
             notes = "1=disconnected 2=AC 3=DC; field-confirmed 14-16.08 (was charging_gun_connect_candidate)"),
+
+        // v0.2.20+219 — AC CANDIDATES from the firmware catalog (Friend 3,
+        // BYDAutoFeatureIds via recon v0.10.56, class Ac). The shared table
+        // already carries the eight catalog names recon re-mapped in p075
+        // (ac_temp_main, ac_wind_level, ...). These seven fids are inside
+        // the AC_ subscription (first 80 read-only fids by value) but had no
+        // decoder, so every frame was dropped. Status for all seven:
+        // CATALOG-NAME-CONFIRMED / VALUES-UNVERIFIED. Enum meanings are
+        // NOT decoded until the stationary climate test (one action per
+        // 10 s, timestamped). Consumer: HAL Test + the ac_* change log in
+        // HalTelemetryService (hal_samples) — never a UI card.
+        "BYDAutoAcDevice|0x2FC00009" to Decoder(
+            "ac_compressor_mode", "", ValueSource.INT,
+            notes = "AC_COMPRESSOR_MODE (A/C button); CATALOG-NAME-CONFIRMED / VALUES-UNVERIFIED"),
+        "BYDAutoAcDevice|0x2FC0000A" to Decoder(
+            "ac_compressor_manual_sign", "", ValueSource.INT,
+            notes = "AC_COMPRESSOR_MANUAL_SIGN (A/C set by hand); CATALOG-NAME-CONFIRMED / VALUES-UNVERIFIED"),
+        "BYDAutoAcDevice|0x2FC0000B" to Decoder(
+            "ac_windmode_manual_sign", "", ValueSource.INT,
+            notes = "AC_WINDMODE_MANUAL_SIGN (airflow set by hand); CATALOG-NAME-CONFIRMED / VALUES-UNVERIFIED"),
+        "BYDAutoAcDevice|0x2FC0000C" to Decoder(
+            "ac_windlevel_manual_sign", "", ValueSource.INT,
+            notes = "AC_WINDLEVEL_MANUAL_SIGN (fan speed set by hand); CATALOG-NAME-CONFIRMED / VALUES-UNVERIFIED"),
+        "BYDAutoAcDevice|0x2FC00016" to Decoder(
+            "ac_defrost_front_state", "", ValueSource.INT,
+            notes = "AC_DEFROST_FRONT_STATE (windscreen defrost); CATALOG-NAME-CONFIRMED / VALUES-UNVERIFIED"),
+        "BYDAutoAcDevice|0x2FA0000C" to Decoder(
+            "ac_ptc_state", "", ValueSource.INT,
+            notes = "AC_PTC_STATE (PTC heater state enum, not duty); CATALOG-NAME-CONFIRMED / VALUES-UNVERIFIED"),
+        "BYDAutoAcDevice|0x2FA00026" to Decoder(
+            "ac_ptc_preheat_signal", "", ValueSource.INT,
+            notes = "AC_PTC_PREHEAT_SIGNAL (PTC preheat); CATALOG-NAME-CONFIRMED / VALUES-UNVERIFIED"),
     )
 
     /**

@@ -30,15 +30,15 @@ class SweepScreen extends StatefulWidget {
 class _SweepPreset {
   final String name;
   final String description;
-  final String txEcu;
-  final String rxEcu;
+  /// v0.2.20+219: one or more TX addresses swept one after another;
+  /// RX is always TX + 8 ([ConnectionService.rxForTx]).
+  final List<String> txList;
   final String startDid;
   final String endDid;
   const _SweepPreset({
     required this.name,
     required this.description,
-    required this.txEcu,
-    required this.rxEcu,
+    required this.txList,
     required this.startDid,
     required this.endDid,
   });
@@ -49,16 +49,14 @@ class _SweepScreenState extends State<SweepScreen> {
     _SweepPreset(
       name: 'VCU full',
       description: '791 — Vehicle Control Unit, 0x0000..0x1FFF (8192 DIDs, ~55 min)',
-      txEcu: '791',
-      rxEcu: '799',
+      txList: ['791'],
       startDid: '0000',
       endDid: '1FFF',
     ),
     _SweepPreset(
       name: 'VCU narrow',
       description: '791 — VCU, 0x0000..0x01FF (512 DIDs, ~3.5 min)',
-      txEcu: '791',
-      rxEcu: '799',
+      txList: ['791'],
       startDid: '0000',
       endDid: '01FF',
     ),
@@ -71,16 +69,14 @@ class _SweepScreenState extends State<SweepScreen> {
       name: 'VCU upper (regen hunt)',
       description: '791 — VCU upper half, 0x1000..0x1FFF (4096 DIDs, ~27 min) — '
           'unexplored zone, likely regen current / motor torque',
-      txEcu: '791',
-      rxEcu: '799',
+      txList: ['791'],
       startDid: '1000',
       endDid: '1FFF',
     ),
     _SweepPreset(
       name: 'BMS Master full',
       description: '790 — BMS Master, 0x0000..0x1FFF (~55 min)',
-      txEcu: '790',
-      rxEcu: '798',
+      txList: ['790'],
       startDid: '0000',
       endDid: '1FFF',
     ),
@@ -88,16 +84,14 @@ class _SweepScreenState extends State<SweepScreen> {
       name: 'BMS Master mid',
       description: '790 — BMS Master, 0x0000..0x0FFF (4096 DIDs, ~27 min) — '
           'driving sweep range, matches VCU mid for comparison',
-      txEcu: '790',
-      rxEcu: '798',
+      txList: ['790'],
       startDid: '0000',
       endDid: '0FFF',
     ),
     _SweepPreset(
       name: 'BMS Master narrow',
       description: '790 — BMS Master, 0x0000..0x01FF (~3.5 min)',
-      txEcu: '790',
-      rxEcu: '798',
+      txList: ['790'],
       startDid: '0000',
       endDid: '01FF',
     ),
@@ -105,40 +99,36 @@ class _SweepScreenState extends State<SweepScreen> {
       name: 'PDU / HV Junction',
       description: '740, 0x0000..0x00FF (256 DIDs, ~2 min) — '
           'pack nominal constants + PDU temps',
-      txEcu: '740',
-      rxEcu: '748',
+      txList: ['740'],
       startDid: '0000',
       endDid: '00FF',
     ),
     _SweepPreset(
       name: 'OBC',
       description: '782 — On-Board Charger, 0x0000..0x00FF (~2 min)',
-      txEcu: '782',
-      rxEcu: '78A',
+      txList: ['782'],
       startDid: '0000',
       endDid: '00FF',
     ),
     _SweepPreset(
       name: 'BMS Slaves',
-      description: '752/753 — BMS slave packs, 0x0000..0x00FF (sequential)',
-      txEcu: '752',
-      rxEcu: '75A',
+      description: '752, 753 — BMS slave packs, 0x0000..0x00FF (one after another)',
+      txList: ['752', '753'],
       startDid: '0000',
       endDid: '00FF',
     ),
     _SweepPreset(
       name: 'GPS Asensing',
       description: '757 — GPS module, 0x0000..0x00FF (~2 min)',
-      txEcu: '757',
-      rxEcu: '75F',
+      txList: ['757'],
       startDid: '0000',
       endDid: '00FF',
     ),
   ];
 
   // Form state (Custom)
+  // v0.2.20+219: one or more TX addresses; RX = TX + 8 for each.
   final _txCtrl = TextEditingController(text: '791');
-  final _rxCtrl = TextEditingController(text: '799');
   final _startCtrl = TextEditingController(text: '0000');
   final _endCtrl = TextEditingController(text: '01FF');
   final _carStateCtrl = TextEditingController(text: 'P+Ready, AC off');
@@ -146,8 +136,13 @@ class _SweepScreenState extends State<SweepScreen> {
 
   bool _customExpanded = false;
 
-  // Local UI state for the "just finished" navigation prompt
-  int? _justFinishedRunId;
+  // Local UI state for the "just finished" navigation prompt.
+  // v0.2.20+219: a queue creates one run per ECU.
+  List<int>? _justFinishedRunIds;
+
+  /// Average seconds per DID for ETA: probe round trip + 30 ms gap.
+  /// Matches the preset descriptions (8192 DIDs ≈ 55 min).
+  static const double _kSecPerDid = 0.4;
 
   @override
   void initState() {
@@ -160,7 +155,6 @@ class _SweepScreenState extends State<SweepScreen> {
   void dispose() {
     WakelockPlus.disable();
     _txCtrl.dispose();
-    _rxCtrl.dispose();
     _startCtrl.dispose();
     _endCtrl.dispose();
     _carStateCtrl.dispose();
@@ -198,9 +192,14 @@ class _SweepScreenState extends State<SweepScreen> {
 
   Widget _buildProgressView(ConnectionService svc) {
     final pct = (svc.sweepProgress * 100).toStringAsFixed(1);
-    // Rough ETA: remaining DIDs * 280ms (probe ~250ms + spacing 30ms)
+    // Rough ETA at _kSecPerDid: rest of this ECU plus every ECU still
+    // waiting in the queue (each the same range).
     final remaining = svc.sweepTotal - svc.sweepDone;
-    final etaSec = (remaining * 0.4).round();
+    final queuedAfter = svc.sweepQueueRunning
+        ? svc.sweepQueueTotal - svc.sweepQueueIndex
+        : 0;
+    final etaSec =
+        ((remaining + queuedAfter * svc.sweepTotal) * _kSecPerDid).round();
     final etaStr = _fmtEta(etaSec);
 
     return Padding(
@@ -215,6 +214,18 @@ class _SweepScreenState extends State<SweepScreen> {
               textAlign: TextAlign.center,
               style: const TextStyle(
                   fontSize: 22, fontWeight: FontWeight.w300, letterSpacing: 1.5)),
+          if (svc.sweepQueueRunning && svc.sweepQueueTotal > 1) ...[
+            const SizedBox(height: 8),
+            Text(
+              S
+                  .of('sw.queue_fmt')
+                  .replaceFirst('{i}', '${svc.sweepQueueIndex}')
+                  .replaceFirst('{n}', '${svc.sweepQueueTotal}')
+                  .replaceFirst('{tx}', svc.sweepQueueTx),
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 14, color: Colors.grey),
+            ),
+          ],
           const SizedBox(height: 24),
           LinearProgressIndicator(
             value: svc.sweepProgress,
@@ -328,21 +339,29 @@ class _SweepScreenState extends State<SweepScreen> {
           ),
           const SizedBox(height: 8),
         ],
-        if (_justFinishedRunId != null) ...[
+        if (_justFinishedRunIds != null) ...[
           Card(
             color: Colors.green.shade900.withValues(alpha: 0.3),
             child: ListTile(
               leading: const Icon(Icons.check_circle, color: Colors.greenAccent),
               title: Text(S.of('sw.complete')),
-              subtitle: Text(
-                  S.of('sw.run_n').replaceFirst('{n}', '$_justFinishedRunId')),
+              subtitle: Text(_justFinishedRunIds!.length == 1
+                  ? S
+                      .of('sw.run_n')
+                      .replaceFirst('{n}', '${_justFinishedRunIds!.first}')
+                  : S
+                      .of('sw.runs_fmt')
+                      .replaceFirst('{a}', '${_justFinishedRunIds!.first}')
+                      .replaceFirst('{b}', '${_justFinishedRunIds!.last}')),
               trailing: TextButton(
                 child: Text(S.of('sw.open')),
                 onPressed: () {
-                  final runId = _justFinishedRunId;
-                  setState(() => _justFinishedRunId = null);
+                  final ids = _justFinishedRunIds!;
+                  setState(() => _justFinishedRunIds = null);
                   Navigator.of(context).push(MaterialPageRoute(
-                    builder: (_) => SweepResultsScreen(runId: runId!),
+                    builder: (_) => ids.length == 1
+                        ? SweepResultsScreen(runId: ids.first)
+                        : const SweepRunListScreen(),
                   ));
                 },
               ),
@@ -365,39 +384,17 @@ class _SweepScreenState extends State<SweepScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        controller: _txCtrl,
-                        decoration: const InputDecoration(
-                          labelText: 'TX ECU (hex)',
-                          hintText: '791',
-                          isDense: true,
-                        ),
-                        textCapitalization: TextCapitalization.characters,
-                        inputFormatters: [
-                          FilteringTextInputFormatter.allow(RegExp(r'[0-9A-Fa-f]')),
-                          LengthLimitingTextInputFormatter(4),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: TextField(
-                        controller: _rxCtrl,
-                        decoration: const InputDecoration(
-                          labelText: 'RX ECU (hex)',
-                          hintText: '799',
-                          isDense: true,
-                        ),
-                        textCapitalization: TextCapitalization.characters,
-                        inputFormatters: [
-                          FilteringTextInputFormatter.allow(RegExp(r'[0-9A-Fa-f]')),
-                          LengthLimitingTextInputFormatter(4),
-                        ],
-                      ),
-                    ),
+                TextField(
+                  controller: _txCtrl,
+                  decoration: InputDecoration(
+                    labelText: S.of('sw.tx_list'),
+                    hintText: '732, 760, 777',
+                    helperText: S.of('sw.rx_auto'),
+                    isDense: true,
+                  ),
+                  textCapitalization: TextCapitalization.characters,
+                  inputFormatters: [
+                    FilteringTextInputFormatter.allow(RegExp(r'[0-9A-Fa-f ,]')),
                   ],
                 ),
                 const SizedBox(height: 12),
@@ -486,7 +483,7 @@ class _SweepScreenState extends State<SweepScreen> {
     final start = int.parse(preset.startDid, radix: 16);
     final end = int.parse(preset.endDid, radix: 16);
     final total = end - start + 1;
-    final etaSec = (total * 0.4).round();
+    final etaSec = (total * preset.txList.length * _kSecPerDid).round();
 
     final confirmed = await showDialog<bool>(
       context: context,
@@ -498,7 +495,9 @@ class _SweepScreenState extends State<SweepScreen> {
           children: [
             Text(preset.description),
             const SizedBox(height: 12),
-            Text('TX: ${preset.txEcu} → RX: ${preset.rxEcu}'),
+            Text(preset.txList
+                .map((tx) => '$tx → ${ConnectionService.rxForTx(tx)}')
+                .join(', ')),
             Text('Range: 0x${preset.startDid} .. 0x${preset.endDid} '
                 '($total DIDs)'),
             Text('ETA: ~${_fmtEta(etaSec)}'),
@@ -525,8 +524,7 @@ class _SweepScreenState extends State<SweepScreen> {
 
     await _runAndAwait(
       svc,
-      txEcu: preset.txEcu,
-      rxEcu: preset.rxEcu,
+      txList: preset.txList,
       startDid: preset.startDid,
       endDid: preset.endDid,
       carState: _carStateCtrl.text.trim().isEmpty ? null : _carStateCtrl.text.trim(),
@@ -535,14 +533,13 @@ class _SweepScreenState extends State<SweepScreen> {
   }
 
   Future<void> _startCustom(ConnectionService svc) async {
-    final tx = _txCtrl.text.trim().toUpperCase();
-    final rx = _rxCtrl.text.trim().toUpperCase();
+    final txList = ConnectionService.parseTxList(_txCtrl.text);
     final startDid = _startCtrl.text.trim().toUpperCase().padLeft(4, '0');
     final endDid = _endCtrl.text.trim().toUpperCase().padLeft(4, '0');
 
-    if (tx.isEmpty || rx.isEmpty) {
+    if (txList == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(S.of('sw.tx_rx_required'))),
+        SnackBar(content: Text(S.of('sw.tx_list_invalid'))),
       );
       return;
     }
@@ -557,8 +554,7 @@ class _SweepScreenState extends State<SweepScreen> {
 
     await _runAndAwait(
       svc,
-      txEcu: tx,
-      rxEcu: rx,
+      txList: txList,
       startDid: startDid,
       endDid: endDid,
       carState: _carStateCtrl.text.trim().isEmpty ? null : _carStateCtrl.text.trim(),
@@ -568,24 +564,22 @@ class _SweepScreenState extends State<SweepScreen> {
 
   Future<void> _runAndAwait(
     ConnectionService svc, {
-    required String txEcu,
-    required String rxEcu,
+    required List<String> txList,
     required String startDid,
     required String endDid,
     String? carState,
     String? notes,
   }) async {
-    final runId = await svc.runSweep(
-      txEcu: txEcu,
-      rxEcu: rxEcu,
+    final runIds = await svc.runSweepQueue(
+      txList: txList,
       startDidHex: startDid,
       endDidHex: endDid,
       carState: carState,
       notes: notes,
     );
     if (!mounted) return;
-    if (runId != null) {
-      setState(() => _justFinishedRunId = runId);
+    if (runIds != null && runIds.isNotEmpty) {
+      setState(() => _justFinishedRunIds = runIds);
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(S.of('sw.start_failed'))),
