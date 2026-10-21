@@ -392,6 +392,9 @@ class BridgeDiagService extends ChangeNotifier {
         case 'bleStartSweep':
           body = _handleBleStartSweep(args);
           break;
+        case 'bleStartSweepQueue':
+          body = _handleBleStartSweepQueue(args);
+          break;
         case 'bleStartLiveLog':
           body = _handleBleStartLiveLog(args);
           break;
@@ -405,8 +408,8 @@ class BridgeDiagService extends ChangeNotifier {
           body = _err('unsupported',
               'Command kind "$kind" not implemented in this client yet. '
               'BridgeDiagService Turn B supports BLE only '
-              '(bleStartSweep / bleStartLiveLog / bleStartCanMonitor / '
-              'bleStopActiveOperation). '
+              '(bleStartSweep / bleStartSweepQueue / bleStartLiveLog / '
+              'bleStartCanMonitor / bleStopActiveOperation). '
               'Native handlers come in Turn C.');
       }
     } catch (e, st) {
@@ -546,6 +549,74 @@ class BridgeDiagService extends ChangeNotifier {
     return {
       'ok': true,
       'result': {'started': true, 'kind': 'sweep'},
+    };
+  }
+
+  /// v0.2.21+220 bleStartSweepQueue: fire-and-forget, one DID range over
+  /// several ECUs via ConnectionService.runSweepQueue (RX = TX + 8 is
+  /// derived there; no rx list in the args). One SweepRun per ECU, each
+  /// with `queue i/n` in its notes, so Plane B shows them as usual.
+  ///
+  /// Args: {tx_list: "722, 755, 716" | ["722","755"], start_did, end_did,
+  ///        car_state?, notes?}
+  Map<String, dynamic> _handleBleStartSweepQueue(Map<String, dynamic> args) {
+    final txRaw = args['tx_list'];
+    final String txText;
+    if (txRaw is String) {
+      txText = txRaw;
+    } else if (txRaw is List) {
+      txText = txRaw.map((e) => '$e').join(',');
+    } else {
+      return _err('parse', 'tx_list must be a string or a list of strings');
+    }
+    final txList = ConnectionService.parseTxList(txText);
+    if (txList == null) {
+      return _err('validation',
+          'tx_list must hold 3-hex-digit addresses in 700..7FF, got $txRaw');
+    }
+    final startDid = args['start_did'];
+    final endDid = args['end_did'];
+    if (startDid is! String || endDid is! String) {
+      return _err('parse', 'start_did and end_did must be strings');
+    }
+    final startInt = int.tryParse(startDid, radix: 16);
+    final endInt = int.tryParse(endDid, radix: 16);
+    if (startInt == null || endInt == null) {
+      return _err('parse',
+          'start_did/end_did not valid hex: got $startDid..$endDid');
+    }
+    if (startInt < 0 || endInt > 0xFFFF || endInt < startInt) {
+      return _err('validation', 'DID range invalid: $startDid..$endDid');
+    }
+    final carState = args['car_state'];
+    final notes = args['notes'];
+    if (!_svc.isBleConnected) {
+      return _err('not_connected',
+          'No live BLE link to ELM327; pair the adapter first');
+    }
+    if (_bleBusy) {
+      return _err('busy',
+          'Another BLE operation in progress '
+          '(sweep=${_svc.sweepRunning} livelog=${_svc.liveLogRunning} '
+          'dtc=${_svc.dtcScanRunning})');
+    }
+    unawaited(_svc
+        .runSweepQueue(
+      txList: txList,
+      startDidHex: startDid.toUpperCase().padLeft(4, '0'),
+      endDidHex: endDid.toUpperCase().padLeft(4, '0'),
+      carState: carState is String ? carState : null,
+      notes: notes is String ? notes : 'started via bridge command',
+    )
+        .then((ids) {
+      debugPrint('BridgeDiag: bleStartSweepQueue finished, '
+          'runs=${ids?.length ?? 0}/${txList.length}');
+    }).catchError((Object e, StackTrace st) {
+      debugPrint('BridgeDiag: bleStartSweepQueue threw: $e\n$st');
+    }));
+    return {
+      'ok': true,
+      'result': {'started': true, 'kind': 'sweep_queue', 'ecus': txList.length},
     };
   }
 

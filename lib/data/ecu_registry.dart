@@ -324,47 +324,60 @@ class EcuRegistryEntry {
   final String txId;
   final String rxId;
   final String label;
+  /// v0.2.21+220: part number as the ECU returned it on DID 0105
+  /// (identity run 21.10), or the Toyota group prefix where only that
+  /// was relayed. Null = not answered (717 EMPTY, 777 7F 22 31) or not
+  /// read. The group (first five digits) is what the UNCONFIRMED labels
+  /// below are read from; nothing here is documentation-confirmed.
+  final String? partNumber;
   final EcuSpec? detailed;
 
   const EcuRegistryEntry({
     required this.txId,
     required this.rxId,
     required this.label,
+    this.partNumber,
     this.detailed,
   });
 }
 
+// v0.2.21+220: labels re-read from part numbers (Друг 3, identity run
+// 21.10). The pre-identity guesses (Motor controller, Inverter/DC-DC,
+// PDU 2–4, BMS slave, Aux #n, Gateway #2) are gone: 744/745/752/753
+// returned ONE part number, so they are one box on four addresses, and
+// 722 is the A/C compressor driver, not an inverter. Every new label is
+// UNCONFIRMED until the ECU's data stream says what it is.
 const allBz5Ecus = <EcuRegistryEntry>[
-  EcuRegistryEntry(txId: '701', rxId: '709', label: 'Gateway/VCU#1'),
+  EcuRegistryEntry(txId: '701', rxId: '709', label: 'Telematics (UNCONFIRMED 89220; VIN at 0020, SW versions at 0107)', partNumber: '8922003050'),
   EcuRegistryEntry(txId: '702', rxId: '70A', label: 'Gateway', detailed: gatewayEcu),
-  EcuRegistryEntry(txId: '703', rxId: '70B', label: 'Gateway/VCU#3'),
-  EcuRegistryEntry(txId: '713', rxId: '71B', label: 'Motor controller 1'),
-  EcuRegistryEntry(txId: '714', rxId: '71C', label: 'Motor controller 2'),
-  EcuRegistryEntry(txId: '716', rxId: '71E', label: 'Motor controller 3'),
-  EcuRegistryEntry(txId: '717', rxId: '71F', label: 'Motor controller 4'),
-  EcuRegistryEntry(txId: '721', rxId: '729', label: 'Inverter/DC-DC 1'),
-  EcuRegistryEntry(txId: '722', rxId: '72A', label: 'Inverter/DC-DC 2'),
-  EcuRegistryEntry(txId: '724', rxId: '72C', label: 'Inverter/DC-DC 3'),
-  EcuRegistryEntry(txId: '732', rxId: '73A', label: 'Aux #1'),
+  EcuRegistryEntry(txId: '703', rxId: '70B', label: 'Unidentified (897B0)', partNumber: '897B0'),
+  EcuRegistryEntry(txId: '713', rxId: '71B', label: 'Instrument cluster A (UNCONFIRMED 83800)', partNumber: '8380003030'),
+  EcuRegistryEntry(txId: '714', rxId: '71C', label: 'Unidentified (861C0)', partNumber: '861C0'),
+  EcuRegistryEntry(txId: '716', rxId: '71E', label: 'Climate module (UNCONFIRMED 88734; right body/climate candidate)', partNumber: '8873403020'),
+  EcuRegistryEntry(txId: '717', rxId: '71F', label: 'Unidentified (0105 EMPTY)'),
+  EcuRegistryEntry(txId: '721', rxId: '729', label: 'Cabin heater/blower (UNCONFIRMED 87101)', partNumber: '8710103040'),
+  EcuRegistryEntry(txId: '722', rxId: '72A', label: 'A/C compressor + inverter (UNCONFIRMED 88370; compressor driver candidate)', partNumber: '8837003030'),
+  EcuRegistryEntry(txId: '724', rxId: '72C', label: 'Charger/converter (UNCONFIRMED 289120Z060)', partNumber: '289120Z060'),
+  EcuRegistryEntry(txId: '732', rxId: '73A', label: 'Instrument cluster B (UNCONFIRMED 83800)', partNumber: '8380003030'),
   EcuRegistryEntry(txId: '740', rxId: '748', label: 'PDU/HV Junction', detailed: packMonitorEcu),
-  EcuRegistryEntry(txId: '744', rxId: '74C', label: 'PDU 2'),
-  EcuRegistryEntry(txId: '745', rxId: '74D', label: 'PDU 3'),
-  EcuRegistryEntry(txId: '746', rxId: '74E', label: 'PDU 4'),
-  EcuRegistryEntry(txId: '750', rxId: '758', label: 'BMS slave 1'),
-  EcuRegistryEntry(txId: '751', rxId: '759', label: 'BMS slave 2'),
-  EcuRegistryEntry(txId: '752', rxId: '75A', label: 'BMS slave 3'),
-  EcuRegistryEntry(txId: '753', rxId: '75B', label: 'BMS slave 4'),
-  EcuRegistryEntry(txId: '755', rxId: '75D', label: 'BMS slave 5'),
-  EcuRegistryEntry(txId: '756', rxId: '75E', label: 'BMS slave 6'),
+  EcuRegistryEntry(txId: '744', rxId: '74C', label: 'Shared box 88162, address 1 of 4 (UNCONFIRMED)', partNumber: '8816203040'),
+  EcuRegistryEntry(txId: '745', rxId: '74D', label: 'Shared box 88162, address 2 of 4 (UNCONFIRMED)', partNumber: '8816203040'),
+  EcuRegistryEntry(txId: '746', rxId: '74E', label: 'Unidentified (89050)', partNumber: '89050'),
+  EcuRegistryEntry(txId: '750', rxId: '758', label: 'EPS steering (UNCONFIRMED 89650)', partNumber: '89650'),
+  EcuRegistryEntry(txId: '751', rxId: '759', label: 'Unidentified (894E1)', partNumber: '894E1'),
+  EcuRegistryEntry(txId: '752', rxId: '75A', label: 'Shared box 88162, address 3 of 4 (UNCONFIRMED)', partNumber: '8816203040'),
+  EcuRegistryEntry(txId: '753', rxId: '75B', label: 'Shared box 88162, address 4 of 4 (UNCONFIRMED)', partNumber: '8816203040'),
+  EcuRegistryEntry(txId: '755', rxId: '75D', label: 'Electric heater A (UNCONFIRMED 881B0; PTC / heat pump candidate)', partNumber: '881B003050'),
+  EcuRegistryEntry(txId: '756', rxId: '75E', label: 'Parking sensors (UNCONFIRMED 89340)', partNumber: '89340'),
   EcuRegistryEntry(txId: '757', rxId: '75F', label: '🛰 GPS', detailed: gpsEcu),
-  EcuRegistryEntry(txId: '760', rxId: '768', label: 'Aux #2'),
-  EcuRegistryEntry(txId: '777', rxId: '77F', label: 'Aux #3'),
+  EcuRegistryEntry(txId: '760', rxId: '768', label: 'Electric heater B (UNCONFIRMED 881D0; PTC / heat pump candidate)', partNumber: '881D003020'),
+  EcuRegistryEntry(txId: '777', rxId: '77F', label: 'Unidentified (0105 → 7F 22 31)'),
   EcuRegistryEntry(txId: '782', rxId: '78A', label: '🔌 Charger', detailed: chargerEcu),
-  EcuRegistryEntry(txId: '786', rxId: '78E', label: 'Aux #4'),
+  EcuRegistryEntry(txId: '786', rxId: '78E', label: 'Brakes A (UNCONFIRMED 47210)', partNumber: '47210'),
   EcuRegistryEntry(txId: '790', rxId: '798', label: '🔋 BMS master', detailed: bmsEcu),
   EcuRegistryEntry(txId: '791', rxId: '799', label: '🚗 VCU', detailed: vcuEcu),
-  EcuRegistryEntry(txId: '7E5', rxId: '7ED', label: 'OBD compliance'),
-  EcuRegistryEntry(txId: '7F1', rxId: '7F9', label: 'Gateway #2'),
+  EcuRegistryEntry(txId: '7E5', rxId: '7ED', label: 'Brakes B / OBD compliance (UNCONFIRMED 44540)', partNumber: '44540'),
+  EcuRegistryEntry(txId: '7F1', rxId: '7F9', label: 'SRS airbags (UNCONFIRMED 89170)', partNumber: '89170'),
 ];
 
 class DecodedValue {

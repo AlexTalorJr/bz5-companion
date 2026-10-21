@@ -4314,6 +4314,14 @@ class ConnectionService extends ChangeNotifier {
   /// any ECU answer, negative or not, resets the counter.
   static const int kSweepSilentEcuProbes = 16;
 
+  /// v0.2.21+220: outcomes the sweep retries once (transport-class, not
+  /// an ECU answer). `7F` NRCs, NO_DATA, EMPTY, MALFORMED are the ECU's or
+  /// the adapter's own word and are recorded as they came.
+  static bool _isSweepRetryable(String? errorCode) =>
+      errorCode == 'TIMEOUT' ||
+      errorCode == 'NULL_RESPONSE' ||
+      (errorCode != null && errorCode.startsWith('MISALIGNED:'));
+
   /// v0.2.20+219: Live Log DID limit. One constant for the service check
   /// and for the screen's add button (the screen stopped at 7 while the
   /// service accepted 10).
@@ -4488,6 +4496,17 @@ class ConnectionService extends ChangeNotifier {
     _sweepQueueTx = '';
     notifyListeners();
 
+    // v0.2.21+220: pause normal polling ONCE for the whole queue. Each
+    // run used to pause and resume it itself, so between two ECUs a full
+    // poll cycle (5–8 s) ran and the next run waited for it to finish.
+    // With _polling already false the runs see wasPolling=false and
+    // leave it alone; the queue resumes it in finally.
+    final wasPolling = _polling;
+    if (wasPolling) {
+      _polling = false;
+      await _waitForPollIdle();
+    }
+
     final runIds = <int>[];
     String stopReason = 'completed';
     try {
@@ -4523,6 +4542,10 @@ class ConnectionService extends ChangeNotifier {
           'stop=$stopReason');
       _sweepQueueRunning = false;
       _sweepQueueCancelled = false;
+      if (wasPolling) {
+        _polling = true;
+        _pollLoop();
+      }
       notifyListeners();
     }
     return runIds;
@@ -4653,73 +4676,108 @@ class ConnectionService extends ChangeNotifier {
 
         String? rawHex;
         String? errorCode;
-
-        try {
-          // v0.1.17: timeout: max(1500ms, periodMs*2). Matches _pollEcu's
-          // empirical production value. Previous 1000ms floor was below
-          // some ECUs' worst-case response latency on a loaded bus.
-          //
-          // v0.1.29+24: raced against killSignal via Future.any. The
-          // .timeout(...) below provides the FAST-path bound; the race
-          // provides the FAULT-path bound (in case the underlying
-          // _writeChar.write() in elm327_ble.dart is wedged at the
-          // platform layer — observed in Cycle 9 freezes).
-          final timeoutMs = periodMs * 2 > 1500 ? periodMs * 2 : 1500;
-          final readFuture = _client!
-              .readDid(didHex, tx: txEcu, rx: rxEcu)
-              .timeout(Duration(milliseconds: timeoutMs));
-          // No-op error handler so an orphaned (kill-won) future doesn't
-          // surface as an unhandled async error if it later throws.
-          unawaited(readFuture.then((_) {}, onError: (Object _) {}));
-          final raceResult = await Future.any<Object?>([
-            readFuture.then<Object?>((v) => v),
-            killSignal.future.then<Object?>((_) => _killedSentinel),
-          ]);
-          if (identical(raceResult, _killedSentinel) ||
-              killSignal.isCompleted) {
+        // v0.2.21+220: one retry of the same DID after a transport-class
+        // outcome (TIMEOUT, NULL_RESPONSE, MISALIGNED — run 8 showed each
+        // is the BLE channel, not the ECU). Before the retry the loop
+        // waits for the abandoned request to finish, so the retry reads
+        // its own answer. Set by the kill race so the attempt loop can
+        // hand the kill to the DID loop.
+        bool killed = false;
+        for (int attempt = 0; attempt < 2; attempt++) {
+          rawHex = null;
+          errorCode = null;
+          try {
+            // v0.1.17: timeout: max(1500ms, periodMs*2). Matches _pollEcu's
+            // empirical production value. Previous 1000ms floor was below
+            // some ECUs' worst-case response latency on a loaded bus.
+            //
+            // v0.1.29+24: raced against killSignal via Future.any. The
+            // .timeout(...) below provides the FAST-path bound; the race
+            // provides the FAULT-path bound (in case the underlying
+            // _writeChar.write() in elm327_ble.dart is wedged at the
+            // platform layer — observed in Cycle 9 freezes).
+            final timeoutMs = periodMs * 2 > 1500 ? periodMs * 2 : 1500;
+            final readFuture = _client!
+                .readDid(didHex, tx: txEcu, rx: rxEcu)
+                .timeout(Duration(milliseconds: timeoutMs));
+            // No-op error handler so an orphaned (kill-won) future doesn't
+            // surface as an unhandled async error if it later throws.
+            unawaited(readFuture.then((_) {}, onError: (Object _) {}));
+            final raceResult = await Future.any<Object?>([
+              readFuture.then<Object?>((v) => v),
+              killSignal.future.then<Object?>((_) => _killedSentinel),
+            ]);
+            if (identical(raceResult, _killedSentinel) ||
+                killSignal.isCompleted) {
+              killed = true;
+              break;
+            }
+            final r = raceResult as EcuResponse?;
+            if (r == null) {
+              // v0.1.29+24: readDid returned null (not threw). Previously
+              // this slipped through with no error code recorded; tag it
+              // so research data shows the failure mode.
+              errorCode = 'NULL_RESPONSE';
+            } else {
+              // Positive responses start with 62XXXX, where XXXX is the DID.
+              // Negative responses start with 7F (NRC).
+              // v0.1.15 bug fix: previously an empty/garbage rawHex (e.g. when
+              // BLE link silently degraded) would slip past the 7F check and
+              // be counted as valid. Sweep #4 of v0.1.14 reported 4083 valid
+              // responses despite all 4095 rows in DB being empty.
+              // Now requires rawHex to be non-empty and start with '62'.
+              final raw = r.rawHex;
+              final rawUp = raw.toUpperCase();
+              if (r.error == 'NO DATA') {
+                // v0.2.20+219: the adapter got no answer from the ECU.
+                // Recorded apart from EMPTY (garbled/empty BLE read) because
+                // it is the silence the silent-ECU stop counts.
+                errorCode = 'NO_DATA';
+              } else if (rawUp.startsWith('7F')) {
+                errorCode = raw;
+              } else if (rawUp.startsWith('62') && raw.length >= 6) {
+                // v0.1.16: validate echoed DID (see runLiveLog for rationale).
+                final echoedDid = rawUp.substring(2, 6);
+                if (echoedDid == didHex.toUpperCase()) {
+                  rawHex = raw;
+                  validCount++;
+                } else {
+                  // v0.2.21+220: keep the raw answer — run 8 had one
+                  // MISALIGNED whose cause could not be told without it.
+                  errorCode = 'MISALIGNED:$echoedDid≠$didHex:$raw';
+                }
+              } else {
+                // Unexpected response shape — log it as error so we can debug,
+                // don't count as valid.
+                errorCode = raw.isEmpty ? 'EMPTY' : 'MALFORMED:$raw';
+              }
+            }
+          } catch (e) {
+            errorCode = e is BleWedgedException ? 'BLE_WEDGED' : 'TIMEOUT';
+          }
+          // v0.2.21+220: let the abandoned request drain, then look at
+          // the transport. A wedged platform write ends the run now
+          // (exit=ble_wedged) instead of 180 s later by the watchdog.
+          if (errorCode == 'TIMEOUT' || errorCode == 'BLE_WEDGED') {
+            await Future.any<void>([
+              _ble?.waitIdle() ?? Future<void>.value(),
+              killSignal.future,
+            ]);
+          }
+          if (_ble?.isWedged == true) {
+            errorCode = 'BLE_WEDGED';
+            _sweepExitReason = 'ble_wedged';
             break;
           }
-          final r = raceResult as EcuResponse?;
-          if (r == null) {
-            // v0.1.29+24: readDid returned null (not threw). Previously
-            // this slipped through with no error code recorded; tag it
-            // so research data shows the failure mode.
-            errorCode = 'NULL_RESPONSE';
-          } else {
-            // Positive responses start with 62XXXX, where XXXX is the DID.
-            // Negative responses start with 7F (NRC).
-            // v0.1.15 bug fix: previously an empty/garbage rawHex (e.g. when
-            // BLE link silently degraded) would slip past the 7F check and
-            // be counted as valid. Sweep #4 of v0.1.14 reported 4083 valid
-            // responses despite all 4095 rows in DB being empty.
-            // Now requires rawHex to be non-empty and start with '62'.
-            final raw = r.rawHex;
-            final rawUp = raw.toUpperCase();
-            if (r.error == 'NO DATA') {
-              // v0.2.20+219: the adapter got no answer from the ECU.
-              // Recorded apart from EMPTY (garbled/empty BLE read) because
-              // it is the silence the silent-ECU stop counts.
-              errorCode = 'NO_DATA';
-            } else if (rawUp.startsWith('7F')) {
-              errorCode = raw;
-            } else if (rawUp.startsWith('62') && raw.length >= 6) {
-              // v0.1.16: validate echoed DID (see runLiveLog for rationale).
-              final echoedDid = rawUp.substring(2, 6);
-              if (echoedDid == didHex.toUpperCase()) {
-                rawHex = raw;
-                validCount++;
-              } else {
-                errorCode = 'MISALIGNED:$echoedDid≠$didHex';
-              }
-            } else {
-              // Unexpected response shape — log it as error so we can debug,
-              // don't count as valid.
-              errorCode = raw.isEmpty ? 'EMPTY' : 'MALFORMED:$raw';
-            }
+          if (attempt == 0 && _isSweepRetryable(errorCode)) {
+            debugPrint('runSweep: $txEcu/$didHex $errorCode — retry once');
+            continue;
           }
-        } catch (e) {
-          errorCode = 'TIMEOUT';
+          break;
         }
+        // A wedge still records its row below so the export shows where
+        // the channel died; a kill records nothing.
+        if (killed) break;
 
         // v0.1.29+24: bounded + raced insert. Drift's sqflite serializes
         // writes; same hang surface as livelog's insertLiveLogEntry. 5s
@@ -4754,6 +4812,10 @@ class ConnectionService extends ChangeNotifier {
 
         _sweepDone++;
         onProgress?.call(_sweepDone, _sweepTotal, didHex);
+        if (_sweepExitReason == 'ble_wedged') {
+          notifyListeners();
+          break;
+        }
 
         // v0.2.20+219: an ECU that answers nothing still costs a full
         // NO DATA wait per DID. Stop after kSweepSilentEcuProbes silent
@@ -5549,6 +5611,11 @@ class ConnectionService extends ChangeNotifier {
           _liveLogExitReason = 'ble_dropped';
           break;
         }
+        // v0.2.21+220: a wedged platform write ends the session at once.
+        if (_ble?.isWedged == true) {
+          _liveLogExitReason = 'ble_wedged';
+          break;
+        }
 
         // Optional max duration cap
         if (maxDurationMs != null &&
@@ -5605,6 +5672,10 @@ class ConnectionService extends ChangeNotifier {
           // wasted reads per cycle on a dead link.
           if (_ble != null && !_ble!.isConnected) {
             _liveLogExitReason = 'ble_dropped_mid_cycle';
+            break;
+          }
+          if (_ble?.isWedged == true) {
+            _liveLogExitReason = 'ble_wedged';
             break;
           }
 

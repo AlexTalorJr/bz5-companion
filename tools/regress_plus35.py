@@ -12620,7 +12620,10 @@ if int(pv) >= 219:
         'await svc.runSweepQueue(' in _cu_sw,
         'svc.runSweep(' not in _cu_sw,
         'final txList = ConnectionService.parseTxList(_txCtrl.text);' in _cu_sw,
-        "txList: ['752', '753']," in _cu_sw,
+        # +220 retired the BMS Slaves preset (one box on four addresses)
+        # for the climate-candidates queue.
+        ("txList: ['722', '755', '716', '744', '760']," if int(pv) >= 220
+         else "txList: ['752', '753'],") in _cu_sw,
     ]
     if all(_cu2_bits):
         ok('CU2 multi-ECU sweep queue owns the BLE channel; RX = TX + 8 from one helper; screen sweeps only via the queue')
@@ -12646,7 +12649,7 @@ if int(pv) >= 219:
 
     # CU4: ПРЕСЕТЫ ИМЁН ECU СТРОЯТСЯ ИЗ РЕЕСТРА, ЛИМИТ ОДИН НА СЕРВИС И
     # ЭКРАН. Данные: в реестре 24 ECU без подробной спецификации → 10+10+4.
-    _cu4_entries = re.findall(r"EcuRegistryEntry\(txId: '([0-9A-F]{3})', rxId: '([0-9A-F]{3})', label: '[^']*'(, detailed: \w+)?\)", _cu_reg)
+    _cu4_entries = re.findall(r"EcuRegistryEntry\(txId: '([0-9A-F]{3})', rxId: '([0-9A-F]{3})', label: '[^']*'(?:, partNumber: '[^']*')?(, detailed: \w+)?\)", _cu_reg)
     _cu4_unnamed = [e for e in _cu4_entries if not e[2]]
     _cu4_rx_ok = all(int(rx, 16) == int(tx, 16) + 8 for tx, rx, _ in _cu4_entries)
     _cu4_bits = [
@@ -12729,6 +12732,147 @@ if int(pv) >= 219:
         fail(f'CU6 AC candidates drifted from the catalog or leaked into consumption: {_cu6_bits}')
 else:
     ok(f"Part CU skipped (build +{pv}, sweep queue lands in +219)")
+
+# ═══════ Part CV — 0.2.21+220: канал BLE перестаёт врать и зависать ═══════
+if int(pv) >= 220:
+    _cv_ble = _strip_comments_safe((root / 'lib/ble/elm327_ble.dart').read_text())
+    _cv_conn = _strip_comments_safe(
+        (root / 'lib/services/connection.dart').read_text())
+    _cv_sw = _strip_comments_safe((root / 'lib/screens/sweep.dart').read_text())
+    _cv_reg = _strip_comments_safe((root / 'lib/data/ecu_registry.dart').read_text())
+    _cv_hts = _strip_comments_safe(
+        (root / 'lib/services/hal_telemetry_service.dart').read_text())
+    _cv_brg = _strip_comments_safe(
+        (root / 'lib/services/bridge_diag_service.dart').read_text())
+    _cv_exp = _strip_comments_safe((root / 'lib/screens/ecu_explorer.dart').read_text())
+
+    # CV1: ОДИН ЗАПРОС ЗА РАЗ. sendRaw ставит запрос в хвост предыдущего и
+    # только потом чистит буфер; брошенный запрос не попадает в чужой ответ.
+    _cv1_i_send = _cv_ble.find('Future<String> sendRaw(String payload, {Duration timeout = const Duration(seconds: 4)}) {')
+    _cv1_i_now = _cv_ble.find('Future<String> _sendRawNow(String payload, Duration timeout) async {')
+    _cv1_i_clear = _cv_ble.find('_rxBuffer.clear();', max(_cv1_i_now, 0))
+    _cv1_bits = [
+        -1 < _cv1_i_send < _cv1_i_now < _cv1_i_clear,
+        "final run = _inflight.catchError((_) {}).then((_) => _sendRawNow(payload, timeout));" in _cv_ble,
+        "_inflight = run.then((_) {}, onError: (_) {});" in _cv_ble,
+        'Future<void> waitIdle({Duration timeout = const Duration(seconds: 5)}) =>' in _cv_ble,
+        '_inflight.timeout(timeout, onTimeout: () {});' in _cv_ble,
+    ]
+    if all(_cv1_bits):
+        ok('CV1 sendRaw is serialized behind the previous request; buffer is cleared only once the channel is ours; waitIdle lets a caller that gave up resync')
+    else:
+        fail(f'CV1 transport requests can interleave again: {_cv1_bits}')
+
+    # CV2: ЗАПИСЬ ОГРАНИЧЕНА, ЗАВИСАНИЕ ИМЕНУЕТСЯ. Платформенная запись с
+    # пределом kWriteTimeout; перебор ставит isWedged и бросает
+    # BleWedgedException; connect() снимает флаг; следующий sendRaw падает
+    # сразу.
+    _cv2_i_write = _cv_ble.find('.timeout(kWriteTimeout);')
+    _cv2_i_catch = _cv_ble.find('} on TimeoutException {\n        _wedged = true;\n        throw const BleWedgedException();', max(_cv2_i_write, 0))
+    _cv2_i_conn = _cv_ble.find('_disconnected = false;\n    _wedged = false;')
+    _cv2_bits = [
+        'static const Duration kWriteTimeout = Duration(seconds: 3);' in _cv_ble,
+        -1 < _cv2_i_write < _cv2_i_catch,
+        _cv2_i_conn > -1,
+        'if (_wedged) throw const BleWedgedException();' in _cv_ble,
+        'bool get isWedged => _wedged;' in _cv_ble,
+        'class BleWedgedException implements Exception {' in _cv_ble,
+    ]
+    if all(_cv2_bits):
+        ok('CV2 platform BLE writes are bounded (3 s); an overrun marks the transport wedged, fails later requests at once, and connect() clears it')
+    else:
+        fail(f'CV2 a hung platform write can stall the transport unbounded again: {_cv2_bits}')
+
+    # CV3: SWEEP — ОДИН ПОВТОР ТОГО ЖЕ DID, ВЫХОД ble_wedged СРАЗУ. Повтор
+    # только для транспортных исходов (TIMEOUT, NULL_RESPONSE, MISALIGNED),
+    # перед ним ждём waitIdle; клин завершает прогон до сторожевого таймера;
+    # MISALIGNED несёт сырой ответ; kill из цикла попыток доходит до цикла DID.
+    _cv3_conn = re.sub(r'\n[ \t]+', '\n', _cv_conn)  # indentation-free view
+    _cv_conn = _cv3_conn
+    _cv3_i_for = _cv_conn.find('for (int attempt = 0; attempt < 2; attempt++) {')
+    _cv3_i_catch = _cv_conn.find("errorCode = e is BleWedgedException ? 'BLE_WEDGED' : 'TIMEOUT';", max(_cv3_i_for, 0))
+    _cv3_i_idle = _cv_conn.find('_ble?.waitIdle() ?? Future<void>.value(),', max(_cv3_i_catch, 0))
+    _cv3_i_wedge = _cv_conn.find("if (_ble?.isWedged == true) {\nerrorCode = 'BLE_WEDGED';\n_sweepExitReason = 'ble_wedged';\nbreak;", max(_cv3_i_idle, 0))
+    _cv3_i_retry = _cv_conn.find('if (attempt == 0 && _isSweepRetryable(errorCode)) {', max(_cv3_i_wedge, 0))
+    _cv3_i_killed = _cv_conn.find('if (killed) break;', max(_cv3_i_retry, 0))
+    _cv3_i_rec = _cv_conn.find("if (_sweepExitReason == 'ble_wedged') {\nnotifyListeners();\nbreak;", max(_cv3_i_killed, 0))
+    _cv3_i_help = _cv_conn.find('static bool _isSweepRetryable(String? errorCode) =>')
+    _cv3_help = _cv_conn[_cv3_i_help:_cv3_i_help + 260] if _cv3_i_help > -1 else ''
+    _cv3_bits = [
+        -1 < _cv3_i_for < _cv3_i_catch < _cv3_i_idle < _cv3_i_wedge < _cv3_i_retry < _cv3_i_killed < _cv3_i_rec,
+        "errorCode == 'TIMEOUT' ||" in _cv3_help,
+        "errorCode == 'NULL_RESPONSE' ||" in _cv3_help,
+        "errorCode.startsWith('MISALIGNED:')" in _cv3_help,
+        "'NO_DATA'" not in _cv3_help and "'EMPTY'" not in _cv3_help,
+        "killed = true;\nbreak;" in _cv_conn[_cv3_i_for:_cv3_i_catch],
+        "errorCode = 'MISALIGNED:$echoedDid≠$didHex:$raw';" in _cv_conn,
+        _cv_conn.count("_liveLogExitReason = 'ble_wedged';") == 2,
+    ]
+    if all(_cv3_bits):
+        ok('CV3 sweep retries a transport-class DID once after the channel drains; a wedged transport ends sweep and live log with exit=ble_wedged; MISALIGNED keeps the raw answer')
+    else:
+        fail(f'CV3 DID retry / ble_wedged exit drifted: {_cv3_bits}')
+
+    # CV4: ОПРОС СТОИТ НА ВСЮ ОЧЕРЕДЬ. Очередь сама останавливает опрос до
+    # первого ECU и возобновляет в finally.
+    _cv4_i_q = _cv_conn.find('Future<List<int>?> runSweepQueue({')
+    _cv4_i_one = _cv_conn.find('Future<int?> _runSweepOne({')
+    _cv4_q = _cv_conn[_cv4_i_q:_cv4_i_one] if -1 < _cv4_i_q < _cv4_i_one else ''
+    _cv4_i_pause = _cv4_q.find('final wasPolling = _polling;\nif (wasPolling) {\n_polling = false;\nawait _waitForPollIdle();')
+    _cv4_i_try = _cv4_q.find('try {\nfor (int i = 0; i < txList.length; i++) {')
+    _cv4_i_fin = _cv4_q.find('} finally {')
+    _cv4_i_res = _cv4_q.find('if (wasPolling) {\n_polling = true;\n_pollLoop();', max(_cv4_i_fin, 0))
+    if -1 < _cv4_i_pause < _cv4_i_try < _cv4_i_fin < _cv4_i_res:
+        ok('CV4 the sweep queue pauses normal polling once before its first ECU and resumes it in finally')
+    else:
+        fail(f'CV4 polling resumes between queued ECUs again: {[_cv4_i_pause, _cv4_i_try, _cv4_i_fin, _cv4_i_res]}')
+
+    # CV5: РЕЕСТР ПО НОМЕРАМ ДЕТАЛЕЙ. Четыре адреса с одним номером, 722 —
+    # компрессор, старые догадки ушли, пресет климат-кандидатов на экране и
+    # номер детали виден в Explorer.
+    _cv5_pn = dict(re.findall(r"txId: '([0-9A-F]{3})', rxId: '[0-9A-F]{3}', label: '[^']*', partNumber: '([^']*)'", _cv_reg))
+    _cv5_bits = [
+        all(_cv5_pn.get(t) == '8816203040' for t in ('744', '745', '752', '753')),
+        _cv5_pn.get('722') == '8837003030',
+        _cv5_pn.get('701') == '8922003050',
+        'BMS slave' not in _cv_reg and 'Inverter/DC-DC' not in _cv_reg and 'Aux #' not in _cv_reg,
+        "label: 'Unidentified (0105 EMPTY)')" in _cv_reg,
+        "name: 'Climate candidates'," in _cv_sw,
+        "name: 'BMS Slaves'," not in _cv_sw,
+        "'${entry.label}\\nP/N ${entry.partNumber}'" in _cv_exp,
+        'final String? partNumber;' in _cv_reg,
+    ]
+    if all(_cv5_bits):
+        ok('CV5 registry carries DID-0105 part numbers: one box on 744/745/752/753, 722 = A/C compressor driver, guesses retired, climate-candidates preset on the sweep screen')
+    else:
+        fail(f'CV5 registry/part numbers drifted: {_cv5_bits}')
+
+    # CV6: РАЗРЕШЕНИЕ AC ЧИНИТСЯ САМО, ОДИН РАЗ. После _startStream при
+    # ошибке регистрации, винящей permission, запрашиваются недостающие
+    # BYDAUTO_*, и после выдачи поток перезапускается. Мост умеет очередь.
+    _cv6_i_s0 = _cv_hts.find('if (_mode != HalSourceMode.obd2Only) {\n      await _startStream();')
+    _cv6_i_start = _cv_hts.find('unawaited(_repairMissingPermissions());', max(_cv6_i_s0, 0))
+    _cv6_i_start = _cv6_i_start if (_cv6_i_s0 > -1 and -1 < _cv6_i_start < _cv6_i_s0 + 400) else -1
+    _cv6_i_fn = _cv_hts.find('Future<void> _repairMissingPermissions() async {')
+    _cv6_fn = _cv_hts[_cv6_i_fn:_cv6_i_fn + 2600] if _cv6_i_fn > -1 else ''
+    _cv6_bits = [
+        _cv6_i_start > -1,
+        'bool _permissionRepairTried = false;' in _cv_hts,
+        'if (_permissionRepairTried) return;' in _cv6_fn,
+        'if (st == null || st.failed == 0) return;' in _cv6_fn,
+        '.where((p) => p.dangerous && p.declared && !p.granted)' in _cv6_fn,
+        'await ch.requestRuntimePermissions();' in _cv6_fn,
+        'await _stopStream();\n          await _startStream();' in _cv6_fn,
+        "case 'bleStartSweepQueue':" in _cv_brg,
+        'final txList = ConnectionService.parseTxList(txText);' in _cv_brg,
+        '.runSweepQueue(' in _cv_brg,
+    ]
+    if all(_cv6_bits):
+        ok('CV6 a register failure blaming a permission triggers one BYDAUTO permission request and a stream restart on grant; bridge gains bleStartSweepQueue')
+    else:
+        fail(f'CV6 permission repair / bridge queue drifted: {_cv6_bits}')
+else:
+    ok(f"Part CV skipped (build +{pv}, BLE channel fixes land in +220)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)

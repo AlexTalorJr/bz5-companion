@@ -110,12 +110,17 @@ class _SweepScreenState extends State<SweepScreen> {
       startDid: '0000',
       endDid: '00FF',
     ),
+    // v0.2.21+220: 752/753 share part number 8816203040 with 744/745 —
+    // one box on four addresses, not BMS slave packs (identity run
+    // 21.10). The "BMS Slaves" preset is gone; the box is swept as 744
+    // inside the climate preset below.
     _SweepPreset(
-      name: 'BMS Slaves',
-      description: '752, 753 — BMS slave packs, 0x0000..0x00FF (one after another)',
-      txList: ['752', '753'],
+      name: 'Climate candidates',
+      description: '722, 755, 716, 744, 760 — compressor, heaters, climate '
+          'module (identity 21.10), 0x0000..0x03FF each (~7.5 min per ECU)',
+      txList: ['722', '755', '716', '744', '760'],
       startDid: '0000',
-      endDid: '00FF',
+      endDid: '03FF',
     ),
     _SweepPreset(
       name: 'GPS Asensing',

@@ -2090,9 +2090,9 @@ MUTATIONS = [
      '    if (_sweepRunning) return null;',
      'Live Log снова читает поле, а не геттер очереди'),
     ('CU2', 'lib/screens/sweep.dart',
-     "      txList: ['752', '753'],",
-     "      txList: ['752'],",
-     'BMS Slaves снова опрашивает один 752 при описании «752, 753»'),
+     "      txList: ['722', '755', '716', '744', '760'],",
+     "      txList: ['722', '755', '716', '744'],",
+     'пресет климат-кандидатов потерял 760 при описании «722, 755, 716, 744, 760»'),
 
     # CU3 — ответ после 7F xx 78 не теряется, +219.
     ('CU3', 'lib/ble/elm327_client.dart',
@@ -2114,8 +2114,8 @@ MUTATIONS = [
      '        if (_entries.length < 7)',
      'экран снова режет до 7 при лимите сервиса 10'),
     ('CU4', 'lib/data/ecu_registry.dart',
-     "  EcuRegistryEntry(txId: '732', rxId: '73A', label: 'Aux #1'),",
-     "  EcuRegistryEntry(txId: '732', rxId: '739', label: 'Aux #1'),",
+     "  EcuRegistryEntry(txId: '703', rxId: '70B', label: 'Unidentified (897B0)', partNumber: '897B0'),",
+     "  EcuRegistryEntry(txId: '703', rxId: '70A', label: 'Unidentified (897B0)', partNumber: '897B0'),",
      'RX в реестре перестал быть TX + 8'),
 
     # CU6 — AC-кандидаты по каталогу, только журнал, +219.
@@ -2140,6 +2140,82 @@ MUTATIONS = [
      "    'sw.queue_fmt': 'ECU {i} из {n}: {tx}',\n",
      '',
      'строка очереди пропала в русском'),
+
+    # CV1 — один запрос за раз, +220.
+    ('CV1', 'lib/ble/elm327_ble.dart',
+     "    final run = _inflight.catchError((_) {}).then((_) => _sendRawNow(payload, timeout));",
+     "    final run = _sendRawNow(payload, timeout);",
+     'запросы снова идут параллельно — брошенный ответ попадает в чужой буфер'),
+    ('CV1', 'lib/ble/elm327_ble.dart',
+     "    _inflight = run.then((_) {}, onError: (_) {});\n",
+     "",
+     'хвост очереди не обновляется — ждать нечего'),
+
+    # CV2 — запись ограничена, клин именуется, +220.
+    ('CV2', 'lib/ble/elm327_ble.dart',
+     "            .timeout(kWriteTimeout);",
+     "            ;",
+     'платформенная запись снова без предела'),
+    ('CV2', 'lib/ble/elm327_ble.dart',
+     "      } on TimeoutException {\n        _wedged = true;\n        throw const BleWedgedException();",
+     "      } on TimeoutException {\n        throw const BleWedgedException();",
+     'клин не запоминается — следующий запрос снова встанет за мёртвой записью'),
+    ('CV2', 'lib/ble/elm327_ble.dart',
+     "    _disconnected = false;\n    _wedged = false;",
+     "    _disconnected = false;",
+     'после переподключения транспорт навсегда «заклинен»'),
+
+    # CV3 — повтор DID и выход ble_wedged, +220.
+    ('CV3', CONN,
+     "          if (attempt == 0 && _isSweepRetryable(errorCode)) {",
+     "          if (false && _isSweepRetryable(errorCode)) {",
+     'повтора нет — сдвиг канала снова портит строки'),
+    ('CV3', CONN,
+     "      errorCode == 'NULL_RESPONSE' ||\n",
+     "      errorCode == 'NULL_RESPONSE' ||\n      errorCode == 'NO_DATA' ||\n",
+     'повторять молчание ECU — удваивает время на мёртвом блоке'),
+    ('CV3', CONN,
+     "          if (_ble?.isWedged == true) {\n            errorCode = 'BLE_WEDGED';\n            _sweepExitReason = 'ble_wedged';\n            break;",
+     "          if (false) {\n            errorCode = 'BLE_WEDGED';\n            _sweepExitReason = 'ble_wedged';\n            break;",
+     'клин снова ждёт сторожевой таймер 180 с'),
+    ('CV3', CONN,
+     "              killed = true;\n              break;",
+     "              break;",
+     'kill из цикла попыток не доходит до цикла DID — вторая попытка после отмены'),
+    ('CV3', CONN,
+     "                  errorCode = 'MISALIGNED:$echoedDid≠$didHex:$raw';",
+     "                  errorCode = 'MISALIGNED:$echoedDid≠$didHex';",
+     'сырой ответ при MISALIGNED снова теряется'),
+
+    # CV4 — опрос стоит на всю очередь, +220.
+    ('CV4', CONN,
+     "    final wasPolling = _polling;\n    if (wasPolling) {\n      _polling = false;\n      await _waitForPollIdle();\n    }\n\n    final runIds = <int>[];",
+     "    final wasPolling = false;\n\n    final runIds = <int>[];",
+     'опрос снова возобновляется между ECU'),
+
+    # CV5 — реестр по номерам деталей, +220.
+    ('CV5', 'lib/data/ecu_registry.dart',
+     "  EcuRegistryEntry(txId: '752', rxId: '75A', label: 'Shared box 88162, address 3 of 4 (UNCONFIRMED)', partNumber: '8816203040'),",
+     "  EcuRegistryEntry(txId: '752', rxId: '75A', label: 'BMS slave 3', partNumber: '8816203040'),",
+     'старая догадка «BMS slave» вернулась на адрес общей коробки'),
+    ('CV5', 'lib/screens/sweep.dart',
+     "      name: 'Climate candidates',",
+     "      name: 'BMS Slaves',",
+     'пресет климат-кандидатов пропал с экрана'),
+
+    # CV6 — разрешение чинится один раз, мост умеет очередь, +220.
+    ('CV6', 'lib/services/hal_telemetry_service.dart',
+     "    if (_permissionRepairTried) return;\n",
+     "",
+     'запрос разрешений на каждом старте потока — диалог в цикле'),
+    ('CV6', 'lib/services/hal_telemetry_service.dart',
+     "        if (_mode != HalSourceMode.obd2Only) {\n          await _stopStream();\n          await _startStream();\n        }\n        return;",
+     "        return;",
+     'разрешение выдано, а поток не перезапущен — AC молчит до перезагрузки'),
+    ('CV6', 'lib/services/bridge_diag_service.dart',
+     "        case 'bleStartSweepQueue':\n          body = _handleBleStartSweepQueue(args);\n          break;\n",
+     "",
+     'команда очереди не подключена к диспетчеру'),
 ]
 
 

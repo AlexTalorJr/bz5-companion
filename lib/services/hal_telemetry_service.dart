@@ -3580,6 +3580,9 @@ class HalTelemetryService extends ChangeNotifier
     // platform returns null and we simply stay on OBD2 — no harm.
     if (_mode != HalSourceMode.obd2Only) {
       await _startStream();
+      // v0.2.21+220: a target that failed to register for a missing
+      // runtime permission gets one repair attempt (see the method).
+      unawaited(_repairMissingPermissions());
     }
     // v0.1.29+91: prime the cumulative drive-energy cell from existing trips.
     await refreshTotalDriveEnergy();
@@ -3613,6 +3616,80 @@ class HalTelemetryService extends ChangeNotifier
       await _startStream();
     }
     notifyListeners();
+  }
+
+  /// v0.2.21+220: BYDAUTO_AC_COMMON is declared since +66 but is a
+  /// runtime-grantable permission, and the only request lived behind a
+  /// button in Native Explorer. After a reinstall (uid changed 10218 →
+  /// 10370 on 21.10) the grant was gone and BYDAutoAcDevice.getInstance
+  /// threw SecurityException: 7 of 8 targets registered, all ac_* silent.
+  ///
+  /// Once per process, when the start status blames a permission: ask
+  /// the platform for every declared-but-ungranted BYDAUTO_* permission,
+  /// then poll briefly for the grant (the system may show a dialog or
+  /// grant silently) and restart the stream so the failed target
+  /// registers. Needs a bound Activity — the UI start path; the
+  /// background service start never comes through init().
+  bool _permissionRepairTried = false;
+
+  Future<void> _repairMissingPermissions() async {
+    if (_permissionRepairTried) return;
+    final st = _status;
+    if (st == null || st.failed == 0) return;
+    final blamesPermission = st.errors.values.any((e) {
+      final t = '$e';
+      return t.contains('SecurityException') || t.contains('permission');
+    });
+    if (!blamesPermission) return;
+    _permissionRepairTried = true;
+    final ch = NativeCarChannel.instance;
+    List<PermissionStatus> perms;
+    try {
+      perms = await ch.checkPermissions();
+    } catch (e) {
+      debugPrint('hal perms: checkPermissions failed: $e');
+      return;
+    }
+    final missing = perms
+        .where((p) => p.dangerous && p.declared && !p.granted)
+        .map((p) => p.permission)
+        .toList();
+    if (missing.isEmpty) {
+      debugPrint('hal perms: register failed but every BYDAUTO permission '
+          'is granted — not a permission problem');
+      return;
+    }
+    debugPrint('hal perms: ${missing.length} not granted '
+        '(${missing.join(', ')}) — requesting');
+    try {
+      final r = await ch.requestRuntimePermissions();
+      debugPrint('hal perms: request → $r');
+    } catch (e) {
+      debugPrint('hal perms: request failed: $e');
+      return;
+    }
+    for (int i = 0; i < 6; i++) {
+      await Future<void>.delayed(const Duration(seconds: 2));
+      try {
+        perms = await ch.checkPermissions();
+      } catch (_) {
+        return;
+      }
+      final still = perms
+          .where((p) => missing.contains(p.permission) && !p.granted)
+          .length;
+      if (still < missing.length) {
+        debugPrint('hal perms: ${missing.length - still} granted — '
+            'restarting HAL stream');
+        if (_mode != HalSourceMode.obd2Only) {
+          await _stopStream();
+          await _startStream();
+        }
+        return;
+      }
+    }
+    debugPrint('hal perms: nothing granted after request '
+        '(${missing.join(', ')})');
   }
 
   Future<void> _startStream() async {

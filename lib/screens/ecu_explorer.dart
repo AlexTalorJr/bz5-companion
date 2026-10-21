@@ -28,7 +28,10 @@ class EcuExplorerScreen extends StatelessWidget {
                     style: const TextStyle(fontSize: 12)),
               ),
               title: Text('${entry.txId} → ${entry.rxId}'),
-              subtitle: Text(entry.label),
+              // v0.2.21+220: part number from DID 0105 under the label.
+              subtitle: Text(entry.partNumber == null
+                  ? entry.label
+                  : '${entry.label}\nP/N ${entry.partNumber}'),
               trailing: entry.detailed != null
                   ? const Icon(Icons.chevron_right)
                   : const Icon(Icons.help_outline, color: Colors.grey),

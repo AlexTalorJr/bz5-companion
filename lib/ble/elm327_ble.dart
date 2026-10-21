@@ -70,6 +70,39 @@ class Elm327Ble {
   bool _disconnected = false;
   bool get isConnected => !_disconnected && _writeChar != null;
 
+  // ────── v0.2.21+220: one request at a time, bounded writes ──────
+  //
+  // Sweep run 8 (21.10): a caller abandoned a request after its own 1.5 s
+  // timeout while this transport was still waiting (up to 4 s). The late
+  // answer landed in the NEXT request's buffer, so that request returned
+  // a stale answer and the ones after it got empty ones until a NO DATA
+  // re-aligned the stream (TIMEOUT + 2×NULL_RESPONSE at 01F0 and 025A).
+  // Now every sendRaw waits for the previous one to finish before it
+  // clears the buffer, so an abandoned request can never bleed into the
+  // next one; callers that gave up can [waitIdle] before retrying.
+  //
+  // The same run then stalled for 180 s after a TIMEOUT at 0435: the
+  // platform-side BLE write hung and nothing bounded it. The write is
+  // now bounded by [kWriteTimeout]; a write that overruns it marks the
+  // transport [isWedged], and every later sendRaw fails at once with
+  // [BleWedgedException] instead of queueing behind a dead write.
+  // [connect] clears the flag.
+  Future<void> _inflight = Future<void>.value();
+  bool _wedged = false;
+
+  /// True after a platform BLE write overran [kWriteTimeout]. Cleared by
+  /// [connect]. Callers end their loops with exit=ble_wedged on this.
+  bool get isWedged => _wedged;
+
+  /// Bound on one platform write call (a ≤20-byte chunk). A healthy
+  /// write returns in milliseconds; seconds means the platform is gone.
+  static const Duration kWriteTimeout = Duration(seconds: 3);
+
+  /// Resolve once no request is in flight (or after [timeout]). Never
+  /// throws — a failed previous request also counts as finished.
+  Future<void> waitIdle({Duration timeout = const Duration(seconds: 5)}) =>
+      _inflight.timeout(timeout, onTimeout: () {});
+
   /// v0.1.16: invoked when the BLE link drops (adapter out of range, car
   /// turned off, etc). ConnectionService subscribes to update its public
   /// status from "connected" → "disconnected" so the UI doesn't lie.
@@ -108,6 +141,7 @@ class Elm327Ble {
     // characteristic throw cryptic "set notify value, device is disconnected"
     // and the whole client object becomes a zombie that fails reconnects.
     _disconnected = false;
+    _wedged = false;
     _stateSub?.cancel();
     _stateSub = device.connectionState.listen((state) {
       if (state == BluetoothConnectionState.disconnected) {
@@ -234,12 +268,21 @@ class Elm327Ble {
     }
   }
 
-  Future<String> sendRaw(String payload, {Duration timeout = const Duration(seconds: 4)}) async {
+  Future<String> sendRaw(String payload, {Duration timeout = const Duration(seconds: 4)}) {
+    // v0.2.21+220: serialize. The previous request's outcome is ignored
+    // here (it reported to its own caller); only its completion matters.
+    final run = _inflight.catchError((_) {}).then((_) => _sendRawNow(payload, timeout));
+    _inflight = run.then((_) {}, onError: (_) {});
+    return run;
+  }
+
+  Future<String> _sendRawNow(String payload, Duration timeout) async {
     // v0.1.7.1: fail fast if BLE link is gone — otherwise the write throws
     // a confusing "set notify value, device is disconnected" platform
     // exception and leaves stale state behind.
     if (_disconnected) throw Exception('BLE link disconnected');
     if (_writeChar == null) throw Exception('Not connected');
+    if (_wedged) throw const BleWedgedException();
 
     _rxBuffer.clear();
     _hasPrompt = false;
@@ -249,7 +292,14 @@ class Elm327Ble {
 
     for (int i = 0; i < bytes.length; i += _chunkSize) {
       final end = (i + _chunkSize > bytes.length) ? bytes.length : i + _chunkSize;
-      await _writeChar!.write(bytes.sublist(i, end), withoutResponse: true);
+      try {
+        await _writeChar!
+            .write(bytes.sublist(i, end), withoutResponse: true)
+            .timeout(kWriteTimeout);
+      } on TimeoutException {
+        _wedged = true;
+        throw const BleWedgedException();
+      }
     }
 
     try {
@@ -414,4 +464,13 @@ class Elm327Ble {
     }
     return true;
   }
+}
+
+/// v0.2.21+220: thrown by [Elm327Ble.sendRaw] once a platform write has
+/// overrun [Elm327Ble.kWriteTimeout]. Distinct from a response timeout:
+/// the adapter is unreachable until [Elm327Ble.connect] runs again.
+class BleWedgedException implements Exception {
+  const BleWedgedException();
+  @override
+  String toString() => 'BLE transport wedged: platform write did not return';
 }

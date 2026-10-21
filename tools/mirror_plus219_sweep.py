@@ -144,7 +144,7 @@ check('3d EMPTY resets the count',
 # ── 4. пресеты имён из реестра ──
 entries = re.findall(
     r"EcuRegistryEntry\(txId: '([0-9A-F]{3})', rxId: '([0-9A-F]{3})', "
-    r"label: '[^']*'(, detailed: \w+)?\)", REG)
+    r"label: '[^']*'(?:, partNumber: '[^']*')?(, detailed: \w+)?\)", REG)
 unnamed = [(tx, rx) for tx, rx, d in entries if not d]
 chunks = [unnamed[i:i + LL_MAX] for i in range(0, len(unnamed), LL_MAX)]
 check('4a registry has 30 ECUs, 24 unnamed',
