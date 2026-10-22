@@ -191,11 +191,11 @@ class BridgeDiagService extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Called externally (e.g. after CloudSyncService finishes setup) to
-  /// refresh our view of the shared token. CloudSyncService doesn't
-  /// know about us, so we don't get notified automatically; the
-  /// Settings UI calls this when the user enables the toggle, and
-  /// init() does it on app start.
+  /// Refresh our view of the shared token. v0.2.22+221: called by
+  /// CloudSyncService.onClientTokenChanged (wired in main.dart) on every
+  /// token write or delete — register, pairing, restore, disconnect,
+  /// 401 wipe — and by the Settings toggle when the user switches it on.
+  /// init() reads the token itself on creation.
   Future<void> refreshTokenFromSharedStorage() async {
     try {
       _clientToken = await _secureStorage.read(key: _kSharedTokenKey);

@@ -67,6 +67,10 @@ class HalEvent {
   final String? bufHex;
   final int? bufSize;
 
+  /// v0.2.22+221: сырые поля кадра климата `i=… d=… ts=…`, есть только у
+  /// `ac_raw_<FID>`. Null у всех остальных событий.
+  final String? text;
+
   const HalEvent({
     required this.name,
     required this.unit,
@@ -77,6 +81,7 @@ class HalEvent {
     this.canIdHex,
     this.bufHex,
     this.bufSize,
+    this.text,
   });
 
   factory HalEvent.fromMap(Map<Object?, Object?> m) => HalEvent(
@@ -89,6 +94,7 @@ class HalEvent {
         canIdHex: m['can_id_hex'] as String?,
         bufHex: m['buf_hex'] as String?,
         bufSize: (m['buf_size'] as num?)?.toInt(),
+        text: m['text'] as String?,
       );
 
   @override

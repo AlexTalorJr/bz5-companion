@@ -33,6 +33,7 @@ package com.bz5companion.bz5_companion.hal
 
 import android.os.Handler
 import android.os.Looper
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -126,6 +127,30 @@ class DecodedStreamSink(
     private val bigDataRawWhitelist: Set<Int> =
         setOf(0x02D3, 0x044B, 0x044C, 0x0478, 0x0681, 0x0682)
 
+    // ─── COMPANION-AUTHORED: сырые значения климата (v0.2.22+221) ─────
+    //
+    // ЗАЧЕМ. Общая таблица расшифровки выбирает ОДНО поле кадра по типу
+    // декодера и молча обнуляет или отбрасывает другое. Поездка 2 дала
+    // «INT 0/1» на 0x2FC00028: декодер INT читал `intValue=0`, а значение
+    // лежало в `doubleValue`. По расшифрованным `ac_*` в hal_samples тип
+    // поля поэтому не установить вообще.
+    //
+    // ЧТО. На каждый кадр BYDAutoAcDevice — отдельное событие
+    // `ac_raw_<FID>` ДО декодера и независимо от его результата: оба поля
+    // как пришли (ноль — нулём, пустое — словом null) и время HAL. Формат
+    // строки согласован с Другом 3: `i=<int|null> d=<double|null> ts=<ms>`.
+    //
+    // ПО ИЗМЕНЕНИЮ. Решение «писать или нет» принимается ЗДЕСЬ, один раз
+    // для обоих адресатов (живой поток и фоновый журнал). Сравнивается
+    // пара значений без времени: время меняется на каждом кадре, и
+    // сравнение по нему писало бы каждый кадр.
+    //
+    // Вендорная таблица не тронута: всё это — надстройка companion.
+    private val acTargetKey: String = "BYDAutoAcDevice"
+
+    /** Подтип → последняя отправленная пара `i=… d=…`. */
+    private val acRawLast = ConcurrentHashMap<Long, String>()
+
     /**
      * v0.1.83+182. Сменить адресат, НЕ трогая подписку.
      *
@@ -137,6 +162,10 @@ class DecodedStreamSink(
      */
     fun setOut(next: HalOut) {
         sink = next
+        // v0.2.22+221: новый адресат не видел прошлых значений климата.
+        // Без сброса текущее состояние до него не дошло бы, пока его не
+        // поменяют руками.
+        acRawLast.clear()
     }
 
     /** Отцепиться совсем — подписка кончилась. Идемпотентно, с любого потока. */
@@ -156,6 +185,9 @@ class DecodedStreamSink(
         timestampMs: Long,
     ) {
         if (sink == null) return  // detached — drop silently
+
+        // v0.2.22+221: сырой кадр климата — ДО декодера, при любом его исходе.
+        maybeEmitAcRaw(targetKey, subtype, intValue, doubleValue, timestampMs)
 
         // decode() returns null for unmapped / hypothesis subtypes → we
         // simply don't forward them (no card appears downstream). It also
@@ -318,6 +350,41 @@ class DecodedStreamSink(
         }
     }
 
+    /**
+     * v0.2.22+221: событие `ac_raw_<FID>` для кадра BYDAutoAcDevice, если
+     * пара значений этого подтипа изменилась. `value` — непустое из двух
+     * полей, при обоих — `doubleValue`. Сравнение через
+     * [ConcurrentHashMap.put] атомарно: кадры приходят с binder-потоков.
+     */
+    private fun maybeEmitAcRaw(
+        targetKey: String,
+        subtype: Long,
+        intValue: Int?,
+        doubleValue: Double?,
+        timestampMs: Long
+    ) {
+        val target = TelemetryDecoderTable.normalizeTargetKey(targetKey)
+        if (target != acTargetKey) return
+        val pair = "i=${intValue ?: "null"} d=${doubleValue ?: "null"}"
+        if (acRawLast.put(subtype, pair) == pair) return
+        val fid = String.format("%08X", subtype and 0xFFFFFFFFL)
+        val numeric: Double? = doubleValue ?: intValue?.toDouble()
+        queue.add(
+            mapOf(
+                "name" to "ac_raw_$fid",
+                "unit" to "",
+                "value" to numeric,
+                "key" to TelemetryDecoderTable.key(target, subtype),
+                "subtype" to subtype,
+                "ts" to timestampMs,
+                "text" to "$pair ts=$timestampMs"
+            )
+        )
+        if (drainScheduled.compareAndSet(false, true)) {
+            mainHandler.post { drain() }
+        }
+    }
+
     private fun toHex(b: ByteArray): String {
         val sb = StringBuilder(b.size * 2)
         for (x in b) sb.append(String.format("%02X", x.toInt() and 0xff))
@@ -367,6 +434,8 @@ class DecodedStreamSink(
 // Flutter contract (hal_telemetry_channel.dart parses exactly these keys):
 //   { "name": String, "unit": String, "value": double,
 //     "key": String, "subtype": int, "ts": int }
+// Extras outside this function: bigdata_raw adds can_id_hex/buf_hex/
+// buf_size (+88), ac_raw_<FID> adds text and may carry value=null (+221).
 // ─────────────────────────────────────────────────────────────────────
 private fun DecodedValue.toEventMap(targetKey: String, subtype: Long): Map<String, Any?> =
     mapOf(

@@ -338,6 +338,31 @@ class CloudSyncService extends ChangeNotifier {
   /// the HAL class (AA2). Null / unwired → treated as "not a head unit".
   bool Function()? isHeadUnitCheck;
 
+  /// v0.2.22+221: «токен устройства в общем хранилище сменился». Мост
+  /// (BridgeDiagService) читает тот же ключ, но читал его только при
+  /// создании и после ручной регистрации на экране настроек. Привязка и
+  /// восстановление писали токен молча, а процесс на голове не
+  /// перезапускается — тумблер «Удалённая диагностика» оставался серым,
+  /// команды моста (114 = bleStartSweepQueue) ждали в очереди. Владелец
+  /// токена — этот сервис, поэтому сообщает он, один раз на каждую
+  /// запись и удаление ([_announceClientToken]). Проводка в main.dart,
+  /// тем же приёмом, что [isHeadUnitCheck]: колбэк, без импорта моста.
+  void Function()? onClientTokenChanged;
+
+  /// v0.2.22+221: сеанс аккаунта, отданный `/v2/pair/status` (§1.2,
+  /// `account_session`, форма ответа `/v2/auth/otp/verify`). Приходит
+  /// ровно один раз, в ответе с первым `client_token`. Получатель —
+  /// AccountAuthService; проводка в main.dart, колбэком (правило §0/§10:
+  /// слои не знают друг о друге).
+  Future<void> Function(Map<String, dynamic> session)? onAccountSession;
+
+  void _announceClientToken(String why) {
+    final cb = onClientTokenChanged;
+    debugPrint('CloudSync: client token changed ($why) — '
+        '${cb == null ? 'no bridge listener wired' : 'bridge notified'}');
+    cb?.call();
+  }
+
   // ── persistence keys ──
   static const _kEnabled = 'cloud_sync_enabled';
   static const _kBaseUrl = 'cloud_sync_base_url';
@@ -347,6 +372,10 @@ class CloudSyncService extends ChangeNotifier {
   static const _kCursorTrip = 'cloud_sync_cursor_trip';
   static const _kCursorSnapshot = 'cloud_sync_cursor_snapshot';
   static const _kCursorSweep = 'cloud_sync_cursor_sweep';
+  // v0.2.22+221: одноразовый сброс курсора свипов (см. init). Ключ
+  // описывает БАЗУ и едет с ней в архиве: литерал повторён в
+  // ImportService.sweepRewindKey, расхождение ловит гейт CW.
+  static const _kSweepRewindDone = 'cloud_sync_sweep_rewind_221';
   static const _kCursorLiveLog = 'cloud_sync_cursor_livelog';
   /// v0.1.29+29: cursor for `/v1/data/ingest/canmonitor` uploads.
   /// Strictly id-ordered, same semantics as livelog cursor.
@@ -611,6 +640,22 @@ class CloudSyncService extends ChangeNotifier {
     _vehicleName = prefs.getString(_kVehicleName);
     _cursorTrip = prefs.getInt(_kCursorTrip) ?? 0;
     _cursorSnapshot = prefs.getInt(_kCursorSnapshot) ?? 0;
+    // v0.2.22+221 — КУРСОР СВИПОВ ОДИН РАЗ НАЗАД В НОЛЬ. До +221 прогон
+    // уходил целиком один раз, даже незавершённым: на сервере лежат
+    // обрезанные снимки (телефон 1, 3, 5, 6, 8, голова 1, 2 — справка
+    // Друга 2 22.10). Сервер с 22.10 дописывает прогон по client_uuid и
+    // (прогон, sequence), повтор полного — ничего не меняет, поэтому
+    // переотправка всей истории безопасна и дорастит обрезанные. Флаг
+    // ставится ПОСЛЕ курсора: падение между ними повторит сброс, а не
+    // потеряет его. Импорт архива без флага сбрасывает его (ImportService),
+    // и тогда сброс случится и для истории из архива.
+    if (!(prefs.getBool(_kSweepRewindDone) ?? false)) {
+      final was = prefs.getInt(_kCursorSweep) ?? 0;
+      await prefs.setInt(_kCursorSweep, 0);
+      await prefs.setBool(_kSweepRewindDone, true);
+      debugPrint('CloudSync: sweep cursor rewound to 0 '
+          '(one-time, +221; was $was)');
+    }
     _cursorSweep = prefs.getInt(_kCursorSweep) ?? 0;
     _cursorLiveLog = prefs.getInt(_kCursorLiveLog) ?? 0;
     _cursorCanMonitor = prefs.getInt(_kCursorCanMonitor) ?? 0;
@@ -1250,6 +1295,19 @@ class CloudSyncService extends ChangeNotifier {
             // to secure storage FIRST, before any state that could
             // throw; a second poll will not repeat it.
             await _secureStorage.write(key: _kTokenKey, value: minted);
+            _announceClientToken('pairing');
+            // v0.2.22+221 (§1.2): сеанс аккаунта едет рядом с первым
+            // токеном и больше не повторится — отдать его сразу, до
+            // любого состояния, которое могло бы бросить.
+            final acct = j['account_session'];
+            if (acct is Map<String, dynamic>) {
+              final cb = onAccountSession;
+              debugPrint('CloudSync: pairing carried account_session — '
+                  '${cb == null ? 'DROPPED, no account listener wired' : 'handed to the account layer'}');
+              if (cb != null) unawaited(cb(acct));
+            } else {
+              debugPrint('CloudSync: pairing without account_session');
+            }
             _pairMintedFresh = true;
             _finishPairing(CloudPairingStatus.paired);
             debugPrint('CloudSync: pairing complete — fresh token '
@@ -1509,6 +1567,7 @@ class CloudSyncService extends ChangeNotifier {
     _recomputeStatus();
     await _recomputeStats();
     _restartTimers();
+    _announceClientToken('register');
     notifyListeners();
   }
 
@@ -1555,6 +1614,7 @@ class CloudSyncService extends ChangeNotifier {
     _lastError = null;
 
     _recomputeStatus();
+    _announceClientToken('disconnect');
     notifyListeners();
   }
 
@@ -1786,6 +1846,7 @@ class CloudSyncService extends ChangeNotifier {
       debugPrint('CloudSync: secure storage delete failed: $e');
     }
     _clientToken = null;
+    _announceClientToken('wiped');
     // Leave _deviceId / _vehicleId in SharedPreferences for the UI
     // to display "Last registered as XYZ" if helpful. They're not
     // credentials.
@@ -2245,13 +2306,28 @@ class CloudSyncService extends ChangeNotifier {
   }
 
   Future<void> _syncSweeps() async {
+    // v0.2.22+221 — ДВА УСЛОВИЯ ОТПРАВКИ.
+    //
+    // 1. Только после начального прохода uuid-mapping. Сервер (Друг 2,
+    //    22.10) ведёт прогон по client_uuid; прогон без uuid идёт по
+    //    старому ключу (устройство, client_sweep_id), first-write-wins,
+    //    и повтор с uuid создал бы ВТОРОЙ прогон. Маппинг стоит в цикле
+    //    последним и проставит uuid уже лежащим на сервере строкам, так
+    //    что после новой регистрации свипы ждут ровно один цикл.
+    // 2. Только завершённый прогон. Незавершённый уходил обрезанным
+    //    (прогон 37/722 — 321 строка, 38/755 — 403, без exit=). Курсор
+    //    его не перешагивает: `return`, а не `continue`, как у Live Log
+    //    с +22. Брошенные прогоны закрывает main() на старте.
+    if (!_uuidMapInitialDone) return;
     final all = await _db.getAllSweepRuns();
     final pending = all.where((s) => s.id > _cursorSweep).toList()
       ..sort((a, b) => a.id.compareTo(b.id));
     if (pending.isEmpty) return;
-    // One parent + nested results per request, per CLIENT_API.md.
-    // A sweep can have up to 256 results — well under any limit.
+    // One parent + nested results per request, per CLIENT_API.md. Server
+    // limits (Друг 2, 22.10): up to 50 000 results per request, 25 MB body;
+    // a 0000–0FFF run is 4096 results, so no client-side split.
     for (final run in pending) {
+      if (run.endedAt == null) return;
       final results = await _db.getSweepResults(run.id);
       final body = {
         'items': [_sweepRunToJson(run, results)]
@@ -3490,6 +3566,7 @@ class CloudSyncService extends ChangeNotifier {
     _clientToken = trimmed;
     _deviceId = newDeviceId;
     _consecutiveAuthFailures = 0;
+    _announceClientToken('restore');
 
     _restoreStatus = CloudRestoreStatus.fetching;
     notifyListeners();
@@ -4446,7 +4523,7 @@ class CloudSyncService extends ChangeNotifier {
   /// Read app version from the static value baked into the build.
   /// We don't have package_info_plus as a dep — pubspec-version is
   /// hardcoded here. Update when bumping. Off-by-one tolerated.
-  Future<String> _readAppVersion() async => '0.2.21+220';
+  Future<String> _readAppVersion() async => '0.2.22+221';
 }
 
 // ─── Internal exceptions ────────────────────────────────────────────

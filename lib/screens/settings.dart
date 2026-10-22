@@ -248,19 +248,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ),
       SwitchListTile(
         title: Text(S.of('bridge.enable')),
-        // Block the toggle if not yet registered — the long-poll loop
-        // can't function without a token, and we share the token with
-        // Cloud backup.
+        // v0.2.22+221: тумблер НЕ блокируется по «нет токена». Блокировка
+        // смотрела на токен в памяти моста, а память отставала от
+        // хранилища: после привязки/восстановления тумблер оставался
+        // серым при живом токене, и выйти из этого можно было только
+        // перезапуском процесса. Теперь включение само перечитывает
+        // токен; если его действительно нет, статус под тумблером скажет
+        // «сначала регистрация», а цикл не запустится.
         value: bd.isEnabled,
-        onChanged: bd.isRegistered
-            ? (v) async {
-                // If user just enabled, refresh token from secure
-                // storage (CloudSyncService may have just finished
-                // setup in this same app session).
-                if (v) await bd.refreshTokenFromSharedStorage();
-                await bd.setEnabled(v);
-              }
-            : null,
+        onChanged: (v) async {
+          if (v) await bd.refreshTokenFromSharedStorage();
+          await bd.setEnabled(v);
+        },
         secondary: const Icon(Icons.toggle_on),
       ),
       if (bd.isEnabled && bd.isRegistered) ...[
@@ -1858,14 +1857,9 @@ class _CloudServicesScreenState extends State<CloudServicesScreen> {
         ),
       );
     } else {
-      // v0.1.29+15: registration succeeded → notify BridgeDiagService
-      // that it can now read the fresh client_token from shared
-      // secure storage. The diag service starts disabled — user must
-      // flip the Bridge diagnostic toggle explicitly to begin
-      // polling. We refresh here so that when they do, the token is
-      // already loaded into memory.
-      await context.read<BridgeDiagService>()
-          .refreshTokenFromSharedStorage();
+      // v0.2.22+221: мосту о новом токене сообщает сам CloudSyncService
+      // (onClientTokenChanged, проводка в main.dart) — здесь больше
+      // ничего не нужно.
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
             content: Text(S
@@ -2147,16 +2141,11 @@ class _CloudServicesScreenState extends State<CloudServicesScreen> {
     );
 
     // v0.1.29+18: post-completion side effects (out of dialog so the
-    // dismiss animation isn't blocked). Plane A shares the secure-
-    // storage token with us; same pattern as _showCloudSetupDialog.
-    // Only run on success — cancelled/error leaves Plane A on its
-    // previous token (which may or may not still be valid).
+    // dismiss animation isn't blocked). v0.2.22+221: the bridge is no
+    // longer refreshed from here — CloudSyncService tells it the moment
+    // the token is written (onClientTokenChanged, wired in main.dart).
     if (!context.mounted) return;
     if (cs.restoreStatus == CloudRestoreStatus.done) {
-      await context
-          .read<BridgeDiagService>()
-          .refreshTokenFromSharedStorage();
-      if (!context.mounted) return;
       final p = cs.restoreProgress;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(

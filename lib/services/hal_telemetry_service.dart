@@ -3788,6 +3788,14 @@ class HalTelemetryService extends ChangeNotifier
     // read it; every VALUE CHANGE goes to hal_samples + the diag journal
     // with a timestamp, so the stationary climate test lands in the
     // export without depending on the recon build.
+    // v0.2.22+221: сырые поля кадра климата. Стоит ДО ветки `ac_`, иначе
+    // имя `ac_raw_…` ушло бы в журнал расшифрованных значений без текста.
+    // Решение «по изменению» уже принято на стороне Kotlin
+    // (DecodedStreamSink) — здесь только запись.
+    if (e.name.startsWith('ac_raw_')) {
+      _logAcRaw(e);
+      return;
+    }
     if (e.name.startsWith('ac_')) {
       _logAcChange(e);
       return;
@@ -3981,6 +3989,25 @@ class HalTelemetryService extends ChangeNotifier
           subtype: subtypeHex,
           name: e.name,
           numeric: v,
+        )
+        .catchError((Object err) => _noteDbFailure('insertHalSignal', err));
+  }
+
+  /// v0.2.22+221: одна строка `ac_raw_<FID>` в hal_samples — числом
+  /// непустое из двух полей, текстом обе пары как пришли и время HAL.
+  /// Не в `_range`: потребителя у неё нет и быть не должно.
+  void _logAcRaw(HalEvent e) {
+    final db = _diagDb;
+    if (db == null) return;
+    final (target, subtypeHex) = _splitKey(e.key);
+    db
+        .insertHalSignal(
+          tripId: _halTripDbId ?? _currentTripId?.call(),
+          targetKey: target,
+          subtype: subtypeHex,
+          name: e.name,
+          numeric: e.value?.toDouble(),
+          text: e.text,
         )
         .catchError((Object err) => _noteDbFailure('insertHalSignal', err));
   }

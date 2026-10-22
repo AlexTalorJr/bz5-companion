@@ -12874,6 +12874,179 @@ if int(pv) >= 220:
 else:
     ok(f"Part CV skipped (build +{pv}, BLE channel fixes land in +220)")
 
+# ═══════ Part CW — 0.2.22+221: сырой климат, мост после привязки, свипы по готовности ═══════
+if int(pv) >= 221:
+    _cw_flat = lambda t: re.sub(r'\n[ \t]+', '\n', t)
+    _cw_kt = 'android/app/src/main/kotlin/com/bz5companion/bz5_companion/'
+    _cw_sink = _cw_flat(_strip_comments_safe((root / (_cw_kt + 'hal/DecodedStreamSink.kt')).read_text()))
+    _cw_out = _cw_flat(_strip_comments_safe((root / (_cw_kt + 'hal/HalOut.kt')).read_text()))
+    _cw_hts = _cw_flat(_strip_comments_safe((root / 'lib/services/hal_telemetry_service.dart').read_text()))
+    _cw_chn = _cw_flat(_strip_comments_safe((root / 'lib/services/hal_telemetry_channel.dart').read_text()))
+    _cw_jrn = _cw_flat(_strip_comments_safe((root / 'lib/services/hal_bg_journal.dart').read_text()))
+    _cw_db = _cw_flat(_strip_comments_safe((root / 'lib/data/database.dart').read_text()))
+    _cw_cs = _cw_flat(_strip_comments_safe((root / 'lib/services/cloud_sync_service.dart').read_text()))
+    _cw_set = _cw_flat(_strip_comments_safe((root / 'lib/screens/settings.dart').read_text()))
+    _cw_main = _cw_flat(_strip_comments_safe((root / 'lib/main.dart').read_text()))
+    _cw_acc = _cw_flat(_strip_comments_safe((root / 'lib/services/account_auth_service.dart').read_text()))
+    _cw_imp = _cw_flat(_strip_comments_safe((root / 'lib/services/import_service.dart').read_text()))
+
+    # CW1: СЫРОЙ КАДР КЛИМАТА ДО ДЕКОДЕРА, ПО ИЗМЕНЕНИЮ ПАРЫ БЕЗ ВРЕМЕНИ.
+    # Решение «писать или нет» принимается в снике один раз для обоих
+    # адресатов; смена адресата сбрасывает память.
+    _cw1_i_call = _cw_sink.find('maybeEmitAcRaw(targetKey, subtype, intValue, doubleValue, timestampMs)')
+    _cw1_i_dec = _cw_sink.find('val dv = TelemetryDecoderTable.decode(')
+    _cw1_i_set = _cw_sink.find('fun setOut(next: HalOut) {')
+    _cw1_set = _cw_sink[_cw1_i_set:_cw1_i_set + 120] if _cw1_i_set > -1 else ''
+    _cw1_bits = [
+        -1 < _cw1_i_call < _cw1_i_dec,
+        'if (target != acTargetKey) return' in _cw_sink,
+        'private val acTargetKey: String = "BYDAutoAcDevice"' in _cw_sink,
+        'val pair = "i=${intValue ?: "null"} d=${doubleValue ?: "null"}"' in _cw_sink,
+        'if (acRawLast.put(subtype, pair) == pair) return' in _cw_sink,
+        'val numeric: Double? = doubleValue ?: intValue?.toDouble()' in _cw_sink,
+        '"name" to "ac_raw_$fid",' in _cw_sink,
+        '"text" to "$pair ts=$timestampMs"' in _cw_sink,
+        'acRawLast.clear()' in _cw1_set,
+    ]
+    if all(_cw1_bits):
+        ok('CW1 every BYDAutoAcDevice frame yields ac_raw_<FID> before the decoder, on change of the i/d pair only; numeric = d, else i; a new destination gets the current state')
+    else:
+        fail(f'CW1 raw climate capture drifted: {_cw1_bits}')
+
+    # CW2: ОБА ПУТИ ДОВОЗЯТ ТЕКСТ. Живой поток пишет text в hal_samples
+    # своей веткой ДО ветки ac_; журнал пишет без придушивания и с ключом t;
+    # читатель журнала и пакетная вставка донесут его в text_value.
+    _cw2_i_raw = _cw_hts.find("if (e.name.startsWith('ac_raw_')) {\n_logAcRaw(e);\nreturn;")
+    _cw2_i_ac = _cw_hts.find("if (e.name.startsWith('ac_')) {\n_logAcChange(e);")
+    _cw2_i_fn = _cw_hts.find('void _logAcRaw(HalEvent e) {')
+    _cw2_fn = _cw_hts[_cw2_i_fn:_cw2_i_fn + 500] if _cw2_i_fn > -1 else ''
+    _cw2_i_rng = _cw_hts.find('static const Map<String, (double, double)> _range = {')
+    _cw2_rng = _cw_hts[_cw2_i_rng:_cw_hts.find('};', _cw2_i_rng)] if _cw2_i_rng > -1 else 'ac_raw'
+    _cw2_i_pfx = _cw_out.find('if (name.startsWith(AC_RAW_PREFIX)) {\nsb.append(line(e, name, ts))\nkept++\ncontinue')
+    _cw2_i_thr = _cw_out.find('val prev = lastPerName[name]')
+    _cw2_bits = [
+        -1 < _cw2_i_raw < _cw2_i_ac,
+        'text: e.text,' in _cw2_fn and 'numeric: e.value?.toDouble(),' in _cw2_fn,
+        'ac_raw' not in _cw2_rng,
+        "text: m['text'] as String?," in _cw_chn,
+        -1 < _cw2_i_pfx < _cw2_i_thr,
+        'private const val AC_RAW_PREFIX = "ac_raw_"' in _cw_out,
+        'val t = e["text"] as? String' in _cw_out,
+        'sb.append(",\\"t\\":\\"").append(esc(t)).append(\'"\')' in _cw_out,
+        "final t = m['t'];" in _cw_jrn and 'text: t is String ? t : null,' in _cw_jrn,
+        'textValue: Value(r.text),' in _cw_db,
+        'String? text,\n});' in _cw_db,
+    ]
+    if all(_cw2_bits):
+        ok('CW2 ac_raw text reaches hal_samples on both paths: live branch before ac_, journal unthrottled with key t, reader and batch insert carry it; never in _range')
+    else:
+        fail(f'CW2 ac_raw text is lost on a path: {_cw2_bits}')
+
+    # CW3: МОСТ УЗНАЁТ О ТОКЕНЕ ОТ ВЛАДЕЛЬЦА ТОКЕНА. Пять мест записи и
+    # удаления сообщают; тумблер не блокируется и при включении перечитывает;
+    # экран больше не будит мост сам; мост создаётся при старте.
+    _cw3_whys = ["_announceClientToken('pairing');", "_announceClientToken('register');",
+                 "_announceClientToken('disconnect');", "_announceClientToken('wiped');",
+                 "_announceClientToken('restore');"]
+    _cw3_i_bd = _cw_main.find('ChangeNotifierProvider<BridgeDiagService>(')
+    _cw3_bd = _cw_main[_cw3_i_bd:_cw_main.find('ChangeNotifierProvider<', _cw3_i_bd + 1)] if _cw3_i_bd > -1 else ''
+    _cw3_bits = [
+        all(w in _cw_cs for w in _cw3_whys),
+        _cw_cs.count('_announceClientToken(') == 6,
+        'cb?.call();' in _cw_cs,
+        'onChanged: (v) async {\nif (v) await bd.refreshTokenFromSharedStorage();\nawait bd.setEnabled(v);' in _cw_set,
+        'onChanged: bd.isRegistered' not in _cw_set,
+        _cw_set.count('refreshTokenFromSharedStorage') == 1,
+        'lazy: false,' in _cw3_bd,
+        'ctx.read<CloudSyncService>().onClientTokenChanged =\n() => unawaited(bd.refreshTokenFromSharedStorage());' in _cw3_bd,
+        "import 'dart:async';" in _cw_main,
+    ]
+    if all(_cw3_bits):
+        ok('CW3 CloudSyncService announces every token write/delete to the bridge (wired in main.dart, created at start); the toggle is never greyed and re-reads the token when switched on')
+    else:
+        fail(f'CW3 bridge can miss a token change again: {_cw3_bits}')
+
+    # CW4: СЕАНС АККАУНТА ИЗ ПРИВЯЗКИ. Берётся из ответа с первым токеном,
+    # после записи токена; передаётся колбэком; слой аккаунта пишет refresh
+    # раньше access и не заменяет действующий сеанс.
+    _cw4_i_tok = _cw_cs.find('await _secureStorage.write(key: _kTokenKey, value: minted);')
+    _cw4_i_acct = _cw_cs.find("final acct = j['account_session'];", max(_cw4_i_tok, 0))
+    _cw4_i_fresh = _cw_cs.find('_pairMintedFresh = true;', max(_cw4_i_acct, 0))
+    _cw4_i_fn = _cw_acc.find('Future<void> adoptPairingSession(Map<String, dynamic> session) async {')
+    _cw4_fn = _cw_acc[_cw4_i_fn:_cw4_i_fn + 900] if _cw4_i_fn > -1 else ''
+    _cw4_i_si = _cw4_fn.find('if (_status == AccountAuthStatus.signedIn) {')
+    _cw4_i_adopt = _cw4_fn.find('await _adoptTokenPair(session);')
+    _cw4_i_set = _cw4_fn.find('_status = AccountAuthStatus.signedIn;')
+    _cw4_i_ap = _cw_main.find('ChangeNotifierProvider<AccountAuthService>(')
+    _cw4_ap = _cw_main[_cw4_i_ap:_cw_main.find('ChangeNotifierProvider<', _cw4_i_ap + 1)] if _cw4_i_ap > -1 else ''
+    _cw4_bits = [
+        -1 < _cw4_i_tok < _cw4_i_acct < _cw4_i_fresh,
+        'if (cb != null) unawaited(cb(acct));' in _cw_cs,
+        'Future<void> Function(Map<String, dynamic> session)? onAccountSession;' in _cw_cs,
+        -1 < _cw4_i_si < _cw4_i_adopt < _cw4_i_set,
+        'lazy: false,' in _cw4_ap,
+        'ctx.read<CloudSyncService>().onAccountSession =\nauth.adoptPairingSession;' in _cw4_ap,
+    ]
+    if all(_cw4_bits):
+        ok('CW4 account_session from /v2/pair/status reaches the account layer once, after the device token is stored; refresh before access; a live session is kept')
+    else:
+        fail(f'CW4 pairing account session is lost or misordered: {_cw4_bits}')
+
+    # CW5: СВИП УХОДИТ ТОЛЬКО ГОТОВЫМ И ТОЛЬКО С uuid. До начального
+    # прохода маппинга — ничего; незавершённый прогон останавливает цикл
+    # (return), курсор его не перешагивает.
+    _cw5_i_fn = _cw_cs.find('Future<void> _syncSweeps() async {')
+    _cw5_fn = _cw_cs[_cw5_i_fn:_cw_cs.find('Future<void> _syncLiveLogs() async {', max(_cw5_i_fn, 0))] if _cw5_i_fn > -1 else ''
+    _cw5_i_gate = _cw5_fn.find('if (!_uuidMapInitialDone) return;')
+    _cw5_i_all = _cw5_fn.find('final all = await _db.getAllSweepRuns();')
+    _cw5_i_end = _cw5_fn.find('if (run.endedAt == null) return;')
+    _cw5_i_post = _cw5_fn.find("await _postIngest('/v1/data/ingest/sweeps', body);")
+    _cw5_i_cur = _cw5_fn.find('_cursorSweep = run.id;')
+    _cw5_bits = [
+        -1 < _cw5_i_gate < _cw5_i_all,
+        -1 < _cw5_i_end < _cw5_i_post < _cw5_i_cur,
+        'up to 256 results' not in _cw5_fn,
+    ]
+    if all(_cw5_bits):
+        ok('CW5 sweeps push only after the initial uuid-mapping pass and only finished runs; an unfinished run stops the pass without moving the cursor')
+    else:
+        fail(f'CW5 sweep push can send unfinished or uuid-less runs again: {_cw5_bits}')
+
+    # CW6: БРОШЕННЫЕ ПРОГОНЫ ЗАКРЫВАЮТСЯ НА СТАРТЕ; КУРСОР СБРАСЫВАЕТСЯ
+    # ОДИН РАЗ, ФЛАГ ЕДЕТ С БАЗОЙ. Порядок в main: пересборка бухгалтерии →
+    # закрытие брошенных → runApp. Литерал флага одинаков в двух файлах.
+    _cw6_i_fn = _cw_db.find('Future<int> closeOrphanSweepRuns() async {')
+    _cw6_fn = _cw_db[_cw6_i_fn:_cw6_i_fn + 900] if _cw6_i_fn > -1 else ''
+    _cw6_i_reb = _cw_main.find('await ImportService.rebuildSyncBookkeeping(db);')
+    _cw6_i_orph = _cw_main.find('await db.closeOrphanSweepRuns();')
+    _cw6_i_run = _cw_main.find('runApp(BZ5App(')
+    _cw6_lit_cs = re.findall(r"static const _kSweepRewindDone = '([^']+)';", _cw_cs)
+    _cw6_lit_imp = re.findall(r"static const String sweepRewindKey = '([^']+)';", _cw_imp)
+    _cw6_i_c0 = _cw_cs.find('await prefs.setInt(_kCursorSweep, 0);\nawait prefs.setBool(_kSweepRewindDone, true);')
+    _cw6_i_load = _cw_cs.find('_cursorSweep = prefs.getInt(_kCursorSweep) ?? 0;')
+    _cw6_i_chk = _cw_cs.find('if (!(prefs.getBool(_kSweepRewindDone) ?? false)) {')
+    _cw6_i_dbk = _cw_imp.find('static const List<String> dbBoundKeys = <String>[')
+    _cw6_dbk = _cw_imp[_cw6_i_dbk:_cw_imp.find('];', max(_cw6_i_dbk, 0))] if _cw6_i_dbk > -1 else ''
+    _cw6_i_ren = _cw_imp.find('await staged.rename(livePath);')
+    _cw6_i_rm = _cw_imp.find('await prefs.remove(sweepRewindKey);', max(_cw6_i_ren, 0))
+    _cw6_i_apply = _cw_imp.find('restored = await _applyPrefsJson(prefs,', max(_cw6_i_rm, 0))
+    _cw6_bits = [
+        '..where((s) => s.endedAt.isNull()))' in _cw6_fn,
+        "'exit=orphaned'" in _cw6_fn and "'${r.notes} | exit=orphaned'" in _cw6_fn,
+        'endedAt: Value(now),' in _cw6_fn,
+        -1 < _cw6_i_reb < _cw6_i_orph < _cw6_i_run,
+        len(_cw6_lit_cs) == 1 and _cw6_lit_cs == _cw6_lit_imp,
+        -1 < _cw6_i_chk < _cw6_i_c0 < _cw6_i_load,
+        'sweepRewindKey,' in _cw6_dbk,
+        -1 < _cw6_i_ren < _cw6_i_rm < _cw6_i_apply,
+    ]
+    if all(_cw6_bits):
+        ok('CW6 orphan sweep runs are closed at process start with exit=orphaned; the sweep cursor rewinds to 0 once per database, the flag travels with the archive and is cleared before archive settings apply')
+    else:
+        fail(f'CW6 orphan close / one-time rewind drifted: {_cw6_bits}')
+else:
+    ok(f"Part CW skipped (build +{pv}, raw climate / bridge / sweep sync land in +221)")
+
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
 print(f"+35→+51 REGRESSION — build +{pv}")

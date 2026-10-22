@@ -21,6 +21,8 @@ typedef BgHalRow = ({
   String? targetKey,
   String? subtype,
   double? value,
+  // v0.2.22+221: текст строки, есть только у `ac_raw_<FID>`.
+  String? text,
 });
 
 /// Schema history:
@@ -1591,6 +1593,7 @@ class AppDatabase extends _$AppDatabase {
               subtype: Value(r.subtype),
               name: Value(r.name),
               numericValue: Value(r.value),
+              textValue: Value(r.text),
             )),
       );
     });
@@ -2234,6 +2237,36 @@ class AppDatabase extends _$AppDatabase {
           ..where((s) => s.sweepRunId.equals(runId))
           ..orderBy([(s) => OrderingTerm(expression: s.sequence)]))
         .get();
+  }
+
+  /// v0.2.22+221: закрыть прогоны свипа, оставшиеся без `ended_at`.
+  ///
+  /// Зовётся из main() на старте процесса, когда ни один прогон идти не
+  /// может (обоснование там). Настоящее время конца неизвестно, поэтому
+  /// `ended_at` = момент закрытия, а отличает такой прогон `exit=orphaned`
+  /// в `notes` — тем же форматом, что пишет конец прогона в
+  /// connection.dart. `valid_responses` считается по результатам: конец
+  /// прогона его не записал.
+  Future<int> closeOrphanSweepRuns() async {
+    final open = await (select(sweepRuns)
+          ..where((s) => s.endedAt.isNull()))
+        .get();
+    final now = DateTime.now();
+    for (final r in open) {
+      final results = await getSweepResults(r.id);
+      final valid = results.where((x) => x.rawHex != null).length;
+      final notes = r.notes != null
+          ? '${r.notes} | exit=orphaned'
+          : 'exit=orphaned';
+      await (update(sweepRuns)..where((s) => s.id.equals(r.id))).write(
+        SweepRunsCompanion(
+          endedAt: Value(now),
+          validResponses: Value(valid),
+          notes: Value(notes),
+        ),
+      );
+    }
+    return open.length;
   }
 
   Future<int> countAllSweepRuns() async {

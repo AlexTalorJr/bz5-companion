@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ui' show PlatformDispatcher;
 
 import 'package:flutter/material.dart';
@@ -93,6 +94,22 @@ void main() async {
   final rebuilt = await ImportService.rebuildSyncBookkeeping(db);
   if (rebuilt != null) {
     debugPrint('Import: sync cursors rebuilt — $rebuilt');
+  }
+  // v0.2.22+221: БРОШЕННЫЕ ПРОГОНЫ СВИПА ЗАКРЫВАЮТСЯ ЗДЕСЬ. Прогон без
+  // `ended_at` больше не уходит в облако и держит курсор (см.
+  // _syncSweeps), поэтому прогон, чей процесс умер посреди работы, без
+  // этого шага заблокировал бы отправку всех следующих. Место выбрано
+  // по одному признаку: свип идёт в Dart этого процесса, а main()
+  // выполняется только на новом движке — сейчас не может идти ни один
+  // прогон. После пересборки бухгалтерии, чтобы закрыть и прогоны,
+  // приехавшие с архивом.
+  try {
+    final orphans = await db.closeOrphanSweepRuns();
+    if (orphans > 0) {
+      debugPrint('Sweep: $orphans orphan run(s) closed with exit=orphaned');
+    }
+  } catch (e) {
+    debugPrint('Sweep: orphan close skipped — $e');
   }
   final svc = ConnectionService(db);
   runApp(BZ5App(db: db, svc: svc, localeService: localeService));
@@ -214,14 +231,37 @@ class _BZ5AppState extends State<BZ5App> with WidgetsBindingObserver {
           )..init(),
         ),
         ChangeNotifierProvider<BridgeDiagService>(
-          create: (_) => BridgeDiagService(svc: widget.svc)..init(),
+          // v0.2.22+221: lazy: false. Ленивый провайдер создавал мост
+          // только когда экран настроек впервые его читал — до этого
+          // цикл команд не шёл даже при включённом тумблере, и колбэк
+          // ниже было бы некому повесить. Проводка тем же приёмом, что
+          // isHeadUnitCheck: CloudSyncService выше по списку, ctx его
+          // видит; мост получает колбэк, а не класс.
+          lazy: false,
+          create: (ctx) {
+            final bd = BridgeDiagService(svc: widget.svc);
+            ctx.read<CloudSyncService>().onClientTokenChanged =
+                () => unawaited(bd.refreshTokenFromSharedStorage());
+            bd.init();
+            return bd;
+          },
         ),
         // v0.1.29+124 (C2): account layer (email OTP, CLIENT_API §1.1).
         // Independent of CloudSyncService/BridgeDiagService per the
         // §0/§10 rule — phone-side credential, own lifecycle. init()
         // is a local secure-storage read (no network).
         ChangeNotifierProvider<AccountAuthService>(
-          create: (_) => AccountAuthService()..init(),
+          // v0.2.22+221: lazy: false и колбэк сеанса из привязки (§1.2
+          // account_session). Сеанс приходит один раз; ленивый провайдер
+          // мог бы ещё не существовать, и сеанс ушёл бы в никуда.
+          lazy: false,
+          create: (ctx) {
+            final auth = AccountAuthService();
+            ctx.read<CloudSyncService>().onAccountSession =
+                auth.adoptPairingSession;
+            auth.init();
+            return auth;
+          },
         ),
         // v0.1.29+64: HAL push-telemetry (SPEED overlapping pilot). Owns
         // the live HAL stream + source mode; feeds the DISPLAYED speedo

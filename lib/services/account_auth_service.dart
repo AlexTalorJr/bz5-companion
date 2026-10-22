@@ -345,6 +345,40 @@ class AccountAuthService extends ChangeNotifier {
         .add(Duration(seconds: expiresIn is int ? expiresIn : 900));
   }
 
+  /// v0.2.22+221 (§1.2): сеанс аккаунта из `/v2/pair/status`
+  /// (`account_session`, форма ответа `/v2/auth/otp/verify`). Приходит
+  /// один раз, вместе с первым `client_token`; зовёт CloudSyncService
+  /// через колбэк из main.dart. Переустановка стирает secure storage, и
+  /// без этого владелец заново проходил OTP после каждой привязки.
+  ///
+  /// Порядок записи тот же, что в [_adoptTokenPair]: сначала refresh в
+  /// хранилище, потом access в память. Уже действующий сеанс не
+  /// заменяется: сервер выдал отдельный сеанс, и брошенный истечёт сам
+  /// (TTL 30 дней), а выброшенный действующий вернул бы вход по OTP.
+  /// Никогда не бросает — вызывается без await.
+  Future<void> adoptPairingSession(Map<String, dynamic> session) async {
+    if (_status == AccountAuthStatus.signedIn) {
+      debugPrint('AccountAuth: pairing session ignored — already signed in');
+      return;
+    }
+    final refresh = session['refresh_token'];
+    if (refresh is! String || refresh.isEmpty) {
+      debugPrint('AccountAuth: pairing session without refresh_token — '
+          'ignored');
+      return;
+    }
+    try {
+      await _adoptTokenPair(session);
+    } catch (e) {
+      debugPrint('AccountAuth: pairing session not stored: $e');
+      return;
+    }
+    _status = AccountAuthStatus.signedIn;
+    _lastErrorCode = null;
+    debugPrint('AccountAuth: signed in via pairing (account_session)');
+    notifyListeners();
+  }
+
   Future<String?> _validAccessToken({bool allowNull = false}) async {
     if (_status != AccountAuthStatus.signedIn) return null;
     final exp = _accessExpiresAt;

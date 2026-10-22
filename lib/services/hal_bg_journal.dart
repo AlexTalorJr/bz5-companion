@@ -255,12 +255,16 @@ class HalBgJournal {
       final v = m['v'];
       final value = v is num ? v.toDouble() : null;
       if (value != null && (value.isNaN || value.isInfinite)) return null;
+      // v0.2.22+221: `t` необязателен, как `v` — его пишет только
+      // `ac_raw_<FID>`.
+      final t = m['t'];
       return (
         at: DateTime.fromMillisecondsSinceEpoch(ms),
         name: name,
         targetKey: target,
         subtype: subtype,
         value: value,
+        text: t is String ? t : null,
       );
     } catch (_) {
       return null;

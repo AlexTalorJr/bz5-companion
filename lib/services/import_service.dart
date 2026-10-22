@@ -189,7 +189,15 @@ class ImportService {
     // до какого места её строки уже разобраны. Уехав без него, архив
     // заставил бы строителя перечитать всю историю стоянок заново.
     'bg_trip_watermark_ms',
+    // v0.2.22+221: «курсор свипов уже сброшен для этой базы». Едет с
+    // базой; при импорте снимается до применения настроек архива
+    // (applyPending), поэтому архив без него вызовет сброс заново.
+    sweepRewindKey,
   ];
+
+  /// Литерал повторяет `_kSweepRewindDone` в CloudSyncService; расхождение
+  /// ловит гейт CW, а не компилятор (константа там приватная).
+  static const String sweepRewindKey = 'cloud_sync_sweep_rewind_221';
 
   static List<String> get travellingKeys =>
       <String>[...ownerKeys, ...dbBoundKeys];
@@ -884,6 +892,12 @@ class ImportService {
       await AutostartArm.write('import-apply: ok=false err=swap-failed: $e');
       return ImportApplyResult(ok: false, error: 'swap-failed: $e');
     }
+
+    // v0.2.22+221: база заменена — факт «курсор свипов уже сброшен»
+    // относился к прежней. Снимаем его ДО настроек архива: если архив
+    // его несёт, он вернётся; если нет, CloudSyncService.init сбросит
+    // курсор и переотправит историю свипов из архива.
+    await prefs.remove(sweepRewindKey);
 
     var restored = 0;
     final prefsFile = File(p.join(support.path, _pendingPrefsName));

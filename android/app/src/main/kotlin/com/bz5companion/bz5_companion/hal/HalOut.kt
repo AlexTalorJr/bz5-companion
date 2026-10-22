@@ -32,7 +32,8 @@ import java.util.concurrent.atomic.AtomicLong
  *
  * Пакет — это уже собранный список карт вида
  * `{name, unit, value, key, subtype, ts}`, у сырых кадров плюс
- * `can_id_hex`, `buf_hex`, `buf_size`.
+ * `can_id_hex`, `buf_hex`, `buf_size`, у `ac_raw_<FID>` (v0.2.22+221)
+ * плюс `text`.
  */
 interface HalOut {
     /** Отправить склеенный пакет. Зовётся с главного лупера. */
@@ -227,6 +228,17 @@ class JournalHalOut(private val ctx: Context) : HalOut {
 
         /** Имя, под которым сырые кадры приходят из сника. */
         private const val RAW_NAME = "bigdata_raw"
+
+        /**
+         * v0.2.22+221 — СЫРЫЕ ЗНАЧЕНИЯ КЛИМАТА ИДУТ БЕЗ ПРИДУШИВАНИЯ.
+         *
+         * Сник уже пропускает их только по изменению пары значений, и это
+         * решение принято там один раз для обоих адресатов. Придушивание
+         * по времени поверх него теряло бы второе нажатие в пределах трёх
+         * секунд — а нажатие и есть измеряемое. Объём ограничен тем, как
+         * часто меняется климат.
+         */
+        private const val AC_RAW_PREFIX = "ac_raw_"
     }
 
     /** Цель → сколько событий пришло. Полные числа, без придушивания. */
@@ -322,6 +334,11 @@ class JournalHalOut(private val ctx: Context) : HalOut {
                 continue
             }
             val ts = (e["ts"] as? Number)?.toLong() ?: continue
+            if (name.startsWith(AC_RAW_PREFIX)) {
+                sb.append(line(e, name, ts))
+                kept++
+                continue
+            }
             val prev = lastPerName[name]
             if (prev != null && ts - prev < throttleFor(name)) {
                 dropped.incrementAndGet()
@@ -411,6 +428,13 @@ class JournalHalOut(private val ctx: Context) : HalOut {
         sb.append(",\"u\":\"").append(esc(e["unit"] as? String ?: "")).append('"')
         if (v != null && !v.isNaN() && !v.isInfinite()) {
             sb.append(",\"v\":").append(v)
+        }
+        // v0.2.22+221: текст есть только у `ac_raw_<FID>`. Ключ
+        // необязательный, как и `v`: строки без него разбираются прежним
+        // читателем без изменений, поэтому версия формата та же.
+        val t = e["text"] as? String
+        if (t != null) {
+            sb.append(",\"t\":\"").append(esc(t)).append('"')
         }
         sb.append("}\n")
         return sb.toString()
