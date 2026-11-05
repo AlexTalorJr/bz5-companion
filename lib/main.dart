@@ -20,6 +20,7 @@ import 'services/bridge_diag_service.dart';
 import 'services/autostart_arm.dart';
 import 'services/locale_service.dart';
 import 'services/speed_profile_service.dart';
+import 'services/energy_split_service.dart';
 import 'screens/dashboard.dart' show kAppVersion;
 import 'screens/home.dart';
 
@@ -104,7 +105,13 @@ void main() async {
   // прогон. После пересборки бухгалтерии, чтобы закрыть и прогоны,
   // приехавшие с архивом.
   try {
-    final orphans = await db.closeOrphanSweepRuns();
+    // v0.2.23+222: с ограничением по времени. Это ожидание стоит до
+    // runApp; зависший Drift (такое было, конец прогона в connection.dart
+    // ограничен 10 с по той же причине) держал бы белый экран без ADB.
+    // TimeoutException ловит catch ниже, запуск продолжается.
+    final orphans = await db
+        .closeOrphanSweepRuns()
+        .timeout(const Duration(seconds: 5));
     if (orphans > 0) {
       debugPrint('Sweep: $orphans orphan run(s) closed with exit=orphaned');
     }
@@ -250,6 +257,21 @@ class _BZ5AppState extends State<BZ5App> with WidgetsBindingObserver {
         // Independent of CloudSyncService/BridgeDiagService per the
         // §0/§10 rule — phone-side credential, own lifecycle. init()
         // is a local secure-storage read (no network).
+        // v0.2.23+222: разделение энергии поездки. Не ChangeNotifier —
+        // экрану нечего слушать, он читает поля поездки. lazy: false:
+        // сервис сам следит за таблицей поездок с запуска. Повторная
+        // отправка посчитанных поездок — колбэком в CloudSyncService.
+        Provider<EnergySplitService>(
+          lazy: false,
+          create: (ctx) {
+            final es = EnergySplitService(widget.db);
+            final cs = ctx.read<CloudSyncService>();
+            es.onTripsSplit = (ids) => unawaited(cs.requeueTrips(ids));
+            es.start();
+            return es;
+          },
+          dispose: (_, es) => es.dispose(),
+        ),
         ChangeNotifierProvider<AccountAuthService>(
           // v0.2.22+221: lazy: false и колбэк сеанса из привязки (§1.2
           // account_session). Сеанс приходит один раз; ленивый провайдер

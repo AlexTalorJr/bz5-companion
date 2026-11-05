@@ -395,6 +395,89 @@ of TargetRegistry.kt needed this patch.
 
 ---
 
+## v0.10.155 (patch 155) — 2026-10-22 — carrier rule + AC catalog completion
+
+Entries between v0.10.57 and this one (p079 cell index swap, p082/p083
+DC-charge temp candidates, p083 battery_temp, p089 state enums) were logged
+only as comments inside the table; they are already in the companion copy
+(ee7bfab) and are not repeated here.
+
+### ~ CHANGE — decode() carrier rule (behaviour, all INT/DOUBLE decoders)
+
+Framework delivers BOTH mIntValue and mDoubleValue on every event, one real,
+the other 0 (p081). A decoder declared INT read a literal 0 when the value
+rode in the double field and reported it as a measurement (trip-2
+AC_TEMP_MAIN 0/1 vs trip-1 dbl 23). New rule in `pickCarrier()`:
+
+- declared field non-zero → use it, `typeConflict=false`
+- declared field 0/absent, other field non-zero → use the other field,
+  `typeConflict=true`, `carrier` = the field actually used
+- both 0 → 0, no flag; neither present → null (unchanged)
+
+`DecodedValue` gains `carrier: ValueSource` and `typeConflict: Boolean`,
+both with defaults, so the 4-arg constructor still compiles downstream.
+A sink may display a flagged value; it must not promote the carrier on it.
+
+Side effect to expect: any existing INT decoder whose fid actually rides in
+the double field (or vice versa) now yields the real value with
+`typeConflict=true` instead of 0. Known candidates from recon chunks: none
+confirmed; watch `int_nonzero_n` / `dbl_nonzero_n` (below) per fid in the
+first run.
+
+### + ADD — ValueSource.ANY
+
+Carrier not pinned yet: non-zero double, then non-zero int, then zero.
+For catalog-named fids whose live events were never recorded with both
+fields. Not for promoted decoders.
+
+### ~ CHANGE  BYDAutoAcDevice|0x2FC00028  source, unit
+          INT "" → ANY "°C"  (trip-1 dbl 23 = 23 °C setpoint; trip-2 "0/1" was
+          the carrier conflict, not a scale)
+          → Decoder("ac_temp_main", "°C", ValueSource.ANY,
+                notes = "AC_TEMP_MAIN (driver setpoint); trip-1 dbl 23 = setpoint; carrier ANY until ac_raw climate test")
+
+### ~ CHANGE  BYDAutoAcDevice|0x2FC00030  source, unit
+          INT "" → ANY "°C"  (same carrier question as 0x2FC00028)
+          → Decoder("ac_temp_deputy", "°C", ValueSource.ANY,
+                notes = "AC_TEMP_DEPUTY (passenger setpoint); carrier ANY until ac_raw climate test")
+
+### + ADD — 7 AC fids, names exact from firmware catalog (class Ac, v0.10.56)
+confidence: NAME only (catalog). Carrier, scale and enum semantics TBD by
+the climate test (one action per 10 s, both fields logged via ac_raw).
+Values are raw enums; companion shows them as raw badges at most.
+
++ ADD  BYDAutoAcDevice|0x2FC00009  ac_compressor_mode          ""  ANY
+       → put("BYDAutoAcDevice|0x2FC00009", Decoder("ac_compressor_mode", "", ValueSource.ANY, notes = "AC_COMPRESSOR_MODE (A/C button); enum TBD; A/C off marker"))
++ ADD  BYDAutoAcDevice|0x2FC0000A  ac_compressor_manual_sign   ""  ANY
+       → put("BYDAutoAcDevice|0x2FC0000A", Decoder("ac_compressor_manual_sign", "", ValueSource.ANY, notes = "AC_COMPRESSOR_MANUAL_SIGN; manual-override flag; enum TBD"))
++ ADD  BYDAutoAcDevice|0x2FC0000B  ac_windmode_manual_sign     ""  ANY
+       → put("BYDAutoAcDevice|0x2FC0000B", Decoder("ac_windmode_manual_sign", "", ValueSource.ANY, notes = "AC_WINDMODE_MANUAL_SIGN; manual-override flag; enum TBD"))
++ ADD  BYDAutoAcDevice|0x2FC0000C  ac_windlevel_manual_sign    ""  ANY
+       → put("BYDAutoAcDevice|0x2FC0000C", Decoder("ac_windlevel_manual_sign", "", ValueSource.ANY, notes = "AC_WINDLEVEL_MANUAL_SIGN; manual-override flag; enum TBD"))
++ ADD  BYDAutoAcDevice|0x2FC00016  ac_defrost_front_state      ""  ANY
+       → put("BYDAutoAcDevice|0x2FC00016", Decoder("ac_defrost_front_state", "", ValueSource.ANY, notes = "AC_DEFROST_FRONT_STATE; windscreen defrost; enum TBD"))
++ ADD  BYDAutoAcDevice|0x2FA0000C  ac_ptc_state                ""  ANY
+       → put("BYDAutoAcDevice|0x2FA0000C", Decoder("ac_ptc_state", "", ValueSource.ANY, notes = "AC_PTC_STATE; PTC heater state, not duty; not yet seen live"))
++ ADD  BYDAutoAcDevice|0x2FA00026  ac_ptc_preheat_signal       ""  ANY
+       → put("BYDAutoAcDevice|0x2FA00026", Decoder("ac_ptc_preheat_signal", "", ValueSource.ANY, notes = "AC_PTC_PREHEAT_SIGNAL; not yet seen live"))
+
+### Also noted (not table changes)
+
+- RollupSink (recon-only): every `by_subtype` entry now carries
+  `int_nonzero_n` and `dbl_nonzero_n`. These are the field-verifiable
+  marker for the carrier rule: compare with the declared source per fid.
+- Firmware catalog, class Ac (125 fields) and all 50 other classes: no fid
+  for compressor speed/power/HV current, refrigerant pressures or
+  temperatures, or PTC duty. Those exist only as UDS DIDs (sweep in
+  companion; candidates 722 compressor 88370, 755/760 heaters 881B0/881D0).
+
+### Active decoder count: 67 → 74  (+7 AC; 2 AC source changes net 0; counted as put() lines in the base table)
+
+### New SHA256 (v0.10.155)
+(recompute after apply; TelemetryDecoderTable.kt and RollupSink.kt changed.)
+
+---
+
 <!--
 TEMPLATE for the next entry — copy below this line, fill in, delete the comment:
                  Decoder("param_name", "unit", ValueSource.SOURCE))

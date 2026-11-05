@@ -33,7 +33,7 @@ import java.util.concurrent.atomic.AtomicLong
  * Пакет — это уже собранный список карт вида
  * `{name, unit, value, key, subtype, ts}`, у сырых кадров плюс
  * `can_id_hex`, `buf_hex`, `buf_size`, у `ac_raw_<FID>` (v0.2.22+221)
- * плюс `text`.
+ * и `heat_raw_<FID>` (v0.2.23+222) плюс `text`.
  */
 interface HalOut {
     /** Отправить склеенный пакет. Зовётся с главного лупера. */
@@ -239,6 +239,9 @@ class JournalHalOut(private val ctx: Context) : HalOut {
          * часто меняется климат.
          */
         private const val AC_RAW_PREFIX = "ac_raw_"
+
+        /** v0.2.23+222: сигналы подогрева — то же правило, что у климата. */
+        private const val HEAT_RAW_PREFIX = "heat_raw_"
     }
 
     /** Цель → сколько событий пришло. Полные числа, без придушивания. */
@@ -334,7 +337,7 @@ class JournalHalOut(private val ctx: Context) : HalOut {
                 continue
             }
             val ts = (e["ts"] as? Number)?.toLong() ?: continue
-            if (name.startsWith(AC_RAW_PREFIX)) {
+            if (name.startsWith(AC_RAW_PREFIX) || name.startsWith(HEAT_RAW_PREFIX)) {
                 sb.append(line(e, name, ts))
                 kept++
                 continue

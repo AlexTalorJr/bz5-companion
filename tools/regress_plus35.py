@@ -390,7 +390,7 @@ if int(pv) >= 37:
     # table (+104), from<12 soh_estimates.source (+105, splits UDS
     # id=1 / HAL id=2), from<13 trips.last_alive_ts (+106), from<14
     # client_uuid x5 (+117).
-    _d1_expected = 19 if int(pv) >= 193 else (18 if int(pv) >= 185 else (17 if int(pv) >= 158 else (16 if int(pv) >= 140 else (15 if int(pv) >= 130 else 14))))  # +193: выдуманные тройки ячеек вычищены (v19); +185: trips.source (v18); +158: atlas (v17); +140: trip_series (v16)
+    _d1_expected = 20 if int(pv) >= 222 else 19 if int(pv) >= 193 else (18 if int(pv) >= 185 else (17 if int(pv) >= 158 else (16 if int(pv) >= 140 else (15 if int(pv) >= 130 else 14))))  # +193: выдуманные тройки ячеек вычищены (v19); +185: trips.source (v18); +158: atlas (v17); +140: trip_series (v16)
     if f"int get schemaVersion => {_d1_expected};" in db_src:
         ok(f"D1 schemaVersion = {_d1_expected} (per-era)")
     else:
@@ -3947,7 +3947,7 @@ if int(pv) >= 140:
     _hw2 = (root / 'lib/screens/wide/history_wide.dart').read_text()
     # AM1: schema (16, or 17 from +158 — atlas era) + additive
     # migration + table registered.
-    _am1_ver = 19 if int(pv) >= 193 else (18 if int(pv) >= 185 else (17 if int(pv) >= 158 else 16))
+    _am1_ver = 20 if int(pv) >= 222 else 19 if int(pv) >= 193 else (18 if int(pv) >= 185 else (17 if int(pv) >= 158 else 16))
     if f'int get schemaVersion => {_am1_ver};' in _db2 and \
        '_createTableIfAbsent(m, tripSeries)' in _db2 and \
        "@DataClassName('TripSeriesRow')" in _db2:
@@ -8856,7 +8856,7 @@ if int(pv) >= 185:
 
     # BS6: МИГРАЦИЯ АДДИТИВНА. Колонка nullable и добавляется охраной; ни
     # одна существующая поездка не переписывается.
-    _bs6_ver = 19 if int(pv) >= 193 else 18
+    _bs6_ver = 20 if int(pv) >= 222 else 19 if int(pv) >= 193 else 18
     _bs6 = (f'int get schemaVersion => {_bs6_ver};' in _bs_db and
             'if (from < 18) {' in _bs_db and
             '_addColumnIfAbsent(m, trips, trips.source);' in _bs_db and
@@ -9988,7 +9988,7 @@ if int(pv) >= 193:
     # агрегат брал МАКСИМУМ по рассинхронам и по построению отбирал худший:
     # отдельный снапшот мог случайно попасть в одномоментную пару, максимум
     # не мог.
-    _bz7 = ('int get schemaVersion => 19;' in _bz_db and
+    _bz7 = (f'int get schemaVersion => {20 if int(pv) >= 222 else 19};' in _bz_db and
             'if (from < 19)' in _bz_db and
             'cell_spread = NULL' in _bz_db and
             'cell_voltage_min = NULL' in _bz_db and
@@ -10723,8 +10723,12 @@ if int(pv) >= 199:
     # грубый канал моложе 90 с). Эта игла держит липкость; CR1 сторожит
     # то же по устройству для любого имени.
     _cc5_sticky = re.search(r'_stickyNames = \{(.*?)\n  \};', _cc_hal, re.S)
-    _cc5 = ('Decoder("pack_voltage_fine", "V", ValueSource.DOUBLE,'
-            in _cc_tab and
+    # v0.2.23+222: recon p155 не несёт эту запись — она в overrides.
+    _cc5_ovr = (root / 'android/app/src/main/kotlin/com/bz5companion'
+                '/bz5_companion/hal/CompanionDecoderOverrides.kt').read_text()
+    _cc5 = (('Decoder("pack_voltage_fine", "V", ValueSource.DOUBLE,' in _cc_tab
+             if int(pv) < 222 else
+             '"BYDAutoChargingDevice|0x2FF00030" to Decoder(\n            "pack_voltage_fine", "V", ValueSource.DOUBLE,' in _cc5_ovr) and
             "'pack_voltage_fine': (250, 500)," in _cc_hal and
             "'pack_voltage_fine': Duration(seconds: 6)," in _cc_hal and
             _cc5_sticky is not None and
@@ -12702,6 +12706,16 @@ if int(pv) >= 219:
         if len(_p) >= 2 and _p[0].startswith('0x'):
             _cu6_cat[int(_p[0], 16)] = _p[1:]
     _cu6_ac = re.findall(r'"BYDAutoAcDevice\|0x([0-9A-F]{8})" to Decoder\(\s*"(ac_[a-z_]+)"', _cu_ovr)
+    # v0.2.23+222: семь кандидатов переехали в вендорную таблицу recon p155
+    # под теми же именами; перекрытий для AC в слое companion быть не должно
+    # (перекрытие затенило бы правило носителя p155).
+    _cu6_no_ovr = True
+    if int(pv) >= 222:
+        _cu6_no_ovr = _cu6_ac == []
+        _cu6_tab = (root / 'android/app/src/main/kotlin/com/bz5companion/'
+                    'bz5_companion/hal/TelemetryDecoderTable.kt').read_text()
+        _cu6_ac = re.findall(r'put\("BYDAutoAcDevice\|0x([0-9A-F]{8})",\s*Decoder\("(ac_[a-z_]+)"', _cu6_tab)
+        _cu6_ac = [x for x in _cu6_ac if x[0] in {'2FC00009', '2FC0000A', '2FC0000B', '2FC0000C', '2FC00016', '2FA0000C', '2FA00026'}]
     _cu6_want = {'2FC00009', '2FC0000A', '2FC0000B', '2FC0000C', '2FC00016',
                  '2FA0000C', '2FA00026'}
     _cu6_names_ok = all(n.upper() in _cu6_cat.get(int(f, 16), [])
@@ -12713,8 +12727,9 @@ if int(pv) >= 219:
     _cu6_i_mend = _cu_hts.find('\n  };', max(_cu6_i_map, 0))
     _cu6_range = _cu_hts[_cu6_i_map:_cu6_i_mend] if -1 < _cu6_i_map < _cu6_i_mend else ''
     _cu6_i_fn = _cu_hts.find('void _logAcChange(HalEvent e) {')
-    _cu6_fn = _cu_hts[_cu6_i_fn:_cu6_i_fn + 900] if _cu6_i_fn > -1 else ''
+    _cu6_fn = _cu_hts[_cu6_i_fn:_cu6_i_fn + 1500] if _cu6_i_fn > -1 else ''
     _cu6_bits = [
+        _cu6_no_ovr,
         {f for f, _ in _cu6_ac} == _cu6_want,
         len(_cu6_ac) == 7,
         _cu6_names_ok,
@@ -12922,7 +12937,7 @@ if int(pv) >= 221:
     _cw2_fn = _cw_hts[_cw2_i_fn:_cw2_i_fn + 500] if _cw2_i_fn > -1 else ''
     _cw2_i_rng = _cw_hts.find('static const Map<String, (double, double)> _range = {')
     _cw2_rng = _cw_hts[_cw2_i_rng:_cw_hts.find('};', _cw2_i_rng)] if _cw2_i_rng > -1 else 'ac_raw'
-    _cw2_i_pfx = _cw_out.find('if (name.startsWith(AC_RAW_PREFIX)) {\nsb.append(line(e, name, ts))\nkept++\ncontinue')
+    _cw2_i_pfx = _cw_out.find('if (name.startsWith(AC_RAW_PREFIX)' + (' || name.startsWith(HEAT_RAW_PREFIX)' if int(pv) >= 222 else '') + ') {\nsb.append(line(e, name, ts))\nkept++\ncontinue')
     _cw2_i_thr = _cw_out.find('val prev = lastPerName[name]')
     _cw2_bits = [
         -1 < _cw2_i_raw < _cw2_i_ac,
@@ -12949,7 +12964,9 @@ if int(pv) >= 221:
                  "_announceClientToken('disconnect');", "_announceClientToken('wiped');",
                  "_announceClientToken('restore');"]
     _cw3_i_bd = _cw_main.find('ChangeNotifierProvider<BridgeDiagService>(')
-    _cw3_bd = _cw_main[_cw3_i_bd:_cw_main.find('ChangeNotifierProvider<', _cw3_i_bd + 1)] if _cw3_i_bd > -1 else ''
+    # До следующего провайдера любого вида (с +222 за мостом стоит
+    # Provider<EnergySplitService> со своим lazy: false).
+    _cw3_bd = _cw_main[_cw3_i_bd:_cw_main.find('Provider<', _cw3_i_bd + 30)] if _cw3_i_bd > -1 else ''
     _cw3_bits = [
         all(w in _cw_cs for w in _cw3_whys),
         _cw_cs.count('_announceClientToken(') == 6,
@@ -13018,7 +13035,7 @@ if int(pv) >= 221:
     _cw6_i_fn = _cw_db.find('Future<int> closeOrphanSweepRuns() async {')
     _cw6_fn = _cw_db[_cw6_i_fn:_cw6_i_fn + 900] if _cw6_i_fn > -1 else ''
     _cw6_i_reb = _cw_main.find('await ImportService.rebuildSyncBookkeeping(db);')
-    _cw6_i_orph = _cw_main.find('await db.closeOrphanSweepRuns();')
+    _cw6_i_orph = _cw_main.find('await db\n.closeOrphanSweepRuns()' if int(pv) >= 222 else 'await db.closeOrphanSweepRuns();')
     _cw6_i_run = _cw_main.find('runApp(BZ5App(')
     _cw6_lit_cs = re.findall(r"static const _kSweepRewindDone = '([^']+)';", _cw_cs)
     _cw6_lit_imp = re.findall(r"static const String sweepRewindKey = '([^']+)';", _cw_imp)
@@ -13046,6 +13063,124 @@ if int(pv) >= 221:
         fail(f'CW6 orphan close / one-time rewind drifted: {_cw6_bits}')
 else:
     ok(f"Part CW skipped (build +{pv}, raw climate / bridge / sweep sync land in +221)")
+
+# ═══════ Part CX — 0.2.23+222: таблица p155, сигналы подогрева, разделение энергии ═══════
+if int(pv) >= 222:
+    _cx_f = lambda t: re.sub(r'\n[ \t]+', '\n', t)
+    _cx_kt = 'android/app/src/main/kotlin/com/bz5companion/bz5_companion/hal/'
+    _cx_rd = lambda pth: _cx_f(_strip_comments_safe((root / pth).read_text()))
+    _cx_man = (root / (_cx_kt + 'HAL_SYNC.manifest')).read_text()
+    _cx_tab = (root / (_cx_kt + 'TelemetryDecoderTable.kt')).read_text()
+    _cx_ovr = _cx_rd(_cx_kt + 'CompanionDecoderOverrides.kt')
+    _cx_sink = _cx_rd(_cx_kt + 'DecodedStreamSink.kt')
+    _cx_out = _cx_rd(_cx_kt + 'HalOut.kt')
+    _cx_own = _cx_rd(_cx_kt + 'HalStreamOwner.kt')
+    _cx_chn = _cx_rd('lib/services/hal_telemetry_channel.dart')
+    _cx_hts = _cx_rd('lib/services/hal_telemetry_service.dart')
+    _cx_es = _cx_rd('lib/services/energy_split_service.dart')
+    _cx_db = _cx_rd('lib/data/database.dart')
+    _cx_cs = _cx_rd('lib/services/cloud_sync_service.dart')
+    _cx_main = _cx_rd('lib/main.dart')
+    _cx_td = _cx_rd('lib/screens/trip_detail.dart')
+    _cx_l10n = (root / 'lib/l10n/strings.dart').read_text()
+
+    # CX1: ТАБЛИЦА recon p155 И ФЛАГ НОСИТЕЛЯ ДО hal_samples.
+    _cx1 = [
+        'TelemetryDecoderTable.kt   85f5e951b745f8ed6a115e456ebb437b6e7b24f1b3798a6af24884df1226605c  recon v0.10.155' in _cx_man,
+        '// SHA256: 85f5e951b745f8ed6a115e456ebb437b6e7b24f1b3798a6af24884df1226605c' in _cx_tab,
+        'val typeConflict: Boolean = false' in _cx_tab,
+        'if (typeConflict) {\nm["type_conflict"] = true\nm["carrier"] = carrier.name' in _cx_sink,
+        "typeConflict: m['type_conflict'] == true," in _cx_chn,
+        "text: e.typeConflict ? 'type_conflict carrier=${e.carrier}' : null," in _cx_hts,
+    ]
+    if all(_cx1): ok('CX1 the vendored table is recon p155 (manifest + header SHA) and the carrier-conflict flag rides from the sink into hal_samples for ac_*')
+    else: fail(f'CX1 p155 / carrier flag drifted: {_cx1}')
+
+    # CX2: ПЕРЕКРЫТИЯ. AC в companion не перекрыт (затенил бы p155); две
+    # записи, которых нет в p155, держатся здесь.
+    _cx2 = [
+        '"BYDAutoAcDevice|' not in _cx_ovr,
+        '"BYDAutoChargingDevice|0x2FF00030" to Decoder(\n"pack_voltage_fine", "V", ValueSource.DOUBLE,' in _cx_ovr,
+        '0x47800020' not in _cx_ovr,
+        '// put("BYDAutoChargingDevice|0x2FF00030",' in _cx_tab and '// put("BYDAutoStatisticDevice|0x47800020",' in _cx_tab,
+    ]
+    if all(_cx2): ok('CX2 no AC override shadows p155; pack_voltage_fine, commented out in p155, is kept as a companion override; quarantined cell_temp_lowest stays out')
+    else: fail(f'CX2 decoder layering drifted: {_cx2}')
+
+    # CX3: СИГНАЛЫ ПОДОГРЕВА. Явный список, по изменению, до декодера; на
+    # Bodywork подписка ради одного fid, всё прочее отбрасывается в снике.
+    _cx3_i_call = _cx_sink.find('maybeEmitHeatRaw(targetKey, subtype, intValue, doubleValue, timestampMs)')
+    _cx3_i_dec = _cx_sink.find('val dv = TelemetryDecoderTable.decode(')
+    _cx3_i_fn = _cx_sink.find('private fun maybeEmitHeatRaw(')
+    _cx3_fn = _cx_sink[_cx3_i_fn:_cx3_i_fn + 900] if _cx3_i_fn > -1 else ''
+    _cx3 = [
+        'val extraInstrumentFids: IntArray = intArrayOf(0x35902039, 0x3A700028)' in _cx_ovr,
+        'val bodyworkHeatFids: IntArray = intArrayOf(0x2FA00016)' in _cx_ovr,
+        -1 < _cx3_i_call < _cx3_i_dec,
+        -1 < _cx3_fn.find('if (fid32 !in fids) return') < _cx3_fn.find('if (heatRawLast.put(k, pair) == pair) return') < _cx3_fn.find('queue.add('),
+        'heatRawLast.clear()' in _cx_sink,
+        '"BYDAutoInstrumentDevice" -> spec.copy(\nfeatureIds = spec.featureIds +\nCompanionDecoderOverrides.extraInstrumentFids' in _cx_own,
+        'TargetSpec(\n"BYDAutoBodyworkDevice",\n"android.hardware.bydauto.bodywork.BYDAutoBodyworkDevice",\nCompanionDecoderOverrides.bodyworkHeatFids' in _cx_own,
+        'if (name.startsWith(AC_RAW_PREFIX) || name.startsWith(HEAT_RAW_PREFIX)) {' in _cx_out,
+        "if (e.name.startsWith('heat_raw_')) {\n_logHeatRaw(e);" in _cx_hts,
+        'if (_heatRawSeen.add(e.name)) {' in _cx_hts and "'HAL: Bodywork failed: " in _cx_hts,
+    ]
+    if all(_cx3): ok('CX3 heating signals: Instrument x2 added on top, Bodywork subscribed for one fid; the sink writes only listed fids, on change, before the decoder; first event and Bodywork registration land in app_log')
+    else: fail(f'CX3 heating capture drifted: {_cx3}')
+
+    # CX4: МОДЕЛЬ. Константы Dart и зеркала совпадают; остаток на уровне
+    # поездки; зеркало проходит самопроверки.
+    import importlib.util as _cx_iu
+    _cx_spec = _cx_iu.spec_from_file_location('_cx_mirror', root / 'tools/mirror_plus222_split.py')
+    _cx_mir = _cx_iu.module_from_spec(_cx_spec); _cx_spec.loader.exec_module(_cx_mir)
+    import io as _cx_io, contextlib as _cx_cl
+    with _cx_cl.redirect_stdout(_cx_io.StringIO()):
+        _cx4_self = _cx_mir._selftest() == 0
+    def _cx4_num(n):
+        _m = re.search(r'static const double ' + n + r' = ([0-9.]+);', _cx_es)
+        return float(_m.group(1)) if _m else None
+    _cx4 = [
+        _cx4_num('kTraction') == _cx_mir.K_T,
+        _cx4_num('kRegen') == _cx_mir.K_R,
+        _cx4_num('baseKw') == _cx_mir.BASE_KW,
+        f'static const int minTripSeconds = {_cx_mir.MIN_TRIP_S};' in _cx_es,
+        _cx4_num('minCoverage') == _cx_mir.MIN_COVERAGE,
+        "final v = last['pack_voltage_fine'] ?? last['pack_voltage'];" in _cx_es,
+        'if (climate < 0) {\nclimate = 0;\nother = residual;\n}' in _cx_es,
+        'cov < EnergySplitModel.minCoverage ||' in _cx_es,
+        _cx4_self,
+    ]
+    if all(_cx4): ok('CX4 the energy split matches its Python mirror (constants, fine-voltage first, trip-level residual) and the mirror self-tests pass')
+    else: fail(f'CX4 energy split model drifted from the mirror: {_cx4}')
+
+    # CX5: ХРАНЕНИЕ И ОБЛАКО. Шесть колонок аддитивно; поля уходят только
+    # у поездок, посчитанных здесь; Restore возвращает модель; посчитанные
+    # поездки ставятся на повторную отправку.
+    _cx5_cols = ['energyMotionKwh', 'energyClimateKwh', 'energyOtherKwh', 'energyPackKwh', 'energySplitCoverage', 'energySplitModel']
+    _cx5 = [
+        'if (from < 20) {' in _cx_db and all(f'_addColumnIfAbsent(m, trips, trips.{c});' in _cx_db for c in _cx5_cols),
+        "if (t.energySplitModel != null) ...<String, dynamic>{\n'energy_motion_kwh': t.energyMotionKwh," in _cx_cs,
+        "energySplitModel: parseStrN(j['energy_split_model'])," in _cx_cs,
+        '_pushedTripIds.removeAll(ids);' in _cx_cs,
+        'await _db.writeEnergySplit(t.id, coverage: 0);' in _cx_es,
+        'if (split.isNotEmpty) onTripsSplit?.call(split);' in _cx_es,
+        'Provider<EnergySplitService>(\nlazy: false,' in _cx_main and 'es.onTripsSplit = (ids) => unawaited(cs.requeueTrips(ids));' in _cx_main,
+    ]
+    if all(_cx5): ok('CX5 six additive trip columns; split fields leave only for trips split on this device; Restore brings the model back; split trips are re-queued for push')
+    else: fail(f'CX5 split persistence / cloud drifted: {_cx5}')
+
+    # CX6: КАРТОЧКА И ТАЙМАУТ СТАРТА.
+    _cx6 = [
+        _cx_td.count('_EnergySplitCard(trip: trip),') == 2,
+        'if (m == null || c == null || o == null) return const SizedBox.shrink();' in _cx_td,
+        'final total = trip.energyUsedKwh ?? sum;' in _cx_td and '(p.$2 * total).toStringAsFixed(2)' in _cx_td,
+        all(_cx_l10n.count(f"'{k}':") == 2 for k in ('trip.energy_split', 'trip.split_motion', 'trip.split_climate', 'trip.split_other', 'trip.split_note')),
+        '.closeOrphanSweepRuns()\n.timeout(const Duration(seconds: 5));' in _cx_main,
+    ]
+    if all(_cx6): ok('CX6 the split card sits in both layouts, hides without parts, scales to the trip energy line; strings in both languages; startup orphan close is time-boxed')
+    else: fail(f'CX6 split card / startup timeout drifted: {_cx6}')
+else:
+    ok(f"Part CX skipped (build +{pv}, p155 / heating signals / energy split land in +222)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)

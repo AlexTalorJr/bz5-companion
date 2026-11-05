@@ -100,13 +100,28 @@ object HalStreamOwner {
     ): List<TargetSpec> {
         val base = TargetRegistry.streamingTargets(ctx)
         val withStatistic = base.map { spec ->
-            if (spec.key == "BYDAutoStatisticDevice")
-                spec.copy(
+            when (spec.key) {
+                "BYDAutoStatisticDevice" -> spec.copy(
                     featureIds = spec.featureIds +
                         CompanionDecoderOverrides.extraStatisticFids
                 )
-            else spec
-        }
+                // v0.2.23+222: два сигнала подогрева за границей 80 fid.
+                "BYDAutoInstrumentDevice" -> spec.copy(
+                    featureIds = spec.featureIds +
+                        CompanionDecoderOverrides.extraInstrumentFids
+                )
+                else -> spec
+            }
+        } + listOf(
+            // v0.2.23+222: Bodywork ради одного fid (см. bodyworkHeatFids).
+            // Регистрация на всё устройство может принести и двери/окна —
+            // сник пишет только этот fid, остальное отбрасывает.
+            TargetSpec(
+                "BYDAutoBodyworkDevice",
+                "android.hardware.bydauto.bodywork.BYDAutoBodyworkDevice",
+                CompanionDecoderOverrides.bodyworkHeatFids
+            )
+        )
         // v0.1.29+89: триггер GB32960-сбора плюс канал данных.
         // streamingTargets() (подмножество из восьми целей) не содержит
         // ни Power, ни BigData, поэтому сбор не начинается сам и кадры

@@ -126,37 +126,24 @@ object CompanionDecoderOverrides {
             "charging_gun_state", "", ValueSource.INT,
             notes = "1=disconnected 2=AC 3=DC; field-confirmed 14-16.08 (was charging_gun_connect_candidate)"),
 
-        // v0.2.20+219 — AC CANDIDATES from the firmware catalog (Friend 3,
-        // BYDAutoFeatureIds via recon v0.10.56, class Ac). The shared table
-        // already carries the eight catalog names recon re-mapped in p075
-        // (ac_temp_main, ac_wind_level, ...). These seven fids are inside
-        // the AC_ subscription (first 80 read-only fids by value) but had no
-        // decoder, so every frame was dropped. Status for all seven:
-        // CATALOG-NAME-CONFIRMED / VALUES-UNVERIFIED. Enum meanings are
-        // NOT decoded until the stationary climate test (one action per
-        // 10 s, timestamped). Consumer: HAL Test + the ac_* change log in
-        // HalTelemetryService (hal_samples) — never a UI card.
-        "BYDAutoAcDevice|0x2FC00009" to Decoder(
-            "ac_compressor_mode", "", ValueSource.INT,
-            notes = "AC_COMPRESSOR_MODE (A/C button); CATALOG-NAME-CONFIRMED / VALUES-UNVERIFIED"),
-        "BYDAutoAcDevice|0x2FC0000A" to Decoder(
-            "ac_compressor_manual_sign", "", ValueSource.INT,
-            notes = "AC_COMPRESSOR_MANUAL_SIGN (A/C set by hand); CATALOG-NAME-CONFIRMED / VALUES-UNVERIFIED"),
-        "BYDAutoAcDevice|0x2FC0000B" to Decoder(
-            "ac_windmode_manual_sign", "", ValueSource.INT,
-            notes = "AC_WINDMODE_MANUAL_SIGN (airflow set by hand); CATALOG-NAME-CONFIRMED / VALUES-UNVERIFIED"),
-        "BYDAutoAcDevice|0x2FC0000C" to Decoder(
-            "ac_windlevel_manual_sign", "", ValueSource.INT,
-            notes = "AC_WINDLEVEL_MANUAL_SIGN (fan speed set by hand); CATALOG-NAME-CONFIRMED / VALUES-UNVERIFIED"),
-        "BYDAutoAcDevice|0x2FC00016" to Decoder(
-            "ac_defrost_front_state", "", ValueSource.INT,
-            notes = "AC_DEFROST_FRONT_STATE (windscreen defrost); CATALOG-NAME-CONFIRMED / VALUES-UNVERIFIED"),
-        "BYDAutoAcDevice|0x2FA0000C" to Decoder(
-            "ac_ptc_state", "", ValueSource.INT,
-            notes = "AC_PTC_STATE (PTC heater state enum, not duty); CATALOG-NAME-CONFIRMED / VALUES-UNVERIFIED"),
-        "BYDAutoAcDevice|0x2FA00026" to Decoder(
-            "ac_ptc_preheat_signal", "", ValueSource.INT,
-            notes = "AC_PTC_PREHEAT_SIGNAL (PTC preheat); CATALOG-NAME-CONFIRMED / VALUES-UNVERIFIED"),
+        // v0.2.23+222 — ТОЧНОЕ НАПРЯЖЕНИЕ БАТАРЕИ ДЕРЖИМ ЗДЕСЬ. В recon p155
+        // запись 0x2FF00030 закомментирована как непроверенная гипотеза
+        // `pack_voltage_alt`; у companion она подтверждена DC-зарядкой 06.08,
+        // и на ней стоят мощность, энергия и разделение энергии поездки.
+        // Без перекрытия переход на p155 молча снял бы сигнал. Друг 3 просил
+        // внести её в recon; снять отсюда, когда внесёт.
+        //
+        // 0x47800020 cell_temp_lowest p155 поместил в карантин (оба поля —
+        // мусор ~1e9), и его не возвращаем: решение владельца 05.11.
+        "BYDAutoChargingDevice|0x2FF00030" to Decoder(
+            "pack_voltage_fine", "V", ValueSource.DOUBLE,
+            notes = "fractional volts; confirmed by recon 06.08 DC charge; commented out in p155"),
+
+        // v0.2.23+222: the seven AC candidates added here in +219
+        // (0x2FC00009/0A/0B/0C/16, 0x2FA0000C/26) moved into the vendored
+        // table with recon p155 under the same names, as ValueSource.ANY.
+        // An override here would shadow p155 and its carrier rule, so none
+        // is kept (Friend 3, 05.11: all seven are in p155's Ac list).
     )
 
     /**
@@ -171,4 +158,32 @@ object CompanionDecoderOverrides {
      * probe fid needs adding here.
      */
     val extraStatisticFids: IntArray = intArrayOf(0x47800010)
+
+    /**
+     * v0.2.23+222 — СИГНАЛЫ ПОДОГРЕВА, сырой записью без расшифровки
+     * (Friend 3, 05.11). Нужны, чтобы зимой отделить подогрев батареи от
+     * климата в разделении энергии поездки. Ни один ещё не приходил живым.
+     *
+     * Instrument: 0x35902039 INSTRUMENT_BATTERY_HEATING_ENERGY_TEMPORARILY_
+     * LIMITED, 0x3A700028 INSTRUMENT_AIR_HEATING_DISPLAY_STATE. Вендорная
+     * подписка берёт 80 младших из ~490 fid панели, эти два за границей —
+     * добавляются сверху, как Statistic.
+     *
+     * Bodywork: 0x2FA00016 BODYWORK_BATTERY_COOLANT_STATUS. Устройство
+     * убрано из вендорного списка в июне (recon p078: SecurityException на
+     * getInstance). Friend 3: это несработавшее runtime-разрешение
+     * BODYWORK_COMMON, как было с AC; у recon registerListener работает.
+     * Отказ подписки запустит самовосстановление разрешений из +220.
+     *
+     * Четыре сигнала AC (PTC, прогрев) уже в подписке AC, их пишет ac_raw.
+     */
+    val extraInstrumentFids: IntArray = intArrayOf(0x35902039, 0x3A700028)
+    val bodyworkHeatFids: IntArray = intArrayOf(0x2FA00016)
+
+    /** Device key → fids written raw as `heat_raw_<FID>` by the sink.
+     *  Everything else from these devices is dropped there. */
+    val heatRawFids: Map<String, Set<Long>> = mapOf(
+        "BYDAutoInstrumentDevice" to extraInstrumentFids.map { it.toLong() and 0xFFFFFFFFL }.toSet(),
+        "BYDAutoBodyworkDevice" to bodyworkHeatFids.map { it.toLong() and 0xFFFFFFFFL }.toSet()
+    )
 }

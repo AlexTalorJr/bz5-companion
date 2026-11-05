@@ -1,7 +1,7 @@
 // === SHARED FROM bz5_recon — DO NOT EDIT (re-sync from recon) ===
 // Source: bz5-recon/android/app/src/main/kotlin/com/bz5/recon/live/TelemetryDecoderTable.kt
-// Synced: 2026-06-11 (recon v0.10.57, commit p078)
-// SHA256: b26144b8299079a02d4ca346ee373a12d353a40835da5908103859d4a70ee3c9
+// Synced: 2026-11-05 (recon v0.10.155, commit p155)
+// SHA256: 85f5e951b745f8ed6a115e456ebb437b6e7b24f1b3798a6af24884df1226605c
 package com.bz5companion.bz5_companion.hal
 
 // === SHARED CANDIDATE (bz5_recon ↔ bz5_companion) ===
@@ -31,6 +31,18 @@ package com.bz5companion.bz5_companion.hal
 // "Charge negative" is a consequence of "discharge positive", not an
 // alternative convention.
 //
+// Carrier rule (patch 155, recon v0.10.155): the framework delivers BOTH
+// mIntValue and mDoubleValue on every event, one real and the other 0 (p081
+// observation, RollupSink raw_trace). A decoder declared INT therefore gets a
+// literal 0 when the value actually rides in mDoubleValue, and reports that 0
+// as a measurement (trip-2 AC_TEMP_MAIN "0/1" where trip-1 saw dbl 23). The
+// decode() below no longer trusts the declared source blindly: when the
+// declared field is 0/absent and the other field is non-zero, it takes the
+// other field and flags DecodedValue.typeConflict = true. ValueSource.ANY
+// declares that the carrier is not known yet (new catalog-named AC fids):
+// non-zero double wins, then non-zero int, then a true zero. Both carriers
+// stay visible offline via RollupSink int_nonzero_n / dbl_nonzero_n.
+//
 // Decoders verified as of recon v0.10.49 (patch 069, post-Friend-1 review).
 // Confirmed entries below have either direct decode verification (string
 // payloads, exact-value cross-check) or strong time-series correlation
@@ -50,7 +62,11 @@ enum class ValueSource {
     DOUBLE,
     /** No direct numeric value — payload is in `mBufData` (e.g. BigData CAN frames,
      *  Statistic battery serial). Caller must do format-specific extraction. */
-    BUFDATA
+    BUFDATA,
+    /** Carrier not yet pinned (patch 155): take the non-zero one of
+     *  `mDoubleValue` / `mIntValue`, double first. Used for catalog-named fids
+     *  whose first live events have not been seen with both fields recorded. */
+    ANY
 }
 
 /** Decoder spec for one (targetKey, subtype) combo. */
@@ -77,7 +93,14 @@ data class DecodedValue(
     val name: String,
     val value: Double,
     val unit: String,
-    val timestampMs: Long
+    val timestampMs: Long,
+    /** Which raw field actually supplied [value] (patch 155). Always set by
+     *  decode(); the default only keeps older 4-arg constructor calls compiling. */
+    val carrier: ValueSource = ValueSource.DOUBLE,
+    /** True when the decoder's declared source was 0/absent and the value was
+     *  taken from the other field instead (patch 155). A companion sink may
+     *  show such a value but should not promote the fid's carrier on it. */
+    val typeConflict: Boolean = false
 )
 
 object TelemetryDecoderTable {
@@ -97,27 +120,22 @@ object TelemetryDecoderTable {
         put("BYDAutoChargingDevice|0x2D300018",
             Decoder("pack_current", "A", ValueSource.DOUBLE,
                 notes = "discharge-positive; same convention as UDS C33"))
-        // ── ГИПОТЕЗА ЗАКРЫТА, КАНАЛ ВКЛЮЧЁН. v0.2.0+199 ──
-        //
-        // Друг 3 подтвердил его на живой быстрой зарядке 06.08: 436 В в
-        // покое → 478,6 В на пике → таппер к 452, 8 489 событий за
-        // сессию, источник значения — double. В его справке помечен как
-        // «подтв», а не «гипотеза».
-        //
-        // Зачем он нужен: основной канал 0x2D300008 отдаёт ЦЕЛЫЕ вольты
-        // (все 5 710 замеров в выгрузке 10.08 без дробной части). Один
-        // вольт округления при качании тока в сто ампер — это десять
-        // миллиом ошибки в расчёте сопротивления пакета, и по двум
-        // точкам оно вырождалось в мусор (от 6 до 199 мОм).
-        //
-        // Заводится ВТОРЫМ именем, а не подменяет `pack_voltage`.
-        // Причина процедурная: сначала оба поедут в выгрузку, там я
-        // сверю их между собой на настоящих данных, и только потом
-        // потребители переедут. Подменить сейчас значило бы поверить
-        // чужому замеру без своей проверки.
-        put("BYDAutoChargingDevice|0x2FF00030",
-            Decoder("pack_voltage_fine", "V", ValueSource.DOUBLE,
-                notes = "fractional volts; confirmed by recon 06.08 DC charge"))
+        // p083 mislabeled this as charge_power_ac (kW) on a single 2.68 reading.
+        // p084 CORRECTION: it is cumulative CHARGE ENERGY in kWh, not power.
+        // Evidence (5-min run 20:32, 10 chunks): value rose monotonically
+        // 2.025 → 2.141, never falling; dE/dt = 1.74 kW constant; the value did
+        // NOT reset between the 19:50 (~0.82) and 20:32 (2.025) sessions, so it
+        // is a persistent accumulator (session/daily counter, not per-snapshot).
+        // Absolute check: 0.82 kWh / 2.85 kW ≈ 17 min = how long Alex had been
+        // charging. dE/dt 1.74 kW < wall 2.6-3.1 kW = OBC losses + cabin/12V
+        // load while sitting. Active only while AC-charging.
+        put("BYDAutoChargingDevice|0x2C100818",
+            Decoder("charge_energy_kwh", "kWh", ValueSource.DOUBLE,
+                notes = "cumulative charge energy; monotonic accumulator (persists across sessions); active only while AC-charging; dE/dt≈1.74kW vs wall 2.6-3.1 (OBC+aux losses); scale 1.0"))
+        // HYPOTHESIS — needs corr-with primary pack_voltage on charge run:
+        // put("BYDAutoChargingDevice|0x2FF00030",
+        //     Decoder("pack_voltage_alt", "V", ValueSource.DOUBLE,
+        //         notes = "possibly high-side; not independently verified"))
 
         // ─── Energy (cells) ──────────────────────────────────────────────
         put("BYDAutoEnergyDevice|0x45400030",
@@ -126,46 +144,24 @@ object TelemetryDecoderTable {
         put("BYDAutoEnergyDevice|0x45400010",
             Decoder("cell_v_lowest",  "V", ValueSource.DOUBLE,
                 notes = "3.24–3.26 V parked LFP"))
-        // v0.2.4+203 — ИМЕНА НОМЕРОВ ПОМЕНЯНЫ МЕСТАМИ.
-        //
-        // До этого патча 0x45400008 назывался `cell_idx_highest`, а
-        // 0x45400028 — `cell_idx_lowest`. Авторитетный каталог
-        // BYDAutoFeatureIds говорит обратное:
-        //   0x45400008 = ENERGY_LOWEST_VOLT_BATTERY_NUM
-        //   0x45400028 = ENERGY_HIGHEST_VOLT_BATTERY_NUM
-        // и это согласуется с раскладкой соседних полей: в младшем блоке
-        // лежат номер (08) и напряжение (10) НИЖНЕЙ ячейки, в старшем —
-        // номер (28) и напряжение (30) ВЕРХНЕЙ. Напряжения у нас были
-        // подписаны верно с самого начала, номера — нет.
-        //
-        // ПОЧЕМУ НЕ ПРОВЕРЕНО ДАННЫМИ. Экспорт 11.08 (282 750 замеров,
-        // 30 856 секундных снимков, из них 930 с разбросом больше 50 мВ)
-        // прогнан четырьмя способами: порядок прихода четырёх полей,
-        // совпадение смены номера со скачком напряжения, устойчивость
-        // номера при большом разбросе, устойчивость на краях напряжения.
-        // Ни один способ два номера не различает. Каталог — единственное
-        // свидетельство, какое есть, и решение принято по нему.
-        //
-        // СТАРЫЕ СТРОКИ В `hal_samples` ОСТАЮТСЯ С ПРЕЖНИМИ ИМЕНАМИ.
-        // Переписывать историю нечем: какое поле стояло за строкой, в
-        // таблице записано (`subtype`), но менять 24 967 строк задним
-        // числом значило бы править замеры. Живой поток с этого патча
-        // подписан правильно; при разборе истории смотреть на `subtype`,
-        // а не на `name`.
+        // p079: names were mirrored. Catalog: 0x...08 = ENERGY_LOWEST_VOLT_
+        // BATTERY_NUM, 0x...28 = ENERGY_HIGHEST_VOLT_BATTERY_NUM. Swapped so
+        // cell_idx_lowest pairs with cell_v_lowest (0x45400010) and highest
+        // with highest (0x45400030).
         put("BYDAutoEnergyDevice|0x45400008",
             Decoder("cell_idx_lowest", "", ValueSource.INT,
-                notes = "1–136; catalog ENERGY_LOWEST_VOLT_BATTERY_NUM"))
+                notes = "ENERGY_LOWEST_VOLT_BATTERY_NUM; index of lowest-voltage cell; 1–136"))
         put("BYDAutoEnergyDevice|0x45400028",
             Decoder("cell_idx_highest",  "", ValueSource.INT,
-                notes = "1–136; catalog ENERGY_HIGHEST_VOLT_BATTERY_NUM"))
+                notes = "ENERGY_HIGHEST_VOLT_BATTERY_NUM; index of highest-voltage cell; 1–136"))
 
         // ─── Statistic (head, first 64) ──────────────────────────────────
         put("BYDAutoStatisticDevice|0x15100008",
             Decoder("speed", "km/h", ValueSource.INT,
                 notes = "averaged ~8.7 Hz; verified ground-truth in trip-1"))
         put("BYDAutoStatisticDevice|0x47300018",
-            Decoder("insulation_resistance", "MΩ", ValueSource.INT,
-                notes = "observed 6.1–17.1 MΩ, median 15.5 (export 11.08)"))
+            Decoder("insulation_resistance", "MΩ", ValueSource.INT, scale = 0.001,
+                notes = "STATISTIC_INSULATION_RESISTANCE_VALUE; raw kΩ ×0.001→MΩ; 11.8–14.1 MΩ healthy"))
         put("BYDAutoStatisticDevice|0x99000191",
             Decoder("battery_serial", "", ValueSource.BUFDATA,
                 notes = "48B ASCII; decoded as string"))
@@ -195,9 +191,40 @@ object TelemetryDecoderTable {
         put("BYDAutoStatisticDevice|0x44500830",
             Decoder("instant_consumption", "kWh/100km", ValueSource.INT,
                 notes = "STATISTIC_INSTANT_EV_CONSUME; instantaneous consumption"))
-        put("BYDAutoStatisticDevice|0x47800020",
-            Decoder("cell_temp_lowest", "°C", ValueSource.INT,
-                notes = "STATISTIC_PROBE_LOWEST_TEMP; lowest cell-probe temperature"))
+        // p079 #4: QUARANTINED STATISTIC_PROBE_LOWEST_TEMP — both INT and
+        // DOUBLE fields carry garbage (~1.03e9), never plausible °C. Re-enable
+        // only if a future chunk shows 20–40°C.
+        // put("BYDAutoStatisticDevice|0x47800020",
+        //     Decoder("cell_temp_lowest", "°C", ValueSource.INT,
+        //         notes = "STATISTIC_PROBE_LOWEST_TEMP; lowest cell-probe temperature"))
+        // p079 #5: PROBE_HIGHEST_TEMP. p083: promoted to canonical battery_temp.
+        // 4-run analysis (14 Jun) shows a healthy ~0.5 Hz stream (n=12–15/chunk),
+        // 21–22°C on a warm day, matching the OEM cluster (Bat 21°) AND companion
+        // OBD2 790/002F. NOT the rare/event-only fid the old handoff feared, and
+        // NOT 28–31 — that was a different (hotter) day. This IS battery temp.
+        put("BYDAutoStatisticDevice|0x47800010",
+            Decoder("battery_temp", "°C", ValueSource.INT,
+                notes = "STATISTIC_PROBE_HIGHEST_TEMP; canonical pack temperature; ~0.5 Hz stream; 21–22°C warm day; matches OEM cluster + OBD2 790/002F"))
+
+        // p082: temp candidates on profile devices (Energy/Charging). p083 update:
+        // 4 runs (3 AC-charge/city + 1 highway w/ launch) delivered ZERO events on
+        // all three — BUT every run was AC-charge + drive, NOT DC fast-charge. The
+        // names are telling: VTOV (vehicle-to-vehicle / DC path) and DC_CHARGING_
+        // PORT_TEMP. Working hypothesis (Alex): these sensors sit on the DC fast-
+        // charge tract and stay silent on AC (which routes through the onboard OBC)
+        // by design. NOT marked dead — kept as DC candidates, verify at a DC
+        // station. raw_trace writes BOTH int and dbl so carrier/scale settle
+        // offline once events flow. scale 1.0 placeholder; semantics unconfirmed
+        // (PORT_TEMP may be port not pack; MAX_TEMP_ALLOWED likely a limit).
+        put("BYDAutoEnergyDevice|0x000DA09B",
+            Decoder("battery_temp_port_candidate", "°C", ValueSource.DOUBLE,
+                notes = "p082 DC-CHARGE CANDIDATE; ENERGY_DC_CHARGING_PORT_TEMP; zero events on AC+drive; verify at DC station; scale 1.0; may be port not pack"))
+        put("BYDAutoChargingDevice|0x00072559",
+            Decoder("battery_temp_pwr_candidate", "°C", ValueSource.DOUBLE,
+                notes = "p082 DC-CHARGE CANDIDATE; CHARGING_VTOV_MAX_POWER_BATTERY_TEMP; zero events on AC+drive; verify at DC station; scale 1.0; strongest name"))
+        put("BYDAutoChargingDevice|0x0004CFF3",
+            Decoder("battery_temp_allowed_candidate", "°C", ValueSource.DOUBLE,
+                notes = "p082 DC-CHARGE CANDIDATE; CHARGING_VTOV_MAX_TEMP_ALLOWED; zero events on AC+drive; verify at DC station; scale 1.0; likely a LIMIT not a measurement"))
 
         // ─── Engine (names from firmware BYDAutoFeatureIds catalog, patch 075) ─
         // The firmware catalog resolved the long-running Engine fid guesses to
@@ -227,6 +254,14 @@ object TelemetryDecoderTable {
         put("BYDAutoEngineDevice|0x40F00008",
             Decoder("motor_control_voltage", "V", ValueSource.INT,
                 notes = "ENGINE_DRIVER_MOTOR_CONTROL_VOLTAGE; inverter DC bus, tracks pack V (r=0.889) but distinct"))
+        // p083: motor-side current candidate. On 18:29 launch run ranged
+        // -156..+513 A (mDoubleValue), sign tracking traction/regen, amplitude
+        // slightly wider than pack_current (513 vs 494). Hypothesis: motor/phase
+        // current, independent of pack_current. Added to raw_trace this patch to
+        // regress pointwise vs pack_current (0x2D300018). Name provisional.
+        put("BYDAutoEngineDevice|0x40800008",
+            Decoder("motor_current_candidate", "A", ValueSource.DOUBLE,
+                notes = "p083 CANDIDATE; -156..+513 A; sign=traction/regen; wider than pack_current; verify independence via raw_trace regression"))
 
         // ─── Gearbox (patch 067 trip-1 partial decode) ───────────────────
         put("BYDAutoGearboxDevice|0x0FB00020",
@@ -253,12 +288,17 @@ object TelemetryDecoderTable {
         // °C) still needs a dedicated stationary climate test with per-action
         // timestamps. Promoted with names; companion should treat values as
         // raw until the climate test confirms scale.
+        // p155: trip-1 (patch 066) saw 0x2FC00028 as mDoubleValue 23 (= the
+        // 23 °C setpoint), trip-2 saw mIntValue 0/1 under the INT decoder. That
+        // is the carrier rule case, not a scale puzzle: the value rides in the
+        // double field and INT read the empty zero. Both setpoints go to ANY
+        // until the ac_raw climate test records both fields per event.
         put("BYDAutoAcDevice|0x2FC00028",
-            Decoder("ac_temp_main", "", ValueSource.INT,
-                notes = "AC_TEMP_MAIN (driver setpoint); raw — scale TBD by climate test"))
+            Decoder("ac_temp_main", "°C", ValueSource.ANY,
+                notes = "AC_TEMP_MAIN (driver setpoint); trip-1 dbl 23 = setpoint; carrier ANY until ac_raw climate test"))
         put("BYDAutoAcDevice|0x2FC00030",
-            Decoder("ac_temp_deputy", "", ValueSource.INT,
-                notes = "AC_TEMP_DEPUTY (passenger setpoint); raw — scale TBD"))
+            Decoder("ac_temp_deputy", "°C", ValueSource.ANY,
+                notes = "AC_TEMP_DEPUTY (passenger setpoint); carrier ANY until ac_raw climate test"))
         put("BYDAutoAcDevice|0x2FC0001C",
             Decoder("ac_wind_level", "", ValueSource.INT, notes = "AC_WIND_LEVEL (fan speed)"))
         put("BYDAutoAcDevice|0x2FC00018",
@@ -270,7 +310,31 @@ object TelemetryDecoderTable {
         put("BYDAutoAcDevice|0x2FC00012",
             Decoder("ac_ctrl_mode", "", ValueSource.INT, notes = "AC_CTRL_MODE (auto/manual)"))
         put("BYDAutoAcDevice|0x2FC00038",
-            Decoder("ac_temp_out", "°C", ValueSource.DOUBLE, notes = "AC_TEMP_OUT (outside temp)"))
+            Decoder("ac_temp_out", "°C", ValueSource.INT, notes = "AC_TEMP_OUT (outside temp); INT carries 27–30°C, DOUBLE was 0"))
+
+        // ─── AC — remaining catalog-named fids (patch 155) ────────────────
+        // Names are exact from the firmware BYDAutoFeatureIds catalog (recon
+        // v0.10.56 export, class Ac). The first four are the trip-1 (patch 066)
+        // subtypes that never had a decoder; the last three have not been seen
+        // live yet (0x2FA0 base, probably event-driven: PTC only when heating).
+        // Carrier and enum semantics unknown, hence ANY and empty unit; the
+        // climate test (one action per 10 s, both fields logged) pins them.
+        // 0x2FC00009 AC_COMPRESSOR_MODE is also the A/C-off marker for the
+        // firehose correlation: CAN 0x02FC carries the same panel state.
+        put("BYDAutoAcDevice|0x2FC00009",
+            Decoder("ac_compressor_mode", "", ValueSource.ANY, notes = "AC_COMPRESSOR_MODE (A/C button); enum TBD; A/C off marker"))
+        put("BYDAutoAcDevice|0x2FC0000A",
+            Decoder("ac_compressor_manual_sign", "", ValueSource.ANY, notes = "AC_COMPRESSOR_MANUAL_SIGN; manual-override flag; enum TBD"))
+        put("BYDAutoAcDevice|0x2FC0000B",
+            Decoder("ac_windmode_manual_sign", "", ValueSource.ANY, notes = "AC_WINDMODE_MANUAL_SIGN; manual-override flag; enum TBD"))
+        put("BYDAutoAcDevice|0x2FC0000C",
+            Decoder("ac_windlevel_manual_sign", "", ValueSource.ANY, notes = "AC_WINDLEVEL_MANUAL_SIGN; manual-override flag; enum TBD"))
+        put("BYDAutoAcDevice|0x2FC00016",
+            Decoder("ac_defrost_front_state", "", ValueSource.ANY, notes = "AC_DEFROST_FRONT_STATE; windscreen defrost; enum TBD"))
+        put("BYDAutoAcDevice|0x2FA0000C",
+            Decoder("ac_ptc_state", "", ValueSource.ANY, notes = "AC_PTC_STATE; PTC heater state, not duty; not yet seen live"))
+        put("BYDAutoAcDevice|0x2FA00026",
+            Decoder("ac_ptc_preheat_signal", "", ValueSource.ANY, notes = "AC_PTC_PREHEAT_SIGNAL; not yet seen live"))
 
         // ─── Tyre (TPMS) — wheel positions from firmware catalog, patch 075 ──
         // Ground-truth confirmed (owner reading 2.7–2.9 bar, ~20°C). Pressure
@@ -328,11 +392,32 @@ object TelemetryDecoderTable {
         put("BYDAutoRadarDevice|0x99000076", Decoder("radar_state_left_rear", "", ValueSource.INT, notes = "RADAR_PROBE_STATE_LEFT_REAR; enum 0-4, semantics TBD"))
         put("BYDAutoRadarDevice|0x99000077", Decoder("radar_state_right_rear", "", ValueSource.INT, notes = "RADAR_PROBE_STATE_RIGHT_REAR; enum 0-4, semantics TBD"))
         put("BYDAutoRadarDevice|0x99000078", Decoder("radar_state_right", "", ValueSource.INT, notes = "RADAR_PROBE_STATE_RIGHT; enum 0-4, semantics TBD"))
+
+        // ─── Powertrain/energy state enums (patch 089) ───────────────────
+        // PROMOTED после полного аудита live-потока 24 июня: эти три фида
+        // СТАБИЛЬНО текут (by_subtype в каждом live-чанке), но не были
+        // декодированы — проскакивали как «прочие subtype». Все три — enum/
+        // флаги состояния (int), НЕ непрерывная телеметрия. Семантика значений
+        // pending (нужен контролируемый прогон с известными переходами).
+        // ВАЖНО: ENGINE_DRIVER_POWER (0x40A00010) — это флаг 0/1 (драйв-режим
+        // активен), НЕ мощность в кВт. Не путать с engine_power 0x15100020
+        // (та — знаковая мощность пакета, r=0.999 с V·I). Имя обманчиво.
+        put("BYDAutoEngineDevice|0x40A00010",
+            Decoder("engine_driver_power_flag", "", ValueSource.INT,
+                notes = "ENGINE_DRIVER_POWER; флаг 0/1 (драйв активен), НЕ кВт; semantics TBD"))
+        put("BYDAutoEngineDevice|0x40A00011",
+            Decoder("motor_state", "", ValueSource.INT,
+                notes = "ENGINE_DRIVER_MOTOR_STATE; enum (набл. 1-2), вероятно idle/active; semantics TBD"))
+        put("BYDAutoEnergyDevice|0x20800018",
+            Decoder("energy_state", "", ValueSource.INT,
+                notes = "ENERGY_STATE; enum (набл. 2-5); состояние энергосистемы; semantics TBD"))
     }
 
     /**
      * Decode a raw event into a [DecodedValue], or null if no decoder exists
-     * for this (targetKey, subtype) pair, or the relevant raw field is null.
+     * for this (targetKey, subtype) pair, or neither raw field is present.
+     * Which field supplies the value is decided by [pickCarrier] (patch 155);
+     * the result carries that choice in `carrier` / `typeConflict`.
      *
      * targetKey NORMALIZATION (patch 073): the same physical fid can arrive
      * under different target keys depending on how the subscription split the
@@ -363,13 +448,53 @@ object TelemetryDecoderTable {
         val d = overrides[exactKey] ?: overrides[normKey]
             ?: table[exactKey] ?: table[normKey]
             ?: return null
-        val raw: Double = when (d.source) {
-            ValueSource.INT    -> intValue?.toDouble() ?: return null
-            ValueSource.DOUBLE -> doubleValue ?: return null
-            ValueSource.BUFDATA -> return null  // caller does format-specific decode
+        val picked = pickCarrier(d.source, intValue, doubleValue) ?: return null
+        val physical = picked.raw * d.scale + d.offset
+        return DecodedValue(d.name, physical, d.unit, timestampMs,
+            carrier = picked.carrier, typeConflict = picked.conflict)
+    }
+
+    /** Result of [pickCarrier]: the raw number, the field it came from, and
+     *  whether that field differs from the decoder's declared source. */
+    data class Picked(val raw: Double, val carrier: ValueSource, val conflict: Boolean)
+
+    /**
+     * Carrier rule (patch 155). The framework fills BOTH fields on every
+     * event, one real and the other 0. A declared source whose field is 0 or
+     * absent while the other field is non-zero is a carrier conflict: the
+     * value is taken from the other field and flagged. A true zero (both
+     * fields 0, or the declared field 0 and the other absent) decodes as 0
+     * without a flag. [ValueSource.ANY] prefers a non-zero double, then a
+     * non-zero int, then a zero from whichever field is present.
+     * Returns null for BUFDATA and when neither field is present.
+     */
+    fun pickCarrier(source: ValueSource, intValue: Int?, doubleValue: Double?): Picked? {
+        val i = intValue
+        val d = doubleValue?.takeIf { it.isFinite() }
+        val iLive = i != null && i != 0
+        val dLive = d != null && d != 0.0
+        return when (source) {
+            ValueSource.BUFDATA -> null  // caller does format-specific decode
+            ValueSource.INT -> when {
+                iLive     -> Picked(i!!.toDouble(), ValueSource.INT, false)
+                dLive     -> Picked(d!!, ValueSource.DOUBLE, true)
+                i != null -> Picked(0.0, ValueSource.INT, false)
+                else      -> null
+            }
+            ValueSource.DOUBLE -> when {
+                dLive     -> Picked(d!!, ValueSource.DOUBLE, false)
+                iLive     -> Picked(i!!.toDouble(), ValueSource.INT, true)
+                d != null -> Picked(0.0, ValueSource.DOUBLE, false)
+                else      -> null
+            }
+            ValueSource.ANY -> when {
+                dLive     -> Picked(d!!, ValueSource.DOUBLE, false)
+                iLive     -> Picked(i!!.toDouble(), ValueSource.INT, false)
+                d != null -> Picked(0.0, ValueSource.DOUBLE, false)
+                i != null -> Picked(0.0, ValueSource.INT, false)
+                else      -> null
+            }
         }
-        val physical = raw * d.scale + d.offset
-        return DecodedValue(d.name, physical, d.unit, timestampMs)
     }
 
     /**

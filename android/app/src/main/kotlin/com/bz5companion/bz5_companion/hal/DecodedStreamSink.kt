@@ -151,6 +151,11 @@ class DecodedStreamSink(
     /** Подтип → последняя отправленная пара `i=… d=…`. */
     private val acRawLast = ConcurrentHashMap<Long, String>()
 
+    /** v0.2.23+222: ключ `устройство|fid` → последняя пара для сигналов
+     *  подогрева ([CompanionDecoderOverrides.heatRawFids]). Тот же формат и
+     *  то же правило «по изменению», что у климата. */
+    private val heatRawLast = ConcurrentHashMap<String, String>()
+
     /**
      * v0.1.83+182. Сменить адресат, НЕ трогая подписку.
      *
@@ -166,6 +171,7 @@ class DecodedStreamSink(
         // Без сброса текущее состояние до него не дошло бы, пока его не
         // поменяют руками.
         acRawLast.clear()
+        heatRawLast.clear()
     }
 
     /** Отцепиться совсем — подписка кончилась. Идемпотентно, с любого потока. */
@@ -188,6 +194,9 @@ class DecodedStreamSink(
 
         // v0.2.22+221: сырой кадр климата — ДО декодера, при любом его исходе.
         maybeEmitAcRaw(targetKey, subtype, intValue, doubleValue, timestampMs)
+        // v0.2.23+222: сигналы подогрева — по явному списку, до декодера
+        // (декодеров для них нет, иначе кадр отбросился бы ниже).
+        maybeEmitHeatRaw(targetKey, subtype, intValue, doubleValue, timestampMs)
 
         // decode() returns null for unmapped / hypothesis subtypes → we
         // simply don't forward them (no card appears downstream). It also
@@ -385,6 +394,38 @@ class DecodedStreamSink(
         }
     }
 
+    /** v0.2.23+222: `heat_raw_<FID>` для fid из [CompanionDecoderOverrides.heatRawFids],
+     *  по изменению пары. Всё прочее с этих устройств сюда не попадает. */
+    private fun maybeEmitHeatRaw(
+        targetKey: String,
+        subtype: Long,
+        intValue: Int?,
+        doubleValue: Double?,
+        timestampMs: Long
+    ) {
+        val target = TelemetryDecoderTable.normalizeTargetKey(targetKey)
+        val fids = CompanionDecoderOverrides.heatRawFids[target] ?: return
+        val fid32 = subtype and 0xFFFFFFFFL
+        if (fid32 !in fids) return
+        val pair = "i=${intValue ?: "null"} d=${doubleValue ?: "null"}"
+        val k = TelemetryDecoderTable.key(target, subtype)
+        if (heatRawLast.put(k, pair) == pair) return
+        queue.add(
+            mapOf(
+                "name" to "heat_raw_${String.format("%08X", fid32)}",
+                "unit" to "",
+                "value" to (doubleValue ?: intValue?.toDouble()),
+                "key" to k,
+                "subtype" to subtype,
+                "ts" to timestampMs,
+                "text" to "$pair ts=$timestampMs"
+            )
+        )
+        if (drainScheduled.compareAndSet(false, true)) {
+            mainHandler.post { drain() }
+        }
+    }
+
     private fun toHex(b: ByteArray): String {
         val sb = StringBuilder(b.size * 2)
         for (x in b) sb.append(String.format("%02X", x.toInt() and 0xff))
@@ -435,16 +476,27 @@ class DecodedStreamSink(
 //   { "name": String, "unit": String, "value": double,
 //     "key": String, "subtype": int, "ts": int }
 // Extras outside this function: bigdata_raw adds can_id_hex/buf_hex/
-// buf_size (+88), ac_raw_<FID> adds text and may carry value=null (+221).
+// buf_size (+88), ac_raw_<FID> and heat_raw_<FID> add text and may carry
+// value=null (+221/+222). This function adds type_conflict + carrier only
+// when the p155 decoder took the value from the undeclared field (+222).
 // ─────────────────────────────────────────────────────────────────────
-private fun DecodedValue.toEventMap(targetKey: String, subtype: Long): Map<String, Any?> =
-    mapOf(
+private fun DecodedValue.toEventMap(targetKey: String, subtype: Long): Map<String, Any?> {
+    val m = mutableMapOf<String, Any?>(
         "name" to name,
         "unit" to unit,
         "value" to value,
         "key" to TelemetryDecoderTable.key(
-            TelemetryDecoderTable.normalizeTargetKey(targetKey), subtype,
+            TelemetryDecoderTable.normalizeTargetKey(targetKey), subtype
         ),
         "subtype" to subtype,
-        "ts" to timestampMs,
+        "ts" to timestampMs
     )
+    // v0.2.23+222 (recon p155): объявленное поле было пустым, значение
+    // взято из другого. Ключ только при конфликте — у остальных событий
+    // канала форма прежняя.
+    if (typeConflict) {
+        m["type_conflict"] = true
+        m["carrier"] = carrier.name
+    }
+    return m
+}

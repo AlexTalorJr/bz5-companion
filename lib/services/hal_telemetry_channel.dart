@@ -71,6 +71,12 @@ class HalEvent {
   /// `ac_raw_<FID>`. Null у всех остальных событий.
   final String? text;
 
+  /// v0.2.23+222 (recon p155): декодер взял значение не из объявленного
+  /// поля, потому что объявленное было пустым. [carrier] — откуда взято
+  /// (`INT`/`DOUBLE`). Приходят только вместе, только при конфликте.
+  final bool typeConflict;
+  final String? carrier;
+
   const HalEvent({
     required this.name,
     required this.unit,
@@ -82,6 +88,8 @@ class HalEvent {
     this.bufHex,
     this.bufSize,
     this.text,
+    this.typeConflict = false,
+    this.carrier,
   });
 
   factory HalEvent.fromMap(Map<Object?, Object?> m) => HalEvent(
@@ -95,6 +103,8 @@ class HalEvent {
         bufHex: m['buf_hex'] as String?,
         bufSize: (m['buf_size'] as num?)?.toInt(),
         text: m['text'] as String?,
+        typeConflict: m['type_conflict'] == true,
+        carrier: m['carrier'] as String?,
       );
 
   @override

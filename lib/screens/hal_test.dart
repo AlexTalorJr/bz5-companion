@@ -272,11 +272,25 @@ class _HalTestScreenState extends State<HalTestScreen> {
     return v.toStringAsFixed(2);
   }
 
+  /// v0.2.23+222: каталожные имена сырых fid без декодера (Друг 3,
+  /// 05.11) — подпись по долгому нажатию. Семантику не толкуем.
+  static const Map<String, String> _rawLabels = {
+    'ac_raw_2FC00024': 'AC_TEMPCTRL_SEPARATE_STATE',
+    'ac_raw_2FA00014': 'AC_MAX_COOLING_STATE',
+    'ac_raw_2FA0000A': 'AC_VENTILATION_STATE',
+    'ac_raw_40600031': 'AC_DEFROST_REAR_STATE',
+    'ac_raw_44300008': 'AC_QUICK_CLEAN_AIR',
+    'heat_raw_2FA00016': 'BODYWORK_BATTERY_COOLANT_STATUS',
+    'heat_raw_35902039': 'INSTRUMENT_BATTERY_HEATING_ENERGY_TEMPORARILY_LIMITED',
+    'heat_raw_3A700028': 'INSTRUMENT_AIR_HEATING_DISPLAY_STATE',
+  };
+
   Widget _cell(String name, _NameStat st) {
     final v = st.lastValue;
     final valueStr = v == null ? '—' : _fmt(v);
+    final label = _rawLabels[name];
     return Tooltip(
-      message: st.key,
+      message: label == null ? st.key : '${st.key}\n$label',
       triggerMode: TooltipTriggerMode.longPress,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),

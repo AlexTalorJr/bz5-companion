@@ -1852,6 +1852,23 @@ class CloudSyncService extends ChangeNotifier {
     // credentials.
   }
 
+  /// v0.2.23+222: поездки, получившие разделение энергии, уходят ещё раз.
+  /// Отправка поездок — по множеству отправленных id, не по курсору, так
+  /// что повторно уйдут ровно эти поездки. Сервер обновит строку по
+  /// client_uuid (Друг 2, §3). Зовёт EnergySplitService (main.dart).
+  Future<void> requeueTrips(List<int> ids) async {
+    final before = _pushedTripIds.length;
+    _pushedTripIds.removeAll(ids);
+    final n = before - _pushedTripIds.length;
+    if (n == 0) return;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+        _kPushedTripIds, jsonEncode(_pushedTripIds.toList()));
+    debugPrint('CloudSync: $n trip(s) re-queued with energy split');
+    await _recomputeStats();
+    notifyListeners();
+  }
+
   Future<void> _syncTrips() async {
     // v0.1.29+20: changed semantics from id-cursor to finalize-gated
     // pushed-set. A Drift trip row is mutable (endTrip rewrites it on
@@ -3942,6 +3959,13 @@ class CloudSyncService extends ChangeNotifier {
       movingSeconds: parseIntN(j['moving_seconds']),
       idleSeconds: parseIntN(j['idle_seconds']),
       energyFromSocKwh: parseRealN(j['energy_from_soc_kwh']),
+      // v0.2.23+222: разделение энергии возвращается с Restore (Друг 2 §4).
+      energyMotionKwh: parseRealN(j['energy_motion_kwh']),
+      energyClimateKwh: parseRealN(j['energy_climate_kwh']),
+      energyOtherKwh: parseRealN(j['energy_other_kwh']),
+      energyPackKwh: parseRealN(j['energy_pack_kwh']),
+      energySplitCoverage: parseRealN(j['energy_split_coverage']),
+      energySplitModel: parseStrN(j['energy_split_model']),
       // v0.1.29+37: server stores extra as jsonb (object). Re-encode to
       // the local string column. This is the whole point — on a restore
       // after a wipe, the speed histogram comes back so the Speed
@@ -4360,6 +4384,18 @@ class CloudSyncService extends ChangeNotifier {
       'moving_seconds': t.movingSeconds,
       'idle_seconds': t.idleSeconds,
       'energy_from_soc_kwh': t.energyFromSocKwh,
+      // v0.2.23+222: разделение энергии — только когда поездка посчитана
+      // на ЭТОМ устройстве (модель задана). Поездка без данных HAL полей
+      // не шлёт вовсе: сервер стирает разделение, если пришла модель с
+      // пустыми частями (Друг 2 §6.2), а чужое разделение стирать нельзя.
+      if (t.energySplitModel != null) ...<String, dynamic>{
+        'energy_motion_kwh': t.energyMotionKwh,
+        'energy_climate_kwh': t.energyClimateKwh,
+        'energy_other_kwh': t.energyOtherKwh,
+        'energy_pack_kwh': t.energyPackKwh,
+        'energy_split_coverage': t.energySplitCoverage,
+        'energy_split_model': t.energySplitModel,
+      },
       // v0.1.29+37: derived aggregates (speed histogram). Stored locally
       // as a JSON string; the bridge column is jsonb, so decode to an
       // object here. Guard against a malformed local blob — on any parse
@@ -4523,7 +4559,7 @@ class CloudSyncService extends ChangeNotifier {
   /// Read app version from the static value baked into the build.
   /// We don't have package_info_plus as a dep — pubspec-version is
   /// hardcoded here. Update when bumping. Off-by-one tolerated.
-  Future<String> _readAppVersion() async => '0.2.22+221';
+  Future<String> _readAppVersion() async => '0.2.23+222';
 }
 
 // ─── Internal exceptions ────────────────────────────────────────────

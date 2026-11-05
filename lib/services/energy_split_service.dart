@@ -1,0 +1,216 @@
+// v0.2.23+222 — РАЗДЕЛЕНИЕ ЭНЕРГИИ ПОЕЗДКИ: движение / климат и подогрев /
+// прочее.
+//
+// Модель Друга 3 (05.11.2026, поездка 399), поправки к схеме согласованы
+// 05.11. Коэффициенты — посекундная подгонка (сверка Друг 1 / Друг 3 05.11:
+// первые 1.096 / 0.661 подгонялись по знаку окна и к посекундному
+// разделению не применимы). После 3–5 поездок на +222 Друг 3 подгонит
+// их совместно и пришлёт одну пару. Python-зеркало с самопроверками и прогоном по экспорту:
+// tools/mirror_plus222_split.py — числа здесь и там обязаны совпадать.
+//
+// Считается ОДИН раз на поездку, после её закрытия, по hal_samples этой
+// поездки. Единственное место решения — [EnergySplitService]: он один
+// выбирает поездки, считает и пишет. Экран только показывает.
+//
+// Почему наблюдение за таблицей, а не вызов из точки закрытия: поездку
+// закрывают пять разных путей (живой HAL, восстановление брошенной,
+// фоновый журнал, OBD, импорт). Вызов из каждого был бы пятью местами
+// одного решения; наблюдение ловит все, включая досчёт старых поездок
+// при первом запуске.
+
+import 'dart:async';
+import 'dart:math' as math;
+
+import 'package:flutter/foundation.dart';
+
+import '../data/database.dart';
+
+/// Константы модели — в одном месте. Меняются патчем по пересчётам
+/// Друга 3; при смене коэффициентов меняется и [version], и тогда пересчёт
+/// с отправкой заново перезапишет облако (Друг 2, 05.11).
+class EnergySplitModel {
+  static const String version = 'v1';
+  static const double kTraction = 1.030;
+  static const double kRegen = 0.835;
+  static const double baseKw = 0.65;
+  static const int minTripSeconds = 600;
+  static const double minCoverage = 0.8;
+
+  /// Сигналы модели. `pack_voltage_fine` предпочтительнее, `pack_voltage`
+  /// — запасной. `motor_power` не годится: целые кВт, на стоянке 1–2 кВт.
+  static const List<String> signals = [
+    'pack_voltage_fine',
+    'pack_voltage',
+    'pack_current',
+    'motor_torque',
+    'motor_rpm',
+  ];
+
+  /// Сигнал подогрева, счётчик которого идёт в строку журнала.
+  static const String coolantSignal = 'heat_raw_2FA00016';
+}
+
+class EnergySplitResult {
+  final double packKwh;
+  final double coverage;
+  final int coveredSeconds;
+  final double? motionKwh;
+  final double? climateKwh;
+  final double? otherKwh;
+  const EnergySplitResult(this.packKwh, this.coverage, this.coveredSeconds,
+      this.motionKwh, this.climateKwh, this.otherKwh);
+  bool get hasSplit => motionKwh != null;
+}
+
+/// Чистая функция, зеркало `split()` в tools/mirror_plus222_split.py.
+///
+/// Шаг 1 с, удержание последнего значения каждого сигнала с его первого
+/// сэмпла в поездке (на стоянке момент и обороты почти не шлют событий —
+/// требование сэмпла в каждом окне выбросило бы именно стоянки). Сумма по
+/// секундам равна сумме окон по 60 с; окна задают только зерно покрытия.
+/// Остаток считается на уровне ПОЕЗДКИ: обрезка по окнам превращала бы шум
+/// (±0.8 кВт на окно) в ложный климат.
+EnergySplitResult computeEnergySplit(
+  List<({DateTime ts, String name, double v})> points,
+  DateTime start,
+  DateTime end,
+) {
+  final startS = start.millisecondsSinceEpoch / 1000.0;
+  final endS = end.millisecondsSinceEpoch / 1000.0;
+  final last = <String, double>{};
+  var i = 0;
+  var covered = 0;
+  var ePack = 0.0;
+  var eMotion = 0.0;
+  for (var s = startS.ceil(); s < endS; s++) {
+    while (i < points.length &&
+        points[i].ts.millisecondsSinceEpoch / 1000.0 <= s) {
+      last[points[i].name] = points[i].v;
+      i++;
+    }
+    final v = last['pack_voltage_fine'] ?? last['pack_voltage'];
+    final cur = last['pack_current'];
+    final tq = last['motor_torque'];
+    final n = last['motor_rpm'];
+    if (v == null || cur == null || tq == null || n == null) continue;
+    covered++;
+    final pPack = v * cur / 1000.0;
+    final pMech = tq * n * 2 * math.pi / 60 / 1000.0;
+    final motion = EnergySplitModel.kTraction * math.max(pMech, 0.0) +
+        EnergySplitModel.kRegen * math.min(pMech, 0.0);
+    ePack += pPack / 3600.0;
+    eMotion += motion / 3600.0;
+  }
+  final dur = endS - startS;
+  final cov = dur > 0 ? covered / dur : 0.0;
+  if (dur < EnergySplitModel.minTripSeconds ||
+      cov < EnergySplitModel.minCoverage ||
+      ePack <= 0) {
+    return EnergySplitResult(ePack, cov, covered, null, null, null);
+  }
+  final residual = ePack - eMotion;
+  var other = EnergySplitModel.baseKw * covered / 3600.0;
+  var climate = residual - other;
+  if (climate < 0) {
+    climate = 0;
+    other = residual;
+  }
+  return EnergySplitResult(ePack, cov, covered, eMotion, climate, other);
+}
+
+class EnergySplitService {
+  EnergySplitService(this._db);
+  final AppDatabase _db;
+
+  /// Поездки, получившие разделение, — CloudSyncService.requeueTrips
+  /// (проводка в main.dart). Уже отправленная без разделения поездка
+  /// уйдёт ещё раз; сервер обновит строку по client_uuid (Друг 2, §3).
+  void Function(List<int> tripIds)? onTripsSplit;
+
+  StreamSubscription<List<Trip>>? _sub;
+  bool _busy = false;
+  bool _again = false;
+
+  void start() {
+    _sub ??= _db.watchTripsAwaitingSplit().listen((_) => unawaited(_kick()));
+  }
+
+  void dispose() {
+    _sub?.cancel();
+    _sub = null;
+  }
+
+  Future<void> _kick() async {
+    if (_busy) {
+      _again = true;
+      return;
+    }
+    _busy = true;
+    try {
+      do {
+        _again = false;
+        await _runPending();
+      } while (_again);
+    } catch (e) {
+      debugPrint('EnergySplit: pass failed: $e');
+    } finally {
+      _busy = false;
+    }
+  }
+
+  Future<void> _runPending() async {
+    final pending = await _db.tripsAwaitingSplit();
+    if (pending.isEmpty) return;
+    final first = await _db.earliestHalSampleAt();
+    final split = <int>[];
+    var noData = 0;
+    for (final t in pending) {
+      final end = t.endedAt;
+      if (end == null) continue;
+      final pts = (first == null || end.isBefore(first))
+          ? const <({DateTime ts, String name, double v})>[]
+          : await _db.halSignalsBetween(
+              t.startedAt, end, EnergySplitModel.signals);
+      if (pts.isEmpty) {
+        // Нет данных HAL — поездка с телефона, чужая из облака или старше
+        // хранения. Отметка только локальная (покрытие 0, модель пуста):
+        // такая поездка НЕ шлёт полей разделения и не может стереть
+        // разделение, посчитанное на другом устройстве.
+        await _db.writeEnergySplit(t.id, coverage: 0);
+        noData++;
+        continue;
+      }
+      final r = computeEnergySplit(pts, t.startedAt, end);
+      final used = t.energyUsedKwh;
+      // Решение владельца 05.11: части в кВт·ч = доля по батарее ×
+      // energy_used_kwh, чтобы их сумма совпадала со строкой «Энергия».
+      final k = (r.hasSplit && used != null && r.packKwh > 0)
+          ? used / r.packKwh
+          : 1.0;
+      await _db.writeEnergySplit(
+        t.id,
+        coverage: r.coverage,
+        packKwh: r.packKwh,
+        motionKwh: r.motionKwh == null ? null : r.motionKwh! * k,
+        climateKwh: r.climateKwh == null ? null : r.climateKwh! * k,
+        otherKwh: r.otherKwh == null ? null : r.otherKwh! * k,
+        model: EnergySplitModel.version,
+      );
+      final coolant = await _db.countHalSamplesNamedBetween(
+          t.startedAt, end, EnergySplitModel.coolantSignal);
+      debugPrint('EnergySplit: trip ${t.id} '
+          '${r.hasSplit ? 'move=${(r.motionKwh! * k).toStringAsFixed(3)} '
+              'climate=${(r.climateKwh! * k).toStringAsFixed(3)} '
+              'other=${(r.otherKwh! * k).toStringAsFixed(3)}' : 'no split'} '
+          'windows=${r.coveredSeconds ~/ 60} '
+          'coverage=${r.coverage.toStringAsFixed(2)} '
+          'pack=${r.packKwh.toStringAsFixed(3)} used=$used '
+          'coolant_events=$coolant model=${EnergySplitModel.version}');
+      if (r.hasSplit) split.add(t.id);
+    }
+    if (noData > 0) {
+      debugPrint('EnergySplit: $noData trip(s) without HAL data — skipped');
+    }
+    if (split.isNotEmpty) onTripsSplit?.call(split);
+  }
+}

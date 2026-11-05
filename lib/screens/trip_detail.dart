@@ -163,6 +163,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                 svc: svc,
               ),
               _PowerBarCard(trip: trip, svc: svc),
+              _EnergySplitCard(trip: trip),
             ],
           );
   }
@@ -259,6 +260,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
           svc: svc,
         ),
         _PowerBarCard(trip: trip, svc: svc),
+        _EnergySplitCard(trip: trip),
       ],
     );
   }
@@ -1380,6 +1382,79 @@ String _fmtDur(int? seconds) {
 /// display is binned, matching the "as in a Tesla" ask. Traction bars point
 /// up (green), regen bars down (blue). Footer shows the frozen per-trip regen
 /// energy and peak regen from the Trip row (+98) — not recomputed here.
+/// v0.2.23+222: «Куда ушла энергия» — три части из EnergySplitService.
+///
+/// Решения, которые карточка НЕ принимает: что считать и когда скрывать
+/// расчёт — сервис (порог 10 мин, покрытие 80 %); здесь только показ.
+/// Одно решение показа: доли берутся из трёх частей и умножаются на
+/// текущий energyUsedKwh поездки, чтобы сумма совпадала со строкой
+/// «Энергия» и после Restore (облако сливает её по максимуму, Друг 2 §6.1).
+/// «Прочее» может быть отрицательным на уровне поездки (модель не
+/// обрезает остаток): число показывается как есть, полоса — от нуля.
+class _EnergySplitCard extends StatelessWidget {
+  final Trip trip;
+  const _EnergySplitCard({required this.trip});
+
+  @override
+  Widget build(BuildContext context) {
+    final m = trip.energyMotionKwh;
+    final c = trip.energyClimateKwh;
+    final o = trip.energyOtherKwh;
+    if (m == null || c == null || o == null) return const SizedBox.shrink();
+    final sum = m + c + o;
+    if (sum <= 0) return const SizedBox.shrink();
+    final total = trip.energyUsedKwh ?? sum;
+    final parts = <(String, double, Color)>[
+      (S.of('trip.split_motion'), m / sum, Colors.lightBlueAccent),
+      (S.of('trip.split_climate'), c / sum, Colors.orangeAccent),
+      (S.of('trip.split_other'), o / sum, Colors.grey),
+    ];
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(S.of('trip.energy_split').toUpperCase(),
+                style: const TextStyle(
+                    fontSize: 11, letterSpacing: 1.5, color: Colors.grey)),
+            const SizedBox(height: 10),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(4),
+              child: SizedBox(
+                height: 10,
+                child: Row(children: [
+                  for (final p in parts)
+                    if (p.$2 > 0)
+                      Expanded(
+                        flex: (p.$2 * 1000).round().clamp(1, 1000),
+                        child: Container(color: p.$3),
+                      ),
+                ]),
+              ),
+            ),
+            const SizedBox(height: 10),
+            for (final p in parts)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 2),
+                child: Row(children: [
+                  Container(width: 8, height: 8, color: p.$3),
+                  const SizedBox(width: 8),
+                  Expanded(child: Text(p.$1)),
+                  Text('${(p.$2 * 100).round()} %   '
+                      '${(p.$2 * total).toStringAsFixed(2)} kWh'),
+                ]),
+              ),
+            const SizedBox(height: 6),
+            Text(S.of('trip.split_note'),
+                style: Theme.of(context).textTheme.bodySmall),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _PowerBarCard extends StatelessWidget {
   final Trip trip;
   final ConnectionService svc;

@@ -39,6 +39,6 @@ TelemetrySink.kt           28426f4a53bec05385b8e83e2bee56ebc77cc7d88d70405ba3e28
 LiveTelemetrySubscriber.kt 925befca76c4d73065c6aa35a0f589846ab6bb74cf6a6213a09f4c525814642e
 ReflectionCache.kt         9cf45133f4f36937c399265d7c95fb866757c56336468a71cdf32c2752a38625
 TargetRegistry.kt          4c260db27c4ac5abf6275668e8d137564a3090de97b7c390f424097d7964acf4
-TelemetryDecoderTable.kt   b26144b8299079a02d4ca346ee373a12d353a40835da5908103859d4a70ee3c9
+TelemetryDecoderTable.kt   85f5e951b745f8ed6a115e456ebb437b6e7b24f1b3798a6af24884df1226605c  recon v0.10.155
 # 6th file — BZ3 GETTERS engine, different recon version (per-line override):
 Bz3TelemetrySubscriber.kt  dca150f550d55fd63a6a87e1f86534b814700c70426ff5fce8255ef974a29a16  recon v0.10.79

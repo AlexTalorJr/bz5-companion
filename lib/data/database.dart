@@ -102,6 +102,18 @@ class Trips extends Table {
   /// подписывается открыто.
   TextColumn get source => text().nullable()();
 
+  /// v0.2.23+222: РАЗДЕЛЕНИЕ ЭНЕРГИИ (EnergySplitService). Части в кВт·ч
+  /// = доля по интегралу батареи × energyUsedKwh на момент расчёта; экран
+  /// перенормирует их к текущему energyUsedKwh (облако сливает его по
+  /// максимуму, Друг 2 §6.1). Модель пуста + покрытие 0 — «данных HAL
+  /// нет», только локальная отметка, в облако такие поля не уходят.
+  RealColumn get energyMotionKwh => real().nullable()();
+  RealColumn get energyClimateKwh => real().nullable()();
+  RealColumn get energyOtherKwh => real().nullable()();
+  RealColumn get energyPackKwh => real().nullable()();
+  RealColumn get energySplitCoverage => real().nullable()();
+  TextColumn get energySplitModel => text().nullable()();
+
   // v0.1.29+37: JSON blob for compact derived aggregates that should
   // survive a DB wipe / reinstall via cloud backup (samples are NOT
   // uploaded — server rejects them 403 samples_disabled — so anything
@@ -570,7 +582,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase.forTesting(QueryExecutor e) : super(e);
 
   @override
-  int get schemaVersion => 19;
+  int get schemaVersion => 20;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -784,6 +796,17 @@ class AppDatabase extends _$AppDatabase {
             );
             debugPrint('DB migrate: v19 — выдуманные тройки ячеек и агрегаты '
                 'фоновых поездок вычищены');
+          }
+          // v19 → v20 (v0.2.23+222): разделение энергии поездки. Строго
+          // аддитивно, nullable: старые поездки досчитает EnergySplitService,
+          // если их hal_samples ещё живы.
+          if (from < 20) {
+            await _addColumnIfAbsent(m, trips, trips.energyMotionKwh);
+            await _addColumnIfAbsent(m, trips, trips.energyClimateKwh);
+            await _addColumnIfAbsent(m, trips, trips.energyOtherKwh);
+            await _addColumnIfAbsent(m, trips, trips.energyPackKwh);
+            await _addColumnIfAbsent(m, trips, trips.energySplitCoverage);
+            await _addColumnIfAbsent(m, trips, trips.energySplitModel);
           }
           debugPrint('DB migrate: $from → $to complete');
         },
@@ -1252,6 +1275,72 @@ class AppDatabase extends _$AppDatabase {
     final row = await q.getSingleOrNull();
     return row?.read(expr) ?? 0.0;
   }
+
+  // ── v0.2.23+222: разделение энергии ──────────────────────────────
+
+  /// Закрытые поездки, которых EnergySplitService ещё не касался.
+  Expression<bool> _awaitingSplit(Trips t) =>
+      t.endedAt.isNotNull() &
+      t.energySplitModel.isNull() &
+      t.energySplitCoverage.isNull();
+
+  Stream<List<Trip>> watchTripsAwaitingSplit() =>
+      (select(trips)..where(_awaitingSplit)).watch();
+
+  Future<List<Trip>> tripsAwaitingSplit() => (select(trips)
+        ..where(_awaitingSplit)
+        ..orderBy([(t) => OrderingTerm(expression: t.id)]))
+      .get();
+
+  Future<DateTime?> earliestHalSampleAt() async {
+    final expr = halSamples.timestamp.min();
+    final row =
+        await (selectOnly(halSamples)..addColumns([expr])).getSingleOrNull();
+    return row?.read(expr);
+  }
+
+  Future<List<({DateTime ts, String name, double v})>> halSignalsBetween(
+      DateTime from, DateTime to, List<String> names) async {
+    final rows = await (select(halSamples)
+          ..where((h) =>
+              h.timestamp.isBetweenValues(from, to) &
+              h.name.isIn(names) &
+              h.numericValue.isNotNull())
+          ..orderBy([(h) => OrderingTerm(expression: h.timestamp)]))
+        .get();
+    return [
+      for (final r in rows) (ts: r.timestamp, name: r.name!, v: r.numericValue!)
+    ];
+  }
+
+  Future<int> countHalSamplesNamedBetween(
+      DateTime from, DateTime to, String name) async {
+    final cnt = countAll();
+    final row = await (selectOnly(halSamples)
+          ..addColumns([cnt])
+          ..where(halSamples.timestamp.isBetweenValues(from, to) &
+              halSamples.name.equals(name)))
+        .getSingle();
+    return row.read(cnt) ?? 0;
+  }
+
+  Future<void> writeEnergySplit(
+    int tripId, {
+    required double coverage,
+    double? packKwh,
+    double? motionKwh,
+    double? climateKwh,
+    double? otherKwh,
+    String? model,
+  }) =>
+      (update(trips)..where((t) => t.id.equals(tripId))).write(TripsCompanion(
+        energySplitCoverage: Value(coverage),
+        energyPackKwh: Value(packKwh),
+        energyMotionKwh: Value(motionKwh),
+        energyClimateKwh: Value(climateKwh),
+        energyOtherKwh: Value(otherKwh),
+        energySplitModel: Value(model),
+      ));
 
   Future<List<Trip>> getAllTrips() {
     return (select(trips)
