@@ -193,11 +193,22 @@ class ImportService {
     // базой; при импорте снимается до применения настроек архива
     // (applyPending), поэтому архив без него вызовет сброс заново.
     sweepRewindKey,
+    // v0.2.26+225: список «отправить ещё раз» (локальные id поездок) и
+    // флаг разовой постановки в него поездок с разделением энергии. Оба
+    // описывают базу; при импорте снимаются до настроек архива, как флаг
+    // +221: архив без флага поставит в список свои поездки заново.
+    repushTripIdsKey,
+    splitRepushSeedKey,
   ];
 
   /// Литерал повторяет `_kSweepRewindDone` в CloudSyncService; расхождение
   /// ловит гейт CW, а не компилятор (константа там приватная).
   static const String sweepRewindKey = 'cloud_sync_sweep_rewind_221';
+
+  /// Литералы повторяют `_kRepushTripIds` и `_kSplitRepushSeeded` в
+  /// CloudSyncService; расхождение ловит гейт CZ.
+  static const String repushTripIdsKey = 'cloud_sync_repush_trip_ids';
+  static const String splitRepushSeedKey = 'cloud_sync_split_repush_225';
 
   static List<String> get travellingKeys =>
       <String>[...ownerKeys, ...dbBoundKeys];
@@ -898,6 +909,10 @@ class ImportService {
     // его несёт, он вернётся; если нет, CloudSyncService.init сбросит
     // курсор и переотправит историю свипов из архива.
     await prefs.remove(sweepRewindKey);
+    // v0.2.26+225: то же для списка повторной отправки и его флага —
+    // id прежней базы указывали бы на чужие поездки новой.
+    await prefs.remove(repushTripIdsKey);
+    await prefs.remove(splitRepushSeedKey);
 
     var restored = 0;
     final prefsFile = File(p.join(support.path, _pendingPrefsName));

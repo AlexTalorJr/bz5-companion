@@ -13161,7 +13161,8 @@ if int(pv) >= 222:
         'if (from < 20) {' in _cx_db and all(f'_addColumnIfAbsent(m, trips, trips.{c});' in _cx_db for c in _cx5_cols),
         "if (t.energySplitModel != null) ...<String, dynamic>{\n'energy_motion_kwh': t.energyMotionKwh," in _cx_cs,
         "energySplitModel: parseStrN(j['energy_split_model'])," in _cx_cs,
-        '_pushedTripIds.removeAll(ids);' in _cx_cs,
+        # +225: повторная отправка через список, не правкой множества (CZ3).
+        '_repushTripIds.addAll(ids);' in _cx_cs,
         'await _db.writeEnergySplit(t.id, coverage: 0);' in _cx_es,
         'if (split.isNotEmpty) onTripsSplit?.call(split);' in _cx_es,
         'Provider<EnergySplitService>(\nlazy: false,' in _cx_main and 'es.onTripsSplit = (ids) => unawaited(cs.requeueTrips(ids));' in _cx_main,
@@ -13171,8 +13172,9 @@ if int(pv) >= 222:
 
     # CX6: КАРТОЧКА И ТАЙМАУТ СТАРТА.
     _cx6 = [
-        _cx_td.count('_EnergySplitCard(trip: trip),') == 2,
-        'if (m == null || c == null || o == null) return const SizedBox.shrink();' in _cx_td,
+        # +225: карточка публичная (EnergySplitCard), доли — energySplitShares.
+        _cx_td.count('EnergySplitCard(trip: trip),') == 2,
+        'if (sh == null) return const SizedBox.shrink();' in _cx_td,
         'final total = trip.energyUsedKwh ?? sum;' in _cx_td and '(p.$2 * total).toStringAsFixed(2)' in _cx_td,
         all(_cx_l10n.count(f"'{k}':") == 2 for k in ('trip.energy_split', 'trip.split_motion', 'trip.split_climate', 'trip.split_other', 'trip.split_note')),
         '.closeOrphanSweepRuns()\n.timeout(const Duration(seconds: 5));' in _cx_main,
@@ -13239,6 +13241,127 @@ if int(pv) >= 223:
     else: fail(f'CY4 Gradle cache drifted: {_cy4}')
 else:
     ok(f"Part CY skipped (build +{pv}, pack current display lands in +223)")
+
+# ═══════ Part CZ — 0.2.26+225: карточка на голове, живое разделение, повторная отправка ═══════
+if int(pv) >= 225:
+    _cz_f = lambda t: re.sub(r'\n[ \t]+', '\n', t)
+    _cz_rd = lambda pth: _cz_f(_strip_comments_safe((root / pth).read_text()))
+    _cz_es = _cz_rd('lib/services/energy_split_service.dart')
+    _cz_td = _cz_rd('lib/screens/trip_detail.dart')
+    _cz_hw = _cz_rd('lib/screens/wide/history_wide.dart')
+    _cz_dp = _cz_rd('lib/widgets/driver_panels.dart')
+    _cz_bar = _cz_rd('lib/widgets/energy_split_bar.dart')
+    _cz_cs = _cz_rd('lib/services/cloud_sync_service.dart')
+    _cz_imp = _cz_rd('lib/services/import_service.dart')
+    _cz_db = _cz_rd('lib/data/database.dart')
+    _cz_l10n = (root / 'lib/l10n/strings.dart').read_text()
+
+    # CZ1: КАРТОЧКА В ПАНЕЛИ ГОЛОВЫ. Гейт CX6 в +222 смотрел только
+    # trip_detail.dart, а на голове история — _SelectedTripDetail.
+    _cz1_i_cls = _cz_hw.find('class _SelectedTripDetail extends StatelessWidget {')
+    _cz1_i_end = _cz_hw.find('class _ActiveTripWideView')
+    _cz1_body = _cz_hw[_cz1_i_cls:_cz1_i_end] if -1 < _cz1_i_cls < _cz1_i_end else ''
+    _cz1 = [
+        'class EnergySplitCard extends StatelessWidget {' in _cz_td,
+        '_EnergySplitCard' not in _cz_td and '_EnergySplitCard' not in _cz_hw,
+        'EnergySplitCard(trip: trip),' in _cz1_body,
+        "import '../trip_detail.dart';" in _cz_hw,
+        'EnergySplitBar(shares: sh),' in _cz_td,
+    ]
+    if all(_cz1): ok('CZ1 the split card is public and sits in the head unit history pane (_SelectedTripDetail), not only in the trip detail screen')
+    else: fail(f'CZ1 split card on the head unit drifted: {_cz1}')
+
+    # CZ2: ЖИВОЕ РАЗДЕЛЕНИЕ. Сервис считает той же функцией по hal_samples
+    # открытой поездки раз в минуту; доли — одна функция для карточки и
+    # строки; строка сверяет id поездки и сама ничего не считает.
+    _cz2_i_tick = _cz_es.find('Future<void> _liveTick() async {')
+    _cz2_i_tick_end = _cz_es.find('Future<void> _kick() async {', _cz2_i_tick)
+    _cz2_tick = _cz_es[_cz2_i_tick:_cz2_i_tick_end] if -1 < _cz2_i_tick < _cz2_i_tick_end else ''
+    _cz2_i_row = _cz_dp.find('class _LiveEnergySplitRow extends StatelessWidget {')
+    _cz2_row = _cz_dp[_cz2_i_row:_cz2_i_row + 2500] if _cz2_i_row > -1 else ''
+    _cz2 = [
+        'static const Duration liveInterval = Duration(minutes: 1);' in _cz_es,
+        'Timer.periodic(liveInterval, (_) => unawaited(_liveTick()));' in _cz_es,
+        'final r = computeEnergySplit(_livePts, t.startedAt, now);' in _cz2_tick,
+        't.id, energySplitShares(r.motionKwh, r.climateKwh, r.otherKwh));' in _cz2_tick,
+        'if (_livePts.isEmpty) {\nlive.value = null;' in _cz2_tick,
+        'final sh = energySplitShares(\ntrip.energyMotionKwh, trip.energyClimateKwh, trip.energyOtherKwh);' in _cz_td,
+        'if (tripId == null || v == null || v.tripId != tripId) {' in _cz2_row,
+        'computeEnergySplit' not in _cz_dp and 'halSignalsBetween' not in _cz_dp,
+        '_LiveEnergySplitRow(tripId: tripDbId, compact: compact),' in _cz_dp,
+        "final tripDbId = useHalTrip ? hal.halTripDbId : svc.currentTripId;" in _cz_dp,
+        "S.of('drv.split_calculating')" in _cz2_row and _cz_l10n.count("'drv.split_calculating':") == 2,
+        'static const Color motionColor' in _cz_bar,
+    ]
+    if all(_cz2): ok('CZ2 live split: computed once a minute by the service with the same function over the open trip hal_samples, shares from one helper shared with the history card; the driving row only shows it and checks the trip id')
+    else: fail(f'CZ2 live energy split drifted: {_cz2}')
+
+    # CZ5: ЖИВОЕ ЧТЕНИЕ ДОЧИТЫВАНИЕМ. Раз в минуту только строки с id
+    # больше последнего (первичный ключ), а не вся таблица по времени —
+    # индекса по timestamp у hal_samples нет. Смена поездки сбрасывает
+    # память; точки сортируются по времени перед расчётом.
+    _cz5 = [
+        'halSignalsBetween' not in _cz2_tick,
+        'final upTo = await _db.maxHalSampleId();\nfinal rows = await _db.halSignalRowsInIdRange(\n_liveMaxId, upTo, t.startedAt, EnergySplitModel.signals);' in _cz2_tick,
+        'if (_liveTimer == null) return;\n_liveMaxId = upTo;\nif (rows.isNotEmpty) {' in _cz2_tick,
+        '_livePts.addAll(rows);\nif (!ordered) _livePts.sort((a, b) => a.ts.compareTo(b.ts));' in _cz2_tick,
+        'if (t.id != _liveTripId) _liveReset(t.id);' in _cz2_tick,
+        'if (open.isEmpty) {\n_liveReset();' in _cz2_tick,
+        'h.id.isBiggerThanValue(afterId) &\nh.id.isSmallerOrEqualValue(upToId) &' in _cz_db and 'final expr = halSamples.id.max();' in _cz_db,
+    ]
+    if all(_cz5): ok('CZ5 the live split reads only the id range (last, max] each minute (primary key), never the whole table by time, and always advances the bound; a new trip resets the cache; points are time-ordered before the split')
+    else: fail(f'CZ5 live split incremental read drifted: {_cz5}')
+
+    # CZ3: ПОВТОРНАЯ ОТПРАВКА. Отдельный список; requeueTrips множество
+    # отправленных не трогает и до init подмешивает сохранённый список
+    # (гонка а); _syncTrips снимает из списка только id из снимка,
+    # взятого ДО чтения поездок (гонка б).
+    _cz3_i_rq = _cz_cs.find('Future<void> requeueTrips(List<int> ids) async {')
+    _cz3_i_rq_end = _cz_cs.find('bool _tripNeedsPush(Trip t, Set<int> repush) =>')
+    _cz3_rq = _cz_cs[_cz3_i_rq:_cz3_i_rq_end] if -1 < _cz3_i_rq < _cz3_i_rq_end else ''
+    _cz3_i_load = _cz_cs.find('_repushTripIds.addAll(_readIntList(prefs, _kRepushTripIds));\nif (!(prefs.getBool(_kSplitRepushSeeded)'.split('\nif')[0], _cz_cs.find('Future<void> init() async {'))
+    _cz3_i_seedif = _cz_cs.find('if (!(prefs.getBool(_kSplitRepushSeeded) ?? false)) {')
+    _cz3_i_st = _cz_cs.find('Future<void> _syncTrips() async {')
+    _cz3_st = _cz_cs[_cz3_i_st:_cz3_i_st + 4000] if _cz3_i_st > -1 else ''
+    _cz3_i_snap = _cz3_st.find('final repushAtRead = Set<int>.of(_repushTripIds);')
+    _cz3_i_read = _cz3_st.find('final all = await _db.getAllTrips();')
+    _cz3 = [
+        '_pushedTripIds' not in _cz3_rq,
+        'if (!_initialized) {\n_repushTripIds.addAll(_readIntList(prefs, _kRepushTripIds));\n}' in _cz3_rq,
+        -1 < _cz3_i_snap < _cz3_i_read,
+        '.where((t) => _tripNeedsPush(t, repushAtRead))' in _cz3_st,
+        'final resent = sent.intersection(repushAtRead);\n_repushTripIds.removeAll(resent);' in _cz3_st,
+        '(!_pushedTripIds.contains(t.id) || repush.contains(t.id));' in _cz_cs,
+        'allTrips.where((t) => _tripNeedsPush(t, _repushTripIds)).length;' in _cz_cs,
+        -1 < _cz3_i_load < _cz3_i_seedif and _cz3_i_load < _cz_cs.find('Future<void> requeueTrips('),
+        '_repushTripIds.clear();\nawait _saveRepushTripIds(prefs);' in _cz_cs,
+        # +225: id удалённой поездки не живёт в списке вечно.
+        'final gone =\nrepushAtRead.difference(all.map((t) => t.id).toSet());\nif (gone.isNotEmpty) {\n_repushTripIds.removeAll(gone);' in _cz3_st,
+    ]
+    if all(_cz3): ok('CZ3 re-send goes through its own persisted list: requeue never touches the pushed set and merges the stored list before init (race a); a sync pass clears only ids that were in the list when it read the trips (race b)')
+    else: fail(f'CZ3 trip re-send drifted: {_cz3}')
+
+    # CZ4: РАЗОВАЯ ПОСТАНОВКА И ИМПОРТ. Флаг после списка; ключи совпадают
+    # с ImportService, едут с базой и снимаются до настроек архива.
+    _cz4_i_seed = _cz_cs.find('final ids = await _db.tripIdsWithEnergySplit();')
+    _cz4_i_save = _cz_cs.find('await _saveRepushTripIds(prefs);', _cz4_i_seed)
+    _cz4_i_flag = _cz_cs.find('await prefs.setBool(_kSplitRepushSeeded, true);')
+    _cz4_i_rm = _cz_imp.find('await prefs.remove(splitRepushSeedKey);')
+    _cz4_i_apply = _cz_imp.find('restored = await _applyPrefsJson(')
+    _cz4 = [
+        -1 < _cz4_i_seed < _cz4_i_save < _cz4_i_flag,
+        "static const _kRepushTripIds = 'cloud_sync_repush_trip_ids';" in _cz_cs,
+        "static const _kSplitRepushSeeded = 'cloud_sync_split_repush_225';" in _cz_cs,
+        "static const String repushTripIdsKey = 'cloud_sync_repush_trip_ids';" in _cz_imp,
+        "static const String splitRepushSeedKey = 'cloud_sync_split_repush_225';" in _cz_imp,
+        'repushTripIdsKey,\nsplitRepushSeedKey,\n];' in _cz_imp,
+        -1 < _cz4_i_rm < _cz4_i_apply and 'await prefs.remove(repushTripIdsKey);' in _cz_imp,
+        't.endedAt.isNotNull() & t.energySplitModel.isNotNull()' in _cz_db,
+    ]
+    if all(_cz4): ok('CZ4 one-time seed of split trips into the re-send list (flag after the list); both keys match ImportService, travel with the database and are cleared on import before archive settings apply')
+    else: fail(f'CZ4 seed / import keys drifted: {_cz4}')
+else:
+    ok(f"Part CZ skipped (build +{pv}, head unit split card / live split / re-send list land in +225)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)

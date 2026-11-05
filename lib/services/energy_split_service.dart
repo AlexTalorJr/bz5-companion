@@ -1,5 +1,6 @@
 // v0.2.23+222 — РАЗДЕЛЕНИЕ ЭНЕРГИИ ПОЕЗДКИ: движение / климат и подогрев /
-// прочее.
+// прочее. v0.2.26+225: живое накопленное разделение открытой поездки
+// ([EnergySplitService.live]) той же функцией, доли — [energySplitShares].
 //
 // Модель Друга 3 (05.11.2026, поездка 399), поправки к схеме согласованы
 // 05.11. Коэффициенты — посекундная подгонка (сверка Друг 1 / Друг 3 05.11:
@@ -60,6 +61,25 @@ class EnergySplitResult {
   const EnergySplitResult(this.packKwh, this.coverage, this.coveredSeconds,
       this.motionKwh, this.climateKwh, this.otherKwh);
   bool get hasSplit => motionKwh != null;
+}
+
+/// v0.2.26+225: доли трёх частей — ОДНО место для карточки истории и
+/// живой строки на экране вождения, чтобы последнее живое число совпало
+/// с карточкой. null — частей нет или их сумма не положительна.
+({double motion, double climate, double other})? energySplitShares(
+    double? motion, double? climate, double? other) {
+  if (motion == null || climate == null || other == null) return null;
+  final sum = motion + climate + other;
+  if (sum <= 0) return null;
+  return (motion: motion / sum, climate: climate / sum, other: other / sum);
+}
+
+/// v0.2.26+225: живое накопленное разделение открытой поездки.
+/// [shares] null — «считается…» (меньше 10 минут или мало покрытия).
+class LiveEnergySplit {
+  final int tripId;
+  final ({double motion, double climate, double other})? shares;
+  const LiveEnergySplit(this.tripId, this.shares);
 }
 
 /// Чистая функция, зеркало `split()` в tools/mirror_plus222_split.py.
@@ -131,13 +151,107 @@ class EnergySplitService {
   bool _busy = false;
   bool _again = false;
 
+  /// v0.2.26+225: живое разделение открытой поездки для TripMetricsPanel.
+  /// null — открытой поездки нет или у неё нет данных HAL (строка
+  /// скрыта). Считает та же [computeEnergySplit] по тем же сигналам
+  /// hal_samples поездки от начала до сейчас, а не по живому потоку.
+  /// Последнее живое число почти совпадает с карточкой истории: живое
+  /// посчитано до последнего такта, карточка — до endedAt, разница —
+  /// меньше минуты в конце поездки.
+  final ValueNotifier<LiveEnergySplit?> live = ValueNotifier(null);
+  static const Duration liveInterval = Duration(minutes: 1);
+  Timer? _liveTimer;
+  bool _liveBusy = false;
+
+  /// v0.2.26+225: точки открытой поездки в памяти. Первый такт по поездке
+  /// читает её строки один раз (как расчёт при закрытии в +222), дальше
+  /// раз в минуту дочитываются только строки с id в (_liveMaxId, max id] —
+  /// диапазон по первичному ключу. Граница — max id на начало такта, и
+  /// [_liveMaxId] сдвигается до неё всегда, даже если подходящих строк не
+  /// было: иначе поездка без сигналов модели читала бы таблицу с нуля
+  /// каждую минуту. Чтение всей таблицы каждую минуту держало бы
+  /// единственное соединение Drift, и запись HAL ждала бы. Память живёт
+  /// одну поездку: смена поездки или её конец — сброс.
+  int? _liveTripId;
+  int _liveMaxId = 0;
+  final List<({DateTime ts, String name, double v})> _livePts = [];
+
+  void _liveReset([int? tripId]) {
+    _liveTripId = tripId;
+    _liveMaxId = 0;
+    _livePts.clear();
+  }
+
   void start() {
     _sub ??= _db.watchTripsAwaitingSplit().listen((_) => unawaited(_kick()));
+    _liveTimer ??=
+        Timer.periodic(liveInterval, (_) => unawaited(_liveTick()));
+    unawaited(_liveTick());
   }
 
   void dispose() {
     _sub?.cancel();
     _sub = null;
+    _liveTimer?.cancel();
+    _liveTimer = null;
+    live.dispose();
+  }
+
+  Future<void> _liveTick() async {
+    if (_liveBusy) return;
+    _liveBusy = true;
+    try {
+      final open = await _db.getOpenTrips();
+      // dispose() мог прийти, пока шёл запрос: ValueNotifier после
+      // dispose писать нельзя.
+      if (_liveTimer == null) return;
+      if (open.isEmpty) {
+        _liveReset();
+        live.value = null;
+        return;
+      }
+      // getOpenTrips упорядочен по началу: последняя — текущая поездка.
+      // Экран дополнительно сверяет id с поездкой, которую показывает.
+      final t = open.last;
+      if (t.id != _liveTripId) _liveReset(t.id);
+      final now = DateTime.now();
+      final upTo = await _db.maxHalSampleId();
+      final rows = await _db.halSignalRowsInIdRange(
+          _liveMaxId, upTo, t.startedAt, EnergySplitModel.signals);
+      // Такты не пересекаются (_liveBusy), поездка за время запроса не
+      // меняется; проверяется только dispose().
+      if (_liveTimer == null) return;
+      _liveMaxId = upTo;
+      if (rows.isNotEmpty) {
+        // Строки идут по id; по времени они почти всегда тоже по порядку.
+        // Сортировка только если порядок нарушен (фоновый журнал пишет
+        // пакетами задним числом). Равные времена — в любом порядке, как
+        // у halSignalsBetween при расчёте после закрытия.
+        final ordered = (_livePts.isEmpty ||
+                !rows.first.ts.isBefore(_livePts.last.ts)) &&
+            _sortedByTs(rows);
+        _livePts.addAll(rows);
+        if (!ordered) _livePts.sort((a, b) => a.ts.compareTo(b.ts));
+      }
+      if (_livePts.isEmpty) {
+        live.value = null;
+        return;
+      }
+      final r = computeEnergySplit(_livePts, t.startedAt, now);
+      live.value = LiveEnergySplit(
+          t.id, energySplitShares(r.motionKwh, r.climateKwh, r.otherKwh));
+    } catch (e) {
+      debugPrint('EnergySplit: live pass failed: $e');
+    } finally {
+      _liveBusy = false;
+    }
+  }
+
+  static bool _sortedByTs(List<({DateTime ts, String name, double v})> xs) {
+    for (var i = 1; i < xs.length; i++) {
+      if (xs[i].ts.isBefore(xs[i - 1].ts)) return false;
+    }
+    return true;
   }
 
   Future<void> _kick() async {

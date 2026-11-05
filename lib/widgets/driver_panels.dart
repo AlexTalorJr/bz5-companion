@@ -38,8 +38,10 @@ import 'package:provider/provider.dart';
 import '../l10n/strings.dart';
 import '../services/connection.dart';
 import '../services/cost_settings.dart';
+import '../services/energy_split_service.dart';
 import '../services/hal_telemetry_service.dart';
 import '../services/soc_resolver.dart';
+import 'energy_split_bar.dart';
 
 /// Speed (huge) + status strip (Pack V / Bat / PDU temps).
 ///
@@ -337,9 +339,8 @@ class TripMetricsPanel extends StatelessWidget {
     // v0.1.29+96: was the +85 placeholder literal 'trip' — replaced with the
     // actual halTripDbId (#42 etc). Falls back to "#—" only in the brief
     // window between trip-active and the row opening.
-    final tripIdLabel = useHalTrip
-        ? '#${hal.halTripDbId ?? "—"}'
-        : '#${svc.currentTripId ?? "—"}';
+    final tripDbId = useHalTrip ? hal.halTripDbId : svc.currentTripId;
+    final tripIdLabel = '#${tripDbId ?? "—"}';
 
     // First 2 min: consumption hidden (too noisy).
     final tripAgeSec = dur?.inSeconds ?? 0;
@@ -500,6 +501,9 @@ class TripMetricsPanel extends StatelessWidget {
             Expanded(child: row1),
             Divider(height: compact ? 16 : 16, color: Colors.white24),
             Expanded(child: row2),
+            // v0.2.26+225: живое накопленное разделение энергии — одна
+            // строка снизу. Ряды выше в Expanded и уступают ей высоту.
+            _LiveEnergySplitRow(tripId: tripDbId, compact: compact),
           ],
         ),
       ),
@@ -509,6 +513,70 @@ class TripMetricsPanel extends StatelessWidget {
   static String _fmtDur(Duration d) {
     if (d.inHours > 0) return '${d.inHours}h ${d.inMinutes % 60}m';
     return '${d.inMinutes}m ${d.inSeconds % 60}s';
+  }
+}
+
+/// v0.2.26+225: живое накопленное разделение энергии текущей поездки.
+///
+/// Не считает и не решает: значение готовит EnergySplitService.live (раз
+/// в минуту, той же computeEnergySplit по hal_samples поездки, доли —
+/// energySplitShares, как у карточки истории). Здесь одна сверка: строка
+/// видна, только если значение относится к поездке, которую показывает
+/// панель, — иначе после закрытия поездки висело бы чужое число до
+/// следующего тика. Нет значения (нет поездки или данных HAL) — строки
+/// нет; доли null (меньше 10 минут или мало покрытия) — «считается…».
+class _LiveEnergySplitRow extends StatelessWidget {
+  final int? tripId;
+  final bool compact;
+  const _LiveEnergySplitRow({required this.tripId, required this.compact});
+
+  @override
+  Widget build(BuildContext context) {
+    final es = context.read<EnergySplitService>();
+    return ValueListenableBuilder<LiveEnergySplit?>(
+      valueListenable: es.live,
+      builder: (context, v, _) {
+        if (tripId == null || v == null || v.tripId != tripId) {
+          return const SizedBox.shrink();
+        }
+        final sh = v.shares;
+        final fs = compact ? 11.0 : 13.0;
+        return Padding(
+          padding: EdgeInsets.only(top: compact ? 4 : 6),
+          child: Row(
+            children: [
+              Text(S.of('trip.energy_split').toUpperCase(),
+                  style: TextStyle(
+                      fontSize: compact ? 9 : 10,
+                      letterSpacing: 1.2,
+                      color: Colors.grey)),
+              const SizedBox(width: 10),
+              if (sh == null)
+                Text(S.of('drv.split_calculating'),
+                    style: TextStyle(fontSize: fs, color: Colors.grey))
+              else ...[
+                Expanded(child: EnergySplitBar(shares: sh, height: 8)),
+                for (final p in <(double, Color)>[
+                  (sh.motion, EnergySplitBar.motionColor),
+                  (sh.climate, EnergySplitBar.climateColor),
+                  (sh.other, EnergySplitBar.otherColor),
+                ])
+                  Padding(
+                    padding: const EdgeInsets.only(left: 10),
+                    child: Text('${(p.$1 * 100).round()} %',
+                        style: TextStyle(
+                            fontSize: fs,
+                            color: p.$2,
+                            fontFeatures: const [
+                              FontFeature.tabularFigures()
+                            ])),
+                  ),
+              ],
+            ],
+          ),
+        );
+      },
+    );
   }
 }
 

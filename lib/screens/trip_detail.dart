@@ -12,6 +12,8 @@ import '../l10n/strings.dart';
 import '../services/locale_service.dart';
 import '../services/connection.dart';
 import '../services/cost_settings.dart';
+import '../services/energy_split_service.dart';
+import '../widgets/energy_split_bar.dart';
 
 /// v0.1.9: Trip detail screen.
 ///
@@ -163,7 +165,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                 svc: svc,
               ),
               _PowerBarCard(trip: trip, svc: svc),
-              _EnergySplitCard(trip: trip),
+              EnergySplitCard(trip: trip),
             ],
           );
   }
@@ -260,7 +262,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
           svc: svc,
         ),
         _PowerBarCard(trip: trip, svc: svc),
-        _EnergySplitCard(trip: trip),
+        EnergySplitCard(trip: trip),
       ],
     );
   }
@@ -1374,40 +1376,37 @@ String _fmtDur(int? seconds) {
   return '${d.inSeconds}s';
 }
 
-/// v0.1.29+113: Tesla-style trip power profile. Replaces the HV-bus voltage
-/// chart (no HAL equivalent, low value). Loads the raw motor_power series
-/// (signed kW: + traction, − regen) from hal_samples and bins it into narrow
-/// bars over the trip's time span — each bar is the MEAN power in its bin
-/// (bin width = span / barCount). Raw data is never smoothed; only the
-/// display is binned, matching the "as in a Tesla" ask. Traction bars point
-/// up (green), regen bars down (blue). Footer shows the frozen per-trip regen
-/// energy and peak regen from the Trip row (+98) — not recomputed here.
 /// v0.2.23+222: «Куда ушла энергия» — три части из EnergySplitService.
 ///
 /// Решения, которые карточка НЕ принимает: что считать и когда скрывать
-/// расчёт — сервис (порог 10 мин, покрытие 80 %); здесь только показ.
-/// Одно решение показа: доли берутся из трёх частей и умножаются на
-/// текущий energyUsedKwh поездки, чтобы сумма совпадала со строкой
-/// «Энергия» и после Restore (облако сливает её по максимуму, Друг 2 §6.1).
-/// «Прочее» может быть отрицательным на уровне поездки (модель не
-/// обрезает остаток): число показывается как есть, полоса — от нуля.
-class _EnergySplitCard extends StatelessWidget {
+/// расчёт — сервис (порог 10 мин, покрытие 80 %); доли — energySplitShares,
+/// та же функция, что у живой строки на экране вождения. Здесь одно
+/// решение показа: доли умножаются на текущий energyUsedKwh поездки, чтобы
+/// сумма совпадала со строкой «Энергия» и после Restore (облако сливает её
+/// по максимуму, Друг 2 §6.1). «Прочее» может быть отрицательным на уровне
+/// поездки (модель не обрезает остаток): число показывается как есть,
+/// полоса — от нуля.
+///
+/// v0.2.26+225: публичная, как остальные карточки поездки, — стоит и в
+/// TripDetailScreen (обе раскладки), и в панели истории головы
+/// (_SelectedTripDetail в history_wide.dart). До +225 водитель на голове
+/// её не видел: панель истории головы — отдельный виджет.
+class EnergySplitCard extends StatelessWidget {
   final Trip trip;
-  const _EnergySplitCard({required this.trip});
+  const EnergySplitCard({super.key, required this.trip});
 
   @override
   Widget build(BuildContext context) {
-    final m = trip.energyMotionKwh;
-    final c = trip.energyClimateKwh;
-    final o = trip.energyOtherKwh;
-    if (m == null || c == null || o == null) return const SizedBox.shrink();
-    final sum = m + c + o;
-    if (sum <= 0) return const SizedBox.shrink();
+    final sh = energySplitShares(
+        trip.energyMotionKwh, trip.energyClimateKwh, trip.energyOtherKwh);
+    if (sh == null) return const SizedBox.shrink();
+    final sum =
+        trip.energyMotionKwh! + trip.energyClimateKwh! + trip.energyOtherKwh!;
     final total = trip.energyUsedKwh ?? sum;
     final parts = <(String, double, Color)>[
-      (S.of('trip.split_motion'), m / sum, Colors.lightBlueAccent),
-      (S.of('trip.split_climate'), c / sum, Colors.orangeAccent),
-      (S.of('trip.split_other'), o / sum, Colors.grey),
+      (S.of('trip.split_motion'), sh.motion, EnergySplitBar.motionColor),
+      (S.of('trip.split_climate'), sh.climate, EnergySplitBar.climateColor),
+      (S.of('trip.split_other'), sh.other, EnergySplitBar.otherColor),
     ];
     return Card(
       child: Padding(
@@ -1419,20 +1418,7 @@ class _EnergySplitCard extends StatelessWidget {
                 style: const TextStyle(
                     fontSize: 11, letterSpacing: 1.5, color: Colors.grey)),
             const SizedBox(height: 10),
-            ClipRRect(
-              borderRadius: BorderRadius.circular(4),
-              child: SizedBox(
-                height: 10,
-                child: Row(children: [
-                  for (final p in parts)
-                    if (p.$2 > 0)
-                      Expanded(
-                        flex: (p.$2 * 1000).round().clamp(1, 1000),
-                        child: Container(color: p.$3),
-                      ),
-                ]),
-              ),
-            ),
+            EnergySplitBar(shares: sh),
             const SizedBox(height: 10),
             for (final p in parts)
               Padding(
@@ -1455,6 +1441,14 @@ class _EnergySplitCard extends StatelessWidget {
   }
 }
 
+/// v0.1.29+113: Tesla-style trip power profile. Replaces the HV-bus voltage
+/// chart (no HAL equivalent, low value). Loads the raw motor_power series
+/// (signed kW: + traction, − regen) from hal_samples and bins it into narrow
+/// bars over the trip's time span — each bar is the MEAN power in its bin
+/// (bin width = span / barCount). Raw data is never smoothed; only the
+/// display is binned, matching the "as in a Tesla" ask. Traction bars point
+/// up (green), regen bars down (blue). Footer shows the frozen per-trip regen
+/// energy and peak regen from the Trip row (+98) — not recomputed here.
 class _PowerBarCard extends StatelessWidget {
   final Trip trip;
   final ConnectionService svc;

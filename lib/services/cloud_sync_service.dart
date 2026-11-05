@@ -418,6 +418,21 @@ class CloudSyncService extends ChangeNotifier {
   // retained for stats (pending count) but no longer gates push.
   static const _kPushedTripIds = 'cloud_sync_pushed_trip_ids';
 
+  // v0.2.26+225 — СПИСОК «ОТПРАВИТЬ ЕЩЁ РАЗ». Поездка, уже бывшая в
+  // _pushedTripIds, но изменившаяся (разделение энергии), уходит повторно
+  // через этот список, а не правкой _pushedTripIds снаружи. В +222
+  // requeueTrips снимал id из множества отправленных, и на проде из 451
+  // поездки разделения не пришло ни у одной (справка Друга 2 05.11): (а)
+  // досчёт при старте звал requeueTrips раньше, чем init загрузил
+  // множество из prefs, — снимать было нечего, загрузка возвращала все
+  // id; (б) _syncTrips после POST добавлял пакет обратно — id, снятый во
+  // время POST, снова помечался отправленным. Теперь _syncTrips снимает
+  // из списка только id, бывшие в нём на момент чтения поездок. Оба
+  // ключа описывают БАЗУ: литералы повторены в ImportService
+  // (repushTripIdsKey, splitRepushSeedKey), расхождение ловит гейт CZ.
+  static const _kRepushTripIds = 'cloud_sync_repush_trip_ids';
+  static const _kSplitRepushSeeded = 'cloud_sync_split_repush_225';
+
   // v0.1.29+117 (C1, spec v1.3 §3.3): per-entity high-water marks for the
   // uuid-mapping push to POST /v2/sync/uuid-mapping. Key = prefix + entity.
   // Semantics: every local row with id <= watermark has been included in a
@@ -507,6 +522,9 @@ class CloudSyncService extends ChangeNotifier {
   // since this device's registration. Loaded from SharedPrefs as a
   // JSON int list. See _kPushedTripIds doc above for rationale.
   final Set<int> _pushedTripIds = <int>{};
+
+  // v0.2.26+225: см. _kRepushTripIds.
+  final Set<int> _repushTripIds = <int>{};
 
   DateTime? _lastSuccessAt;
   String? _lastError;
@@ -770,6 +788,24 @@ class CloudSyncService extends ChangeNotifier {
         }
       } on FormatException {
         debugPrint('CloudSync: corrupted pushed-trip-ids json, ignoring');
+      }
+    }
+    // v0.2.26+225: список повторной отправки. Объединение, а не замена:
+    // requeueTrips мог прийти раньше init (досчёт разделения при старте).
+    _repushTripIds.addAll(_readIntList(prefs, _kRepushTripIds));
+    // Разово: все поездки, посчитанные на этом устройстве в +222/+223, —
+    // в список. Флаг ставится ПОСЛЕ списка: падение между ними повторит
+    // постановку (множество, повтор безвреден), а не потеряет её.
+    if (!(prefs.getBool(_kSplitRepushSeeded) ?? false)) {
+      try {
+        final ids = await _db.tripIdsWithEnergySplit();
+        _repushTripIds.addAll(ids);
+        await _saveRepushTripIds(prefs);
+        await prefs.setBool(_kSplitRepushSeeded, true);
+        debugPrint('CloudSync: ${ids.length} trip(s) with energy split '
+            'queued for re-send (one-time, +225)');
+      } catch (e) {
+        debugPrint('CloudSync: split re-send seed failed ($e), will retry');
       }
     }
     try {
@@ -1853,21 +1889,49 @@ class CloudSyncService extends ChangeNotifier {
   }
 
   /// v0.2.23+222: поездки, получившие разделение энергии, уходят ещё раз.
-  /// Отправка поездок — по множеству отправленных id, не по курсору, так
-  /// что повторно уйдут ровно эти поездки. Сервер обновит строку по
-  /// client_uuid (Друг 2, §3). Зовёт EnergySplitService (main.dart).
+  /// Сервер обновит строку по client_uuid (Друг 2, §3). Зовёт
+  /// EnergySplitService (main.dart).
+  ///
+  /// v0.2.26+225: id идут в список «отправить ещё раз», множество
+  /// отправленных не трогается (см. _kRepushTripIds). Вызов до init
+  /// допустим: сохранённый список сначала подмешивается, иначе запись
+  /// ниже затёрла бы его.
   Future<void> requeueTrips(List<int> ids) async {
-    final before = _pushedTripIds.length;
-    _pushedTripIds.removeAll(ids);
-    final n = before - _pushedTripIds.length;
-    if (n == 0) return;
+    if (ids.isEmpty) return;
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(
-        _kPushedTripIds, jsonEncode(_pushedTripIds.toList()));
-    debugPrint('CloudSync: $n trip(s) re-queued with energy split');
+    if (!_initialized) {
+      _repushTripIds.addAll(_readIntList(prefs, _kRepushTripIds));
+    }
+    _repushTripIds.addAll(ids);
+    await _saveRepushTripIds(prefs);
+    debugPrint('CloudSync: ${ids.length} trip(s) re-queued with energy '
+        'split (re-send list ${_repushTripIds.length})');
+    if (!_initialized) return;
     await _recomputeStats();
     notifyListeners();
   }
+
+  /// v0.2.26+225: закрытая поездка ждёт отправки — ещё не отправлена или
+  /// стоит в списке повторной отправки [repush]. Одно правило для
+  /// _syncTrips и счётчика в настройках.
+  bool _tripNeedsPush(Trip t, Set<int> repush) =>
+      t.endedAt != null &&
+      (!_pushedTripIds.contains(t.id) || repush.contains(t.id));
+
+  static List<int> _readIntList(SharedPreferences prefs, String key) {
+    final raw = prefs.getString(key);
+    if (raw == null) return const <int>[];
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is List) return decoded.whereType<int>().toList();
+    } on FormatException {
+      debugPrint('CloudSync: corrupted $key json, ignoring');
+    }
+    return const <int>[];
+  }
+
+  Future<void> _saveRepushTripIds(SharedPreferences prefs) => prefs.setString(
+      _kRepushTripIds, jsonEncode(_repushTripIds.toList()..sort()));
 
   Future<void> _syncTrips() async {
     // v0.1.29+20: changed semantics from id-cursor to finalize-gated
@@ -1885,10 +1949,28 @@ class CloudSyncService extends ChangeNotifier {
     //
     // _cursorTrip is still maintained as max(id seen) for the
     // pending-count stat in Settings; it no longer gates push.
+    //
+    // v0.2.26+225: плюс список «отправить ещё раз». Снимок списка берётся
+    // ДО чтения поездок: id в снимке значит, что его изменение уже в базе
+    // и попадёт в прочитанную строку. После POST из списка снимаются
+    // только id из снимка; поставленный во время POST остаётся и уйдёт
+    // следующим проходом с новыми полями.
     while (true) {
+      final repushAtRead = Set<int>.of(_repushTripIds);
       final all = await _db.getAllTrips();
+      // Поездка из снимка, которой нет в прочитанных, удалена — её id
+      // остался бы в списке навсегда (не уйдёт, значит не снимется).
+      final gone =
+          repushAtRead.difference(all.map((t) => t.id).toSet());
+      if (gone.isNotEmpty) {
+        _repushTripIds.removeAll(gone);
+        repushAtRead.removeAll(gone);
+        await _saveRepushTripIds(await SharedPreferences.getInstance());
+        debugPrint('CloudSync: ${gone.length} deleted trip(s) dropped '
+            'from the re-send list');
+      }
       final pending = all
-          .where((t) => t.endedAt != null && !_pushedTripIds.contains(t.id))
+          .where((t) => _tripNeedsPush(t, repushAtRead))
           .toList()
         ..sort((a, b) => a.id.compareTo(b.id));
       if (pending.isEmpty) break;
@@ -1901,10 +1983,18 @@ class CloudSyncService extends ChangeNotifier {
       // Mark pushed only after POST succeeds. _postIngest throws on
       // any non-2xx (and the server-side UPSERT, once deployed,
       // guarantees a duplicate replay is a safe no-op).
-      _pushedTripIds.addAll(batch.map((t) => t.id));
+      final sent = batch.map((t) => t.id).toSet();
+      _pushedTripIds.addAll(sent);
+      final resent = sent.intersection(repushAtRead);
+      _repushTripIds.removeAll(resent);
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString(_kPushedTripIds,
           jsonEncode(_pushedTripIds.toList()));
+      if (resent.isNotEmpty) {
+        await _saveRepushTripIds(prefs);
+        debugPrint('CloudSync: ${resent.length} trip(s) re-sent '
+            '(re-send list ${_repushTripIds.length})');
+      }
       // Keep _cursorTrip in sync with max trip id for the pending-
       // count stat. Use max(local trip id seen), not just batch.last —
       // open trips are tracked too because they still represent
@@ -3677,6 +3767,11 @@ class CloudSyncService extends ChangeNotifier {
       }
       await prefs.setString(_kPushedTripIds,
           jsonEncode(_pushedTripIds.toList()));
+      // v0.2.26+225: восстановление заменило поездки, локальные id
+      // сдвинулись — список повторной отправки указывал бы на чужие
+      // строки. Восстановленные поля уже на сервере.
+      _repushTripIds.clear();
+      await _saveRepushTripIds(prefs);
 
       _restoreStatus = CloudRestoreStatus.done;
       // v0.1.65+164 (B4) → +165: the v2 path filled _restoreProgress
@@ -4322,9 +4417,8 @@ class CloudSyncService extends ChangeNotifier {
       final sweeps = await _db.getAllSweepRuns();
       final logs = await _db.getAllLiveLogSessions();
       final canMonitors = await _db.getAllCanMonitorSessions();
-      final pendingTrips = allTrips
-          .where((t) => t.endedAt != null && !_pushedTripIds.contains(t.id))
-          .length;
+      final pendingTrips =
+          allTrips.where((t) => _tripNeedsPush(t, _repushTripIds)).length;
       final maxSnap = snapshots.isEmpty ? 0 : snapshots.first.id;
       final maxSweep =
           sweeps.isEmpty ? 0 : sweeps.map((s) => s.id).reduce((a, b) => a > b ? a : b);
@@ -4559,7 +4653,7 @@ class CloudSyncService extends ChangeNotifier {
   /// Read app version from the static value baked into the build.
   /// We don't have package_info_plus as a dep — pubspec-version is
   /// hardcoded here. Update when bumping. Off-by-one tolerated.
-  Future<String> _readAppVersion() async => '0.2.24+223';
+  Future<String> _readAppVersion() async => '0.2.26+225';
 }
 
 // ─── Internal exceptions ────────────────────────────────────────────

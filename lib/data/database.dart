@@ -1313,6 +1313,36 @@ class AppDatabase extends _$AppDatabase {
     ];
   }
 
+  /// v0.2.26+225: наибольший id в hal_samples (0 — таблица пуста).
+  /// max по первичному ключу SQLite берёт с конца дерева, без прохода.
+  Future<int> maxHalSampleId() async {
+    final expr = halSamples.id.max();
+    final row =
+        await (selectOnly(halSamples)..addColumns([expr])).getSingleOrNull();
+    return row?.read(expr) ?? 0;
+  }
+
+  /// v0.2.26+225: строки сигналов с id в (afterId, upToId] и временем не
+  /// раньше [from] — дочитывание живого разделения. Фильтр по id идёт по
+  /// первичному ключу (диапазон rowid): у hal_samples нет индекса по
+  /// timestamp, и чтение по времени проходит всю таблицу. Порядок по id;
+  /// по времени упорядочивает вызывающий.
+  Future<List<({DateTime ts, String name, double v})>> halSignalRowsInIdRange(
+      int afterId, int upToId, DateTime from, List<String> names) async {
+    final rows = await (select(halSamples)
+          ..where((h) =>
+              h.id.isBiggerThanValue(afterId) &
+              h.id.isSmallerOrEqualValue(upToId) &
+              h.timestamp.isBiggerOrEqualValue(from) &
+              h.name.isIn(names) &
+              h.numericValue.isNotNull())
+          ..orderBy([(h) => OrderingTerm(expression: h.id)]))
+        .get();
+    return [
+      for (final r in rows) (ts: r.timestamp, name: r.name!, v: r.numericValue!)
+    ];
+  }
+
   Future<int> countHalSamplesNamedBetween(
       DateTime from, DateTime to, String name) async {
     final cnt = countAll();
@@ -1322,6 +1352,17 @@ class AppDatabase extends _$AppDatabase {
               halSamples.name.equals(name)))
         .getSingle();
     return row.read(cnt) ?? 0;
+  }
+
+  /// v0.2.26+225: закрытые поездки с посчитанным здесь разделением
+  /// (модель не пуста) — разовая постановка на повторную отправку в
+  /// CloudSyncService.init.
+  Future<List<int>> tripIdsWithEnergySplit() async {
+    final rows = await (select(trips)
+          ..where((t) => t.endedAt.isNotNull() & t.energySplitModel.isNotNull())
+          ..orderBy([(t) => OrderingTerm(expression: t.id)]))
+        .get();
+    return [for (final t in rows) t.id];
   }
 
   Future<void> writeEnergySplit(

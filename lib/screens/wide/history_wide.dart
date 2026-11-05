@@ -452,6 +452,12 @@ class _SelectedTripDetail extends StatelessWidget {
             _PowerBarCard(trip: trip, svc: svc),
           ),
         ),
+        // v0.2.26+225: «Куда ушла энергия» — та же карточка, что в
+        // TripDetailScreen. На голове история открывается ЭТОЙ панелью, а
+        // не экраном подробностей; в +222 карточка стояла только там, и
+        // водитель её не видел. Без частей карточка схлопывается в ноль.
+        const SizedBox(height: 12),
+        EnergySplitCard(trip: trip),
       ],
     );
   }
