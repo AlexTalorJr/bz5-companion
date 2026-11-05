@@ -2417,6 +2417,42 @@ MUTATIONS = [
      '        .timeout(const Duration(seconds: 5));',
      ';',
      'зависший Drift держит белый экран до runApp'),
+    # CY1 — один выбор тока, +223.
+    ('CY1', 'lib/services/soc_resolver.dart',
+     '  if (h != null) return (amps: h, held: hal.halPackCurrentHeld);',
+     '  if (h != null) return (amps: h, held: false);',
+     'удерживаемый ток выдаётся за измеренный'),
+    ('CY1', 'lib/services/soc_resolver.dart',
+     '  final o = svc.packCurrentA;\n  if (o != null) return (amps: o, held: false);\n',
+     '',
+     'на телефоне с донглом ток пропадает'),
+    ('CY1', 'lib/widgets/driver_panels.dart',
+     '    final current = resolvePackCurrent(hal, svc);',
+     '    final current = svc.packCurrentA == null ? null : (amps: svc.packCurrentA!, held: false);',
+     'экран сам выбирает источник тока'),
+    # CY2 — экран скорости, +223.
+    ('CY2', 'lib/widgets/driver_panels.dart',
+     '                    color: current.held\n                        ? Colors.grey',
+     '                    color: false\n                        ? Colors.grey',
+     'удерживаемый ток не отличается от живого'),
+    ('CY2', 'lib/widgets/driver_panels.dart',
+     "            Text(' · ${current.amps.round()} A',",
+     "            Text(' · ${current.amps.abs().round()} A',",
+     'рекуперация теряет знак'),
+    # CY3 — экран зарядки, +223.
+    ('CY3', 'lib/screens/wide/charging_view_wide.dart',
+     "                        .replaceFirst('{a}', amps.abs().toStringAsFixed(0)),",
+     "                        .replaceFirst('{a}', amps.toStringAsFixed(0)),",
+     'на зарядке ток показан с минусом'),
+    ('CY3', 'lib/l10n/strings.dart',
+     "    'chg.batt_va': 'батарея {v} V · {a} A',\n",
+     '',
+     'русская строка с током пропала'),
+    # CY4 — кэш Gradle, +223.
+    ('CY4', '.github/workflows/build.yml',
+     '            ~/.gradle/wrapper\n',
+     '',
+     'дистрибутив обёртки снова качается каждый раз'),
 ]
 
 

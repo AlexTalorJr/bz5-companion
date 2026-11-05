@@ -1332,6 +1332,14 @@ class HalTelemetryService extends ChangeNotifier
     return v * i / 1000.0;
   }
 
+  /// v0.2.24+223: ток пака для показа, А, разряд положительный. Та же
+  /// охрана, что у [halPowerKw]: вне окна доверия HAL — null, и тогда
+  /// [resolvePackCurrent] берёт донгл.
+  double? get halPackCurrentA {
+    if (!_useHal('pack_current')) return null;
+    return halValue('pack_current');
+  }
+
   /// v0.2.15+214: сколько секунд назад пришёл ток пака. null — не приходил.
   int? get halPackCurrentAgeSec {
     final s = _lastGood['pack_current'];

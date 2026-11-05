@@ -1264,6 +1264,7 @@ class S {
     'chg.eta_wait': 'waiting for power and charge level',
     'chg.eta_note': 'at current power · slower near the end',
     'chg.batt_v': 'battery {v} V',
+    'chg.batt_va': 'battery {v} V · {a} A',
     'chg.batt_v_none': 'battery —',
     'chg.collecting': 'collecting… ({n} samples)',
     'chg.power': 'POWER',
@@ -2558,6 +2559,7 @@ class S {
     'chg.eta_note': 'по текущей мощности · к концу медленнее',
     // Единицы латиницей, как везде в приложении (kW, V, A, mV).
     'chg.batt_v': 'батарея {v} V',
+    'chg.batt_va': 'батарея {v} V · {a} A',
     'chg.batt_v_none': 'батарея —',
     'chg.collecting': 'накопление… ({n} сэмплов)',
     'chg.power': 'МОЩНОСТЬ',

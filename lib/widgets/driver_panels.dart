@@ -39,6 +39,7 @@ import '../l10n/strings.dart';
 import '../services/connection.dart';
 import '../services/cost_settings.dart';
 import '../services/hal_telemetry_service.dart';
+import '../services/soc_resolver.dart';
 
 /// Speed (huge) + status strip (Pack V / Bat / PDU temps).
 ///
@@ -88,6 +89,8 @@ class SpeedAndStatusStrip extends StatelessWidget {
     final hvBus = svc.hvBusV;
     // v0.1.29+91: battery temp prefers HAL (probe → BigData fallback) so the
     // cell is populated in halOnly without a dongle; OBD2 002F otherwise.
+    // v0.2.24+223: ток батареи рядом с напряжением (владелец 05.11).
+    final current = resolvePackCurrent(hal, svc);
     final batTemp =
         hal.useHalForBatteryTemp ? hal.halBatteryTempC : svc.readNumeric('790', '002F');
     final pdu1 = svc.readNumeric('740', '0010');
@@ -163,6 +166,19 @@ class SpeedAndStatusStrip extends StatelessWidget {
                   fontSize: statusFontSize,
                   fontWeight: FontWeight.w400,
                   color: hvColor)),
+          // v0.2.24+223: ток со знаком, как пришёл: плюс — разгон,
+          // минус — рекуперация (зелёным, порог ±3 А как у направления
+          // потока). Удерживаемое дольше пяти минут — серым.
+          if (current != null)
+            Text(' · ${current.amps.round()} A',
+                style: TextStyle(
+                    fontSize: statusFontSize,
+                    fontWeight: FontWeight.w400,
+                    color: current.held
+                        ? Colors.grey
+                        : current.amps < -3
+                            ? Colors.greenAccent
+                            : Colors.white70)),
           SizedBox(width: compact ? 12 : 24),
           Icon(Icons.thermostat, size: iconSize, color: Colors.orangeAccent),
           SizedBox(width: compact ? 3 : 4),

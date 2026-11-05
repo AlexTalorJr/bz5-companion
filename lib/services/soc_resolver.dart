@@ -201,3 +201,20 @@ ChargingPhase resolveChargingPhase(
   // машины, это правило целиком выбрасывается.
   return ChargingPhase.cc;
 }
+
+/// v0.2.24+223: ЕДИНСТВЕННОЕ место выбора тока батареи для показа —
+/// экран скорости и экран зарядки берут его отсюда, не решая сами.
+///
+/// HAL (`pack_current`, голова) первым, донгл (790/0009, ~2 Гц) запасным;
+/// оба со знаком «разряд положительный». `held` — HAL-ток удерживается
+/// дольше пяти минут без нового значения ([HalTelemetryService.halPackCurrentHeld]):
+/// экран обязан это показать, а не выдавать старое число за измеренное.
+/// У донгла удержания нет — устаревший ток он сам отдаёт как null.
+({double amps, bool held})? resolvePackCurrent(
+    HalTelemetryService hal, ConnectionService svc) {
+  final h = hal.halPackCurrentA;
+  if (h != null) return (amps: h, held: hal.halPackCurrentHeld);
+  final o = svc.packCurrentA;
+  if (o != null) return (amps: o, held: false);
+  return null;
+}

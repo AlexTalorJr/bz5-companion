@@ -33,6 +33,21 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
+      # v0.2.24+223: кэш Gradle. Без него каждая сборка заново качает
+      # дистрибутив обёртки (~150 МБ) с github.com, и сбой их CDN роняет
+      # сборку до компиляции: 05.11 — HTTP 504 на gradle-8.3-all.zip.
+      # Ключ по pubspec.yaml (pubspec.lock в репозитории нет): смена
+      # зависимостей обновляет кэш, restore-keys подхватывает прежний.
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/wrapper
+            ~/.gradle/caches
+          key: ${{ runner.os }}-gradle-${{ hashFiles('pubspec.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:

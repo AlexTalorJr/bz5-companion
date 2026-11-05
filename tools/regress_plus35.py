@@ -13182,6 +13182,64 @@ if int(pv) >= 222:
 else:
     ok(f"Part CX skipped (build +{pv}, p155 / heating signals / energy split land in +222)")
 
+# ═══════ Part CY — 0.2.24+223: ток батареи на экранах скорости и зарядки, кэш Gradle ═══════
+if int(pv) >= 223:
+    _cy_f = lambda t: re.sub(r'\n[ \t]+', '\n', t)
+    _cy_rd = lambda pth: _cy_f(_strip_comments_safe((root / pth).read_text()))
+    _cy_res = _cy_rd('lib/services/soc_resolver.dart')
+    _cy_hts = _cy_rd('lib/services/hal_telemetry_service.dart')
+    _cy_dp = _cy_rd('lib/widgets/driver_panels.dart')
+    _cy_chg = _cy_rd('lib/screens/wide/charging_view_wide.dart')
+    _cy_l10n = (root / 'lib/l10n/strings.dart').read_text()
+    _cy_ci = (root / '.github/workflows/build.yml').read_text()
+
+    # CY1: ОДНО МЕСТО ВЫБОРА ТОКА. HAL первым (с признаком удержания),
+    # донгл запасным; экраны источник не выбирают.
+    _cy1_i_h = _cy_res.find('final h = hal.halPackCurrentA;\nif (h != null) return (amps: h, held: hal.halPackCurrentHeld);')
+    _cy1_i_o = _cy_res.find('final o = svc.packCurrentA;\nif (o != null) return (amps: o, held: false);')
+    _cy1 = [
+        '({double amps, bool held})? resolvePackCurrent(' in _cy_res,
+        -1 < _cy1_i_h < _cy1_i_o,
+        "double? get halPackCurrentA {\nif (!_useHal('pack_current')) return null;\nreturn halValue('pack_current');" in _cy_hts,
+        all('packCurrentA' not in t and "halValue('pack_current')" not in t for t in (_cy_dp, _cy_chg)),
+    ]
+    if all(_cy1): ok('CY1 pack current for display is chosen in one resolver: HAL first with its held flag, dongle second; neither screen picks a source')
+    else: fail(f'CY1 pack current source choice drifted: {_cy1}')
+
+    # CY2: ЭКРАН СКОРОСТИ. Ток со знаком рядом с напряжением; рекуперация
+    # зелёным; удерживаемое — серым.
+    _cy2 = [
+        'final current = resolvePackCurrent(hal, svc);' in _cy_dp,
+        "if (current != null)\nText(' · ${current.amps.round()} A'," in _cy_dp,
+        'color: current.held\n? Colors.grey\n: current.amps < -3\n? Colors.greenAccent' in _cy_dp,
+    ]
+    if all(_cy2): ok('CY2 the speed strip shows signed pack current next to the voltage, regen green, held grey')
+    else: fail(f'CY2 speed strip current drifted: {_cy2}')
+
+    # CY3: ЭКРАН ЗАРЯДКИ. Ток без знака в строке напряжения; без тока —
+    # прежняя строка; обе локали.
+    _cy3 = [
+        'final amps = resolvePackCurrent(hal, svc)?.amps;' in _cy_chg,
+        "S.of('chg.batt_va')\n.replaceFirst('{v}', hv.toStringAsFixed(0))\n.replaceFirst('{a}', amps.abs().toStringAsFixed(0))" in _cy_chg,
+        ": amps == null\n? S.of('chg.batt_v')" in _cy_chg,
+        _cy_l10n.count("'chg.batt_va':") == 2,
+    ]
+    if all(_cy3): ok('CY3 the charging power tile reads battery V · A (current unsigned), falling back to the old line without current; both locales')
+    else: fail(f'CY3 charging screen current drifted: {_cy3}')
+
+    # CY4: КЭШ GRADLE до установки Flutter; обёртка в пути кэша.
+    _cy4_i_c = _cy_ci.find('uses: actions/cache@v4')
+    _cy4_i_f = _cy_ci.find('- name: Setup Flutter')
+    _cy4 = [
+        -1 < _cy4_i_c < _cy4_i_f,
+        '~/.gradle/wrapper' in _cy_ci[_cy4_i_c:_cy4_i_f],
+        "key: ${{ runner.os }}-gradle-${{ hashFiles('pubspec.yaml') }}" in _cy_ci,
+    ]
+    if all(_cy4): ok('CY4 CI caches the Gradle wrapper and caches before the build, so a github.com 504 on the distribution no longer kills it')
+    else: fail(f'CY4 Gradle cache drifted: {_cy4}')
+else:
+    ok(f"Part CY skipped (build +{pv}, pack current display lands in +223)")
+
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
 print(f"+35→+51 REGRESSION — build +{pv}")

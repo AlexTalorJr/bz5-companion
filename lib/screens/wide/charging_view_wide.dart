@@ -382,6 +382,9 @@ class _TopHeroRow extends StatelessWidget {
     final hv = svc.hvBusV ??
         hal.halValue('pack_voltage_fine') ??
         hal.halValue('pack_voltage');
+    // v0.2.24+223: ток батареи в той же строке, что напряжение. На зарядке
+    // он отрицательный — направление очевидно из экрана, знак не нужен.
+    final amps = resolvePackCurrent(hal, svc)?.amps;
     // v0.1.26+17: мощность держит 0 первые ~7 минут AC-сессии — точный SOC
     // растёт шагами по 0.1 %, и до трёх шагов роста числу верить нельзя.
     // Большое «—» без объяснения выглядит поломкой, поэтому подпись меняем.
@@ -433,9 +436,13 @@ class _TopHeroRow extends StatelessWidget {
           unit: 'kW',
           notes: [
             // v0.2.17+216: «HV bus» — жаргон; водителю это напряжение батареи.
-            hv != null
-                ? S.of('chg.batt_v').replaceFirst('{v}', hv.toStringAsFixed(0))
-                : S.of('chg.batt_v_none'),
+            hv == null
+                ? S.of('chg.batt_v_none')
+                : amps == null
+                    ? S.of('chg.batt_v').replaceFirst('{v}', hv.toStringAsFixed(0))
+                    : S.of('chg.batt_va')
+                        .replaceFirst('{v}', hv.toStringAsFixed(0))
+                        .replaceFirst('{a}', amps.abs().toStringAsFixed(0)),
             // v0.2.15+214: ток пака теперь удерживается бессрочно (он
             // событийный), поэтому экран обязан сказать, когда показывает
             // удержанное, а не измеренное. Молча держать — значит выдавать
