@@ -186,4 +186,49 @@ object CompanionDecoderOverrides {
         "BYDAutoInstrumentDevice" to extraInstrumentFids.map { it.toLong() and 0xFFFFFFFFL }.toSet(),
         "BYDAutoBodyworkDevice" to bodyworkHeatFids.map { it.toLong() and 0xFFFFFFFFL }.toSet()
     )
+
+    /**
+     * v0.2.27+226 — СОСТОЯНИЯ НАГРУЗОК, сырой записью `state_raw_<FID>`
+     * (Друг 3, 06.11). Нужны регрессии «Прочего» и климата в разделении
+     * энергии: что было включено, пока шла поездка. Значения — номера
+     * ступеней, а не ватты; в ватты их переведёт только регрессия.
+     * Только hal_samples, в облако не идут.
+     *
+     * Light: 0x3310000A LIGHT_LOW_BEAM_LIGHT, 0x3310000C LIGHT_HIGH_BEAM_LIGHT.
+     *
+     * Setting, подогрев сидений: водитель и пассажир в ДВУХ версиях
+     * (`_STATE` 0x48D00010 / 0x3480000B и `_STATE1` 0x3B400042 /
+     * 0x3B400044) — какую шлёт bZ5, неизвестно; задние 0x34800025,
+     * 0x3480002C. Вентиляция: 0x48D00008, 0x48D0000B, 0x48600008,
+     * 0x48600010. Руль: 0x31000040 SET_STEERING_WHEEL_HEAT_STATE.
+     * НЕ подписываемся: `*_STATE_SET` (команды), `SET_HAS_*` (признак
+     * комплектации), `SETTING_*_CONFIG` (конфигурация).
+     *
+     * Bodywork, 12 В: имя BODYWORK_BATTERY_VOLTAGE_LEVEL. В передаче
+     * 06.11 номер 0x2FC00042, а каталог fid прошивки
+     * (tools/data/feature_ids.txt) даёт этому имени 0x000450BF, номер
+     * 0x2FC00042 там — PM25_ANION_CONFIG. Подписаны оба: какой придёт,
+     * тот верный, второй снять следующим патчем.
+     *
+     * Statistic: 0x2F300030 STATISTIC_DC_DC_STATE. Ac: 0x40600031
+     * AC_DEFROST_REAR_STATE — кадры Ac уже пишутся целиком как ac_raw, здесь
+     * только гарантия подписки (вендорная берёт 80 из списка AC_).
+     */
+    val lightStateFids: IntArray = intArrayOf(0x3310000A, 0x3310000C)
+    val settingStateFids: IntArray = intArrayOf(
+        0x48D00010, 0x3B400042, 0x3480000B, 0x3B400044, 0x34800025, 0x3480002C,
+        0x48D00008, 0x48D0000B, 0x48600008, 0x48600010,
+        0x31000040
+    )
+    val bodyworkStateFids: IntArray = intArrayOf(0x000450BF, 0x2FC00042)
+    val statisticStateFids: IntArray = intArrayOf(0x2F300030)
+    val extraAcFids: IntArray = intArrayOf(0x40600031)
+
+    /** Device key → fids written raw as `state_raw_<FID>` by the sink. */
+    val stateRawFids: Map<String, Set<Long>> = mapOf(
+        "BYDAutoLightDevice" to lightStateFids.map { it.toLong() and 0xFFFFFFFFL }.toSet(),
+        "BYDAutoSettingDevice" to settingStateFids.map { it.toLong() and 0xFFFFFFFFL }.toSet(),
+        "BYDAutoBodyworkDevice" to bodyworkStateFids.map { it.toLong() and 0xFFFFFFFFL }.toSet(),
+        "BYDAutoStatisticDevice" to statisticStateFids.map { it.toLong() and 0xFFFFFFFFL }.toSet()
+    )
 }

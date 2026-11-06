@@ -58,7 +58,11 @@ object BydPermissions {
         "android.permission.BYDAUTO_LOCATION_COMMON"   to "Vehicle location",
         "android.permission.BYDAUTO_BODYWORK_COMMON"   to "VIN / body data",
         "android.permission.BYDAUTO_DTC_COMMON"        to "Diagnostic codes",
-        "android.permission.BYDAUTO_LIGHTS_COMMON"     to "Lights state",
+        // v0.2.27+226: LIGHT в единственном числе — BYDAUTO_LIGHTS_* в
+        // прошивке нет (Друг 3, 06.11). SETTING — сиденья и руль; не
+        // CARSETTING, это другой класс.
+        "android.permission.BYDAUTO_LIGHT_COMMON"      to "Lights state",
+        "android.permission.BYDAUTO_SETTING_COMMON"    to "Seat / wheel heating state",
         "android.permission.BYDAUTO_DOORLOCK_COMMON"   to "Door lock state",
         "android.permission.BYDAUTO_TIME_COMMON"       to "Vehicle clock",
         "android.permission.BYDAUTO_TEST_COMMON"       to "Factory test channel",
@@ -81,7 +85,8 @@ object BydPermissions {
         "android.permission.BYDAUTO_LOCATION_GET"         to "Vehicle location (R only)",
         "android.permission.BYDAUTO_BODYWORK_GET"         to "VIN / body data (R only)",
         "android.permission.BYDAUTO_DTC_GET"              to "Diagnostic codes (R only)",
-        "android.permission.BYDAUTO_LIGHTS_GET"           to "Lights state (R only)",
+        "android.permission.BYDAUTO_LIGHT_GET"            to "Lights state (R only)",
+        "android.permission.BYDAUTO_SETTING_GET"          to "Seat / wheel heating state (R only)",
         "android.permission.BYDAUTO_DOORLOCK_GET"         to "Door lock state (R only)",
         "android.permission.BYDAUTO_TIME_GET"             to "Vehicle clock (R only)",
         "android.permission.BYDAUTO_TEST_GET"             to "Factory test channel (R only)",

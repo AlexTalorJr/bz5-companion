@@ -153,7 +153,9 @@ class DecodedStreamSink(
 
     /** v0.2.23+222: ключ `устройство|fid` → последняя пара для сигналов
      *  подогрева ([CompanionDecoderOverrides.heatRawFids]). Тот же формат и
-     *  то же правило «по изменению», что у климата. */
+     *  то же правило «по изменению», что у климата.
+     *  v0.2.27+226: и для состояний нагрузок ([CompanionDecoderOverrides.
+     *  stateRawFids]) — списки не пересекаются, ключ общий. */
     private val heatRawLast = ConcurrentHashMap<String, String>()
 
     /**
@@ -196,6 +198,7 @@ class DecodedStreamSink(
         maybeEmitAcRaw(targetKey, subtype, intValue, doubleValue, timestampMs)
         // v0.2.23+222: сигналы подогрева — по явному списку, до декодера
         // (декодеров для них нет, иначе кадр отбросился бы ниже).
+        // v0.2.27+226: тем же путём состояния нагрузок (state_raw_).
         maybeEmitHeatRaw(targetKey, subtype, intValue, doubleValue, timestampMs)
 
         // decode() returns null for unmapped / hypothesis subtypes → we
@@ -395,7 +398,10 @@ class DecodedStreamSink(
     }
 
     /** v0.2.23+222: `heat_raw_<FID>` для fid из [CompanionDecoderOverrides.heatRawFids],
-     *  по изменению пары. Всё прочее с этих устройств сюда не попадает. */
+     *  по изменению пары. Всё прочее с этих устройств сюда не попадает.
+     *  v0.2.27+226: `state_raw_<FID>` для fid из
+     *  [CompanionDecoderOverrides.stateRawFids] — решение о префиксе здесь,
+     *  в одном месте. */
     private fun maybeEmitHeatRaw(
         targetKey: String,
         subtype: Long,
@@ -404,15 +410,18 @@ class DecodedStreamSink(
         timestampMs: Long
     ) {
         val target = TelemetryDecoderTable.normalizeTargetKey(targetKey)
-        val fids = CompanionDecoderOverrides.heatRawFids[target] ?: return
         val fid32 = subtype and 0xFFFFFFFFL
-        if (fid32 !in fids) return
+        val prefix = when {
+            CompanionDecoderOverrides.heatRawFids[target]?.contains(fid32) == true -> "heat_raw_"
+            CompanionDecoderOverrides.stateRawFids[target]?.contains(fid32) == true -> "state_raw_"
+            else -> return
+        }
         val pair = "i=${intValue ?: "null"} d=${doubleValue ?: "null"}"
         val k = TelemetryDecoderTable.key(target, subtype)
         if (heatRawLast.put(k, pair) == pair) return
         queue.add(
             mapOf(
-                "name" to "heat_raw_${String.format("%08X", fid32)}",
+                "name" to "$prefix${String.format("%08X", fid32)}",
                 "unit" to "",
                 "value" to (doubleValue ?: intValue?.toDouble()),
                 "key" to k,
@@ -476,8 +485,8 @@ class DecodedStreamSink(
 //   { "name": String, "unit": String, "value": double,
 //     "key": String, "subtype": int, "ts": int }
 // Extras outside this function: bigdata_raw adds can_id_hex/buf_hex/
-// buf_size (+88), ac_raw_<FID> and heat_raw_<FID> add text and may carry
-// value=null (+221/+222). This function adds type_conflict + carrier only
+// buf_size (+88), ac_raw_<FID>, heat_raw_<FID> and state_raw_<FID> add
+// text and may carry value=null (+221/+222/+226). This function adds type_conflict + carrier only
 // when the p155 decoder took the value from the undeclared field (+222).
 // ─────────────────────────────────────────────────────────────────────
 private fun DecodedValue.toEventMap(targetKey: String, subtype: Long): Map<String, Any?> {

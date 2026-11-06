@@ -1391,6 +1391,15 @@ String _fmtDur(int? seconds) {
 /// TripDetailScreen (обе раскладки), и в панели истории головы
 /// (_SelectedTripDetail в history_wide.dart). До +225 водитель на голове
 /// её не видел: панель истории головы — отдельный виджет.
+///
+/// v0.2.27+226: части в kWh — доля × энергия пака (интеграл V·I за
+/// поездку, `energyPackKwh`), сумма частей = энергия пака. Разница с
+/// «Энергией» поездки (она считается по SOC) — отдельной строкой «Потери
+/// пака и погрешность SOC»; она бывает отрицательной и показывается как
+/// есть (поездка 1131 при 5–6 °C: 8.7 %, 399: 1.7 %, Друг 3 06.11). Без
+/// энергии пака — прежний показ от `energyUsedKwh`, без строки. Меняется
+/// только показ: хранимые и отправляемые части остаются в масштабе
+/// `energyUsedKwh` (правило Друга 2), доли и живая строка те же.
 class EnergySplitCard extends StatelessWidget {
   final Trip trip;
   const EnergySplitCard({super.key, required this.trip});
@@ -1402,7 +1411,11 @@ class EnergySplitCard extends StatelessWidget {
     if (sh == null) return const SizedBox.shrink();
     final sum =
         trip.energyMotionKwh! + trip.energyClimateKwh! + trip.energyOtherKwh!;
-    final total = trip.energyUsedKwh ?? sum;
+    final pack = trip.energyPackKwh;
+    final used = trip.energyUsedKwh;
+    final packKwh = pack != null && pack > 0 ? pack : null;
+    final total = packKwh ?? used ?? sum;
+    final packLoss = packKwh != null && used != null ? used - packKwh : null;
     final parts = <(String, double, Color)>[
       (S.of('trip.split_motion'), sh.motion, EnergySplitBar.motionColor),
       (S.of('trip.split_climate'), sh.climate, EnergySplitBar.climateColor),
@@ -1429,6 +1442,15 @@ class EnergySplitCard extends StatelessWidget {
                   Expanded(child: Text(p.$1)),
                   Text('${(p.$2 * 100).round()} %   '
                       '${(p.$2 * total).toStringAsFixed(2)} kWh'),
+                ]),
+              ),
+            if (packLoss != null)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 2),
+                child: Row(children: [
+                  const SizedBox(width: 16),
+                  Expanded(child: Text(S.of('trip.split_pack_loss'))),
+                  Text('${packLoss.toStringAsFixed(2)} kWh'),
                 ]),
               ),
             const SizedBox(height: 6),

@@ -208,7 +208,8 @@ class ImportService {
   /// Литералы повторяют `_kRepushTripIds` и `_kSplitRepushSeeded` в
   /// CloudSyncService; расхождение ловит гейт CZ.
   static const String repushTripIdsKey = 'cloud_sync_repush_trip_ids';
-  static const String splitRepushSeedKey = 'cloud_sync_split_repush_225';
+  /// v0.2.27+226: флаг новый — постановка +225 сорвалась на Restore.
+  static const String splitRepushSeedKey = 'cloud_sync_split_repush_226';
 
   static List<String> get travellingKeys =>
       <String>[...ownerKeys, ...dbBoundKeys];

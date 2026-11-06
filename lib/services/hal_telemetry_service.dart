@@ -3709,14 +3709,19 @@ class HalTelemetryService extends ChangeNotifier
     // v0.2.23+222: Bodywork подписан ради одного сигнала подогрева, и его
     // регистрация — открытый вопрос (июнь: SecurityException). Отдельная
     // строка, чтобы не искать её в общем статусе.
+    // v0.2.27+226: так же Light и Setting — новые устройства. Текст отказа
+    // полный (HalStreamOwner.withFullGetInstanceErrors): SecurityException
+    // назовёт недостающее разрешение.
     if (status != null) {
-      final bw = status.errors.entries
-          .where((x) => '${x.key}'.contains('Bodywork'))
-          .map((x) => '${x.value}')
-          .toList();
-      debugPrint(bw.isEmpty
-          ? 'HAL: Bodywork registered (no error)'
-          : 'HAL: Bodywork failed: ${bw.join('; ')}');
+      for (final dev in const ['Bodywork', 'Light', 'Setting']) {
+        final errs = status.errors.entries
+            .where((x) => '${x.key}'.contains('BYDAuto${dev}Device'))
+            .map((x) => '${x.value}')
+            .toList();
+        debugPrint(errs.isEmpty
+            ? 'HAL: $dev registered (no error)'
+            : 'HAL: $dev failed: ${errs.join('; ')}');
+      }
     }
     if (status == null) {
       // HAL unavailable (phone, or stream failed) — drop the listener and
@@ -3817,7 +3822,9 @@ class HalTelemetryService extends ChangeNotifier
       return;
     }
     // v0.2.23+222: сигналы подогрева — та же сырая запись.
-    if (e.name.startsWith('heat_raw_')) {
+    // v0.2.27+226: состояния нагрузок (фары, сиденья, руль, 12 В, DC-DC)
+    // — тем же путём; префикс выбран в DecodedStreamSink.
+    if (e.name.startsWith('heat_raw_') || e.name.startsWith('state_raw_')) {
       _logHeatRaw(e);
       return;
     }
@@ -4025,11 +4032,13 @@ class HalTelemetryService extends ChangeNotifier
   /// v0.2.23+222: первое событие каждого сигнала подогрева за процесс —
   /// строкой в app_log (Friend 3 сверяет по ней, пришёл ли сигнал вообще).
   /// Запись — общим путём сырых кадров.
+  /// v0.2.27+226: то же для `state_raw_` — строка `HAL state: first …`.
   final Set<String> _heatRawSeen = {};
 
   void _logHeatRaw(HalEvent e) {
     if (_heatRawSeen.add(e.name)) {
-      debugPrint('HAL heat: first ${e.name} ${e.text} [${e.key}]');
+      final kind = e.name.startsWith('state_raw_') ? 'state' : 'heat';
+      debugPrint('HAL $kind: first ${e.name} ${e.text} [${e.key}]');
     }
     _logAcRaw(e);
   }

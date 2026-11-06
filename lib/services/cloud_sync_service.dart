@@ -430,8 +430,14 @@ class CloudSyncService extends ChangeNotifier {
   // из списка только id, бывшие в нём на момент чтения поездок. Оба
   // ключа описывают БАЗУ: литералы повторены в ImportService
   // (repushTripIdsKey, splitRepushSeedKey), расхождение ловит гейт CZ.
+  //
+  // v0.2.27+226: флаг разовой постановки новый (_226). Постановка +225
+  // на голове прошла, но Restore после спаривания очистил список, и ни
+  // одна поездка с разделением не ушла (диагноз 06.11, подтверждён
+  // Другом 2). Новый флаг ставит их ещё раз; старый ключ стирается в init.
   static const _kRepushTripIds = 'cloud_sync_repush_trip_ids';
-  static const _kSplitRepushSeeded = 'cloud_sync_split_repush_225';
+  static const _kSplitRepushSeeded = 'cloud_sync_split_repush_226';
+  static const _kSplitRepushSeededOld = 'cloud_sync_split_repush_225';
 
   // v0.1.29+117 (C1, spec v1.3 §3.3): per-entity high-water marks for the
   // uuid-mapping push to POST /v2/sync/uuid-mapping. Key = prefix + entity.
@@ -796,6 +802,8 @@ class CloudSyncService extends ChangeNotifier {
     // Разово: все поездки, посчитанные на этом устройстве в +222/+223, —
     // в список. Флаг ставится ПОСЛЕ списка: падение между ними повторит
     // постановку (множество, повтор безвреден), а не потеряет её.
+    // v0.2.27+226: флаг +225 больше никто не читает — не копим его.
+    await prefs.remove(_kSplitRepushSeededOld);
     if (!(prefs.getBool(_kSplitRepushSeeded) ?? false)) {
       try {
         final ids = await _db.tripIdsWithEnergySplit();
@@ -803,7 +811,7 @@ class CloudSyncService extends ChangeNotifier {
         await _saveRepushTripIds(prefs);
         await prefs.setBool(_kSplitRepushSeeded, true);
         debugPrint('CloudSync: ${ids.length} trip(s) with energy split '
-            'queued for re-send (one-time, +225)');
+            'queued for re-send (one-time, +226)');
       } catch (e) {
         debugPrint('CloudSync: split re-send seed failed ($e), will retry');
       }
@@ -1917,6 +1925,12 @@ class CloudSyncService extends ChangeNotifier {
   bool _tripNeedsPush(Trip t, Set<int> repush) =>
       t.endedAt != null &&
       (!_pushedTripIds.contains(t.id) || repush.contains(t.id));
+
+  /// v0.2.27+226: у локальной поездки есть разделение энергии, а облачная
+  /// строка пришла без него — облако отстаёт, поездку надо отправить ещё
+  /// раз. Одно правило для Restore и для приёма из облака.
+  static bool _splitMissingInCloud(Trip local, Map<String, dynamic> data) =>
+      local.energySplitModel != null && data['energy_split_model'] == null;
 
   static List<int> _readIntList(SharedPreferences prefs, String key) {
     final raw = prefs.getString(key);
@@ -3159,6 +3173,15 @@ class CloudSyncService extends ChangeNotifier {
           if (r == _PullApply.updated) tUpd++;
           if (r != _PullApply.skippedBad) mapDirty = true;
         }
+        // v0.2.27+226: _applyPulledTrip отметил принятые поездки
+        // отправленными (и, если облако отстаёт по разделению, поставил
+        // в список повторной отправки) — сохранить, пока страница цела.
+        if (tripRows.isNotEmpty) {
+          final pagePrefs = await SharedPreferences.getInstance();
+          await pagePrefs.setString(
+              _kPushedTripIds, jsonEncode(_pushedTripIds.toList()));
+          await _saveRepushTripIds(pagePrefs);
+        }
         // -- Pass 2: snapshots --
         for (final data in snapRows) {
           if (await _applyPulledSnapshot(data)) sIns++;
@@ -3245,6 +3268,22 @@ class CloudSyncService extends ChangeNotifier {
   /// uuid absent locally: insert. Null-uuid legacy rows: dedup by
   /// started_at plus distance_km as in the restore; insert-only, never
   /// update (finalize needs a uuid identity).
+  ///
+  /// v0.2.27+226 — ДВЕ ПРАВКИ.
+  ///
+  /// (1) Вставленная или обновлённая поездка отмечается отправленной:
+  /// её строка теперь равна облачной. Без этого телефон отправлял
+  /// принятые поездки обратно — 57 лишних сдвигов server_seq (1015–1072)
+  /// на 0.2.20+219 (Друг 2, 06.11).
+  ///
+  /// (2) Облачная строка без `energy_split_model` не трогает столбцы
+  /// разделения локальной строки — то же правило, что на сервере
+  /// (разделение стирается, только когда модель пришла с пустыми
+  /// частями). Раньше обновление писало строку целиком, и пустые поля
+  /// облака стирали локальное разделение. Если локальное разделение
+  /// есть, а в облаке его нет, поездка встаёт в список повторной
+  /// отправки. Вставке и Restore это не нужно: вставка пишет в пустую
+  /// строку, Restore существующие строки не обновляет.
   Future<_PullApply> _applyPulledTrip(Map<String, dynamic> data) async {
     final uuid = data['client_uuid'];
     final ctid = data['client_trip_id'];
@@ -3276,6 +3315,7 @@ class CloudSyncService extends ChangeNotifier {
       final newId =
           await _db.into(_db.trips).insert(_tripCompanionFromJson(data));
       mapPut(newId);
+      _pushedTripIds.add(newId);
       return _PullApply.inserted;
     }
     final existing = await _db.getTripByClientUuid(uuid);
@@ -3283,6 +3323,7 @@ class CloudSyncService extends ChangeNotifier {
       final newId =
           await _db.into(_db.trips).insert(_tripCompanionFromJson(data));
       mapPut(newId);
+      _pushedTripIds.add(newId);
       return _PullApply.inserted;
     }
     mapPut(existing.id);
@@ -3290,11 +3331,23 @@ class CloudSyncService extends ChangeNotifier {
       // Open echo -- finalize rule: don't mirror.
       return _PullApply.skippedExisting;
     }
-    final companion = _tripCompanionFromJson(data)
+    var companion = _tripCompanionFromJson(data)
         .copyWith(clientUuid: const Value.absent());
+    if (data['energy_split_model'] == null) {
+      companion = companion.copyWith(
+        energyMotionKwh: const Value.absent(),
+        energyClimateKwh: const Value.absent(),
+        energyOtherKwh: const Value.absent(),
+        energyPackKwh: const Value.absent(),
+        energySplitCoverage: const Value.absent(),
+        energySplitModel: const Value.absent(),
+      );
+    }
     await (_db.update(_db.trips)
           ..where((t) => t.clientUuid.equals(uuid)))
         .write(companion);
+    _pushedTripIds.add(existing.id);
+    if (_splitMissingInCloud(existing, data)) _repushTripIds.add(existing.id);
     return _PullApply.updated;
   }
 
@@ -3378,8 +3431,15 @@ class CloudSyncService extends ChangeNotifier {
   /// restore would throw away rows that are already in Drift. What
   /// changed in +165 is only what the CALLER does with a null: there is
   /// no legacy v1 path left to fall back to, so it fails the restore.
+  ///
+  /// v0.2.27+226: [restoredTripIds] — локальные id поездок, которые этот
+  /// Restore вставил или нашёл в облаке; только они потом отмечаются
+  /// отправленными. [splitBehindCloud] — найденные, у которых локально
+  /// есть разделение, а облачная строка пришла без него.
   Future<(int, int, int, int)?> _tryRestoreViaSyncPullV2(
-      Map<int, int> tripIdMap) async {
+      Map<int, int> tripIdMap,
+      Set<int> restoredTripIds,
+      Set<int> splitBehindCloud) async {
     var since = 0;
     var pages = 0;
 
@@ -3521,10 +3581,15 @@ class CloudSyncService extends ChangeNotifier {
           if (dev is String && clientTripId is int) {
             _pullTripMap['$dev:$clientTripId'] = existing.id;
           }
+          restoredTripIds.add(existing.id);
+          if (_splitMissingInCloud(existing, data)) {
+            splitBehindCloud.add(existing.id);
+          }
           continue;
         }
         final newLocalId =
             await _db.into(_db.trips).insert(_tripCompanionFromJson(data));
+        restoredTripIds.add(newLocalId);
         if (clientTripId is int) tripIdMap[clientTripId] = newLocalId;
         if (dev is String && clientTripId is int) {
           _pullTripMap['$dev:$clientTripId'] = newLocalId;
@@ -3685,6 +3750,9 @@ class CloudSyncService extends ChangeNotifier {
     _heartbeatTimer?.cancel();
 
     final tripIdMap = <int, int>{}; // serverClientTripId → newLocalId
+    // v0.2.27+226: см. _tryRestoreViaSyncPullV2.
+    final restoredTripIds = <int>{};
+    final splitBehindCloud = <int>{};
 
     try {
       // ── v0.1.29+121 (C5) → v0.1.66+165: restore goes through
@@ -3700,7 +3768,8 @@ class CloudSyncService extends ChangeNotifier {
       // snapshots but knows nothing of the atlas or trip_series, and
       // would have silently substituted a truncated restore for a
       // full one — exactly the failure mode +164 was built to end.
-      final v2 = await _tryRestoreViaSyncPullV2(tripIdMap);
+      final v2 = await _tryRestoreViaSyncPullV2(
+          tripIdMap, restoredTripIds, splitBehindCloud);
       if (_restoreStatus == CloudRestoreStatus.cancelled) return;
       if (v2 == null) {
         // Unusable on the FIRST page (mid-run losses break out and
@@ -3760,18 +3829,29 @@ class CloudSyncService extends ChangeNotifier {
       // half-finalized ones we WANT to re-push once the client
       // recomputes aggregates (e.g. via _finalizeTripFromLastKnown);
       // leaving them out of the set ensures that future re-push.
+      //
+      // v0.2.27+226: только поездки, которые этот Restore вставил или
+      // нашёл в облаке. Раньше отмечались ВСЕ локальные закрытые, и
+      // локальная поездка, которой в облаке нет, не уходила никогда.
+      // Restore не сдвигает id существующих строк (он их не трогает, а
+      // вставляет новые), поэтому список повторной отправки остаётся как
+      // есть — его очистка в +225 и сорвала отправку разделения после
+      // спаривания (диагноз 06.11). Найденные поездки, чьё разделение
+      // облако не знает, встают в список.
       for (final t in allTrips) {
-        if (t.endedAt != null) {
+        if (t.endedAt != null && restoredTripIds.contains(t.id)) {
           _pushedTripIds.add(t.id);
         }
       }
       await prefs.setString(_kPushedTripIds,
           jsonEncode(_pushedTripIds.toList()));
-      // v0.2.26+225: восстановление заменило поездки, локальные id
-      // сдвинулись — список повторной отправки указывал бы на чужие
-      // строки. Восстановленные поля уже на сервере.
-      _repushTripIds.clear();
-      await _saveRepushTripIds(prefs);
+      if (splitBehindCloud.isNotEmpty) {
+        _repushTripIds.addAll(splitBehindCloud);
+        await _saveRepushTripIds(prefs);
+        debugPrint('CloudSync: restore — ${splitBehindCloud.length} trip(s) '
+            'with energy split missing in the cloud queued for re-send '
+            '(re-send list ${_repushTripIds.length})');
+      }
 
       _restoreStatus = CloudRestoreStatus.done;
       // v0.1.65+164 (B4) → +165: the v2 path filled _restoreProgress
@@ -4653,7 +4733,7 @@ class CloudSyncService extends ChangeNotifier {
   /// Read app version from the static value baked into the build.
   /// We don't have package_info_plus as a dep — pubspec-version is
   /// hardcoded here. Update when bumping. Off-by-one tolerated.
-  Future<String> _readAppVersion() async => '0.2.26+225';
+  Future<String> _readAppVersion() async => '0.2.27+226';
 }
 
 // ─── Internal exceptions ────────────────────────────────────────────

@@ -99,27 +99,55 @@ object HalStreamOwner {
         selection: DiLinkProfiles.Selection,
     ): List<TargetSpec> {
         val base = TargetRegistry.streamingTargets(ctx)
+        // v0.2.27+226: fid, которого нет ни в одной цели этого же класса
+        // устройства. Statistic подписан двумя целями (первые 64 и хвост),
+        // и тот же fid во второй регистрации пришёл бы дважды.
+        fun missingIn(spec: TargetSpec, extra: IntArray): List<Int> =
+            extra.filter { f ->
+                base.none { it.deviceClassName == spec.deviceClassName && f in it.featureIds }
+            }
         val withStatistic = base.map { spec ->
             when (spec.key) {
                 "BYDAutoStatisticDevice" -> spec.copy(
                     featureIds = spec.featureIds +
-                        CompanionDecoderOverrides.extraStatisticFids
+                        CompanionDecoderOverrides.extraStatisticFids +
+                        missingIn(spec, CompanionDecoderOverrides.statisticStateFids)
                 )
                 // v0.2.23+222: два сигнала подогрева за границей 80 fid.
                 "BYDAutoInstrumentDevice" -> spec.copy(
                     featureIds = spec.featureIds +
                         CompanionDecoderOverrides.extraInstrumentFids
                 )
+                // v0.2.27+226: обогрев заднего стекла, если его нет в 80.
+                "BYDAutoAcDevice" -> spec.copy(
+                    featureIds = spec.featureIds +
+                        missingIn(spec, CompanionDecoderOverrides.extraAcFids)
+                )
                 else -> spec
             }
         } + listOf(
             // v0.2.23+222: Bodywork ради одного fid (см. bodyworkHeatFids).
             // Регистрация на всё устройство может принести и двери/окна —
-            // сник пишет только этот fid, остальное отбрасывает.
+            // сник пишет только эти fid, остальное отбрасывает.
+            // v0.2.27+226: плюс 12 В (см. bodyworkStateFids).
             TargetSpec(
                 "BYDAutoBodyworkDevice",
                 "android.hardware.bydauto.bodywork.BYDAutoBodyworkDevice",
-                CompanionDecoderOverrides.bodyworkHeatFids
+                CompanionDecoderOverrides.bodyworkHeatFids +
+                    CompanionDecoderOverrides.bodyworkStateFids
+            ),
+            // v0.2.27+226: фары и Setting (сиденья, руль) — только состояния,
+            // сник пишет их как state_raw_<FID>. Нужны разрешения
+            // BYDAUTO_LIGHT_* и BYDAUTO_SETTING_* (манифест, BydPermissions).
+            TargetSpec(
+                "BYDAutoLightDevice",
+                "android.hardware.bydauto.light.BYDAutoLightDevice",
+                CompanionDecoderOverrides.lightStateFids
+            ),
+            TargetSpec(
+                "BYDAutoSettingDevice",
+                "android.hardware.bydauto.setting.BYDAutoSettingDevice",
+                CompanionDecoderOverrides.settingStateFids
             )
         )
         // v0.1.29+89: триггер GB32960-сбора плюс канал данных.
@@ -285,10 +313,11 @@ object HalStreamOwner {
         )
         selection = sel
         val sink = DecodedStreamSink(out, CompanionDecoderOverrides.map)
+        val targets = buildTargets(ctx, sel)
         val eng = DiLinkProfiles.selectEngine(
-            sel.engineKind, ctx, sink, buildTargets(ctx, sel),
+            sel.engineKind, ctx, sink, targets,
         )
-        lastStatus = eng.start()
+        lastStatus = withFullGetInstanceErrors(ctx, eng.start(), targets)
         streamSink = sink
         engine = eng
         Log.i(
@@ -297,6 +326,42 @@ object HalStreamOwner {
                 "(platform=${sel.platformId}, engine=${sel.engineKind})",
         )
     }
+}
+
+/**
+ * v0.2.27+226 — ПОЛНЫЙ ТЕКСТ ОТКАЗА getInstance.
+ *
+ * Вендорные движки режут причину до 80 символов, а SecurityException
+ * называет нужное разрешение в КОНЦЕ строки («Neither user 10370 nor
+ * current process has android.permission.BYDAUTO_SETTING_COMMON.») — имя
+ * обрезается. Так в июне нашлось недостающее BYDAUTO_AC_COMMON, и так же
+ * должно найтись имя для Light и Setting. Для целей, упавших на
+ * getInstance, вызываем getInstance ещё раз и подставляем причину
+ * целиком; остальные ошибки не трогаем. Вызов тот же, что сделал движок,
+ * побочных действий у него нет.
+ */
+internal fun withFullGetInstanceErrors(
+    ctx: Context,
+    st: SubscriptionStatus,
+    targets: List<TargetSpec>
+): SubscriptionStatus {
+    if (st.perTargetErrors.isEmpty()) return st
+    val full = st.perTargetErrors.mapValues { (key, err) ->
+        if (!err.startsWith("getInstance_threw")) return@mapValues err
+        val cls = targets.firstOrNull { it.key == key }?.deviceClassName
+            ?: return@mapValues err
+        try {
+            Class.forName(cls).getMethod("getInstance", Context::class.java)
+                .invoke(null, ctx)
+            err
+        } catch (e: java.lang.reflect.InvocationTargetException) {
+            val c = e.cause
+            "getInstance_threw: ${c?.javaClass?.simpleName}: ${c?.message}"
+        } catch (e: Throwable) {
+            err
+        }
+    }
+    return st.copy(perTargetErrors = full)
 }
 
 /*

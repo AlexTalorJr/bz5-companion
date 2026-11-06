@@ -3622,7 +3622,11 @@ if int(pv) >= 121:
             "_getJson('/v1/data/snapshots'" not in _cs)
         _af1_hard = (
             "_restoreError = 'Server does not serve /v2/sync/pull'" in _cs)
-        if "_tryRestoreViaSyncPullV2(tripIdMap)" in _cs and \
+        # +226: вызов несёт ещё два множества (restoredTripIds,
+        # splitBehindCloud) — переносится на вторую строку.
+        _af1_call = ("_tryRestoreViaSyncPullV2(tripIdMap)" in _cs) if int(pv) < 226 else \
+            ("_tryRestoreViaSyncPullV2(\n          tripIdMap, restoredTripIds, splitBehindCloud);" in _cs)
+        if _af1_call and \
            "if (v2 == null) {" in _cs and _af1_dead and _af1_hard:
             ok("AF1 (re-era +165) v2 pull is the only restore path; "
                "legacy v1 gone; null on page 1 is a hard error")
@@ -12937,7 +12941,7 @@ if int(pv) >= 221:
     _cw2_fn = _cw_hts[_cw2_i_fn:_cw2_i_fn + 500] if _cw2_i_fn > -1 else ''
     _cw2_i_rng = _cw_hts.find('static const Map<String, (double, double)> _range = {')
     _cw2_rng = _cw_hts[_cw2_i_rng:_cw_hts.find('};', _cw2_i_rng)] if _cw2_i_rng > -1 else 'ac_raw'
-    _cw2_i_pfx = _cw_out.find('if (name.startsWith(AC_RAW_PREFIX)' + (' || name.startsWith(HEAT_RAW_PREFIX)' if int(pv) >= 222 else '') + ') {\nsb.append(line(e, name, ts))\nkept++\ncontinue')
+    _cw2_i_pfx = _cw_out.find('if (name.startsWith(AC_RAW_PREFIX)' + (' || name.startsWith(HEAT_RAW_PREFIX)' if int(pv) >= 222 else '') + (' ||\nname.startsWith(STATE_RAW_PREFIX)' if int(pv) >= 226 else '') + ') {\nsb.append(line(e, name, ts))\nkept++\ncontinue')
     _cw2_i_thr = _cw_out.find('val prev = lastPerName[name]')
     _cw2_bits = [
         -1 < _cw2_i_raw < _cw2_i_ac,
@@ -13117,13 +13121,16 @@ if int(pv) >= 222:
         'val extraInstrumentFids: IntArray = intArrayOf(0x35902039, 0x3A700028)' in _cx_ovr,
         'val bodyworkHeatFids: IntArray = intArrayOf(0x2FA00016)' in _cx_ovr,
         -1 < _cx3_i_call < _cx3_i_dec,
-        -1 < _cx3_fn.find('if (fid32 !in fids) return') < _cx3_fn.find('if (heatRawLast.put(k, pair) == pair) return') < _cx3_fn.find('queue.add('),
+        # +226: список выбирает префикс; чужой fid — return до записи.
+        (-1 < _cx3_fn.find('if (fid32 !in fids) return') < _cx3_fn.find('if (heatRawLast.put(k, pair) == pair) return') < _cx3_fn.find('queue.add(')) if int(pv) < 226 else
+        (-1 < _cx3_fn.find('CompanionDecoderOverrides.heatRawFids[target]?.contains(fid32) == true -> "heat_raw_"') < _cx3_fn.find('else -> return') < _cx3_fn.find('if (heatRawLast.put(k, pair) == pair) return') < _cx3_fn.find('queue.add(')),
         'heatRawLast.clear()' in _cx_sink,
         '"BYDAutoInstrumentDevice" -> spec.copy(\nfeatureIds = spec.featureIds +\nCompanionDecoderOverrides.extraInstrumentFids' in _cx_own,
         'TargetSpec(\n"BYDAutoBodyworkDevice",\n"android.hardware.bydauto.bodywork.BYDAutoBodyworkDevice",\nCompanionDecoderOverrides.bodyworkHeatFids' in _cx_own,
-        'if (name.startsWith(AC_RAW_PREFIX) || name.startsWith(HEAT_RAW_PREFIX)) {' in _cx_out,
-        "if (e.name.startsWith('heat_raw_')) {\n_logHeatRaw(e);" in _cx_hts,
-        'if (_heatRawSeen.add(e.name)) {' in _cx_hts and "'HAL: Bodywork failed: " in _cx_hts,
+        'if (name.startsWith(AC_RAW_PREFIX) || name.startsWith(HEAT_RAW_PREFIX)' in _cx_out,
+        ("if (e.name.startsWith('heat_raw_')) {\n_logHeatRaw(e);" in _cx_hts) if int(pv) < 226 else
+        ("if (e.name.startsWith('heat_raw_') || e.name.startsWith('state_raw_')) {\n_logHeatRaw(e);" in _cx_hts),
+        'if (_heatRawSeen.add(e.name)) {' in _cx_hts and (("'HAL: Bodywork failed: " in _cx_hts) if int(pv) < 226 else ("'HAL: $dev failed: " in _cx_hts and "for (final dev in const ['Bodywork', 'Light', 'Setting']) {" in _cx_hts)),
     ]
     if all(_cx3): ok('CX3 heating signals: Instrument x2 added on top, Bodywork subscribed for one fid; the sink writes only listed fids, on change, before the decoder; first event and Bodywork registration land in app_log')
     else: fail(f'CX3 heating capture drifted: {_cx3}')
@@ -13175,7 +13182,8 @@ if int(pv) >= 222:
         # +225: карточка публичная (EnergySplitCard), доли — energySplitShares.
         _cx_td.count('EnergySplitCard(trip: trip),') == 2,
         'if (sh == null) return const SizedBox.shrink();' in _cx_td,
-        'final total = trip.energyUsedKwh ?? sum;' in _cx_td and '(p.$2 * total).toStringAsFixed(2)' in _cx_td,
+        # +226: масштаб — энергия пака, без неё — energyUsedKwh (см. DA4).
+        (('final total = trip.energyUsedKwh ?? sum;' in _cx_td) if int(pv) < 226 else ('final total = packKwh ?? used ?? sum;' in _cx_td)) and '(p.$2 * total).toStringAsFixed(2)' in _cx_td,
         all(_cx_l10n.count(f"'{k}':") == 2 for k in ('trip.energy_split', 'trip.split_motion', 'trip.split_climate', 'trip.split_other', 'trip.split_note')),
         '.closeOrphanSweepRuns()\n.timeout(const Duration(seconds: 5));' in _cx_main,
     ]
@@ -13334,7 +13342,8 @@ if int(pv) >= 225:
         '(!_pushedTripIds.contains(t.id) || repush.contains(t.id));' in _cz_cs,
         'allTrips.where((t) => _tripNeedsPush(t, _repushTripIds)).length;' in _cz_cs,
         -1 < _cz3_i_load < _cz3_i_seedif and _cz3_i_load < _cz_cs.find('Future<void> requeueTrips('),
-        '_repushTripIds.clear();\nawait _saveRepushTripIds(prefs);' in _cz_cs,
+        # +226: Restore список НЕ чистит (DA1).
+        ('_repushTripIds.clear();\nawait _saveRepushTripIds(prefs);' in _cz_cs) if int(pv) < 226 else ('_repushTripIds.clear();' not in _cz_cs),
         # +225: id удалённой поездки не живёт в списке вечно.
         'final gone =\nrepushAtRead.difference(all.map((t) => t.id).toSet());\nif (gone.isNotEmpty) {\n_repushTripIds.removeAll(gone);' in _cz3_st,
     ]
@@ -13351,9 +13360,9 @@ if int(pv) >= 225:
     _cz4 = [
         -1 < _cz4_i_seed < _cz4_i_save < _cz4_i_flag,
         "static const _kRepushTripIds = 'cloud_sync_repush_trip_ids';" in _cz_cs,
-        "static const _kSplitRepushSeeded = 'cloud_sync_split_repush_225';" in _cz_cs,
+        f"static const _kSplitRepushSeeded = 'cloud_sync_split_repush_{'225' if int(pv) < 226 else '226'}';" in _cz_cs,
         "static const String repushTripIdsKey = 'cloud_sync_repush_trip_ids';" in _cz_imp,
-        "static const String splitRepushSeedKey = 'cloud_sync_split_repush_225';" in _cz_imp,
+        f"static const String splitRepushSeedKey = 'cloud_sync_split_repush_{'225' if int(pv) < 226 else '226'}';" in _cz_imp,
         'repushTripIdsKey,\nsplitRepushSeedKey,\n];' in _cz_imp,
         -1 < _cz4_i_rm < _cz4_i_apply and 'await prefs.remove(repushTripIdsKey);' in _cz_imp,
         't.endedAt.isNotNull() & t.energySplitModel.isNotNull()' in _cz_db,
@@ -13362,6 +13371,139 @@ if int(pv) >= 225:
     else: fail(f'CZ4 seed / import keys drifted: {_cz4}')
 else:
     ok(f"Part CZ skipped (build +{pv}, head unit split card / live split / re-send list land in +225)")
+
+# ═══════ Part DA — 0.2.27+226: разделение доходит до облака, карточка от пака, состояния нагрузок ═══════
+if int(pv) >= 226:
+    _da_f = lambda t: re.sub(r'\n[ \t]+', '\n', t)
+    _da_rd = lambda pth: _da_f(_strip_comments_safe((root / pth).read_text()))
+    _da_cs = _da_rd('lib/services/cloud_sync_service.dart')
+    _da_imp = _da_rd('lib/services/import_service.dart')
+    _da_td = _da_rd('lib/screens/trip_detail.dart')
+    _da_hts = _da_rd('lib/services/hal_telemetry_service.dart')
+    _da_l10n = (root / 'lib/l10n/strings.dart').read_text()
+    _da_kt = 'android/app/src/main/kotlin/com/bz5companion/bz5_companion/'
+    _da_man = (root / 'android/app/src/main/AndroidManifest.xml').read_text()
+    _da_perm = _da_rd(_da_kt + 'BydPermissions.kt')
+    _da_ovr = _da_rd(_da_kt + 'hal/CompanionDecoderOverrides.kt')
+    _da_own = _da_rd(_da_kt + 'hal/HalStreamOwner.kt')
+    _da_sink = _da_rd(_da_kt + 'hal/DecodedStreamSink.kt')
+    _da_out = _da_rd(_da_kt + 'hal/HalOut.kt')
+
+    # DA1: RESTORE. Список повторной отправки не чистится; отправленными
+    # отмечаются только вставленные или найденные этим Restore; найденные
+    # с разделением, которого облако не знает, — в список.
+    _da1_i_ex = _da_cs.find('restoredTripIds.add(existing.id);')
+    _da1_ex = _da_cs[_da1_i_ex:_da1_i_ex + 200] if _da1_i_ex > -1 else ''
+    _da1_i_tail = _da_cs.find('if (t.endedAt != null && restoredTripIds.contains(t.id)) {')
+    _da1_tail = _da_cs[_da1_i_tail:_da1_i_tail + 700] if _da1_i_tail > -1 else ''
+    _da1 = [
+        '_repushTripIds.clear();' not in _da_cs,
+        'if (_splitMissingInCloud(existing, data)) {\nsplitBehindCloud.add(existing.id);' in _da1_ex,
+        'await _db.into(_db.trips).insert(_tripCompanionFromJson(data));\nrestoredTripIds.add(newLocalId);' in _da_cs,
+        _da1_i_tail > -1 and '_pushedTripIds.add(t.id);' in _da1_tail,
+        'if (t.endedAt != null) {\n_pushedTripIds.add(t.id);' not in _da_cs,
+        'if (splitBehindCloud.isNotEmpty) {\n_repushTripIds.addAll(splitBehindCloud);\nawait _saveRepushTripIds(prefs);' in _da1_tail,
+        'local.energySplitModel != null && data[\'energy_split_model\'] == null;' in _da_cs,
+    ]
+    if all(_da1): ok('DA1 Restore keeps the re-send list, marks pushed only trips it inserted or matched, and queues matched trips whose split the cloud lacks')
+    else: fail(f'DA1 restore bookkeeping drifted: {_da1}')
+
+    # DA2: ПРИЁМ ИЗ ОБЛАКА. Принятая поездка отмечена отправленной (нет
+    # эха); облачная строка без модели разделения не стирает локальное;
+    # множества сохраняются после страницы.
+    _da2_i = _da_cs.find('Future<_PullApply> _applyPulledTrip(Map<String, dynamic> data) async {')
+    _da2_end = _da_cs.find('Future<bool> _applyPulledSnapshot(', _da2_i)
+    _da2_fn = _da_cs[_da2_i:_da2_end] if -1 < _da2_i < _da2_end else ''
+    _da2_i_strip = _da2_fn.find("if (data['energy_split_model'] == null) {\ncompanion = companion.copyWith(")
+    _da2_i_write = _da2_fn.find('.write(companion);')
+    _da2 = [
+        _da2_fn.count('_pushedTripIds.add(newId);') == 2,
+        '.write(companion);\n_pushedTripIds.add(existing.id);\nif (_splitMissingInCloud(existing, data)) _repushTripIds.add(existing.id);' in _da2_fn,
+        -1 < _da2_i_strip < _da2_i_write,
+        all(f'{c}: const Value.absent(),' in _da2_fn for c in ('energyMotionKwh', 'energyClimateKwh', 'energyOtherKwh', 'energyPackKwh', 'energySplitCoverage', 'energySplitModel')),
+        'if (tripRows.isNotEmpty) {\nfinal pagePrefs = await SharedPreferences.getInstance();\nawait pagePrefs.setString(\n_kPushedTripIds, jsonEncode(_pushedTripIds.toList()));\nawait _saveRepushTripIds(pagePrefs);' in _da_cs,
+    ]
+    if all(_da2): ok('DA2 pulled trips are marked pushed (no echo), a cloud row without the split model leaves local split columns alone and queues the trip, both sets persisted per page')
+    else: fail(f'DA2 pull apply drifted: {_da2}')
+
+    # DA3: РАЗОВАЯ ПОСТАНОВКА +226. Новый флаг, старый стирается, литерал
+    # совпадает с ImportService.
+    _da3_i_rm = _da_cs.find('await prefs.remove(_kSplitRepushSeededOld);')
+    _da3_i_if = _da_cs.find('if (!(prefs.getBool(_kSplitRepushSeeded) ?? false)) {')
+    _da3 = [
+        "static const _kSplitRepushSeededOld = 'cloud_sync_split_repush_225';" in _da_cs,
+        -1 < _da3_i_rm < _da3_i_if,
+        "'queued for re-send (one-time, +226)');" in _da_cs,
+        "static const String splitRepushSeedKey = 'cloud_sync_split_repush_226';" in _da_imp,
+    ]
+    if all(_da3): ok('DA3 one-time seed runs again under the +226 flag (same literal in ImportService); the +225 flag is removed at init')
+    else: fail(f'DA3 +226 seed drifted: {_da3}')
+
+    # DA4: КАРТОЧКА ОТ ЭНЕРГИИ ПАКА. Части = доля × пак; строка потерь =
+    # energyUsedKwh − пак, только когда есть оба; без пака прежний показ.
+    _da4 = [
+        'final packKwh = pack != null && pack > 0 ? pack : null;' in _da_td,
+        'final total = packKwh ?? used ?? sum;' in _da_td,
+        'final packLoss = packKwh != null && used != null ? used - packKwh : null;' in _da_td,
+        "if (packLoss != null)" in _da_td and "Text(S.of('trip.split_pack_loss'))" in _da_td and "Text('${packLoss.toStringAsFixed(2)} kWh')," in _da_td,
+        _da_l10n.count("'trip.split_pack_loss':") == 2,
+    ]
+    if all(_da4): ok('DA4 split card parts scale to the pack energy; the pack-loss/SOC-error line is trip energy minus pack energy, shown only when both exist; both languages')
+    else: fail(f'DA4 split card pack scale drifted: {_da4}')
+
+    # DA5: РАЗРЕШЕНИЯ. LIGHT в единственном числе в манифесте И в каталоге
+    # запроса; SETTING добавлен там же; LIGHTS не осталось нигде.
+    _da5_man_code = re.sub(r'<!--.*?-->', '', _da_man, flags=re.S)
+    _da5 = [
+        all(f'android.permission.BYDAUTO_{n}' in _da5_man_code for n in ('LIGHT_COMMON', 'LIGHT_GET', 'SETTING_COMMON', 'SETTING_GET')),
+        'BYDAUTO_LIGHTS_' not in _da5_man_code and 'BYDAUTO_LIGHTS_' not in _da_perm,
+        all(f'"android.permission.BYDAUTO_{n}"' in _da_perm for n in ('LIGHT_COMMON', 'LIGHT_GET', 'SETTING_COMMON', 'SETTING_GET')),
+        'CARSETTING' not in _da5_man_code,
+    ]
+    if all(_da5): ok('DA5 LIGHT (singular) and SETTING permissions declared in the manifest and in the runtime-request catalog; no LIGHTS name left')
+    else: fail(f'DA5 Light/Setting permissions drifted: {_da5}')
+
+    # DA6: ПОДПИСКА. Light и Setting — свои цели; 12 В на Bodywork; DC-DC и
+    # обогрев стекла — только если их нет в целях того же класса; запрещённых
+    # fid (команды, комплектация, конфигурация) в списках нет.
+    _da6_set = re.search(r'val settingStateFids: IntArray = intArrayOf\(([^)]*)\)', _da_ovr)
+    _da6_set_ids = set(re.findall(r'0x[0-9A-Fa-f]+', _da6_set.group(1))) if _da6_set else set()
+    _da6 = [
+        _da6_set_ids == {'0x48D00010', '0x3B400042', '0x3480000B', '0x3B400044', '0x34800025', '0x3480002C', '0x48D00008', '0x48D0000B', '0x48600008', '0x48600010', '0x31000040'},
+        'val lightStateFids: IntArray = intArrayOf(0x3310000A, 0x3310000C)' in _da_ovr,
+        'val bodyworkStateFids: IntArray = intArrayOf(0x000450BF, 0x2FC00042)' in _da_ovr,
+        'TargetSpec(\n"BYDAutoLightDevice",\n"android.hardware.bydauto.light.BYDAutoLightDevice",\nCompanionDecoderOverrides.lightStateFids\n)' in _da_own,
+        'TargetSpec(\n"BYDAutoSettingDevice",\n"android.hardware.bydauto.setting.BYDAutoSettingDevice",\nCompanionDecoderOverrides.settingStateFids\n)' in _da_own,
+        'CompanionDecoderOverrides.bodyworkHeatFids +\nCompanionDecoderOverrides.bodyworkStateFids' in _da_own,
+        'missingIn(spec, CompanionDecoderOverrides.statisticStateFids)' in _da_own and 'missingIn(spec, CompanionDecoderOverrides.extraAcFids)' in _da_own,
+        'base.none { it.deviceClassName == spec.deviceClassName && f in it.featureIds }' in _da_own,
+        not any(x in _da_ovr for x in ('0x1EA00034', '0xB480000B', '0x4D00303E', '0x23200')),
+    ]
+    if all(_da6): ok('DA6 Light and Setting subscribed as their own targets, 12 V on Bodywork (catalog and handoff fid), DC-DC and rear defrost added only where the device does not have them yet; no command/equipment/config fid')
+    else: fail(f'DA6 load-state subscription drifted: {_da6}')
+
+    # DA7: ЗАПИСЬ И МАРКЕРЫ. Сник выбирает префикс в одном месте; журнал
+    # пишет state_raw без придушивания; Dart пишет его тем же путём и
+    # первой строкой в app_log; регистрация Light/Setting — строкой;
+    # отказ getInstance — полным текстом.
+    _da7_i_fn = _da_sink.find('private fun maybeEmitHeatRaw(')
+    _da7_fn = _da_sink[_da7_i_fn:_da7_i_fn + 1200] if _da7_i_fn > -1 else ''
+    _da7_i_start = _da_own.find('lastStatus = withFullGetInstanceErrors(ctx, eng.start(), targets)')
+    _da7 = [
+        'CompanionDecoderOverrides.stateRawFids[target]?.contains(fid32) == true -> "state_raw_"' in _da7_fn,
+        '"name" to "$prefix${String.format("%08X", fid32)}",' in _da7_fn,
+        'private const val STATE_RAW_PREFIX = "state_raw_"' in _da_out and 'name.startsWith(STATE_RAW_PREFIX)) {' in _da_out,
+        '"BYDAutoLightDevice" to lightStateFids' in _da_ovr and '"BYDAutoSettingDevice" to settingStateFids' in _da_ovr and '"BYDAutoBodyworkDevice" to bodyworkStateFids' in _da_ovr and '"BYDAutoStatisticDevice" to statisticStateFids' in _da_ovr,
+        "if (e.name.startsWith('heat_raw_') || e.name.startsWith('state_raw_')) {" in _da_hts,
+        "final kind = e.name.startsWith('state_raw_') ? 'state' : 'heat';" in _da_hts,
+        "for (final dev in const ['Bodywork', 'Light', 'Setting']) {" in _da_hts and "'BYDAuto${dev}Device'" in _da_hts,
+        _da7_i_start > -1,
+        'if (!err.startsWith("getInstance_threw")) return@mapValues err' in _da_own and '"getInstance_threw: ${c?.javaClass?.simpleName}: ${c?.message}"' in _da_own,
+    ]
+    if all(_da7): ok('DA7 load states written raw as state_raw_<FID> (prefix chosen once in the sink, journal unthrottled, first event and Light/Setting registration in app_log); getInstance refusals carry the full SecurityException text')
+    else: fail(f'DA7 load-state capture / markers drifted: {_da7}')
+else:
+    ok(f"Part DA skipped (build +{pv}, restore bookkeeping / pack-scaled card / load states land in +226)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)

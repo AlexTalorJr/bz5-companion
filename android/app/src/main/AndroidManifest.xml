@@ -108,7 +108,13 @@
     <uses-permission android:name="android.permission.BYDAUTO_LOCATION_COMMON" />
     <uses-permission android:name="android.permission.BYDAUTO_BODYWORK_COMMON" />
     <uses-permission android:name="android.permission.BYDAUTO_DTC_COMMON" />
-    <uses-permission android:name="android.permission.BYDAUTO_LIGHTS_COMMON" />
+    <!-- v0.2.27+226: имя в единственном числе. BYDAUTO_LIGHTS_* в прошивке
+         нет (Друг 3, по прошивке, 06.11): система такие строки молча
+         игнорирует, и устройство Light не было бы доступно никогда. -->
+    <uses-permission android:name="android.permission.BYDAUTO_LIGHT_COMMON" />
+    <!-- v0.2.27+226: устройство Setting (подогрев и вентиляция сидений,
+         подогрев руля). Не путать с BYDAUTO_CARSETTING_* — другой класс. -->
+    <uses-permission android:name="android.permission.BYDAUTO_SETTING_COMMON" />
     <uses-permission android:name="android.permission.BYDAUTO_DOORLOCK_COMMON" />
     <uses-permission android:name="android.permission.BYDAUTO_TIME_COMMON" />
     <uses-permission android:name="android.permission.BYDAUTO_TEST_COMMON" />
@@ -138,7 +144,8 @@
     <uses-permission android:name="android.permission.BYDAUTO_LOCATION_GET" />
     <uses-permission android:name="android.permission.BYDAUTO_BODYWORK_GET" />
     <uses-permission android:name="android.permission.BYDAUTO_DTC_GET" />
-    <uses-permission android:name="android.permission.BYDAUTO_LIGHTS_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_LIGHT_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_SETTING_GET" />
     <uses-permission android:name="android.permission.BYDAUTO_DOORLOCK_GET" />
     <uses-permission android:name="android.permission.BYDAUTO_TIME_GET" />
     <uses-permission android:name="android.permission.BYDAUTO_TEST_GET" />
