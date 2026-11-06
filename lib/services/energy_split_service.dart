@@ -46,9 +46,6 @@ class EnergySplitModel {
     'motor_torque',
     'motor_rpm',
   ];
-
-  /// Сигнал подогрева, счётчик которого идёт в строку журнала.
-  static const String coolantSignal = 'heat_raw_2FA00016';
 }
 
 class EnergySplitResult {
@@ -310,8 +307,6 @@ class EnergySplitService {
         otherKwh: r.otherKwh == null ? null : r.otherKwh! * k,
         model: EnergySplitModel.version,
       );
-      final coolant = await _db.countHalSamplesNamedBetween(
-          t.startedAt, end, EnergySplitModel.coolantSignal);
       debugPrint('EnergySplit: trip ${t.id} '
           '${r.hasSplit ? 'move=${(r.motionKwh! * k).toStringAsFixed(3)} '
               'climate=${(r.climateKwh! * k).toStringAsFixed(3)} '
@@ -319,7 +314,7 @@ class EnergySplitService {
           'windows=${r.coveredSeconds ~/ 60} '
           'coverage=${r.coverage.toStringAsFixed(2)} '
           'pack=${r.packKwh.toStringAsFixed(3)} used=$used '
-          'coolant_events=$coolant model=${EnergySplitModel.version}');
+          'model=${EnergySplitModel.version}');
       if (r.hasSplit) split.add(t.id);
     }
     if (noData > 0) {

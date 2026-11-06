@@ -3706,21 +3706,21 @@ class HalTelemetryService extends ChangeNotifier
     _sub = _hal.events.listen(_onEvent, onError: (Object _) {});
     final status = await _hal.start();
     _status = status;
-    // v0.2.23+222: Bodywork подписан ради одного сигнала подогрева, и его
-    // регистрация — открытый вопрос (июнь: SecurityException). Отдельная
-    // строка, чтобы не искать её в общем статусе.
-    // v0.2.27+226: так же Lights и Setting — новые устройства. Текст отказа
-    // полный (HalStreamOwner.withFullGetInstanceErrors): SecurityException
-    // назовёт недостающее разрешение.
+    // v0.2.23+222 → v0.2.29+228: цели, которые companion добавляет сверх
+    // вендорного списка и чья регистрация — открытый вопрос, — отдельной
+    // строкой, чтобы не искать её в общем статусе. Текст отказа полный
+    // (HalStreamOwner.withFullGetInstanceErrors): SecurityException назовёт
+    // разрешение; `_GET` в тексте значит, что класс закрыт подписью.
+    // Ключи — ровно ключи целей из HalStreamOwner.buildTargets.
     if (status != null) {
-      for (final dev in const ['Bodywork', 'Lights', 'Setting']) {
-        final errs = status.errors.entries
-            .where((x) => '${x.key}'.contains('BYDAuto${dev}Device'))
-            .map((x) => '${x.value}')
-            .toList();
-        debugPrint(errs.isEmpty
-            ? 'HAL: $dev registered (no error)'
-            : 'HAL: $dev failed: ${errs.join('; ')}');
+      for (final key in const [
+        'BYDAutoSettingDevice',
+        'BYDAutoPowerDevice_lowVoltage',
+      ]) {
+        final err = status.errors[key];
+        debugPrint(err == null
+            ? 'HAL: $key registered (no error)'
+            : 'HAL: $key failed: $err');
       }
     }
     if (status == null) {

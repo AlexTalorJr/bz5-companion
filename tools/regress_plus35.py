@@ -2362,6 +2362,22 @@ else:
     ok(f"Part T skipped (build +{pv}, moving/idle fix lands in +55)")
 
 
+# v0.2.29+228: КАТАЛОГ fid bZ5 — единственный источник номеров (recon
+# v0.10.56, рефлексия BYDAutoFeatureIds на самой машине, отчёт 11.06; Друг 3).
+# Заменил tools/data/feature_ids.txt, снятый с другой прошивки. Строка:
+# class,name,fid,kind,device_class,getinstance_20260611.
+BZ5_CATALOG = 'tools/data/bydauto_feature_ids_bz5_v0_10_56.csv'
+
+
+def _bz5_catalog(root_):
+    import csv as _csv
+    p_ = root_ / BZ5_CATALOG
+    if not p_.exists():
+        return []
+    with p_.open(newline='') as fh:
+        return list(_csv.DictReader(fh))
+
+
 def _strip_comments_safe(src: str) -> str:
     """Убрать комментарии, НЕ ТРОГАЯ строковые литералы.
 
@@ -3376,7 +3392,13 @@ if int(pv) >= 66:
     #      the Statistic subscription — without touching vendored files.
     if _ovr_p.exists():
         _ovr = _ovr_p.read_text()
-        if 'scale = 0.001' in _ovr and '0x47300018' in _ovr:
+        # +228: перекрытие снято — p155 несёт ровно то же; масштаб теперь в
+        # вендорной таблице, и перекрытия быть не должно.
+        _aa4_tab = (_ovr_p.parent / 'TelemetryDecoderTable.kt').read_text()
+        _aa4_ins = (('scale = 0.001' in _ovr and '0x47300018' in _ovr) if int(pv) < 228 else
+                    ('0x47300018' not in _strip_comments_safe(_ovr) and
+                     'put("BYDAutoStatisticDevice|0x47300018",\n            Decoder("insulation_resistance", "MΩ", ValueSource.INT, scale = 0.001,' in _aa4_tab))
+        if _aa4_ins:
             ok("AA4 insulation local fix (scale=0.001) present")
         else:
             fail("AA4 insulation override missing/wrong scale")
@@ -3386,7 +3408,15 @@ if int(pv) >= 66:
             fail("AA4 battery-temp candidate layer incomplete")
         # +71: battery-temp second attempt on the profile devices
         # (Energy/Charging) — pure decoder add, fids already subscribed.
-        if int(pv) >= 71:
+        # +228: эти номера не из каталога bZ5 (legacy, чужая прошивка) —
+        # перекрытия сняты, гейт требует их отсутствия.
+        if int(pv) >= 228:
+            if all(x not in _ovr for x in ('|0x000DA09B', '|0x00072559', '|0x0004CFF3',
+                                           '|0x00049367', '|0x00090D49', '|0x000A4490')):
+                ok("AA4 dead old-format candidates (not in the bZ5 catalog) removed from the override layer")
+            else:
+                fail("AA4 profile-device temp candidates missing")
+        elif int(pv) >= 71:
             if 'BYDAutoEnergyDevice|0x000DA09B' in _ovr \
                     and 'BYDAutoChargingDevice|0x00072559' in _ovr:
                 ok("AA4 Energy/Charging battery-temp candidates added")
@@ -11392,7 +11422,10 @@ if int(pv) >= 203:
     # приводится: гейт на отсутствие, процитировавший запрещённое
     # дословно, находит сам себя, как это уже случилось в +197.
     _cg2_needle = '*' + ' ' + '0.001'
-    _cg2_kt = ('scale' in _cg_kt_over and '0.001' in _cg_kt_over)
+    # +228: масштаб изоляции живёт в вендорной таблице p155 (перекрытие снято).
+    _cg2_kt = ('scale' in _cg_kt_over and '0.001' in _cg_kt_over) if int(pv) < 228 else \
+        ('"BYDAutoStatisticDevice|0x47300018",\nDecoder("insulation_resistance", "MΩ", ValueSource.INT, scale = 0.001,' in re.sub(r'\n[ \t]+', '\n', _cg_kt_tab)
+         and '0x47300018' not in _cg_kt_over)
     _cg2_g = _cg_hal.find('get halInsulationMOhm')
     _cg2_getter = _cg_hal[_cg2_g:_cg2_g + 200] if _cg2_g > 0 else 'нет геттера'
     # Окно нормы ищет ИМЕННО присвоение медианы. Первое вхождение имени
@@ -11484,17 +11517,15 @@ if int(pv) >= 203:
     # наших имён — законные синонимы каталожных (`odometer` против
     # `STATISTIC_TOTAL_MILEAGE` и так далее), и гейт на словах давал бы
     # шесть ложных срабатываний из восьми. Пара меняется — гейт краснеет.
-    _cg5_idx = root / 'tools/data/feature_ids.txt'
-    if not _cg5_idx.exists():
+    # +228: каталог bZ5 (BZ5_CATALOG) вместо feature_ids.txt.
+    _cg5_rows = _bz5_catalog(root)
+    if not _cg5_rows:
         fail('CG5 the authoritative feature-id index is missing from the '
              'repository')
     else:
         _cg5_map = {}
-        for _ln in _cg5_idx.read_text().splitlines():
-            if _ln.startswith('#') or not _ln.strip():
-                continue
-            _p = _ln.split()
-            _cg5_map[int(_p[0], 16)] = set(_p[1:])
+        for _r in _cg5_rows:
+            _cg5_map.setdefault(int(_r['fid'], 16), set()).add(_r['name'])
         _cg5_pairs = {
             'insulation_resistance': 'STATISTIC_INSULATION_RESISTANCE_VALUE',
             'cell_idx_lowest': 'ENERGY_LOWEST_VOLT_BATTERY_NUM',
@@ -11516,7 +11547,15 @@ if int(pv) >= 203:
                     r'"\w+\|0x([0-9A-Fa-f]{8})"[^"]{0,80}?'
                     r'Decoder\(\s*"([a-z0-9_]+)"', _src, re.S):
                 _cg5_ent.append((int(_m.group(1), 16), _m.group(2)))
-        _cg5_absent = [hex(f) for f, _ in _cg5_ent if f not in _cg5_map]
+        # +228: три декодера ВЕНДОРЕННОЙ таблицы стоят на номерах, которых в
+        # каталоге bZ5 нет (Друг 3: чужая прошивка, recon снимает их в
+        # v0.10.156). Руками вендоренный файл не правим — список ждёт
+        # перевендоринга и обязан опустеть вместе с ним (номер, которого в
+        # таблице уже нет, роняет гейт: список не должен жить дольше дела).
+        _cg5_pending = {0xDA09B, 0x72559, 0x4CFF3} if int(pv) >= 228 else set()
+        _cg5_stale = [hex(f) for f in _cg5_pending if f not in {e[0] for e in _cg5_ent}]
+        _cg5_absent = [hex(f) for f, _ in _cg5_ent if f not in _cg5_map and f not in _cg5_pending] + \
+            [f'stale pending {x}' for x in _cg5_stale]
         _cg5_wrong = [n for f, n in _cg5_ent
                       if n in _cg5_pairs and f in _cg5_map
                       and _cg5_pairs[n] not in _cg5_map[f]]
@@ -12695,7 +12734,7 @@ if int(pv) >= 219:
 
     # CU6: AC-КАНДИДАТЫ ПО КАТАЛОГУ ДРУГА 3. Семь fid класса Ac, которые уже
     # в подписке, но были без декодера, получают имена ровно из каталога
-    # BYDAutoFeatureIds (tools/data/feature_ids.txt) в слое companion —
+    # BYDAutoFeatureIds (каталог bZ5, BZ5_CATALOG, с +228) в слое companion —
     # вендоренная таблица не тронута. В Dart все ac_* — кандидаты: ни одного
     # в _range, каждое изменение значения пишется в hal_samples, и ветка
     # стоит ДО проверки _range.
@@ -12705,10 +12744,8 @@ if int(pv) >= 219:
     _cu_hts = _strip_comments_safe(
         (root / 'lib/services/hal_telemetry_service.dart').read_text())
     _cu6_cat = {}
-    for _ln in (root / 'tools/data/feature_ids.txt').read_text().split('\n'):
-        _p = _ln.split()
-        if len(_p) >= 2 and _p[0].startswith('0x'):
-            _cu6_cat[int(_p[0], 16)] = _p[1:]
+    for _r in _bz5_catalog(root):
+        _cu6_cat.setdefault(int(_r['fid'], 16), []).append(_r['name'])
     _cu6_ac = re.findall(r'"BYDAutoAcDevice\|0x([0-9A-F]{8})" to Decoder\(\s*"(ac_[a-z_]+)"', _cu_ovr)
     # v0.2.23+222: семь кандидатов переехали в вендорную таблицу recon p155
     # под теми же именами; перекрытий для AC в слое companion быть не должно
@@ -13119,18 +13156,19 @@ if int(pv) >= 222:
     _cx3_fn = _cx_sink[_cx3_i_fn:_cx3_i_fn + 900] if _cx3_i_fn > -1 else ''
     _cx3 = [
         'val extraInstrumentFids: IntArray = intArrayOf(0x35902039, 0x3A700028)' in _cx_ovr,
-        'val bodyworkHeatFids: IntArray = intArrayOf(0x2FA00016)' in _cx_ovr,
+        # +228: Bodywork снят (закрыт подписью, каталог bZ5).
+        ('val bodyworkHeatFids: IntArray = intArrayOf(0x2FA00016)' in _cx_ovr) if int(pv) < 228 else ('bodyworkHeatFids' not in _cx_ovr),
         -1 < _cx3_i_call < _cx3_i_dec,
         # +226: список выбирает префикс; чужой fid — return до записи.
         (-1 < _cx3_fn.find('if (fid32 !in fids) return') < _cx3_fn.find('if (heatRawLast.put(k, pair) == pair) return') < _cx3_fn.find('queue.add(')) if int(pv) < 226 else
         (-1 < _cx3_fn.find('CompanionDecoderOverrides.heatRawFids[target]?.contains(fid32) == true -> "heat_raw_"') < _cx3_fn.find('else -> return') < _cx3_fn.find('if (heatRawLast.put(k, pair) == pair) return') < _cx3_fn.find('queue.add(')),
         'heatRawLast.clear()' in _cx_sink,
         '"BYDAutoInstrumentDevice" -> spec.copy(\nfeatureIds = spec.featureIds +\nCompanionDecoderOverrides.extraInstrumentFids' in _cx_own,
-        'TargetSpec(\n"BYDAutoBodyworkDevice",\n"android.hardware.bydauto.bodywork.BYDAutoBodyworkDevice",\nCompanionDecoderOverrides.bodyworkHeatFids' in _cx_own,
+        ('TargetSpec(\n"BYDAutoBodyworkDevice",\n"android.hardware.bydauto.bodywork.BYDAutoBodyworkDevice",\nCompanionDecoderOverrides.bodyworkHeatFids' in _cx_own) if int(pv) < 228 else ('BYDAutoBodyworkDevice' not in _cx_own),
         'if (name.startsWith(AC_RAW_PREFIX) || name.startsWith(HEAT_RAW_PREFIX)' in _cx_out,
         ("if (e.name.startsWith('heat_raw_')) {\n_logHeatRaw(e);" in _cx_hts) if int(pv) < 226 else
         ("if (e.name.startsWith('heat_raw_') || e.name.startsWith('state_raw_')) {\n_logHeatRaw(e);" in _cx_hts),
-        'if (_heatRawSeen.add(e.name)) {' in _cx_hts and (("'HAL: Bodywork failed: " in _cx_hts) if int(pv) < 226 else ("'HAL: $dev failed: " in _cx_hts and ("for (final dev in const ['Bodywork', 'Light', 'Setting']) {" if int(pv) < 227 else "for (final dev in const ['Bodywork', 'Lights', 'Setting']) {") in _cx_hts)),
+        'if (_heatRawSeen.add(e.name)) {' in _cx_hts and (("'HAL: Bodywork failed: " in _cx_hts) if int(pv) < 226 else ("'HAL: $key failed: $err'" in _cx_hts) if int(pv) >= 228 else ("'HAL: $dev failed: " in _cx_hts and ("for (final dev in const ['Bodywork', 'Light', 'Setting']) {" if int(pv) < 227 else "for (final dev in const ['Bodywork', 'Lights', 'Setting']) {") in _cx_hts)),
     ]
     if all(_cx3): ok('CX3 heating signals: Instrument x2 added on top, Bodywork subscribed for one fid; the sink writes only listed fids, on change, before the decoder; first event and Bodywork registration land in app_log')
     else: fail(f'CX3 heating capture drifted: {_cx3}')
@@ -13454,12 +13492,14 @@ if int(pv) >= 226:
     # DA5: РАЗРЕШЕНИЯ. LIGHT в единственном числе в манифесте И в каталоге
     # запроса; SETTING добавлен там же; LIGHTS не осталось нигде.
     _da5_man_code = re.sub(r'<!--.*?-->', '', _da_man, flags=re.S)
+    # +228: LIGHT снят вместе с целью Lights (class_not_found на bZ5).
+    _da5_have = ('LIGHT_COMMON', 'LIGHT_GET', 'SETTING_COMMON', 'SETTING_GET') if int(pv) < 228 else ('SETTING_COMMON', 'SETTING_GET')
     _da5 = [
-        all(f'android.permission.BYDAUTO_{n}' in _da5_man_code for n in ('LIGHT_COMMON', 'LIGHT_GET', 'SETTING_COMMON', 'SETTING_GET')),
+        all(f'android.permission.BYDAUTO_{n}' in _da5_man_code for n in _da5_have),
         'BYDAUTO_LIGHTS_' not in _da5_man_code and 'BYDAUTO_LIGHTS_' not in _da_perm,
-        all(f'"android.permission.BYDAUTO_{n}"' in _da_perm for n in ('LIGHT_COMMON', 'LIGHT_GET', 'SETTING_COMMON', 'SETTING_GET')),
+        all(f'"android.permission.BYDAUTO_{n}"' in _da_perm for n in _da5_have),
         'CARSETTING' not in _da5_man_code,
-    ]
+    ] + ([] if int(pv) < 228 else ['BYDAUTO_LIGHT_' not in _da5_man_code and 'BYDAUTO_LIGHT_' not in _da_perm])
     if all(_da5): ok('DA5 LIGHT (singular) and SETTING permissions declared in the manifest and in the runtime-request catalog; no LIGHTS name left')
     else: fail(f'DA5 Light/Setting permissions drifted: {_da5}')
 
@@ -13468,20 +13508,30 @@ if int(pv) >= 226:
     # fid (команды, комплектация, конфигурация) в списках нет.
     _da6_set = re.search(r'val settingStateFids: IntArray = intArrayOf\(([^)]*)\)', _da_ovr)
     _da6_set_ids = set(re.findall(r'0x[0-9A-Fa-f]+', _da6_set.group(1))) if _da6_set else set()
-    _da6 = [
-        _da6_set_ids == {'0x48D00010', '0x3B400042', '0x3480000B', '0x3B400044', '0x34800025', '0x3480002C', '0x48D00008', '0x48D0000B', '0x48600008', '0x48600010', '0x31000040'},
-        'val lightStateFids: IntArray = intArrayOf(0x3310000A, 0x3310000C)' in _da_ovr,
-        'val bodyworkStateFids: IntArray = intArrayOf(0x000450BF, 0x2FC00042)' in _da_ovr,
-        # +227: класс фар во множественном числе (Друг 3 по прошивке).
-        (('TargetSpec(\n"BYDAutoLightDevice",\n"android.hardware.bydauto.light.BYDAutoLightDevice",\nCompanionDecoderOverrides.lightStateFids\n)' in _da_own) if int(pv) < 227 else
-         ('TargetSpec(\n"BYDAutoLightsDevice",\n"android.hardware.bydauto.lights.BYDAutoLightsDevice",\nCompanionDecoderOverrides.lightStateFids\n)' in _da_own and 'bydauto.light.' not in _da_own and 'BYDAutoLightDevice' not in _da_own and 'BYDAutoLightDevice' not in _da_ovr)),
-        'TargetSpec(\n"BYDAutoSettingDevice",\n"android.hardware.bydauto.setting.BYDAutoSettingDevice",\nCompanionDecoderOverrides.settingStateFids\n)' in _da_own,
-        'CompanionDecoderOverrides.bodyworkHeatFids +\nCompanionDecoderOverrides.bodyworkStateFids' in _da_own,
-        'missingIn(spec, CompanionDecoderOverrides.statisticStateFids)' in _da_own and 'missingIn(spec, CompanionDecoderOverrides.extraAcFids)' in _da_own,
-        'base.none { it.deviceClassName == spec.deviceClassName && f in it.featureIds }' in _da_own,
-        not any(x in _da_ovr for x in ('0x1EA00034', '0xB480000B', '0x4D00303E', '0x23200')),
-    ]
-    if all(_da6): ok('DA6 Light and Setting subscribed as their own targets, 12 V on Bodywork (recon fid 0x2FC00042 plus the old-format 0x000450BF until the export), DC-DC and rear defrost added only where the device does not have them yet; no command/equipment/config fid')
+    if int(pv) < 228:
+        _da6 = [
+            _da6_set_ids == {'0x48D00010', '0x3B400042', '0x3480000B', '0x3B400044', '0x34800025', '0x3480002C', '0x48D00008', '0x48D0000B', '0x48600008', '0x48600010', '0x31000040'},
+            'val lightStateFids: IntArray = intArrayOf(0x3310000A, 0x3310000C)' in _da_ovr,
+            'val bodyworkStateFids: IntArray = intArrayOf(0x000450BF, 0x2FC00042)' in _da_ovr,
+            # +227: класс фар во множественном числе (Друг 3 по прошивке).
+            (('TargetSpec(\n"BYDAutoLightDevice",\n"android.hardware.bydauto.light.BYDAutoLightDevice",\nCompanionDecoderOverrides.lightStateFids\n)' in _da_own) if int(pv) < 227 else
+             ('TargetSpec(\n"BYDAutoLightsDevice",\n"android.hardware.bydauto.lights.BYDAutoLightsDevice",\nCompanionDecoderOverrides.lightStateFids\n)' in _da_own and 'bydauto.light.' not in _da_own and 'BYDAutoLightDevice' not in _da_own and 'BYDAutoLightDevice' not in _da_ovr)),
+            'TargetSpec(\n"BYDAutoSettingDevice",\n"android.hardware.bydauto.setting.BYDAutoSettingDevice",\nCompanionDecoderOverrides.settingStateFids\n)' in _da_own,
+            'CompanionDecoderOverrides.bodyworkHeatFids +\nCompanionDecoderOverrides.bodyworkStateFids' in _da_own,
+            'missingIn(spec, CompanionDecoderOverrides.statisticStateFids)' in _da_own and 'missingIn(spec, CompanionDecoderOverrides.extraAcFids)' in _da_own,
+            'base.none { it.deviceClassName == spec.deviceClassName && f in it.featureIds }' in _da_own,
+            not any(x in _da_ovr for x in ('0x1EA00034', '0xB480000B', '0x4D00303E', '0x23200')),
+        ]
+    else:
+        # +228: Lights и Bodywork сняты; подписка сверяется с каталогом в DB2/DB3.
+        _da6 = [
+            _da6_set_ids == {'0x48D00010', '0x3B400042', '0x3480000B', '0x3B400044', '0x34800025', '0x3480002C', '0x48D00008', '0x48D0000B', '0x48600008', '0x48600010', '0x31000040'},
+            'TargetSpec(\n"BYDAutoSettingDevice",\n"android.hardware.bydauto.setting.BYDAutoSettingDevice",\nCompanionDecoderOverrides.settingStateFids\n)' in _da_own,
+            'BYDAutoLightsDevice' not in _da_own and 'BYDAutoBodyworkDevice' not in _da_own and 'lightStateFids' not in _da_ovr and 'bodyworkStateFids' not in _da_ovr,
+            'missingIn' not in _da_own and 'extraAcFids' not in _da_ovr,
+            not any(x in _da_ovr for x in ('0x1EA00034', '0xB480000B', '0x4D00303E', '0x23200')),
+        ]
+    if all(_da6): ok('DA6 Light and Setting subscribed as their own targets, 12 V on Bodywork (recon fid 0x2FC00042 plus the old-format 0x000450BF until the export), DC-DC and rear defrost added only where the device does not have them yet; no command/equipment/config fid' if int(pv) < 228 else 'DA6 Setting is its own target with the eleven catalog fids; Lights, Bodywork and the dead add-if-missing path are gone; no command/equipment/config fid')
     else: fail(f'DA6 load-state subscription drifted: {_da6}')
 
     # DA7: ЗАПИСЬ И МАРКЕРЫ. Сник выбирает префикс в одном месте; журнал
@@ -13495,10 +13545,12 @@ if int(pv) >= 226:
         'CompanionDecoderOverrides.stateRawFids[target]?.contains(fid32) == true -> "state_raw_"' in _da7_fn,
         '"name" to "$prefix${String.format("%08X", fid32)}",' in _da7_fn,
         'private const val STATE_RAW_PREFIX = "state_raw_"' in _da_out and 'name.startsWith(STATE_RAW_PREFIX)) {' in _da_out,
-        ('"BYDAutoLightDevice" to lightStateFids' if int(pv) < 227 else '"BYDAutoLightsDevice" to lightStateFids') in _da_ovr and '"BYDAutoSettingDevice" to settingStateFids' in _da_ovr and '"BYDAutoBodyworkDevice" to bodyworkStateFids' in _da_ovr and '"BYDAutoStatisticDevice" to statisticStateFids' in _da_ovr,
+        (('"BYDAutoLightDevice" to lightStateFids' if int(pv) < 227 else '"BYDAutoLightsDevice" to lightStateFids') in _da_ovr and '"BYDAutoSettingDevice" to settingStateFids' in _da_ovr and '"BYDAutoBodyworkDevice" to bodyworkStateFids' in _da_ovr and '"BYDAutoStatisticDevice" to statisticStateFids' in _da_ovr) if int(pv) < 228 else
+        ('"BYDAutoSettingDevice" to settingStateFids' in _da_ovr and '"BYDAutoPowerDevice" to powerStateFids' in _da_ovr and '"BYDAutoChargingDevice" to extraChargingFids' in _da_ovr and '"BYDAutoStatisticDevice" to statisticStateFids' in _da_ovr),
         "if (e.name.startsWith('heat_raw_') || e.name.startsWith('state_raw_')) {" in _da_hts,
         "final kind = e.name.startsWith('state_raw_') ? 'state' : 'heat';" in _da_hts,
-        ("for (final dev in const ['Bodywork', 'Light', 'Setting']) {" if int(pv) < 227 else "for (final dev in const ['Bodywork', 'Lights', 'Setting']) {") in _da_hts and "'BYDAuto${dev}Device'" in _da_hts,
+        (("for (final dev in const ['Bodywork', 'Light', 'Setting']) {" if int(pv) < 227 else "for (final dev in const ['Bodywork', 'Lights', 'Setting']) {") in _da_hts and "'BYDAuto${dev}Device'" in _da_hts) if int(pv) < 228 else
+        ("final err = status.errors[key];" in _da_hts and "'HAL: $key registered (no error)'" in _da_hts),
         _da7_i_start > -1,
         'if (!err.startsWith("getInstance_threw")) return@mapValues err' in _da_own and '"getInstance_threw: ${c?.javaClass?.simpleName}: ${c?.message}"' in _da_own,
     ]
@@ -13506,6 +13558,157 @@ if int(pv) >= 226:
     else: fail(f'DA7 load-state capture / markers drifted: {_da7}')
 else:
     ok(f"Part DA skipped (build +{pv}, restore bookkeeping / pack-scaled card / load states land in +226)")
+
+# ═══════ Part DB — 0.2.29+228: всё по каталогу bZ5 ═══════
+if int(pv) >= 228:
+    import hashlib as _db_h
+    _db_f = lambda t: re.sub(r'\n[ \t]+', '\n', t)
+    _db_kt = 'android/app/src/main/kotlin/com/bz5companion/bz5_companion/'
+    _db_ovr_raw = (root / (_db_kt + 'hal/CompanionDecoderOverrides.kt')).read_text()
+    _db_ovr = _db_f(_strip_comments_safe(_db_ovr_raw))
+    _db_own = _db_f(_strip_comments_safe((root / (_db_kt + 'hal/HalStreamOwner.kt')).read_text()))
+    _db_reg = (root / (_db_kt + 'hal/TargetRegistry.kt')).read_text()
+    _db_hts = _db_f(_strip_comments_safe((root / 'lib/services/hal_telemetry_service.dart').read_text()))
+    _db_es = _db_f(_strip_comments_safe((root / 'lib/services/energy_split_service.dart').read_text()))
+    _db_dbf = (root / 'lib/data/database.dart').read_text()
+    _db_ht = (root / 'lib/screens/hal_test.dart').read_text()
+    _db_man = re.sub(r'<!--.*?-->', '', (root / 'android/app/src/main/AndroidManifest.xml').read_text(), flags=re.S)
+    _db_rows = _bz5_catalog(root)
+    _db_bytes = (root / BZ5_CATALOG).read_bytes() if (root / BZ5_CATALOG).exists() else b''
+
+    # DB1: КАТАЛОГ НА МЕСТЕ И ТОТ САМЫЙ. Хранится с LF; SHA Друга 3 снят с
+    # CRLF-файла — сверяем, вернув CRLF. feature_ids.txt чужой прошивки удалён.
+    _db1 = [
+        len(_db_rows) == 3158,
+        _db_h.sha256(_db_bytes.replace(b'\n', b'\r\n')).hexdigest() == '00f1db4b9c4763cf8e2adc90695452e826754243f9b79812289241d77fe8ce34',
+        b'\r' not in _db_bytes,
+        not (root / 'tools/data/feature_ids.txt').exists(),
+        set(_db_rows[0].keys()) == {'class', 'name', 'fid', 'kind', 'device_class', 'getinstance_20260611'} if _db_rows else False,
+    ]
+    if all(_db1): ok('DB1 the bZ5 catalog (recon v0.10.56, 3158 rows, provenance SHA 00f1db4b… over CRLF) is the only fid source; feature_ids.txt is gone')
+    else: fail(f'DB1 bZ5 catalog drifted: {_db1}')
+
+    # DB2: КАЖДЫЙ fid СЛОЯ COMPANION ЕСТЬ НА bZ5 И ДОСТИЖИМ. Для каждого
+    # номера, который companion расшифровывает или подписывает сверху:
+    # строка каталога на этом классе устройства (любом из его классов —
+    # один сигнал CAN бывает в двух категориях); kind push, flagbit только
+    # для 0x99xxxxxx (давление шин и радары идут живыми, экспорт 11.08);
+    # класс не закрыт (SecurityException / class_not_found 11.06).
+    _db2_by = {}
+    for _r in _db_rows:
+        _db2_by.setdefault(int(_r['fid'], 16), []).append(_r)
+    def _db2_ok(dev, fid):
+        for _r in _db2_by.get(fid, []):
+            if not _r['device_class'].endswith('.' + dev):
+                continue
+            _k = _r['kind']
+            if _k == 'push' or (_k == 'flagbit' and (fid >> 24) == 0x99):
+                return True
+        return False
+    _db2_closed = set()
+    for _r in _db_rows:
+        _o = _r['getinstance_20260611']
+        if _o.startswith('SecurityException') or _o.startswith('class_not_found'):
+            _db2_closed.add(_r['device_class'].split('.')[-1])
+    _db2_use = []
+    for _m in re.finditer(r'"(BYDAuto\w+Device)\|0x([0-9A-Fa-f]{8})" to Decoder\(', _db_ovr):
+        _db2_use.append((_m.group(1), int(_m.group(2), 16), 'decoder'))
+    _db2_arrays = {
+        'extraStatisticFids': 'BYDAutoStatisticDevice',
+        'extraInstrumentFids': 'BYDAutoInstrumentDevice',
+        'extraChargingFids': 'BYDAutoChargingDevice',
+        'settingStateFids': 'BYDAutoSettingDevice',
+        'powerStateFids': 'BYDAutoPowerDevice',
+        'statisticStateFids': 'BYDAutoStatisticDevice',
+    }
+    _db2_vals = {}
+    for _n in re.findall(r'val (\w+): IntArray = intArrayOf\(', _db_ovr):
+        _mm = re.search(r'val ' + _n + r': IntArray = intArrayOf\(([^)]*)\)', _db_ovr)
+        _db2_vals[_n] = [int(x, 16) for x in re.findall(r'0x([0-9A-Fa-f]+)', _mm.group(1))]
+    _db2_unmapped = sorted(set(_db2_vals) - set(_db2_arrays))
+    for _n, _dev in _db2_arrays.items():
+        for _v in _db2_vals.get(_n, []):
+            _db2_use.append((_dev, _v, _n))
+    _db2_bad = [f'{d}|{hex(v)} ({w})' for d, v, w in _db2_use if not _db2_ok(d, v)]
+    _db2_shut = [f'{d}|{hex(v)} ({w}) on a closed class' for d, v, w in _db2_use if d in _db2_closed]
+    _db2_cls = re.findall(r'TargetSpec\(\n"\w+",\n"android\.hardware\.bydauto\.[\w.]+\.(BYDAuto\w+Device)",', _db_own)
+    _db2_cls_shut = [c for c in _db2_cls if c in _db2_closed]
+    _db2 = [len(_db2_use) >= 20, not _db2_bad, not _db2_shut, not _db2_unmapped,
+            len(_db2_cls) >= 4, not _db2_cls_shut]
+    if all(_db2): ok(f'DB2 all {len(_db2_use)} companion-layer fids exist on their device class in the bZ5 catalog as push (flagbit only 0x99xxxxxx), and no companion target sits on a class closed on 11.06')
+    else: fail(f'DB2 companion fid / class not valid on bZ5: {_db2} {_db2_bad + _db2_shut + _db2_unmapped + _db2_cls_shut}')
+
+    # DB3: КАЖДЫЙ ЗАПИСЫВАЕМЫЙ fid ПОДПИСАН, И НИ ОДНА ДОБАВКА НЕ ДУБЛИРУЕТ
+    # ВЕНДОРНУЮ ПОДПИСКУ. Вендорная подписка считается по каталогу тем же
+    # правилом, что TargetRegistry.streamingTargets на машине (рефлексия по
+    # тем же полям): Statistic — первые 64 STATISTIC_ по знаковому значению
+    # ∪ явный список; Charging — явный список; Instrument — первые 80
+    # INSTRUMENT_ без _SET.
+    def _db3_s32(v): return v - (1 << 32) if v >= (1 << 31) else v
+    _db3_named = {}
+    for _r in _db_rows:
+        _db3_named[_r['name']] = int(_r['fid'], 16)
+    def _db3_prefix(pref, cap, ro):
+        _vals = sorted(_db3_s32(v) for k, v in _db3_named.items()
+                       if k.startswith(pref) and (not ro or not k.endswith('_SET')))
+        return {v & 0xFFFFFFFF for v in _vals[:cap]}
+    def _db3_block(src, start, end):
+        _i = src.find(start)
+        _j = src.find(end, _i + len(start)) if _i > -1 else -1
+        return src[_i + len(start):_j] if -1 < _i < _j else ''
+    _db3_stat_prio = {int(x, 16) for x in re.findall(r'0x([0-9A-Fa-f]{8})',
+        _db3_block(_db_reg, 'val statisticPriority = intArrayOf(', '\n        )\n'))}
+    _db3_chg_ids = {int(x, 16) for x in re.findall(r'0x([0-9A-Fa-f]{8})',
+        _db3_block(_db_reg, '"android.hardware.bydauto.charging.BYDAutoChargingDevice",\n            intArrayOf(', '\n            )'))}
+    _db3_vendor = {
+        'BYDAutoStatisticDevice': _db3_prefix('STATISTIC_', 64, False) | _db3_stat_prio,
+        'BYDAutoChargingDevice': _db3_chg_ids,
+        'BYDAutoInstrumentDevice': _db3_prefix('INSTRUMENT_', 80, True),
+    }
+    _db3_extra = {
+        'BYDAutoStatisticDevice': set(_db2_vals.get('extraStatisticFids', [])),
+        'BYDAutoChargingDevice': set(_db2_vals.get('extraChargingFids', [])),
+        'BYDAutoInstrumentDevice': set(_db2_vals.get('extraInstrumentFids', [])),
+    }
+    _db3_dup = [f'{d}|{hex(v)}' for d, xs in _db3_extra.items() for v in xs if v in _db3_vendor[d]]
+    _db3_sub = {d: _db3_vendor[d] | _db3_extra[d] for d in _db3_vendor}
+    _db3_sub['BYDAutoSettingDevice'] = set(_db2_vals.get('settingStateFids', []))
+    _db3_sub['BYDAutoPowerDevice'] = set(_db2_vals.get('powerStateFids', []))
+    _db3_raw = {'BYDAutoStatisticDevice': 'statisticStateFids', 'BYDAutoChargingDevice': 'extraChargingFids',
+                'BYDAutoSettingDevice': 'settingStateFids', 'BYDAutoPowerDevice': 'powerStateFids'}
+    _db3_unsub = [f'{d}|{hex(v)}' for d, n in _db3_raw.items() for v in _db2_vals.get(n, []) if v not in _db3_sub.get(d, set())] + \
+        [f'Instrument|{hex(v)}' for v in _db2_vals.get('extraInstrumentFids', []) if v not in _db3_sub['BYDAutoInstrumentDevice']]
+    _db3 = [
+        len(_db3_stat_prio) >= 10 and len(_db3_chg_ids) >= 9,
+        not _db3_dup,
+        not _db3_unsub,
+        '"BYDAutoChargingDevice" -> spec.copy(\nfeatureIds = spec.featureIds +\nCompanionDecoderOverrides.extraChargingFids\n)' in _db_own,
+        'TargetSpec(\n"BYDAutoPowerDevice_lowVoltage",\n"android.hardware.bydauto.power.BYDAutoPowerDevice",\nCompanionDecoderOverrides.powerStateFids\n)' in _db_own,
+        'TargetSpec(\n"BYDAutoPowerDevice_canDataCollect",\n"android.hardware.bydauto.power.BYDAutoPowerDevice",\nintArrayOf(0x99000037.toInt(), 0x99000003.toInt()),' in _db_own,
+        '"BYDAutoPowerDevice" to powerStateFids' in _db_ovr and '"BYDAutoChargingDevice" to extraChargingFids' in _db_ovr,
+    ]
+    if all(_db3): ok('DB3 every raw-captured fid is in the effective subscription computed from the catalog by the vendor rule, no companion addition duplicates the vendor set; 12 V has its own Power registration, the GB32960 one is untouched')
+    else: fail(f'DB3 subscription vs catalog drifted: {_db3} dup={_db3_dup} unsub={_db3_unsub}')
+
+    # DB4: СНЯТОЕ СНЯТО, МАРКЕРЫ НА МЕСТЕ. Lights, Bodywork, LIGHT-разрешения,
+    # счётчик coolant и его запрос; строки регистрации в app_log — ровно по
+    # ключам целей companion; подписи HAL Test для новых сигналов.
+    _db4_keys = re.findall(r"for \(final key in const \[\n((?:'[\w]+',\n)+)\]\) \{", _db_hts)
+    _db4_keys = re.findall(r"'(\w+)'", _db4_keys[0]) if _db4_keys else []
+    _db4_targets = re.findall(r'TargetSpec\(\n"(\w+)",\n"android', _db_own.split('// v0.1.29+89')[0] if '// v0.1.29+89' in _db_own else _db_own)
+    _db4 = [
+        'BYDAutoLightsDevice' not in _db_own and 'BYDAutoBodyworkDevice' not in _db_own,
+        'BYDAUTO_LIGHT_' not in _db_man,
+        'coolantSignal' not in _db_es and 'coolant' not in _db_es and 'countHalSamplesNamedBetween' not in _db_dbf,
+        _db4_keys == ['BYDAutoSettingDevice', 'BYDAutoPowerDevice_lowVoltage'],
+        set(_db4_keys) <= set(re.findall(r'TargetSpec\(\n"(\w+)",', _db_own)),
+        "'state_raw_1CD0003D': 'POWER_LOW_VOLTAGE'," in _db_ht and "'state_raw_44900842': 'CHARGING_IRON_BATTERY_POWER_MODE'," in _db_ht,
+        'state_raw_3310' not in _db_ht and 'heat_raw_2FA00016' not in _db_ht and 'state_raw_2FC00042' not in _db_ht,
+    ]
+    if all(_db4): ok('DB4 Lights, Bodywork, LIGHT permissions and the coolant counter are gone; app_log registration lines name exactly the companion-added targets; HAL Test labels the two new signals')
+    else: fail(f'DB4 removals / markers drifted: {_db4}')
+else:
+    ok(f"Part DB skipped (build +{pv}, catalog-checked companion layer lands in +228)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)

@@ -280,12 +280,9 @@ class _HalTestScreenState extends State<HalTestScreen> {
     'ac_raw_2FA0000A': 'AC_VENTILATION_STATE',
     'ac_raw_40600031': 'AC_DEFROST_REAR_STATE',
     'ac_raw_44300008': 'AC_QUICK_CLEAN_AIR',
-    'heat_raw_2FA00016': 'BODYWORK_BATTERY_COOLANT_STATUS',
     'heat_raw_35902039': 'INSTRUMENT_BATTERY_HEATING_ENERGY_TEMPORARILY_LIMITED',
     'heat_raw_3A700028': 'INSTRUMENT_AIR_HEATING_DISPLAY_STATE',
     // v0.2.27+226: состояния нагрузок (Друг 3, 06.11).
-    'state_raw_3310000A': 'LIGHT_LOW_BEAM_LIGHT',
-    'state_raw_3310000C': 'LIGHT_HIGH_BEAM_LIGHT',
     'state_raw_48D00010': 'SET_DRIVER_SEAT_HEATING_STATE',
     'state_raw_3B400042': 'SET_DRIVER_SEAT_HEATING_STATE1',
     'state_raw_3480000B': 'SET_PASSENGER_SEAT_HEATING_STATE',
@@ -297,8 +294,8 @@ class _HalTestScreenState extends State<HalTestScreen> {
     'state_raw_48600008': 'SET_REAR_LEFT_SEAT_VENTILATING_STATE',
     'state_raw_48600010': 'SET_REAR_RIGHT_SEAT_VENTILATING_STATE',
     'state_raw_31000040': 'SET_STEERING_WHEEL_HEAT_STATE',
-    'state_raw_2FC00042': 'BODYWORK_BATTERY_VOLTAGE_LEVEL',
-    'state_raw_000450BF': 'BODYWORK_BATTERY_VOLTAGE_LEVEL (old-format fid)',
+    'state_raw_1CD0003D': 'POWER_LOW_VOLTAGE',
+    'state_raw_44900842': 'CHARGING_IRON_BATTERY_POWER_MODE',
     'state_raw_2F300030': 'STATISTIC_DC_DC_STATE',
   };
 

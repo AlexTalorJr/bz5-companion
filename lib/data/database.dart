@@ -1343,17 +1343,6 @@ class AppDatabase extends _$AppDatabase {
     ];
   }
 
-  Future<int> countHalSamplesNamedBetween(
-      DateTime from, DateTime to, String name) async {
-    final cnt = countAll();
-    final row = await (selectOnly(halSamples)
-          ..addColumns([cnt])
-          ..where(halSamples.timestamp.isBetweenValues(from, to) &
-              halSamples.name.equals(name)))
-        .getSingle();
-    return row.read(cnt) ?? 0;
-  }
-
   /// v0.2.26+225: закрытые поездки с посчитанным здесь разделением
   /// (модель не пуста) — разовая постановка на повторную отправку в
   /// CloudSyncService.init.

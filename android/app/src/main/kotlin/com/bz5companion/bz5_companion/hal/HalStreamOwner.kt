@@ -99,60 +99,42 @@ object HalStreamOwner {
         selection: DiLinkProfiles.Selection,
     ): List<TargetSpec> {
         val base = TargetRegistry.streamingTargets(ctx)
-        // v0.2.27+226: fid, которого нет ни в одной цели этого же класса
-        // устройства. Statistic подписан двумя целями (первые 64 и хвост),
-        // и тот же fid во второй регистрации пришёл бы дважды.
-        fun missingIn(spec: TargetSpec, extra: IntArray): List<Int> =
-            extra.filter { f ->
-                base.none { it.deviceClassName == spec.deviceClassName && f in it.featureIds }
-            }
         val withStatistic = base.map { spec ->
             when (spec.key) {
                 "BYDAutoStatisticDevice" -> spec.copy(
                     featureIds = spec.featureIds +
-                        CompanionDecoderOverrides.extraStatisticFids +
-                        missingIn(spec, CompanionDecoderOverrides.statisticStateFids)
+                        CompanionDecoderOverrides.extraStatisticFids
                 )
                 // v0.2.23+222: два сигнала подогрева за границей 80 fid.
                 "BYDAutoInstrumentDevice" -> spec.copy(
                     featureIds = spec.featureIds +
                         CompanionDecoderOverrides.extraInstrumentFids
                 )
-                // v0.2.27+226: обогрев заднего стекла, если его нет в 80.
-                "BYDAutoAcDevice" -> spec.copy(
+                // v0.2.29+228: режим 12-вольтовой батареи — в явном списке
+                // Charging его нет.
+                "BYDAutoChargingDevice" -> spec.copy(
                     featureIds = spec.featureIds +
-                        missingIn(spec, CompanionDecoderOverrides.extraAcFids)
+                        CompanionDecoderOverrides.extraChargingFids
                 )
                 else -> spec
             }
         } + listOf(
-            // v0.2.23+222: Bodywork ради одного fid (см. bodyworkHeatFids).
-            // Регистрация на всё устройство может принести и двери/окна —
-            // сник пишет только эти fid, остальное отбрасывает.
-            // v0.2.27+226: плюс 12 В (см. bodyworkStateFids).
-            TargetSpec(
-                "BYDAutoBodyworkDevice",
-                "android.hardware.bydauto.bodywork.BYDAutoBodyworkDevice",
-                CompanionDecoderOverrides.bodyworkHeatFids +
-                    CompanionDecoderOverrides.bodyworkStateFids
-            ),
-            // v0.2.27+226: фары и Setting (сиденья, руль) — только состояния,
-            // сник пишет их как state_raw_<FID>. Нужны разрешения
-            // BYDAUTO_LIGHT_* и BYDAUTO_SETTING_* (манифест, BydPermissions).
-            // v0.2.28+227: класс фар во МНОЖЕСТВЕННОМ числе — пакет `lights`,
-            // класс BYDAutoLightsDevice (Друг 3 по прошивке, 06.11); в +226
-            // стоял `light.BYDAutoLightDevice`, которого на bZ5 нет. Разрешение
-            // при этом в ЕДИНСТВЕННОМ: BYDAUTO_LIGHT_*. Класс Lights,
-            // разрешение LIGHT — отсюда и прежняя путаница.
-            TargetSpec(
-                "BYDAutoLightsDevice",
-                "android.hardware.bydauto.lights.BYDAutoLightsDevice",
-                CompanionDecoderOverrides.lightStateFids
-            ),
+            // v0.2.27+226: Setting (сиденья, руль) — только состояния, сник
+            // пишет их как state_raw_<FID>. Разрешения BYDAUTO_SETTING_*.
+            // v0.2.29+228: Lights и Bodywork сняты — на bZ5 закрыты
+            // (class_not_found и signature-разрешение, каталог bZ5).
             TargetSpec(
                 "BYDAutoSettingDevice",
                 "android.hardware.bydauto.setting.BYDAutoSettingDevice",
                 CompanionDecoderOverrides.settingStateFids
+            ),
+            // v0.2.29+228: 12 В — ОТДЕЛЬНАЯ регистрация на Power, регистрацию
+            // GB32960 ниже не трогаем. Ключ с суффиксом, как _canDataCollect:
+            // normalizeTargetKey сведёт его к BYDAutoPowerDevice.
+            TargetSpec(
+                "BYDAutoPowerDevice_lowVoltage",
+                "android.hardware.bydauto.power.BYDAutoPowerDevice",
+                CompanionDecoderOverrides.powerStateFids
             )
         )
         // v0.1.29+89: триггер GB32960-сбора плюс канал данных.

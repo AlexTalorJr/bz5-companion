@@ -22,24 +22,10 @@ object CompanionDecoderOverrides {
      * (override wins on key collision — see TelemetryDecoderTable.decode).
      */
     val map: Map<String, Decoder> = mapOf(
-        // LOCAL FIX (v0.1.29+66) — shared table ships scale=1.0 which
-        // renders raw kΩ as "MΩ" (live reading 13517 "MΩ" on 2026-06-11
-        // drive, physically absurd). Truth: raw is kΩ → scale 0.001 gives
-        // 13.5 MΩ.
+        // v0.2.29+228: перекрытие изоляции 0x47300018 снято — p155 несёт
+        // ровно то же (insulation_resistance, MΩ, INT, scale 0.001; Друг 3,
+        // 06.11).
         //
-        // v0.2.4+203 — ОДНА ПОЛОСА НОРМЫ, А НЕ ДВЕ. Здесь стояло
-        // «14–18 MΩ», в общей таблице «16–18 MΩ», а замеры дали
-        // 6.1–17.1 MΩ при медиане 15.5 (108 замеров, экспорт 11.08,
-        // сводка в tools/data/export_summary_20260811.txt). Обе прежние
-        // полосы противоречили данным, и разошлись между собой. Теперь
-        // написано одно и то же в обоих файлах, и написано наблюдение.
-        // Official fix queued recon-side (p079); drop this entry on the
-        // next re-vendor that contains it.
-        "BYDAutoStatisticDevice|0x47300018" to Decoder(
-            "insulation_resistance", "MΩ", ValueSource.INT,
-            scale = 0.001,
-            notes = "LOCAL FIX over shared scale=1.0 bug; raw is kΩ"),
-
         // CANDIDATES (v0.1.29+66) — battery temperature search. None of
         // these is in the shared active table; recon saw PROBE_HIGHEST_TEMP
         // live at 20–21 °C (plausible = ambient) and never saw the
@@ -49,37 +35,17 @@ object CompanionDecoderOverrides {
         "BYDAutoStatisticDevice|0x47800010" to Decoder(
             "probe_highest_temp", "°C", ValueSource.INT,
             notes = "CANDIDATE battery temp; verify vs 790/002F"),
-        "BYDAutoStatisticDevice|0x00049367" to Decoder(
-            "battery_temp_avg", "°C", ValueSource.INT,
-            notes = "CANDIDATE STATISTIC_AVERAGE_BATTERY_TEMP; never seen live"),
-        "BYDAutoStatisticDevice|0x00090D49" to Decoder(
-            "battery_temp_high", "°C", ValueSource.INT,
-            notes = "CANDIDATE STATISTIC_HIGHEST_BATTERY_TEMP; never seen live"),
-        "BYDAutoStatisticDevice|0x000A4490" to Decoder(
-            "battery_temp_low", "°C", ValueSource.INT,
-            notes = "CANDIDATE STATISTIC_LOWEST_BATTERY_TEMP; never seen live"),
+        // v0.2.29+228: кандидаты battery_temp_avg/high/low (0x49367,
+        // 0x90D49, 0xA4490) сняты — номера с другой прошивки, в каталоге bZ5
+        // их нет ни по номеру, ни по имени; за все прогоны ни одного события
+        // (Друг 3, 06.11). Температура батареи — 0x47800010 выше.
 
-        // CANDIDATES (v0.1.29+70, status updated +72) — Energy/Charging
-        // temp fids. Battery temperature is now resolved via
-        // probe_highest_temp (0x47800010, promoted below this patch), so
-        // these are no longer needed as a battery-temp fallback. They are
-        // NOT dead-confirmed for us, though: recon (Friend 3, v0.10.61,
-        // n=4) saw zero events across charge/city/motorway, but all three
-        // are charging-CONTEXT fids by name (DC port temp, V2X max-power
-        // battery temp, V2X max-temp-allowed) and we have NOT yet run a
-        // charge session with HAL Test open. They stay in the override as
-        // a no-cost decoder layer (already subscribed, just decoded) until
-        // verified on an AC/DC charge. Surface in HAL Test only — NOT in
-        // the consumed allowlist, NOT on any card.
-        "BYDAutoEnergyDevice|0x000DA09B" to Decoder(
-            "energy_dc_port_temp", "°C", ValueSource.INT,
-            notes = "CANDIDATE charging-context; recon n=4 no events in drive — verify during a charge with HAL Test open"),
-        "BYDAutoChargingDevice|0x00072559" to Decoder(
-            "charging_max_power_batt_temp", "°C", ValueSource.INT,
-            notes = "CANDIDATE charging-context; recon n=4 no events in drive — verify during a charge with HAL Test open"),
-        "BYDAutoChargingDevice|0x0004CFF3" to Decoder(
-            "charging_max_temp_allowed", "°C", ValueSource.INT,
-            notes = "CANDIDATE charging-context; recon n=4 no events in drive — verify during a charge with HAL Test open"),
+        // v0.2.29+228: кандидаты energy_dc_port_temp (0xDA09B),
+        // charging_max_power_batt_temp (0x72559), charging_max_temp_allowed
+        // (0x4CFF3) сняты. Номера с другой прошивки; на bZ5 эти имена —
+        // 0x30A / 0x2F2 / 0x2F3, kind=legacy, читаются только синхронным
+        // get(), который недоверенному приложению закрыт. Дело не в DC-
+        // зарядке: номер чужой (Друг 3, 06.11).
 
         // PROMOTED (v0.1.44+143) — accumulated charge energy, kWh.
         // Verified by recon on a live AC session (p084): monotonic
@@ -152,10 +118,9 @@ object CompanionDecoderOverrides {
      * BydNativePlugin as a copy-on-top of the "BYDAutoStatisticDevice"
      * TargetSpec — the vendored registry file itself is never edited.
      *
-     * 0x47800010 = STATISTIC_PROBE_HIGHEST_TEMP. The AVERAGE/HIGHEST/
-     * LOWEST trio (0x00049367 / 0x00090D49 / 0x000A4490) is already
-     * inside the registry's top-64 prefix subscription, so only the
-     * probe fid needs adding here.
+     * 0x47800010 = STATISTIC_PROBE_HIGHEST_TEMP (battery temperature,
+     * checked against the cluster and OBD 790/002F). It is outside the
+     * registry's top-64 prefix subscription, so it is added here.
      */
     val extraStatisticFids: IntArray = intArrayOf(0x47800010)
 
@@ -169,33 +134,36 @@ object CompanionDecoderOverrides {
      * подписка берёт 80 младших из ~490 fid панели, эти два за границей —
      * добавляются сверху, как Statistic.
      *
-     * Bodywork: 0x2FA00016 BODYWORK_BATTERY_COOLANT_STATUS. Устройство
-     * убрано из вендорного списка в июне (recon p078: SecurityException на
-     * getInstance). Friend 3: это несработавшее runtime-разрешение
-     * BODYWORK_COMMON, как было с AC; у recon registerListener работает.
-     * Отказ подписки запустит самовосстановление разрешений из +220.
+     * v0.2.29+228: Bodywork (0x2FA00016) снят. getInstance закрыт
+     * signature-разрешением BYDAUTO_BODYWORK_GET (recon p078, 11.06; по
+     * каталогу bZ5 — SecurityException:BYDAUTO_BODYWORK_GET), запрос
+     * _COMMON не помогает. Подогрев батареи остаётся в «климат и подогрев».
      *
      * Четыре сигнала AC (PTC, прогрев) уже в подписке AC, их пишет ac_raw.
      */
     val extraInstrumentFids: IntArray = intArrayOf(0x35902039, 0x3A700028)
-    val bodyworkHeatFids: IntArray = intArrayOf(0x2FA00016)
 
     /** Device key → fids written raw as `heat_raw_<FID>` by the sink.
      *  Everything else from these devices is dropped there. */
     val heatRawFids: Map<String, Set<Long>> = mapOf(
-        "BYDAutoInstrumentDevice" to extraInstrumentFids.map { it.toLong() and 0xFFFFFFFFL }.toSet(),
-        "BYDAutoBodyworkDevice" to bodyworkHeatFids.map { it.toLong() and 0xFFFFFFFFL }.toSet()
+        "BYDAutoInstrumentDevice" to extraInstrumentFids.map { it.toLong() and 0xFFFFFFFFL }.toSet()
     )
 
     /**
      * v0.2.27+226 — СОСТОЯНИЯ НАГРУЗОК, сырой записью `state_raw_<FID>`
      * (Друг 3, 06.11). Нужны регрессии «Прочего» и климата в разделении
      * энергии: что было включено, пока шла поездка. Значения — номера
-     * ступеней, а не ватты; в ватты их переведёт только регрессия.
-     * Только hal_samples, в облако не идут.
+     * ступеней или флаги, а не ватты; в ватты их переведёт только
+     * регрессия. Только hal_samples, в облако не идут.
      *
-     * Lights (класс BYDAutoLightsDevice, разрешение BYDAUTO_LIGHT_*):
-     * 0x3310000A LIGHT_LOW_BEAM_LIGHT, 0x3310000C LIGHT_HIGH_BEAM_LIGHT.
+     * v0.2.29+228 — СВЕРЕНО С КАТАЛОГОМ bZ5 (tools/data/
+     * bydauto_feature_ids_bz5_v0_10_56.csv, гейт DB2):
+     *  - Lights снят: класс BYDAutoLightsDevice на bZ5 — class_not_found
+     *    (recon 11.06), фар не будет; разрешения BYDAUTO_LIGHT_* тоже сняты.
+     *  - Bodywork снят: SecurityException:BYDAUTO_BODYWORK_GET, 12 В
+     *    (0x2FC00042) с него не прийти.
+     *  - Setting остаётся: класс есть, getInstance 11.06 не вызывался —
+     *    ответит строка `HAL: BYDAutoSettingDevice …` в app_log и проба recon.
      *
      * Setting, подогрев сидений: водитель и пассажир в ДВУХ версиях
      * (`_STATE` 0x48D00010 / 0x3480000B и `_STATE1` 0x3B400042 /
@@ -205,33 +173,35 @@ object CompanionDecoderOverrides {
      * НЕ подписываемся: `*_STATE_SET` (команды), `SET_HAS_*` (признак
      * комплектации), `SETTING_*_CONFIG` (конфигурация).
      *
-     * Bodywork, 12 В: 0x2FC00042 BODYWORK_BATTERY_VOLTAGE_LEVEL по каталогу
-     * recon (снят рефлексией BYDAutoFeatureIds на самой машине, Друг 3
-     * 06.11). 0x000450BF — номер старого формата из tools/data/
-     * feature_ids.txt, который снят с другой прошивки и с bZ5 расходится
-     * (там же 0x2FC00042 назван PM25_ANION_CONFIG; на bZ5 это 0x43300025).
-     * Оба подписаны до экспорта: ожидается только 0x2FC00042, второй снять
-     * следующим патчем. Номера fid брать из каталога recon v0.10.56.
+     * Power: 0x1CD0003D POWER_LOW_VOLTAGE — единственный кандидат на 12 В на
+     * открытом классе. Может оказаться флагом «низкое напряжение», а не
+     * вольтами. Подписан ОТДЕЛЬНОЙ регистрацией (HalStreamOwner), чтобы не
+     * вмешиваться в регистрацию GB32960 (совет Друга 3: в recon на Power
+     * две регистрации живут вместе без потерь 0x99000020).
      *
-     * Statistic: 0x2F300030 STATISTIC_DC_DC_STATE. Ac: 0x40600031
-     * AC_DEFROST_REAR_STATE — кадры Ac уже пишутся целиком как ac_raw, здесь
-     * только гарантия подписки (вендорная берёт 80 из списка AC_).
+     * Charging: 0x44900842 CHARGING_IRON_BATTERY_POWER_MODE — режим
+     * 12-вольтовой LFP-батареи, покажет подзарядку от DC-DC. В вендорном
+     * явном списке Charging его нет — добавляется сверху (extraChargingFids).
+     *
+     * Statistic: 0x2F300030 STATISTIC_DC_DC_STATE — уже в первых 64
+     * вендорной подписки Statistic, добавлять не нужно (гейт DB3 считает
+     * подписку по каталогу тем же правилом). Тот же fid есть в Energy как
+     * ENERGY_DC_WORK_MODE; Energy у нас подписан явным списком без него.
      */
-    val lightStateFids: IntArray = intArrayOf(0x3310000A, 0x3310000C)
     val settingStateFids: IntArray = intArrayOf(
         0x48D00010, 0x3B400042, 0x3480000B, 0x3B400044, 0x34800025, 0x3480002C,
         0x48D00008, 0x48D0000B, 0x48600008, 0x48600010,
         0x31000040
     )
-    val bodyworkStateFids: IntArray = intArrayOf(0x000450BF, 0x2FC00042)
+    val powerStateFids: IntArray = intArrayOf(0x1CD0003D)
+    val extraChargingFids: IntArray = intArrayOf(0x44900842)
     val statisticStateFids: IntArray = intArrayOf(0x2F300030)
-    val extraAcFids: IntArray = intArrayOf(0x40600031)
 
     /** Device key → fids written raw as `state_raw_<FID>` by the sink. */
     val stateRawFids: Map<String, Set<Long>> = mapOf(
-        "BYDAutoLightsDevice" to lightStateFids.map { it.toLong() and 0xFFFFFFFFL }.toSet(),
         "BYDAutoSettingDevice" to settingStateFids.map { it.toLong() and 0xFFFFFFFFL }.toSet(),
-        "BYDAutoBodyworkDevice" to bodyworkStateFids.map { it.toLong() and 0xFFFFFFFFL }.toSet(),
+        "BYDAutoPowerDevice" to powerStateFids.map { it.toLong() and 0xFFFFFFFFL }.toSet(),
+        "BYDAutoChargingDevice" to extraChargingFids.map { it.toLong() and 0xFFFFFFFFL }.toSet(),
         "BYDAutoStatisticDevice" to statisticStateFids.map { it.toLong() and 0xFFFFFFFFL }.toSet()
     )
 }
