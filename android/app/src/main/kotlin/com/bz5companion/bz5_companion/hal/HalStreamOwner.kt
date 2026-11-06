@@ -139,9 +139,14 @@ object HalStreamOwner {
             // v0.2.27+226: фары и Setting (сиденья, руль) — только состояния,
             // сник пишет их как state_raw_<FID>. Нужны разрешения
             // BYDAUTO_LIGHT_* и BYDAUTO_SETTING_* (манифест, BydPermissions).
+            // v0.2.28+227: класс фар во МНОЖЕСТВЕННОМ числе — пакет `lights`,
+            // класс BYDAutoLightsDevice (Друг 3 по прошивке, 06.11); в +226
+            // стоял `light.BYDAutoLightDevice`, которого на bZ5 нет. Разрешение
+            // при этом в ЕДИНСТВЕННОМ: BYDAUTO_LIGHT_*. Класс Lights,
+            // разрешение LIGHT — отсюда и прежняя путаница.
             TargetSpec(
-                "BYDAutoLightDevice",
-                "android.hardware.bydauto.light.BYDAutoLightDevice",
+                "BYDAutoLightsDevice",
+                "android.hardware.bydauto.lights.BYDAutoLightsDevice",
                 CompanionDecoderOverrides.lightStateFids
             ),
             TargetSpec(

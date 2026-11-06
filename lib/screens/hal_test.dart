@@ -297,8 +297,8 @@ class _HalTestScreenState extends State<HalTestScreen> {
     'state_raw_48600008': 'SET_REAR_LEFT_SEAT_VENTILATING_STATE',
     'state_raw_48600010': 'SET_REAR_RIGHT_SEAT_VENTILATING_STATE',
     'state_raw_31000040': 'SET_STEERING_WHEEL_HEAT_STATE',
-    'state_raw_000450BF': 'BODYWORK_BATTERY_VOLTAGE_LEVEL (catalog fid)',
-    'state_raw_2FC00042': 'BODYWORK_BATTERY_VOLTAGE_LEVEL (handoff fid)',
+    'state_raw_2FC00042': 'BODYWORK_BATTERY_VOLTAGE_LEVEL',
+    'state_raw_000450BF': 'BODYWORK_BATTERY_VOLTAGE_LEVEL (old-format fid)',
     'state_raw_2F300030': 'STATISTIC_DC_DC_STATE',
   };
 

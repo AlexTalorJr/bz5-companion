@@ -3709,11 +3709,11 @@ class HalTelemetryService extends ChangeNotifier
     // v0.2.23+222: Bodywork подписан ради одного сигнала подогрева, и его
     // регистрация — открытый вопрос (июнь: SecurityException). Отдельная
     // строка, чтобы не искать её в общем статусе.
-    // v0.2.27+226: так же Light и Setting — новые устройства. Текст отказа
+    // v0.2.27+226: так же Lights и Setting — новые устройства. Текст отказа
     // полный (HalStreamOwner.withFullGetInstanceErrors): SecurityException
     // назовёт недостающее разрешение.
     if (status != null) {
-      for (final dev in const ['Bodywork', 'Light', 'Setting']) {
+      for (final dev in const ['Bodywork', 'Lights', 'Setting']) {
         final errs = status.errors.entries
             .where((x) => '${x.key}'.contains('BYDAuto${dev}Device'))
             .map((x) => '${x.value}')

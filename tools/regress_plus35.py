@@ -13130,7 +13130,7 @@ if int(pv) >= 222:
         'if (name.startsWith(AC_RAW_PREFIX) || name.startsWith(HEAT_RAW_PREFIX)' in _cx_out,
         ("if (e.name.startsWith('heat_raw_')) {\n_logHeatRaw(e);" in _cx_hts) if int(pv) < 226 else
         ("if (e.name.startsWith('heat_raw_') || e.name.startsWith('state_raw_')) {\n_logHeatRaw(e);" in _cx_hts),
-        'if (_heatRawSeen.add(e.name)) {' in _cx_hts and (("'HAL: Bodywork failed: " in _cx_hts) if int(pv) < 226 else ("'HAL: $dev failed: " in _cx_hts and "for (final dev in const ['Bodywork', 'Light', 'Setting']) {" in _cx_hts)),
+        'if (_heatRawSeen.add(e.name)) {' in _cx_hts and (("'HAL: Bodywork failed: " in _cx_hts) if int(pv) < 226 else ("'HAL: $dev failed: " in _cx_hts and ("for (final dev in const ['Bodywork', 'Light', 'Setting']) {" if int(pv) < 227 else "for (final dev in const ['Bodywork', 'Lights', 'Setting']) {") in _cx_hts)),
     ]
     if all(_cx3): ok('CX3 heating signals: Instrument x2 added on top, Bodywork subscribed for one fid; the sink writes only listed fids, on change, before the decoder; first event and Bodywork registration land in app_log')
     else: fail(f'CX3 heating capture drifted: {_cx3}')
@@ -13472,14 +13472,16 @@ if int(pv) >= 226:
         _da6_set_ids == {'0x48D00010', '0x3B400042', '0x3480000B', '0x3B400044', '0x34800025', '0x3480002C', '0x48D00008', '0x48D0000B', '0x48600008', '0x48600010', '0x31000040'},
         'val lightStateFids: IntArray = intArrayOf(0x3310000A, 0x3310000C)' in _da_ovr,
         'val bodyworkStateFids: IntArray = intArrayOf(0x000450BF, 0x2FC00042)' in _da_ovr,
-        'TargetSpec(\n"BYDAutoLightDevice",\n"android.hardware.bydauto.light.BYDAutoLightDevice",\nCompanionDecoderOverrides.lightStateFids\n)' in _da_own,
+        # +227: класс фар во множественном числе (Друг 3 по прошивке).
+        (('TargetSpec(\n"BYDAutoLightDevice",\n"android.hardware.bydauto.light.BYDAutoLightDevice",\nCompanionDecoderOverrides.lightStateFids\n)' in _da_own) if int(pv) < 227 else
+         ('TargetSpec(\n"BYDAutoLightsDevice",\n"android.hardware.bydauto.lights.BYDAutoLightsDevice",\nCompanionDecoderOverrides.lightStateFids\n)' in _da_own and 'bydauto.light.' not in _da_own and 'BYDAutoLightDevice' not in _da_own and 'BYDAutoLightDevice' not in _da_ovr)),
         'TargetSpec(\n"BYDAutoSettingDevice",\n"android.hardware.bydauto.setting.BYDAutoSettingDevice",\nCompanionDecoderOverrides.settingStateFids\n)' in _da_own,
         'CompanionDecoderOverrides.bodyworkHeatFids +\nCompanionDecoderOverrides.bodyworkStateFids' in _da_own,
         'missingIn(spec, CompanionDecoderOverrides.statisticStateFids)' in _da_own and 'missingIn(spec, CompanionDecoderOverrides.extraAcFids)' in _da_own,
         'base.none { it.deviceClassName == spec.deviceClassName && f in it.featureIds }' in _da_own,
         not any(x in _da_ovr for x in ('0x1EA00034', '0xB480000B', '0x4D00303E', '0x23200')),
     ]
-    if all(_da6): ok('DA6 Light and Setting subscribed as their own targets, 12 V on Bodywork (catalog and handoff fid), DC-DC and rear defrost added only where the device does not have them yet; no command/equipment/config fid')
+    if all(_da6): ok('DA6 Light and Setting subscribed as their own targets, 12 V on Bodywork (recon fid 0x2FC00042 plus the old-format 0x000450BF until the export), DC-DC and rear defrost added only where the device does not have them yet; no command/equipment/config fid')
     else: fail(f'DA6 load-state subscription drifted: {_da6}')
 
     # DA7: ЗАПИСЬ И МАРКЕРЫ. Сник выбирает префикс в одном месте; журнал
@@ -13493,10 +13495,10 @@ if int(pv) >= 226:
         'CompanionDecoderOverrides.stateRawFids[target]?.contains(fid32) == true -> "state_raw_"' in _da7_fn,
         '"name" to "$prefix${String.format("%08X", fid32)}",' in _da7_fn,
         'private const val STATE_RAW_PREFIX = "state_raw_"' in _da_out and 'name.startsWith(STATE_RAW_PREFIX)) {' in _da_out,
-        '"BYDAutoLightDevice" to lightStateFids' in _da_ovr and '"BYDAutoSettingDevice" to settingStateFids' in _da_ovr and '"BYDAutoBodyworkDevice" to bodyworkStateFids' in _da_ovr and '"BYDAutoStatisticDevice" to statisticStateFids' in _da_ovr,
+        ('"BYDAutoLightDevice" to lightStateFids' if int(pv) < 227 else '"BYDAutoLightsDevice" to lightStateFids') in _da_ovr and '"BYDAutoSettingDevice" to settingStateFids' in _da_ovr and '"BYDAutoBodyworkDevice" to bodyworkStateFids' in _da_ovr and '"BYDAutoStatisticDevice" to statisticStateFids' in _da_ovr,
         "if (e.name.startsWith('heat_raw_') || e.name.startsWith('state_raw_')) {" in _da_hts,
         "final kind = e.name.startsWith('state_raw_') ? 'state' : 'heat';" in _da_hts,
-        "for (final dev in const ['Bodywork', 'Light', 'Setting']) {" in _da_hts and "'BYDAuto${dev}Device'" in _da_hts,
+        ("for (final dev in const ['Bodywork', 'Light', 'Setting']) {" if int(pv) < 227 else "for (final dev in const ['Bodywork', 'Lights', 'Setting']) {") in _da_hts and "'BYDAuto${dev}Device'" in _da_hts,
         _da7_i_start > -1,
         'if (!err.startsWith("getInstance_threw")) return@mapValues err' in _da_own and '"getInstance_threw: ${c?.javaClass?.simpleName}: ${c?.message}"' in _da_own,
     ]
