@@ -13,7 +13,7 @@ do not apply to a per-second split; reconciled 05.11):
   residual = E_pack - E_motion   (trip level, never clipped per window)
   other    = BASE_KW * covered time
   climate  = residual - other; if < 0 -> climate = 0, other = residual.
-  Shown only if trip >= 10 min, coverage >= 0.8 and E_pack > 0.
+  Shown only if trip >= 3 min (10 min before +229), coverage >= 0.8 and E_pack > 0.
 
 Usage:
   python3 tools/mirror_plus222_split.py               self-tests (CI-safe)
@@ -23,7 +23,7 @@ import csv, math, sys
 from datetime import datetime
 
 K_T, K_R, BASE_KW = 1.030, 0.835, 0.65
-MIN_TRIP_S, MIN_COVERAGE = 600, 0.8
+MIN_TRIP_S, MIN_COVERAGE = 180, 0.8  # +229: 600 -> 180
 NAMES = ('pack_voltage_fine', 'pack_voltage', 'pack_current', 'motor_torque', 'motor_rpm')
 
 
@@ -100,8 +100,9 @@ def _selftest():
            (0, 'motor_rpm', 0.0), (400, 'motor_torque', 0.0)]
     r = split(ev5, 0, 1200)
     check('coverage starts at the last first sample', r['covered_s'] == 800 and r['motion'] is None)
-    # 6. Short trip: no split.
-    check('trip under 10 min: no split', split(ev, 0, 599)['motion'] is None)
+    # 6. Short trip: no split below the threshold, split at it (+229: 3 min).
+    check('trip under 3 min: no split', split(ev, 0, 179)['motion'] is None)
+    check('trip of 3 min: split', split(ev, 0, 180)['motion'] is not None)
     # 7. Scaling to energy_used_kwh keeps the shares and sums to it.
     r = split(ev3, 0, 1200)
     m, c, o = scaled(r, 2.0)

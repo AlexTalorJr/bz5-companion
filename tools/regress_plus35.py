@@ -13258,7 +13258,8 @@ if int(pv) >= 223:
     # зелёным; удерживаемое — серым.
     _cy2 = [
         'final current = resolvePackCurrent(hal, svc);' in _cy_dp,
-        "if (current != null)\nText(' · ${current.amps.round()} A'," in _cy_dp,
+        # +229: один знак после запятой (pack_current шаг 0.1 А).
+        ("if (current != null)\nText(' · ${current.amps.round()} A'," if int(pv) < 229 else "if (current != null)\nText(' · ${current.amps.toStringAsFixed(1)} A',") in _cy_dp,
         'color: current.held\n? Colors.grey\n: current.amps < -3\n? Colors.greenAccent' in _cy_dp,
     ]
     if all(_cy2): ok('CY2 the speed strip shows signed pack current next to the voltage, regen green, held grey')
@@ -13401,7 +13402,7 @@ if int(pv) >= 225:
         f"static const _kSplitRepushSeeded = 'cloud_sync_split_repush_{'225' if int(pv) < 226 else '226'}';" in _cz_cs,
         "static const String repushTripIdsKey = 'cloud_sync_repush_trip_ids';" in _cz_imp,
         f"static const String splitRepushSeedKey = 'cloud_sync_split_repush_{'225' if int(pv) < 226 else '226'}';" in _cz_imp,
-        'repushTripIdsKey,\nsplitRepushSeedKey,\n];' in _cz_imp,
+        ('repushTripIdsKey,\nsplitRepushSeedKey,\n];' if int(pv) < 229 else 'repushTripIdsKey,\nsplitRepushSeedKey,\n\nsplitRecomputeKey,\n];') in _cz_imp,
         -1 < _cz4_i_rm < _cz4_i_apply and 'await prefs.remove(repushTripIdsKey);' in _cz_imp,
         't.endedAt.isNotNull() & t.energySplitModel.isNotNull()' in _cz_db,
     ]
@@ -13709,6 +13710,90 @@ if int(pv) >= 228:
     else: fail(f'DB4 removals / markers drifted: {_db4}')
 else:
     ok(f"Part DB skipped (build +{pv}, catalog-checked companion layer lands in +228)")
+
+# ═══════ Part DC — 0.2.30+229: отступ BZ3, ток, стартовый SOC, порог разделения ═══════
+if int(pv) >= 229:
+    _dc_f = lambda t: re.sub(r'\n[ \t]+', '\n', t)
+    _dc_rd = lambda pth: _dc_f(_strip_comments_safe((root / pth).read_text()))
+    _dc_cb = _dc_rd('lib/widgets/charging_banner.dart')
+    _dc_hts = _dc_rd('lib/services/hal_telemetry_service.dart')
+    _dc_db = _dc_rd('lib/data/database.dart')
+    _dc_es = _dc_rd('lib/services/energy_split_service.dart')
+    _dc_imp = _dc_rd('lib/services/import_service.dart')
+    _dc_main = _dc_rd('lib/main.dart')
+    _dc_mir = (root / 'tools/mirror_plus222_split.py').read_text()
+
+    # DC1: ВЕРХНИЙ ОТСТУП В ОДНОМ МЕСТЕ. Плашка атласа получает отступ
+    # строки состояния, когда стоит первой; экрану под баннером/плашкой
+    # отступ сверху снят (иначе двойной на BZ3).
+    _dc1_i = _dc_cb.find('Widget _withPlate(Widget? banner) {')
+    _dc1_fn = _dc_cb[_dc1_i:_dc1_i + 700] if _dc1_i > -1 else ''
+    _dc1 = [
+        'SafeArea(\ntop: banner == null,\nbottom: false,\nchild: AtlasSummaryPlate(onTap: widget.onPlateTap),\n),' in _dc1_fn,
+        'Expanded(\nchild: MediaQuery.removePadding(\ncontext: context,\nremoveTop: true,\nchild: widget.child,\n),\n),' in _dc1_fn,
+        'if (banner == null && !widget.showAtlasPlate) return widget.child;' in _dc1_fn,
+    ]
+    if all(_dc1): ok('DC1 the top inset is decided once in ChargingAwareBody: the atlas plate takes the status bar when it is first, the screen below loses its top inset (no clipped plate, no double gap on BZ3)')
+    else: fail(f'DC1 top inset drifted: {_dc1}')
+
+    # DC2: СТАРТОВЫЙ SOC. Защёлка помнит, точный ли старт; целый заменяет
+    # первый точный в пределах двух минут, со сбросом сглаживания и
+    # минимума/максимума и обновлением строки; маркер в app_log.
+    _dc2_i = _dc_hts.find('} else if (_halTripStartSoc != null && !_halTripStartSocPrecise) {')
+    _dc2_br = _dc_hts[_dc2_i:_dc2_i + 900] if _dc2_i > -1 else ''
+    _dc2 = [
+        "_halTripStartSoc = soc;\n_halTripStartSocPrecise =\n_heldValue('soc_precise', _socPreciseHold) != null;" in _dc_hts,
+        _dc2_i > -1 and 'DateTime.now().difference(started) <= _kStartSocUpgradeWindow) {' in _dc2_br,
+        '_halTripStartSoc = p;\n_halTripStartSocPrecise = true;\n_halEnergyEma = null;' in _dc2_br,
+        '_halTripMinSoc = p;\n_halTripMaxSoc = p;\n_backfillHalTripStart();' in _dc2_br,
+        "'${p.toStringAsFixed(1)} (precise)');" in _dc2_br,
+        'static const Duration _kStartSocUpgradeWindow = Duration(minutes: 2);' in _dc_hts,
+        _dc_hts.count('_halTripStartSocPrecise = false;') == 3 and 'if (j.startSoc != null) _halTripStartSocPrecise = true;' in _dc_hts,
+    ]
+    if all(_dc2): ok('DC2 an integer start SOC is replaced by the first precise one within two minutes (EMA and min/max restart, row back-filled before the first push, app_log marker)')
+    else: fail(f'DC2 start SOC upgrade drifted: {_dc2}')
+
+    # DC3: ПОЧИНКА СТАРЫХ. Все условия разом; запись сбрасывает разделение
+    # (оно пересчитается к новой энергии); повторная отправка — проводка
+    # в main; проход после восстановления брошенных.
+    _dc3_i = _dc_hts.find('Future<void> _repairIntegerStartSoc() async {')
+    _dc3_fn = _dc_hts[_dc3_i:_dc3_i + 2200] if _dc3_i > -1 else ''
+    _dc3_i_rec = _dc_hts.find('await _recoverOrphanHalTrips();\n\nawait _repairIntegerStartSoc();')
+    _dc3_rep = _dc_db[_dc_db.find('Future<void> repairTripStartSoc('):][:1200]
+    _dc3 = [
+        _dc3_i_rec > -1,
+        'if (s0 != s0.roundToDouble()) continue;' in _dc3_fn,
+        'if (pts.first.ts.difference(t.startedAt) > _kStartSocUpgradeWindow) {\ncontinue;' in _dc3_fn,
+        'if (s1 == s1.roundToDouble() && pts.last.v != s1) continue;' in _dc3_fn,
+        'if (p0 <= s1) continue;' in _dc3_fn,
+        'final energy = (p0 - s1) * _halPackCapacityKwh / 100.0;' in _dc3_fn,
+        'if (fixed.isNotEmpty) onTripsRepaired?.call(fixed);' in _dc3_fn,
+        all(f'{c}: const Value(null),' in _dc3_rep for c in ('energySplitCoverage', 'energyPackKwh', 'energyMotionKwh', 'energyClimateKwh', 'energyOtherKwh', 'energySplitModel')),
+        't.energyUsedKwh.isNull() &' in _dc_db and 't.startedAt.isBiggerOrEqualValue(since))' in _dc_db,
+        'hal.onTripsRepaired = (ids) =>\nunawaited(ctx.read<CloudSyncService>().requeueTrips(ids));\nhal.init();' in _dc_main,
+    ]
+    if all(_dc3): ok('DC3 trips with an integer start and empty energy are repaired from the first precise SOC (all conditions at once, split reset to rescale, re-sent via main wiring, after orphan recovery)')
+    else: fail(f'DC3 start SOC repair drifted: {_dc3}')
+
+    # DC4: ПОРОГ РАЗДЕЛЕНИЯ 3 МИНУТЫ И ОТПРАВКА ЛЮБОЙ ЗАПИСАННОЙ МОДЕЛИ.
+    # Dart и зеркало совпадают; разовый пересчёт поездок без частей —
+    # только с данными HAL, ключ едет с базой и снимается импортом.
+    _dc4_i = _dc_es.find('await _db.writeEnergySplit(\nt.id,\ncoverage: r.coverage,')
+    _dc4_tail = _dc_es[_dc4_i:_dc4_i + 1200] if _dc4_i > -1 else ''
+    _dc4 = [
+        'static const int minTripSeconds = 180;' in _dc_es and 'MIN_TRIP_S, MIN_COVERAGE = 180, 0.8' in _dc_mir,
+        "static const String version = 'v1';" in _dc_es,
+        'split.add(t.id);' in _dc4_tail and 'if (r.hasSplit) split.add(t.id);' not in _dc_es,
+        "static const String recomputeKey = 'energy_split_recompute_229';" in _dc_es and "static const String splitRecomputeKey = 'energy_split_recompute_229';" in _dc_imp,
+        'await prefs.remove(splitRecomputeKey);' in _dc_imp,
+        'final n = since == null ? 0 : await _db.clearPartlessEnergySplitSince(since);\nawait prefs.setBool(recomputeKey, true);' in _dc_es,
+        'void start() {\nunawaited(_recomputePartless());' in _dc_es,
+        't.energySplitModel.isNotNull() &\nt.energyMotionKwh.isNull() &\nt.startedAt.isBiggerOrEqualValue(since)))' in _dc_db,
+    ]
+    if all(_dc4): ok('DC4 split threshold 3 min in Dart and mirror (model v1 kept), every written model is re-sent, one-time recompute of partless trips limited to trips with HAL data under a database-bound key')
+    else: fail(f'DC4 split threshold / re-send drifted: {_dc4}')
+else:
+    ok(f"Part DC skipped (build +{pv}, BZ3 inset / current decimal / start SOC / split threshold land in +229)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)

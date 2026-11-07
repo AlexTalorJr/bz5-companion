@@ -1372,6 +1372,63 @@ class AppDatabase extends _$AppDatabase {
         energySplitModel: Value(model),
       ));
 
+  /// v0.2.30+229: закрытые поездки с пустой энергией и известными стартом
+  /// и концом SOC, начатые не раньше [since] (у них ещё есть hal_samples).
+  /// Кандидаты на починку целого стартового SOC (HalTelemetryService).
+  Future<List<Trip>> closedTripsWithoutEnergySince(DateTime since) =>
+      (select(trips)
+            ..where((t) =>
+                t.endedAt.isNotNull() &
+                t.energyUsedKwh.isNull() &
+                t.startSoc.isNotNull() &
+                t.endSoc.isNotNull() &
+                t.startedAt.isBiggerOrEqualValue(since))
+            ..orderBy([(t) => OrderingTerm(expression: t.id)]))
+          .get();
+
+  /// v0.2.30+229: починка поездки, стартовавшей по целому SOC. Пишет
+  /// старт, энергию, расход, минимум и максимум SOC и СБРАСЫВАЕТ
+  /// разделение: оно масштабировано к старой (пустой) энергии, служба
+  /// разделения пересчитает его к новой — сумма частей снова равна
+  /// energy_used_kwh (правило Друга 2).
+  Future<void> repairTripStartSoc(
+    int tripId, {
+    required double startSoc,
+    required double energyUsedKwh,
+    required double? avgConsumptionKwh100km,
+    required double minSoc,
+    required double maxSoc,
+  }) =>
+      (update(trips)..where((t) => t.id.equals(tripId))).write(TripsCompanion(
+        startSoc: Value(startSoc),
+        energyUsedKwh: Value(energyUsedKwh),
+        avgConsumptionKwh100km: Value(avgConsumptionKwh100km),
+        minSoc: Value(minSoc),
+        maxSoc: Value(maxSoc),
+        energySplitCoverage: const Value(null),
+        energyPackKwh: const Value(null),
+        energyMotionKwh: const Value(null),
+        energyClimateKwh: const Value(null),
+        energyOtherKwh: const Value(null),
+        energySplitModel: const Value(null),
+      ));
+
+  /// v0.2.30+229: снять разделение без частей (модель есть, частей нет)
+  /// у закрытых поездок, начатых не раньше [since] — служба разделения
+  /// пересчитает их по новому порогу длительности. Возвращает число строк.
+  Future<int> clearPartlessEnergySplitSince(DateTime since) =>
+      (update(trips)
+            ..where((t) =>
+                t.endedAt.isNotNull() &
+                t.energySplitModel.isNotNull() &
+                t.energyMotionKwh.isNull() &
+                t.startedAt.isBiggerOrEqualValue(since)))
+          .write(const TripsCompanion(
+        energySplitCoverage: Value(null),
+        energyPackKwh: Value(null),
+        energySplitModel: Value(null),
+      ));
+
   Future<List<Trip>> getAllTrips() {
     return (select(trips)
           ..orderBy(

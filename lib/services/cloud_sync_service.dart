@@ -1898,7 +1898,8 @@ class CloudSyncService extends ChangeNotifier {
 
   /// v0.2.23+222: поездки, получившие разделение энергии, уходят ещё раз.
   /// Сервер обновит строку по client_uuid (Друг 2, §3). Зовёт
-  /// EnergySplitService (main.dart).
+  /// EnergySplitService (main.dart); с +229 — и HalTelemetryService после
+  /// починки стартового SOC.
   ///
   /// v0.2.26+225: id идут в список «отправить ещё раз», множество
   /// отправленных не трогается (см. _kRepushTripIds). Вызов до init
@@ -1912,8 +1913,9 @@ class CloudSyncService extends ChangeNotifier {
     }
     _repushTripIds.addAll(ids);
     await _saveRepushTripIds(prefs);
-    debugPrint('CloudSync: ${ids.length} trip(s) re-queued with energy '
-        'split (re-send list ${_repushTripIds.length})');
+    // v0.2.30+229: зовут разделение энергии и починка стартового SOC.
+    debugPrint('CloudSync: ${ids.length} trip(s) re-queued '
+        '(re-send list ${_repushTripIds.length})');
     if (!_initialized) return;
     await _recomputeStats();
     notifyListeners();
@@ -4733,7 +4735,7 @@ class CloudSyncService extends ChangeNotifier {
   /// Read app version from the static value baked into the build.
   /// We don't have package_info_plus as a dep — pubspec-version is
   /// hardcoded here. Update when bumping. Off-by-one tolerated.
-  Future<String> _readAppVersion() async => '0.2.29+228';
+  Future<String> _readAppVersion() async => '0.2.30+229';
 }
 
 // ─── Internal exceptions ────────────────────────────────────────────

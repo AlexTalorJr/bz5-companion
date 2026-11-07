@@ -320,6 +320,10 @@ class _BZ5AppState extends State<BZ5App> with WidgetsBindingObserver {
             // a bool callback, never the HAL class itself (AA2).
             ctx.read<CloudSyncService>().isHeadUnitCheck =
                 () => hal.canUseHal;
+            // v0.2.30+229: починка целого стартового SOC переписывает
+            // энергию уже отправленных поездок — отправить ещё раз.
+            hal.onTripsRepaired = (ids) =>
+                unawaited(ctx.read<CloudSyncService>().requeueTrips(ids));
             hal.init();
             // v0.1.56+155: arm the autostart net once the head-unit
             // verdict settles (no-op on phones).

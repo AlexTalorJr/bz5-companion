@@ -23,6 +23,7 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../data/database.dart';
 
@@ -34,7 +35,15 @@ class EnergySplitModel {
   static const double kTraction = 1.030;
   static const double kRegen = 0.835;
   static const double baseKw = 0.65;
-  static const int minTripSeconds = 600;
+  /// v0.2.30+229: 600 → 180 (решение владельца 07.11). Прогон зеркала по
+  /// экспорту 07.11 без порога: у поездок до 5 мин (8 шт.) медианы
+  /// движение 69 % / климат 14 %, 5–10 мин (12) — 66 / 22, длинных (33) —
+  /// 67 / 20; покрытие 0.98–1.00; климат в ноль — 1 из 20 коротких.
+  /// Модель посекундная, длинные окна ей не нужны; 10 минут были
+  /// осторожным порогом исходной схемы, когда коротких данных не было.
+  /// Коэффициенты те же — [version] не меняется. Живая строка на
+  /// экране вождения подчиняется тому же порогу: «считается…» — 3 мин.
+  static const int minTripSeconds = 180;
   static const double minCoverage = 0.8;
 
   /// Сигналы модели. `pack_voltage_fine` предпочтительнее, `pack_voltage`
@@ -72,7 +81,8 @@ class EnergySplitResult {
 }
 
 /// v0.2.26+225: живое накопленное разделение открытой поездки.
-/// [shares] null — «считается…» (меньше 10 минут или мало покрытия).
+/// [shares] null — «считается…» (короче [EnergySplitModel.minTripSeconds]
+/// или мало покрытия).
 class LiveEnergySplit {
   final int tripId;
   final ({double motion, double climate, double other})? shares;
@@ -142,7 +152,19 @@ class EnergySplitService {
   /// Поездки, получившие разделение, — CloudSyncService.requeueTrips
   /// (проводка в main.dart). Уже отправленная без разделения поездка
   /// уйдёт ещё раз; сервер обновит строку по client_uuid (Друг 2, §3).
+  ///
+  /// v0.2.30+229: сюда идёт КАЖДАЯ поездка, которой записалась модель, а
+  /// не только получившая части. Короткая поездка получает модель, пак и
+  /// покрытие без частей; раньше она повторно не уходила, и если отправка
+  /// успевала до расчёта, сервер этих полей не видел (1201–1204, Друг 2
+  /// 07.11 §5). Модель без частей ничего на сервере не стирает: частей у
+  /// такой поездки там нет — их считает только эта голова.
   void Function(List<int> tripIds)? onTripsSplit;
+
+  /// v0.2.30+229: разовый пересчёт поездок с моделью без частей под
+  /// новый порог (см. [_recomputePartless]). Ключ привязан к базе —
+  /// ImportService снимает его при импорте архива.
+  static const String recomputeKey = 'energy_split_recompute_229';
 
   StreamSubscription<List<Trip>>? _sub;
   bool _busy = false;
@@ -180,6 +202,7 @@ class EnergySplitService {
   }
 
   void start() {
+    unawaited(_recomputePartless());
     _sub ??= _db.watchTripsAwaitingSplit().listen((_) => unawaited(_kick()));
     _liveTimer ??=
         Timer.periodic(liveInterval, (_) => unawaited(_liveTick()));
@@ -241,6 +264,27 @@ class EnergySplitService {
       debugPrint('EnergySplit: live pass failed: $e');
     } finally {
       _liveBusy = false;
+    }
+  }
+
+  /// v0.2.30+229 — РАЗОВЫЙ ПЕРЕСЧЁТ ПОД ПОРОГ 3 МИНУТЫ. Поездкам с
+  /// моделью без частей разделение снимается, и наблюдение за таблицей
+  /// посчитает их заново: от 3 минут они получат части, короче — снова
+  /// модель без частей; все уйдут на сервер (правило [onTripsSplit]).
+  /// Только поездки не старше первого сэмпла hal_samples: старшие
+  /// пересчитать не по чему, а снятие отметки сделало бы их «без данных»
+  /// и стёрло бы локально пак, который есть.
+  Future<void> _recomputePartless() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (prefs.getBool(recomputeKey) ?? false) return;
+      final since = await _db.earliestHalSampleAt();
+      final n = since == null ? 0 : await _db.clearPartlessEnergySplitSince(since);
+      await prefs.setBool(recomputeKey, true);
+      debugPrint('EnergySplit: $n trip(s) without parts queued for '
+          'recompute (threshold ${EnergySplitModel.minTripSeconds} s, +229)');
+    } catch (e) {
+      debugPrint('EnergySplit: recompute pass failed: $e');
     }
   }
 
@@ -315,7 +359,8 @@ class EnergySplitService {
           'coverage=${r.coverage.toStringAsFixed(2)} '
           'pack=${r.packKwh.toStringAsFixed(3)} used=$used '
           'model=${EnergySplitModel.version}');
-      if (r.hasSplit) split.add(t.id);
+      // v0.2.30+229: любая записанная модель — на отправку (см. onTripsSplit).
+      split.add(t.id);
     }
     if (noData > 0) {
       debugPrint('EnergySplit: $noData trip(s) without HAL data — skipped');

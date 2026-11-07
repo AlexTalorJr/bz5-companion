@@ -755,6 +755,11 @@ class HalTelemetryService extends ChangeNotifier
   bool _halTripActive = false;
   DateTime? _halTripStartedAt;
   double? _halTripStartSoc;     // latched start SOC (whole %, smoothed via EMA)
+  /// v0.2.30+229: старт защёлкнут по точному SOC. false — по целому с
+  /// приборки (точного ещё не было); тогда первый точный в пределах
+  /// [_kStartSocUpgradeWindow] от начала поездки его заменит.
+  bool _halTripStartSocPrecise = false;
+  static const Duration _kStartSocUpgradeWindow = Duration(minutes: 2);
   double? _halTripStartTripA;   // latched start odo-trip (km) from trip_a
   // v0.1.29+103: survive a user-reset of the native trip_a counter mid-trip.
   // trip_a is the dashboard "Trip A" the driver can zero from the car's own
@@ -2006,10 +2011,39 @@ class HalTelemetryService extends ChangeNotifier
     // until this fires, then counts from here.
     if (_halTripStartSoc == null && soc != null) {
       _halTripStartSoc = soc;
+      _halTripStartSocPrecise =
+          _heldValue('soc_precise', _socPreciseHold) != null;
       // v0.1.29+91: back-fill the DB row's start_soc once we have it (the row
       // was opened with a null anchor). Same pattern as the OBD2 tracker's
       // updateTripStartAnchors. Best-effort; null odo leaves that column be.
       _backfillHalTripStart();
+    } else if (_halTripStartSoc != null && !_halTripStartSocPrecise) {
+      // v0.2.30+229 — ЦЕЛЫЙ СТАРТ ЗАМЕНЯЕТСЯ ПЕРВЫМ ТОЧНЫМ. Поездка в
+      // первые ~30 с после запуска потока защёлкивала целый SOC с приборки
+      // (точного ещё нет), а конец считался по точному: два источника в
+      // одной поездке. #462 (07.11): старт 72.0 при настоящих 73.4, заряд
+      // «вырос», энергия и расход — прочерк весь путь, в истории пусто.
+      // Замена — только в первые две минуты: позже точный SOC уже ушёл от
+      // старта, и замена исказила бы энергию. Строка поездки обновляется
+      // сразу, до закрытия и до первой отправки — сервер получит верный
+      // старт (start_soc на сервере после вставки неизменяем, Друг 2).
+      final p = _heldValue('soc_precise', _socPreciseHold);
+      final started = _halTripStartedAt;
+      if (p != null &&
+          started != null &&
+          DateTime.now().difference(started) <= _kStartSocUpgradeWindow) {
+        debugPrint('HAL trip: start SOC '
+            '${_halTripStartSoc!.toStringAsFixed(1)} → '
+            '${p.toStringAsFixed(1)} (precise)');
+        _halTripStartSoc = p;
+        _halTripStartSocPrecise = true;
+        _halEnergyEma = null; // сглаживание считалось от старого старта
+        // Минимум и максимум до этого кадра копились по целому SOC — он
+        // и есть ошибка; точных в них ещё не было. Начинаются заново.
+        _halTripMinSoc = p;
+        _halTripMaxSoc = p;
+        _backfillHalTripStart();
+      }
     }
     // trip_a may also have been null at start — latch it once it arrives so
     // distance reads from zero (handled in halTripDistanceKm).
@@ -2129,6 +2163,7 @@ class HalTelemetryService extends ChangeNotifier
     _halTripActive = true;
     _halTripStartedAt = DateTime.now();
     _halTripStartSoc = null;      // latched later, on first valid SOC frame
+    _halTripStartSocPrecise = false;
     _halSpeedStartConfirmStart = null; // v0.1.29+104: clear speed-start clock
     _halStartOdoWatch = null;     // v0.1.89+188: опорный одометр живёт только между поездками
     _halLastAliveFlush = null;    // v0.1.29+106: flush promptly for the new trip
@@ -2339,6 +2374,8 @@ class HalTelemetryService extends ChangeNotifier
     // источник правды, и он побеждает, когда значение у него есть.
     _halTripStartOdo = j.startOdo ?? _halTripStartOdo;
     _halTripStartSoc = j.startSoc ?? _halTripStartSoc;
+    // v0.2.30+229: хвост журнала берёт старт только из soc_precise.
+    if (j.startSoc != null) _halTripStartSocPrecise = true;
     if (j.distanceKm > 0) _halTripDistAccumKm += j.distanceKm;
     final ps = j.peakSpeedKmh;
     if (ps != null && (_halPeakSpeedKmh == null || ps > _halPeakSpeedKmh!)) {
@@ -2357,6 +2394,74 @@ class HalTelemetryService extends ChangeNotifier
   /// v0.1.29+91: back-fill the HAL trip row's start_soc / start_odometer once
   /// those anchors arrive (they may be null at open time). Mirrors the OBD2
   /// tracker's updateTripStartAnchors. Best-effort/async; no-op without a row.
+  /// v0.2.30+229: поездки, которым починка ниже переписала энергию, —
+  /// CloudSyncService.requeueTrips (проводка в main.dart).
+  void Function(List<int> tripIds)? onTripsRepaired;
+
+  /// v0.2.30+229 — ПОЧИНКА ПОЕЗДОК С ЦЕЛЫМ СТАРТОМ И ПУСТОЙ ЭНЕРГИЕЙ.
+  ///
+  /// Для поездок, закрытых до замены старта первым точным SOC (см. ветку
+  /// в _updateHalTrip) или закрытых восстановлением раньше, чем замена
+  /// успела. Условия — все сразу: энергия пуста; старт — целый SOC; первый
+  /// soc_precise поездки пришёл в первые две минуты; конец — точный
+  /// (дробный или равен последнему точному); точный старт выше конца.
+  /// Тогда старт = первый точный, энергия = ΔSOC × ёмкость, расход,
+  /// минимум и максимум — по точным замерам поездки. Разделение
+  /// сбрасывается и пересчитывается к новой энергии.
+  ///
+  /// Без флага: проход идемпотентен (после починки энергия не пуста), а
+  /// кандидатов единицы. Поездки с законно пустой энергией (заряд вырос по
+  /// точному SOC) условию «точный старт выше конца» не отвечают и остаются.
+  /// Поездки старше хранения hal_samples не трогаются — проверить их нечем.
+  /// #462 от 07.11: 72.0 → 73.4, 0.457 kWh.
+  Future<void> _repairIntegerStartSoc() async {
+    final db = _diagDb;
+    if (db == null) return;
+    try {
+      final since = await db.earliestHalSampleAt();
+      if (since == null) return;
+      final fixed = <int>[];
+      for (final t in await db.closedTripsWithoutEnergySince(since)) {
+        final s0 = t.startSoc!;
+        final s1 = t.endSoc!;
+        if (s0 != s0.roundToDouble()) continue;
+        final pts = await db.halSignalsBetween(
+            t.startedAt, t.endedAt!, const ['soc_precise']);
+        if (pts.isEmpty) continue;
+        if (pts.first.ts.difference(t.startedAt) > _kStartSocUpgradeWindow) {
+          continue;
+        }
+        if (s1 == s1.roundToDouble() && pts.last.v != s1) continue;
+        final p0 = pts.first.v;
+        if (p0 <= s1) continue;
+        final energy = (p0 - s1) * _halPackCapacityKwh / 100.0;
+        var mn = p0 < s1 ? p0 : s1;
+        var mx = p0 > s1 ? p0 : s1;
+        for (final pt in pts) {
+          if (pt.v < mn) mn = pt.v;
+          if (pt.v > mx) mx = pt.v;
+        }
+        final dist = t.distanceKm;
+        await db.repairTripStartSoc(
+          t.id,
+          startSoc: p0,
+          energyUsedKwh: energy,
+          avgConsumptionKwh100km:
+              dist != null && dist >= 0.1 ? energy / dist * 100.0 : null,
+          minSoc: mn,
+          maxSoc: mx,
+        );
+        debugPrint('HAL repair: trip ${t.id} start SOC '
+            '${s0.toStringAsFixed(1)} → ${p0.toStringAsFixed(1)} (precise), '
+            'energy ${energy.toStringAsFixed(3)} kWh');
+        fixed.add(t.id);
+      }
+      if (fixed.isNotEmpty) onTripsRepaired?.call(fixed);
+    } catch (e) {
+      debugPrint('HAL repair: start SOC pass failed: $e');
+    }
+  }
+
   Future<void> _backfillHalTripStart() async {
     final db = _diagDb;
     final id = _halTripDbId;
@@ -2384,6 +2489,7 @@ class HalTelemetryService extends ChangeNotifier
     _halTripActive = false;
     _halTripStartedAt = null;
     _halTripStartSoc = null;
+    _halTripStartSocPrecise = false;
     _halTripStartTripA = null;
     // v0.1.29+103: clear distance accumulator / last-seen on trip close.
     _halTripDistAccumKm = 0;
@@ -3503,6 +3609,8 @@ class HalTelemetryService extends ChangeNotifier
     // Best-effort; a failure must not block startup.
     if (_isHeadUnit) {
       await _recoverOrphanHalTrips();
+      // v0.2.30+229: после восстановления — оно тоже закрывает поездки.
+      await _repairIntegerStartSoc();
     }
     // ── ЧТЕНИЕ СОХРАНЁННОЙ ОЦЕНКИ — В НАЧАЛО. v0.1.98+197 ──
     //

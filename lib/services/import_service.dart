@@ -199,6 +199,8 @@ class ImportService {
     // +221: архив без флага поставит в список свои поездки заново.
     repushTripIdsKey,
     splitRepushSeedKey,
+    // v0.2.30+229: разовый пересчёт разделения под порог 3 минуты.
+    splitRecomputeKey,
   ];
 
   /// Литерал повторяет `_kSweepRewindDone` в CloudSyncService; расхождение
@@ -210,6 +212,11 @@ class ImportService {
   static const String repushTripIdsKey = 'cloud_sync_repush_trip_ids';
   /// v0.2.27+226: флаг новый — постановка +225 сорвалась на Restore.
   static const String splitRepushSeedKey = 'cloud_sync_split_repush_226';
+
+  /// v0.2.30+229: разовый пересчёт разделения под порог 3 минуты привязан
+  /// к базе — после импорта архива он должен пройти по новой базе.
+  /// Литерал совпадает с EnergySplitService.recomputeKey.
+  static const String splitRecomputeKey = 'energy_split_recompute_229';
 
   static List<String> get travellingKeys =>
       <String>[...ownerKeys, ...dbBoundKeys];
@@ -914,6 +921,7 @@ class ImportService {
     // id прежней базы указывали бы на чужие поездки новой.
     await prefs.remove(repushTripIdsKey);
     await prefs.remove(splitRepushSeedKey);
+    await prefs.remove(splitRecomputeKey);
 
     var restored = 0;
     final prefsFile = File(p.join(support.path, _pendingPrefsName));

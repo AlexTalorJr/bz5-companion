@@ -171,8 +171,12 @@ class SpeedAndStatusStrip extends StatelessWidget {
           // v0.2.24+223: ток со знаком, как пришёл: плюс — разгон,
           // минус — рекуперация (зелёным, порог ±3 А как у направления
           // потока). Удерживаемое дольше пяти минут — серым.
+          // v0.2.30+229: один знак после запятой — pack_current
+          // (0x2D300018) приходит с шагом ровно 0.1 А (экспорт 07.11:
+          // десятые равномерны, сотых нет). Строка в FittedBox, лишние
+          // символы ужмутся, а не обрежутся.
           if (current != null)
-            Text(' · ${current.amps.round()} A',
+            Text(' · ${current.amps.toStringAsFixed(1)} A',
                 style: TextStyle(
                     fontSize: statusFontSize,
                     fontWeight: FontWeight.w400,

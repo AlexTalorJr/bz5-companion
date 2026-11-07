@@ -149,14 +149,35 @@ class _ChargingAwareBodyState extends State<ChargingAwareBody> {
   /// has anything to say the tree is the bare child, exactly as before
   /// +161 — no Column, no Expanded, zero layout delta for every screen
   /// that never sees either.
+  ///
+  /// v0.2.30+229 — ВЕРХНИЙ ОТСТУП РЕШАЕТСЯ ЗДЕСЬ, В ОДНОМ МЕСТЕ. На BZ3
+  /// (720×1106, системная строка сверху) плашка атласа стояла первой в
+  /// колонке без отступа и уходила под часы и иконки, а экран под ней
+  /// делал свой SafeArea ещё раз — пустая полоса ниже плашки (фото
+  /// владельца 07.11). Теперь верх колонки занимает строку состояния
+  /// один раз: баннер зарядки делает это сам (свой SafeArea), плашка —
+  /// если она первая; экрану под ними отступ сверху снят, его SafeArea
+  /// и AppBar второго не добавят. На BZ5 строки состояния нет, отступ
+  /// нулевой — раскладка не меняется.
   Widget _withPlate(Widget? banner) {
     if (banner == null && !widget.showAtlasPlate) return widget.child;
     return Column(
       children: [
         if (banner != null) banner,
         // Charging on top when both are up (§6.11).
-        if (widget.showAtlasPlate) AtlasSummaryPlate(onTap: widget.onPlateTap),
-        Expanded(child: widget.child),
+        if (widget.showAtlasPlate)
+          SafeArea(
+            top: banner == null,
+            bottom: false,
+            child: AtlasSummaryPlate(onTap: widget.onPlateTap),
+          ),
+        Expanded(
+          child: MediaQuery.removePadding(
+            context: context,
+            removeTop: true,
+            child: widget.child,
+          ),
+        ),
       ],
     );
   }
