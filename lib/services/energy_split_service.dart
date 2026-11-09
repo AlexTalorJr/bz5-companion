@@ -41,6 +41,11 @@ class EnergySplitModel {
   /// энергия интегрируется отдельно по своему току с удержанием последнего
   /// значения, вычитание — только в конце: покадровая разность токов
   /// шумит до −8.6 кВт. Порог и покрытие — те же, что у v1.
+  ///
+  /// v0.2.32+231 (Друг 3, письмо по +230; решение владельца 09.11):
+  /// движение = тяга − рекуперация, может быть меньше нуля; части v2 НЕ
+  /// масштабируются к energy_used_kwh — их сумма равна energy_pack_kwh.
+  /// v1 не меняется. Ни одна поездка v2 до +231 на сервер не ушла.
   static const String versionV2 = 'v2';
   static const double kTraction = 1.030;
   static const double kRegen = 0.835;
@@ -79,9 +84,15 @@ class EnergySplitResult {
   /// v0.2.31+230: какой моделью посчитано — [EnergySplitModel.version]
   /// или [EnergySplitModel.versionV2].
   final String model;
+  /// v0.2.32+231: у v2 — тяга (∫V·I_инв при I > 0) и рекуперация
+  /// (∫|V·I_инв| при I < 0), кВт·ч. Только для строки в app_log.
+  final double? tractionKwh;
+  final double? regenKwh;
   const EnergySplitResult(this.packKwh, this.coverage, this.coveredSeconds,
       this.motionKwh, this.climateKwh, this.otherKwh,
-      {this.model = EnergySplitModel.version});
+      {this.model = EnergySplitModel.version,
+      this.tractionKwh,
+      this.regenKwh});
   bool get hasSplit => motionKwh != null;
 }
 
@@ -168,11 +179,12 @@ EnergySplitResult computeEnergySplit(
 /// tools/mirror_plus222_split.py.
 ///
 /// Шаг 1 с, удержание последнего значения каждого сигнала с его первого
-/// сэмпла, как у v1. ∫V·I_бат и ∫V·I_инв копятся по отдельности;
-/// «климат и бортовая сеть» — их разность на уровне поездки. Если разность
-/// отрицательна (шум или поездка почти без нагрузок), климат = 0, движение
-/// = вся энергия батареи; если отрицательно движение (спуск с рекуперацией
-/// больше тяги), движение = 0, климат = вся энергия батареи. Сумма частей
+/// сэмпла, как у v1. ∫V·I_бат, тяга (∫V·I_инв при I > 0) и рекуперация
+/// (∫|V·I_инв| при I < 0) копятся по отдельности; движение = тяга −
+/// рекуперация, «климат и бортовая сеть» = ∫V·I_бат − движение — на уровне
+/// поездки. v0.2.32+231: движение может быть меньше нуля (длинный спуск),
+/// оно не обрезается. Если отрицателен климат (шум или поездка почти без
+/// нагрузок), климат = 0, движение = вся энергия батареи. Сумма частей
 /// всегда равна энергии батареи; «прочее» = 0.
 EnergySplitResult computeEnergySplitV2(
   List<({DateTime ts, String name, double v})> points,
@@ -185,7 +197,8 @@ EnergySplitResult computeEnergySplitV2(
   var i = 0;
   var covered = 0;
   var ePack = 0.0;
-  var eInv = 0.0;
+  var eTraction = 0.0;
+  var eRegen = 0.0;
   for (var s = startS.ceil(); s < endS; s++) {
     while (i < points.length &&
         points[i].ts.millisecondsSinceEpoch / 1000.0 <= s) {
@@ -198,7 +211,12 @@ EnergySplitResult computeEnergySplitV2(
     if (v == null || iBat == null || iInv == null) continue;
     covered++;
     ePack += v * iBat / 1000.0 / 3600.0;
-    eInv += v * iInv / 1000.0 / 3600.0;
+    final pInv = v * iInv / 1000.0 / 3600.0;
+    if (pInv > 0) {
+      eTraction += pInv;
+    } else {
+      eRegen -= pInv;
+    }
   }
   final dur = endS - startS;
   final cov = dur > 0 ? covered / dur : 0.0;
@@ -206,19 +224,20 @@ EnergySplitResult computeEnergySplitV2(
       cov < EnergySplitModel.minCoverage ||
       ePack <= 0) {
     return EnergySplitResult(ePack, cov, covered, null, null, null,
-        model: EnergySplitModel.versionV2);
+        model: EnergySplitModel.versionV2,
+        tractionKwh: eTraction,
+        regenKwh: eRegen);
   }
-  var motion = eInv;
-  var climate = ePack - eInv;
+  var motion = eTraction - eRegen;
+  var climate = ePack - motion;
   if (climate < 0) {
     climate = 0;
     motion = ePack;
-  } else if (motion < 0) {
-    motion = 0;
-    climate = ePack;
   }
   return EnergySplitResult(ePack, cov, covered, motion, climate, 0.0,
-      model: EnergySplitModel.versionV2);
+      model: EnergySplitModel.versionV2,
+      tractionKwh: eTraction,
+      regenKwh: eRegen);
 }
 
 /// v0.2.31+230: выбор модели — ОДНО место для расчёта после закрытия и
@@ -429,7 +448,13 @@ class EnergySplitService {
       final used = t.energyUsedKwh;
       // Решение владельца 05.11: части в кВт·ч = доля по батарее ×
       // energy_used_kwh, чтобы их сумма совпадала со строкой «Энергия».
-      final k = (r.hasSplit && used != null && r.packKwh > 0)
+      // v0.2.32+231: только для v1. У v2 масштаба нет: energy_used_kwh
+      // считается по SOC, и масштаб перенёс бы погрешность SOC на части
+      // (Друг 3); части v2 в сумме дают energy_pack_kwh (Друг 2 принял).
+      final k = (r.model == EnergySplitModel.version &&
+              r.hasSplit &&
+              used != null &&
+              r.packKwh > 0)
           ? used / r.packKwh
           : 1.0;
       await _db.writeEnergySplit(
@@ -448,6 +473,8 @@ class EnergySplitService {
           'windows=${r.coveredSeconds ~/ 60} '
           'coverage=${r.coverage.toStringAsFixed(2)} '
           'pack=${r.packKwh.toStringAsFixed(3)} used=$used '
+          '${r.tractionKwh == null ? '' : 'traction=${r.tractionKwh!.toStringAsFixed(3)} '
+              'regen=${r.regenKwh!.toStringAsFixed(3)} '}'
           'model=${r.model}');
       // v0.2.30+229: любая записанная модель — на отправку (см. onTripsSplit).
       split.add(t.id);

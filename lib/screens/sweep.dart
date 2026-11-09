@@ -35,12 +35,15 @@ class _SweepPreset {
   final List<String> txList;
   final String startDid;
   final String endDid;
+  /// v0.2.32+231: DIDs per queue run; 0 — the whole range in one run.
+  final int blockSize;
   const _SweepPreset({
     required this.name,
     required this.description,
     required this.txList,
     required this.startDid,
     required this.endDid,
+    this.blockSize = 0,
   });
 }
 
@@ -122,21 +125,17 @@ class _SweepScreenState extends State<SweepScreen> {
       startDid: '0000',
       endDid: '03FF',
     ),
-    // v0.2.31+230: the climate box 744 above 0x03FF, in two parts. Real
-    // sweep pace is about 0.44 s per DID, hence ~22 and ~30 min.
+    // v0.2.32+231: the climate box 744 above 0x03FF as ONE queue of seven
+    // 0x400 blocks (Friend 3), ~7.5 min each at the real 0.44 s per DID.
+    // Runs untouched end to end; a stall costs one block, not the range.
     _SweepPreset(
-      name: 'Climate 744 mid',
-      description: '744 — climate box, 0x0400..0x0FFF (3072 DIDs, ~22 min)',
+      name: 'Climate 744, 7 blocks',
+      description: '744 — climate box, 0x0400..0x1FFF in 7 blocks of 0x400 '
+          '(7168 DIDs, ~53 min, one run per block)',
       txList: ['744'],
       startDid: '0400',
-      endDid: '0FFF',
-    ),
-    _SweepPreset(
-      name: 'Climate 744 upper',
-      description: '744 — climate box, 0x1000..0x1FFF (4096 DIDs, ~30 min)',
-      txList: ['744'],
-      startDid: '1000',
       endDid: '1FFF',
+      blockSize: 0x400,
     ),
     _SweepPreset(
       name: 'GPS Asensing',
@@ -163,7 +162,8 @@ class _SweepScreenState extends State<SweepScreen> {
 
   /// Average seconds per DID for ETA: probe round trip + 30 ms gap.
   /// Matches the preset descriptions (8192 DIDs ≈ 55 min).
-  static const double _kSecPerDid = 0.4;
+  /// v0.2.32+231: 0.4 → 0.44 — measured pace (sweep runs 21–22.10).
+  static const double _kSecPerDid = 0.44;
 
   @override
   void initState() {
@@ -213,8 +213,9 @@ class _SweepScreenState extends State<SweepScreen> {
 
   Widget _buildProgressView(ConnectionService svc) {
     final pct = (svc.sweepProgress * 100).toStringAsFixed(1);
-    // Rough ETA at _kSecPerDid: rest of this ECU plus every ECU still
-    // waiting in the queue (each the same range).
+    // Rough ETA at _kSecPerDid: rest of this run plus every run still
+    // waiting in the queue (each the same range; with blocks, the same
+    // block size — the last block may be shorter).
     final remaining = svc.sweepTotal - svc.sweepDone;
     final queuedAfter = svc.sweepQueueRunning
         ? svc.sweepQueueTotal - svc.sweepQueueIndex
@@ -520,7 +521,8 @@ class _SweepScreenState extends State<SweepScreen> {
                 .map((tx) => '$tx → ${ConnectionService.rxForTx(tx)}')
                 .join(', ')),
             Text('Range: 0x${preset.startDid} .. 0x${preset.endDid} '
-                '($total DIDs)'),
+                '($total DIDs'
+                '${preset.blockSize > 0 ? ', blocks of 0x${preset.blockSize.toRadixString(16).toUpperCase()}' : ''})'),
             Text('ETA: ~${_fmtEta(etaSec)}'),
             const SizedBox(height: 12),
             Text(
@@ -548,6 +550,7 @@ class _SweepScreenState extends State<SweepScreen> {
       txList: preset.txList,
       startDid: preset.startDid,
       endDid: preset.endDid,
+      blockSize: preset.blockSize,
       carState: _carStateCtrl.text.trim().isEmpty ? null : _carStateCtrl.text.trim(),
       notes: 'preset: ${preset.name}',
     );
@@ -588,6 +591,7 @@ class _SweepScreenState extends State<SweepScreen> {
     required List<String> txList,
     required String startDid,
     required String endDid,
+    int blockSize = 0,
     String? carState,
     String? notes,
   }) async {
@@ -595,6 +599,7 @@ class _SweepScreenState extends State<SweepScreen> {
       txList: txList,
       startDidHex: startDid,
       endDidHex: endDid,
+      blockSize: blockSize,
       carState: carState,
       notes: notes,
     );

@@ -19,8 +19,11 @@ Model v2 (+230, Friend 3 letter 09.11), used when the trip has inverter_current:
   E_bat = integral V * I_bat, E_inv = integral V * I_inv, each with hold-last,
   subtracted only at the end (per-frame difference is noise down to -8.6 kW);
   motion = E_inv, climate_and_board = E_bat - E_inv, other = 0;
-  climate < 0 -> climate = 0, motion = E_bat; motion < 0 -> motion = 0,
-  climate = E_bat. Same threshold and coverage as v1.
+  climate < 0 -> climate = 0, motion = E_bat. Same threshold and coverage as v1.
+  +231 (Friend 3, owner 09.11): E_inv = traction (V*I_inv > 0) - regen
+  (|V*I_inv| for I_inv < 0), accumulated separately; motion may be negative
+  (not clipped); v2 parts are NOT scaled to energy_used_kwh, they sum to
+  the pack integral (energy_pack_kwh). v1 keeps its scaling.
 
 Usage:
   python3 tools/mirror_plus222_split.py               self-tests (CI-safe)
@@ -75,7 +78,7 @@ def split_v2(events, start_s, end_s):
     last = {}
     i = 0
     covered = 0
-    e_pack = e_inv = 0.0
+    e_pack = e_tr = e_rg = 0.0
     s = math.ceil(start_s)
     while s < end_s:
         while i < len(events) and events[i][0] <= s:
@@ -86,19 +89,22 @@ def split_v2(events, start_s, end_s):
         if None not in (v, ib, ii):
             covered += 1
             e_pack += v * ib / 1000.0 / 3600.0
-            e_inv += v * ii / 1000.0 / 3600.0
+            p_inv = v * ii / 1000.0 / 3600.0
+            if p_inv > 0:
+                e_tr += p_inv
+            else:
+                e_rg -= p_inv
         s += 1
     dur = end_s - start_s
     cov = covered / dur if dur > 0 else 0.0
-    out = dict(pack=e_pack, inv=e_inv, coverage=cov, covered_s=covered,
+    out = dict(pack=e_pack, traction=e_tr, regen=e_rg, coverage=cov, covered_s=covered,
                motion=None, climate=None, other=None, model='v2')
     if dur < MIN_TRIP_S or cov < MIN_COVERAGE or e_pack <= 0:
         return out
-    motion, climate = e_inv, e_pack - e_inv
+    motion = e_tr - e_rg
+    climate = e_pack - motion
     if climate < 0:
         climate, motion = 0.0, e_pack
-    elif motion < 0:
-        motion, climate = 0.0, e_pack
     out.update(motion=motion, climate=climate, other=0.0)
     return out
 
@@ -116,7 +122,8 @@ def scaled(r, energy_used):
     """Parts as stored: share of the battery integral times energy_used_kwh."""
     if r['motion'] is None:
         return None
-    k = (energy_used / r['pack']) if energy_used is not None else 1.0
+    # +231: v2 parts are not scaled (they sum to the pack integral).
+    k = (energy_used / r['pack']) if (energy_used is not None and r.get('model', 'v1') == 'v1') else 1.0
     return tuple(x * k for x in (r['motion'], r['climate'], r['other']))
 
 
@@ -183,11 +190,29 @@ def _selftest():
            (0, 'inverter_current', 12.0)]
     r = split_v2(evc, 0, 600)
     check('v2 clamp: climate 0, motion = pack', r['climate'] == 0.0 and r['motion'] == r['pack'])
-    # 12. v2 clamp: regen-dominated -> motion 0, climate = pack.
+    # 12. +231: regen-dominated -> motion negative, NOT clipped; climate =
+    # pack - motion; parts still sum to the pack.
     evr = [(0, 'pack_voltage_fine', 400.0), (0, 'pack_current', 1.0),
            (0, 'inverter_current', -5.0)]
     r = split_v2(evr, 0, 600)
-    check('v2 clamp: motion 0, climate = pack', r['motion'] == 0.0 and r['climate'] == r['pack'])
+    check('v2 regen-dominated: motion < 0 kept, parts sum to pack',
+          r['motion'] < 0 and abs(r['motion'] + 5 * 400 * 600 / 3.6e6) < 1e-12
+          and abs(r['motion'] + r['climate'] - r['pack']) < 1e-12)
+    # 15. +231: traction and regen accumulate separately; motion = their
+    # difference. 600 s at +20 A, 600 s at -10 A, 400 V.
+    evt = [(0, 'pack_voltage_fine', 400.0), (0, 'pack_current', 25.0),
+           (0, 'inverter_current', 20.0), (600, 'pack_current', -5.0),
+           (600, 'inverter_current', -10.0)]
+    r = split_v2(evt, 0, 1200)
+    check('v2 traction and regen separate',
+          abs(r['traction'] - 400 * 20 * 600 / 3.6e6) < 1e-9
+          and abs(r['regen'] - 400 * 10 * 600 / 3.6e6) < 1e-9
+          and abs(r['motion'] - (r['traction'] - r['regen'])) < 1e-12)
+    # 16. +231: v2 parts unscaled, v1 parts scaled to energy_used.
+    m2, c2, o2 = scaled(split_v2(evd, 0, 3600), 9.5)
+    check('v2 not scaled to energy_used', abs(m2 + c2 + o2 - 8.0) < 1e-9)
+    m1, c1, o1 = scaled(split_auto(ev3, 0, 1200), 2.0)
+    check('v1 still scaled to energy_used', abs(m1 + c1 + o1 - 2.0) < 1e-9)
     # 13. Model choice: inverter_current present -> v2, absent -> v1.
     check('auto picks v2 with inverter current', split_auto(evd, 0, 3600)['model'] == 'v2')
     check('auto keeps v1 without it', split_auto(ev, 0, 1200)['model'] == 'v1')

@@ -558,7 +558,9 @@ class BridgeDiagService extends ChangeNotifier {
   /// with `queue i/n` in its notes, so Plane B shows them as usual.
   ///
   /// Args: {tx_list: "722, 755, 716" | ["722","755"], start_did, end_did,
-  ///        car_state?, notes?}
+  ///        block_size?, car_state?, notes?}
+  /// v0.2.32+231: block_size — DIDs per run, an int or a hex string
+  /// ("400"); absent or 0 — the whole range in one run per ECU.
   Map<String, dynamic> _handleBleStartSweepQueue(Map<String, dynamic> args) {
     final txRaw = args['tx_list'];
     final String txText;
@@ -588,6 +590,22 @@ class BridgeDiagService extends ChangeNotifier {
     if (startInt < 0 || endInt > 0xFFFF || endInt < startInt) {
       return _err('validation', 'DID range invalid: $startDid..$endDid');
     }
+    final bsRaw = args['block_size'];
+    final int? blockSize = bsRaw == null
+        ? 0
+        : bsRaw is int
+            ? bsRaw
+            : bsRaw is String
+                ? int.tryParse(bsRaw, radix: 16)
+                : null;
+    if (blockSize == null || blockSize < 0 || blockSize > 0x10000) {
+      return _err('validation', 'block_size invalid: $bsRaw');
+    }
+    final runs = (ConnectionService.sweepBlocks(
+                    startDid, endDid, blockSize)
+                ?.length ??
+            1) *
+        txList.length;
     final carState = args['car_state'];
     final notes = args['notes'];
     if (!_svc.isBleConnected) {
@@ -605,18 +623,24 @@ class BridgeDiagService extends ChangeNotifier {
       txList: txList,
       startDidHex: startDid.toUpperCase().padLeft(4, '0'),
       endDidHex: endDid.toUpperCase().padLeft(4, '0'),
+      blockSize: blockSize,
       carState: carState is String ? carState : null,
       notes: notes is String ? notes : 'started via bridge command',
     )
         .then((ids) {
       debugPrint('BridgeDiag: bleStartSweepQueue finished, '
-          'runs=${ids?.length ?? 0}/${txList.length}');
+          'runs=${ids?.length ?? 0}/$runs');
     }).catchError((Object e, StackTrace st) {
       debugPrint('BridgeDiag: bleStartSweepQueue threw: $e\n$st');
     }));
     return {
       'ok': true,
-      'result': {'started': true, 'kind': 'sweep_queue', 'ecus': txList.length},
+      'result': {
+        'started': true,
+        'kind': 'sweep_queue',
+        'ecus': txList.length,
+        'runs': runs,
+      },
     };
   }
 

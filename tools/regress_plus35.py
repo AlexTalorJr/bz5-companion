@@ -12662,7 +12662,8 @@ if int(pv) >= 219:
         'if (_sweepQueueRunning) _sweepQueueCancelled = true;' in _cu_conn,
         'final rx = rxForTx(tx);' in _cu2_q,
         "if (exit != 'completed' && exit != 'silent_ecu') {" in _cu2_q,
-        "final tag = 'queue ${i + 1}/${txList.length}';" in _cu2_q,
+        # v0.2.32+231: элемент очереди — блок одного ECU (DF1).
+        ("final tag = 'queue ${i + 1}/${txList.length}';" if int(pv) < 231 else "final tag = 'queue ${i + 1}/${items.length}';") in _cu2_q,
         'if (_sweepQueueCancelled) {' in _cu2_q,
         _cu_conn.count('if (_sweepRunning) return null;') == 1,
         _cu_conn.count('if (sweepRunning) return null;') == 2,
@@ -12878,7 +12879,7 @@ if int(pv) >= 220:
     _cv4_i_one = _cv_conn.find('Future<int?> _runSweepOne({')
     _cv4_q = _cv_conn[_cv4_i_q:_cv4_i_one] if -1 < _cv4_i_q < _cv4_i_one else ''
     _cv4_i_pause = _cv4_q.find('final wasPolling = _polling;\nif (wasPolling) {\n_polling = false;\nawait _waitForPollIdle();')
-    _cv4_i_try = _cv4_q.find('try {\nfor (int i = 0; i < txList.length; i++) {')
+    _cv4_i_try = _cv4_q.find('try {\nfor (int i = 0; i < txList.length; i++) {' if int(pv) < 231 else 'try {\nfor (int i = 0; i < items.length; i++) {')
     _cv4_i_fin = _cv4_q.find('} finally {')
     _cv4_i_res = _cv4_q.find('if (wasPolling) {\n_polling = true;\n_pollLoop();', max(_cv4_i_fin, 0))
     if -1 < _cv4_i_pause < _cv4_i_try < _cv4_i_fin < _cv4_i_res:
@@ -13872,10 +13873,13 @@ if int(pv) >= 230:
     _de3_i = _de_es.find('EnergySplitResult computeEnergySplitV2(')
     _de3_fn = _de_es[_de3_i:_de_es.find('EnergySplitResult computeEnergySplitAuto(')] if _de3_i > -1 else ''
     _de3 = [
-        'covered++;\nePack += v * iBat / 1000.0 / 3600.0;\neInv += v * iInv / 1000.0 / 3600.0;\n}\nfinal dur = endS - startS;' in _de3_fn,
+        ('covered++;\nePack += v * iBat / 1000.0 / 3600.0;\neInv += v * iInv / 1000.0 / 3600.0;\n}\nfinal dur = endS - startS;' in _de3_fn) if int(pv) < 231 else
+        ('covered++;\nePack += v * iBat / 1000.0 / 3600.0;\nfinal pInv = v * iInv / 1000.0 / 3600.0;\nif (pInv > 0) {\neTraction += pInv;\n} else {\neRegen -= pInv;\n}\n}\nfinal dur = endS - startS;' in _de3_fn),
         "final iInv = last['inverter_current'];" in _de3_fn and "final v = last['pack_voltage_fine'] ?? last['pack_voltage'];" in _de3_fn,
-        'var motion = eInv;\nvar climate = ePack - eInv;\nif (climate < 0) {\nclimate = 0;\nmotion = ePack;\n} else if (motion < 0) {\nmotion = 0;\nclimate = ePack;\n}' in _de3_fn,
-        'return EnergySplitResult(ePack, cov, covered, motion, climate, 0.0,\nmodel: EnergySplitModel.versionV2);' in _de3_fn,
+        ('var motion = eInv;\nvar climate = ePack - eInv;\nif (climate < 0) {\nclimate = 0;\nmotion = ePack;\n} else if (motion < 0) {\nmotion = 0;\nclimate = ePack;\n}' in _de3_fn) if int(pv) < 231 else
+        ('var motion = eTraction - eRegen;\nvar climate = ePack - motion;\nif (climate < 0) {\nclimate = 0;\nmotion = ePack;\n}\nreturn EnergySplitResult(' in _de3_fn and 'motion = 0;' not in _de3_fn),
+        ('return EnergySplitResult(ePack, cov, covered, motion, climate, 0.0,\nmodel: EnergySplitModel.versionV2);' in _de3_fn) if int(pv) < 231 else
+        ('return EnergySplitResult(ePack, cov, covered, motion, climate, 0.0,\nmodel: EnergySplitModel.versionV2,\ntractionKwh: eTraction,\nregenKwh: eRegen);' in _de3_fn),
         ") =>\npoints.any((p) => p.name == 'inverter_current')\n? computeEnergySplitV2(points, start, end)\n: computeEnergySplit(points, start, end);" in _de_es,
         _de_es.count('computeEnergySplitAuto(') == 3 and 'model: r.model,\n);' in _de_es,
         "static const String versionV2 = 'v2';" in _de_es,
@@ -13964,12 +13968,56 @@ if int(pv) >= 230:
     _de9 = [
         "_LivelogPreset.climate744 => const [\n('744', '74C', '0007'),\n('744', '74C', '0008'),\n('744', '74C', '0009'),\n('744', '74C', '0010'),\n('744', '74C', '0011'),\n('744', '74C', '0014'),\n('744', '74C', '0022'),\n]," in _de_ll,
         "onPressed: () => _applyPreset(_LivelogPreset.climate744)," in _de_ll,
-        "txList: ['744'],\nstartDid: '0400',\nendDid: '0FFF'," in _de_sw and "txList: ['744'],\nstartDid: '1000',\nendDid: '1FFF'," in _de_sw,
+        ("txList: ['744'],\nstartDid: '0400',\nendDid: '0FFF'," in _de_sw and "txList: ['744'],\nstartDid: '1000',\nendDid: '1FFF'," in _de_sw) if int(pv) < 231 else
+        ("txList: ['744'],\nstartDid: '0400',\nendDid: '1FFF',\nblockSize: 0x400," in _de_sw),
     ]
     if all(_de9): ok('DE9 Live Log preset Climate 744 (seven raw DIDs) and two 744 sweep presets 0400-0FFF and 1000-1FFF')
     else: fail(f'DE9 744 presets drifted: {_de9}')
 else:
     ok(f"Part DE skipped (build +{pv}, recon p157 / v2 / ATRV land in +230)")
+
+# ═══════ Part DF — 0.2.32+231: v2 тяга/рекуперация без масштаба, очередь свипа блоками ═══════
+if int(pv) >= 231:
+    _df_f = lambda t: re.sub(r'\n\s*\n', '\n', re.sub(r'\n[ \t]+', '\n', t))
+    _df_rd = lambda pth: _df_f(_strip_comments_safe((root / pth).read_text()))
+    _df_es = _df_rd('lib/services/energy_split_service.dart')
+    _df_con = _df_rd('lib/services/connection.dart')
+    _df_sw = _df_rd('lib/screens/sweep.dart')
+    _df_br = _df_rd('lib/services/bridge_diag_service.dart')
+    _df_mir = (root / 'tools/mirror_plus222_split.py').read_text()
+
+    # DF1: ОЧЕРЕДЬ БЛОКАМИ. Разбиение — одно место (sweepBlocks); элемент
+    # очереди — блок ECU; экран и мост только передают размер; пресет 744
+    # одной очередью семи блоков; темп 0.44 с.
+    _df1_i = _df_con.find('static List<({String start, String end})>? sweepBlocks(')
+    _df1_fn = _df_con[_df1_i:_df1_i + 800] if _df1_i > -1 else ''
+    _df1_q = _df_con[_df_con.find('Future<List<int>?> runSweepQueue({'):_df_con.find('Future<int?> _runSweepOne({')]
+    _df1 = [
+        'if (blockSize == 0) return [(start: h(s), end: h(e))];' in _df1_fn and 'for (var b = s; b <= e; b += blockSize) {\nfinal be = b + blockSize - 1;\nout.add((start: h(b), end: h(be < e ? be : e)));' in _df1_fn,
+        'final blocks = sweepBlocks(startDidHex, endDidHex, blockSize);\nif (blocks == null) return null;' in _df1_q,
+        'for (final b in blocks) {\nitems.add((tx: tx, rx: rx, start: b.start, end: b.end));' in _df1_q,
+        '_sweepQueueTotal = items.length;' in _df1_q and 'startDidHex: it.start,\nendDidHex: it.end,' in _df1_q,
+        'blockSize: preset.blockSize,' in _df_sw and 'blockSize: blockSize,' in _df_sw,
+        "startDid: '0400',\nendDid: '1FFF',\nblockSize: 0x400," in _df_sw and 'static const double _kSecPerDid = 0.44;' in _df_sw,
+        "final bsRaw = args['block_size'];" in _df_br and 'blockSize: blockSize,' in _df_br and 'sweepBlocks(' in _df_br,
+        'sweepBlocks(' not in _df_sw,
+    ]
+    if all(_df1): ok('DF1 the sweep queue runs every 0x400 block of every ECU as its own run, the split decided in one place; screen and bridge pass the size; 744 preset is one queue of seven blocks')
+    else: fail(f'DF1 sweep blocks drifted: {_df1}')
+
+    # DF2: v2 БЕЗ МАСШТАБА, ДВИЖЕНИЕ СО ЗНАКОМ. Масштаб только у v1; тяга и
+    # рекуперация в app_log; зеркало то же.
+    _df2 = [
+        'final k = (r.model == EnergySplitModel.version &&\nr.hasSplit &&\nused != null &&\nr.packKwh > 0)\n? used / r.packKwh\n: 1.0;' in _df_es,
+        "'regen=${r.regenKwh!.toStringAsFixed(3)} '}'" in _df_es,
+        "motion = e_tr - e_rg" in _df_mir and "elif motion < 0" not in _df_mir,
+        'var motion = eTraction - eRegen;' in _df_es and 'else if (motion < 0)' not in _df_es,
+        "r.get('model', 'v1') == 'v1'" in _df_mir,
+    ]
+    if all(_df2): ok('DF2 v2 motion = traction - regen kept with its sign, climate clipped at 0, v2 parts unscaled (sum = pack), v1 scaling unchanged; traction and regen in app_log; mirror matches')
+    else: fail(f'DF2 v2 scaling / sign drifted: {_df2}')
+else:
+    ok(f"Part DF skipped (build +{pv}, v2 sign/scale and sweep blocks land in +231)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)

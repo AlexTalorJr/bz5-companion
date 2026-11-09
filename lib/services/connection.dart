@@ -4532,6 +4532,13 @@ class ConnectionService extends ChangeNotifier {
   /// SweepRun row with `queue i/n` in its notes, so the export needs no
   /// new columns.
   ///
+  /// v0.2.32+231: [blockSize] > 0 splits the range into blocks of that many
+  /// DIDs (Friend 3: 744 in 0x400 blocks, ~7.5 min each). The queue is then
+  /// every block of every ECU, ECU by ECU, one SweepRun per block with
+  /// `queue i/n` in its notes — a stall loses one block, not the range.
+  /// The split is decided here only; the screen and the bridge pass the
+  /// size through.
+  ///
   /// Moves to the next ECU when a run ends `completed` or `silent_ecu`.
   /// Stops the whole queue on cancel, BLE drop, watchdog stall, loop
   /// exception, or a run that could not start (another BLE operation
@@ -4541,6 +4548,7 @@ class ConnectionService extends ChangeNotifier {
     required List<String> txList,
     required String startDidHex,
     required String endDidHex,
+    int blockSize = 0,
     String? carState,
     String? notes,
   }) async {
@@ -4550,16 +4558,20 @@ class ConnectionService extends ChangeNotifier {
         _canMonitorRunning) {
       return null;
     }
-    final rxList = <String>[];
+    final blocks = sweepBlocks(startDidHex, endDidHex, blockSize);
+    if (blocks == null) return null;
+    final items = <({String tx, String rx, String start, String end})>[];
     for (final tx in txList) {
       final rx = rxForTx(tx);
       if (rx == null) return null;
-      rxList.add(rx);
+      for (final b in blocks) {
+        items.add((tx: tx, rx: rx, start: b.start, end: b.end));
+      }
     }
 
     _sweepQueueRunning = true;
     _sweepQueueCancelled = false;
-    _sweepQueueTotal = txList.length;
+    _sweepQueueTotal = items.length;
     _sweepQueueIndex = 0;
     _sweepQueueTx = '';
     notifyListeners();
@@ -4578,19 +4590,22 @@ class ConnectionService extends ChangeNotifier {
     final runIds = <int>[];
     String stopReason = 'completed';
     try {
-      for (int i = 0; i < txList.length; i++) {
+      for (int i = 0; i < items.length; i++) {
         if (_sweepQueueCancelled) {
           stopReason = 'cancelled';
           break;
         }
+        final it = items[i];
         _sweepQueueIndex = i + 1;
-        _sweepQueueTx = txList[i];
-        final tag = 'queue ${i + 1}/${txList.length}';
+        _sweepQueueTx = blocks.length > 1
+            ? '${it.tx} ${it.start}..${it.end}'
+            : it.tx;
+        final tag = 'queue ${i + 1}/${items.length}';
         final runId = await _runSweepOne(
-          txEcu: txList[i],
-          rxEcu: rxList[i],
-          startDidHex: startDidHex,
-          endDidHex: endDidHex,
+          txEcu: it.tx,
+          rxEcu: it.rx,
+          startDidHex: it.start,
+          endDidHex: it.end,
           carState: carState,
           notes: notes != null ? '$notes | $tag' : tag,
         );
@@ -4606,7 +4621,7 @@ class ConnectionService extends ChangeNotifier {
         }
       }
     } finally {
-      debugPrint('runSweepQueue: ${runIds.length}/${txList.length} runs, '
+      debugPrint('runSweepQueue: ${runIds.length}/${items.length} runs, '
           'stop=$stopReason');
       _sweepQueueRunning = false;
       _sweepQueueCancelled = false;
@@ -4617,6 +4632,24 @@ class ConnectionService extends ChangeNotifier {
       notifyListeners();
     }
     return runIds;
+  }
+
+  /// v0.2.32+231: a DID range as blocks of [blockSize] DIDs (0 — one block,
+  /// the whole range). Hex, upper case, four digits. null — bad range.
+  static List<({String start, String end})>? sweepBlocks(
+      String startDidHex, String endDidHex, int blockSize) {
+    final s = int.tryParse(startDidHex, radix: 16);
+    final e = int.tryParse(endDidHex, radix: 16);
+    if (s == null || e == null || s < 0 || e > 0xFFFF || e < s) return null;
+    if (blockSize < 0) return null;
+    String h(int v) => v.toRadixString(16).toUpperCase().padLeft(4, '0');
+    if (blockSize == 0) return [(start: h(s), end: h(e))];
+    final out = <({String start, String end})>[];
+    for (var b = s; b <= e; b += blockSize) {
+      final be = b + blockSize - 1;
+      out.add((start: h(b), end: h(be < e ? be : e)));
+    }
+    return out;
   }
 
   Future<int?> _runSweepOne({

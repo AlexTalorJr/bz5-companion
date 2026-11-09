@@ -17,8 +17,9 @@ class EnergySplitBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // «Прочее» может быть отрицательным (модель не обрезает остаток):
-    // полоса рисует только положительные части.
+    // «Прочее» у v1 и «Движение» у v2 (v0.2.32+231: тяга − рекуперация)
+    // могут быть отрицательными: полоса рисует только положительные части,
+    // число в строке показывается как есть.
     final parts = <(double, Color)>[
       (shares.motion, motionColor),
       (shares.climate, climateColor),
