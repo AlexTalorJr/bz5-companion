@@ -324,6 +324,15 @@ class _BZ5AppState extends State<BZ5App> with WidgetsBindingObserver {
             // энергию уже отправленных поездок — отправить ещё раз.
             hal.onTripsRepaired = (ids) =>
                 unawaited(ctx.read<CloudSyncService>().requeueTrips(ids));
+            // v0.2.31+230: у машины есть голова — телефон не ведёт
+            // поездки и не пишет снимки. Только не на самой голове: там
+            // поездки ведёт HAL, а с подключённым донглом — OBD. AA2:
+            // колбэки, не классы.
+            final cloud = ctx.read<CloudSyncService>();
+            widget.svc.headunitOwnsTripsCheck = () =>
+                !hal.canUseHal && cloud.vehicleHeadunitPresent == true;
+            widget.svc.onDongleConnected =
+                () => unawaited(cloud.fetchDeviceMe());
             hal.init();
             // v0.1.56+155: arm the autostart net once the head-unit
             // verdict settles (no-op on phones).

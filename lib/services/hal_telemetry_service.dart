@@ -38,6 +38,7 @@ import 'cell_pair.dart';
 import 'hal_bg_journal.dart';
 import 'hal_telemetry_channel.dart';
 import 'native_car_channel.dart';
+import 'parked_climate.dart';
 
 enum HalSourceMode { auto, halOnly, obd2Only }
 
@@ -354,6 +355,11 @@ class HalTelemetryService extends ChangeNotifier
     // 415…479 В по наблюдениям, запас с обеих сторон.
     'pack_voltage_fine': (250, 500),
     'pack_current': (-600, 600),
+    // v0.2.31+230: ток инвертора (0x40800008, перекрытие companion) —
+    // второй ток модели разделения v2. Без имени здесь событие
+    // отбрасывалось: за всю историю 65 строк. Коридор тот же, что у тока
+    // батареи; на P ровно 0.
+    'inverter_current': (-600, 600),
     'gear_enum': (0, 15),
     'soc_display': (0, 100),
     'soc_battery': (0, 100),
@@ -748,6 +754,31 @@ class HalTelemetryService extends ChangeNotifier
   // value — change-detect only (edge logging for enum collection), never a
   // consumed signal. See the dedicated branch in _onEvent.
   double? _gunConnectLastVal;
+
+  /// v0.2.31+230: климат и подогревы на стоянке ([ParkedClimateMeter]).
+  /// Время — монотонное, по Stopwatch.
+  final ParkedClimateMeter parkedClimate = ParkedClimateMeter();
+  final Stopwatch _parkedClimateClock = Stopwatch()..start();
+
+  /// Один отсчёт в [parkedClimate]: P — gear_enum 1, климат — последнее
+  /// событие `ac_power_state` (до первого события — неизвестно, карточки
+  /// нет), мощность — [halPowerKw]. Зовётся из [_onEvent] на каждом
+  /// принятом сигнале и из [_logAcChange] на смене состояния климата.
+  void _feedParkedClimate({bool streamStopped = false}) {
+    final ac = _acLastVal['ac_power_state'];
+    final done = parkedClimate.feed(
+      t: _parkedClimateClock.elapsed,
+      parked: !streamStopped && halGear == 1,
+      acOn: ac == null ? null : ac == 1,
+      packKw: halPowerKw,
+    );
+    if (done != null) {
+      debugPrint('ParkedClimate: ${done.dur.inSeconds} s, '
+          'mean ${done.meanKw.toStringAsFixed(2)} kW, '
+          '${done.kwh.toStringAsFixed(3)} kWh '
+          '(base ${ParkedClimateMeter.baseKw} kW)');
+    }
+  }
 
   /// v0.2.20+219: last logged value per `ac_*` name — see [_logAcChange].
   final Map<String, double> _acLastVal = {};
@@ -3823,7 +3854,6 @@ class HalTelemetryService extends ChangeNotifier
     if (status != null) {
       for (final key in const [
         'BYDAutoSettingDevice',
-        'BYDAutoPowerDevice_lowVoltage',
       ]) {
         final err = status.errors[key];
         debugPrint(err == null
@@ -3862,6 +3892,9 @@ class HalTelemetryService extends ChangeNotifier
     // v0.1.29+85: a stopped stream must not keep a HAL trip "open" or let
     // the 1 s tick accumulate against a dead stream. Close it cleanly.
     _closeHalTrip();
+    // v0.2.31+230: остановленный поток закрывает и стоянку с климатом —
+    // иначе строка «Климат и подогревы» висела бы с последним числом.
+    _feedParkedClimate(streamStopped: true);
     // v0.1.29+105: same for the SOH charge session — finalize what we have
     // (the gates discard a too-short one) and reset so a stopped stream never
     // leaves a session dangling. _onEvent won't tick once the stream is down,
@@ -3966,6 +3999,7 @@ class HalTelemetryService extends ChangeNotifier
     // export shows the real HAL stream and matches recon's schema. Throttled
     // per-name so the ~15 Hz stream doesn't bloat the DB. No-op without DB.
     _logHalDiag(e, d);
+    _feedParkedClimate();
     // v0.2.0+199: замер изоляции пришёл — подтянуть норму. Место
     // выбрано здесь, а не в геттере: геттер читается на каждой
     // перерисовке панели, и побочное действие в нём — та самая
@@ -4117,6 +4151,10 @@ class HalTelemetryService extends ChangeNotifier
     if (v == null || _acLastVal[e.name] == v) return;
     final prev = _acLastVal[e.name];
     _acLastVal[e.name] = v;
+    if (e.name == 'ac_power_state') {
+      _feedParkedClimate();
+      _scheduleNotify();
+    }
     debugPrint('ac candidate: ${e.name}=$v'
         '${prev == null ? '' : ' (was $prev)'} [${e.key}]');
     final db = _diagDb;

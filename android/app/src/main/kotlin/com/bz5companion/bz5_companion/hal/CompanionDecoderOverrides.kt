@@ -92,18 +92,22 @@ object CompanionDecoderOverrides {
             "charging_gun_state", "", ValueSource.INT,
             notes = "1=disconnected 2=AC 3=DC; field-confirmed 14-16.08 (was charging_gun_connect_candidate)"),
 
-        // v0.2.23+222 — ТОЧНОЕ НАПРЯЖЕНИЕ БАТАРЕИ ДЕРЖИМ ЗДЕСЬ. В recon p155
-        // запись 0x2FF00030 закомментирована как непроверенная гипотеза
-        // `pack_voltage_alt`; у companion она подтверждена DC-зарядкой 06.08,
-        // и на ней стоят мощность, энергия и разделение энергии поездки.
-        // Без перекрытия переход на p155 молча снял бы сигнал. Друг 3 просил
-        // внести её в recon; снять отсюда, когда внесёт.
+        // v0.2.31+230: перекрытие 0x2FF00030 pack_voltage_fine снято — recon
+        // p156 активировал запись под тем же именем, единицей и полем (V,
+        // DOUBLE). История hal_samples продолжается без разрыва.
         //
         // 0x47800020 cell_temp_lowest p155 поместил в карантин (оба поля —
         // мусор ~1e9), и его не возвращаем: решение владельца 05.11.
-        "BYDAutoChargingDevice|0x2FF00030" to Decoder(
-            "pack_voltage_fine", "V", ValueSource.DOUBLE,
-            notes = "fractional volts; confirmed by recon 06.08 DC charge; commented out in p155"),
+
+        // v0.2.31+230 — ТОК ИНВЕРТОРА. ENGINE_MOTOR_CONTROL_ELEC 0x40800008,
+        // А, поле double, плюс = разряд, около 0.75 Гц, на P ровно 0
+        // (Друг 3, письмо 09.11). В таблице recon он всё ещё
+        // `motor_current_candidate`; Друг 3 переведёт его в активные под
+        // этим именем, тогда перекрытие снимается. На нём стоит модель
+        // разделения энергии v2: «движение» = ∫V·I_инв.
+        "BYDAutoEngineDevice|0x40800008" to Decoder(
+            "inverter_current", "A", ValueSource.DOUBLE,
+            notes = "ENGINE_MOTOR_CONTROL_ELEC; inverter DC input current, discharge-positive; 0 in P (Friend 3, 09.11)"),
 
         // v0.2.23+222: the seven AC candidates added here in +219
         // (0x2FC00009/0A/0B/0C/16, 0x2FA0000C/26) moved into the vendored
@@ -173,15 +177,16 @@ object CompanionDecoderOverrides {
      * НЕ подписываемся: `*_STATE_SET` (команды), `SET_HAS_*` (признак
      * комплектации), `SETTING_*_CONFIG` (конфигурация).
      *
-     * Power: 0x1CD0003D POWER_LOW_VOLTAGE — единственный кандидат на 12 В на
-     * открытом классе. Может оказаться флагом «низкое напряжение», а не
-     * вольтами. Подписан ОТДЕЛЬНОЙ регистрацией (HalStreamOwner), чтобы не
-     * вмешиваться в регистрацию GB32960 (совет Друга 3: в recon на Power
-     * две регистрации живут вместе без потерь 0x99000020).
+     * Power: v0.2.31+230 — отдельная регистрация 0x1CD0003D POWER_LOW_VOLTAGE
+     * снята. За двое суток ни одного события (экспорты 07.11 и 09.11), Друг
+     * 3: подписка на Power нам не работает. 12 В теперь читает телефон через
+     * адаптер (ATRV). Регистрация GB32960 на Power не тронута.
      *
      * Charging: 0x44900842 CHARGING_IRON_BATTERY_POWER_MODE — режим
      * 12-вольтовой LFP-батареи, покажет подзарядку от DC-DC. В вендорном
      * явном списке Charging его нет — добавляется сверху (extraChargingFids).
+     * v0.2.31+230: recon p156 внёс его в `Charging_priority` своих
+     * defaultTargets, но не в streamingTargets, — добавка остаётся.
      *
      * Statistic: 0x2F300030 STATISTIC_DC_DC_STATE — уже в первых 64
      * вендорной подписки Statistic, добавлять не нужно (гейт DB3 считает
@@ -193,14 +198,12 @@ object CompanionDecoderOverrides {
         0x48D00008, 0x48D0000B, 0x48600008, 0x48600010,
         0x31000040
     )
-    val powerStateFids: IntArray = intArrayOf(0x1CD0003D)
     val extraChargingFids: IntArray = intArrayOf(0x44900842)
     val statisticStateFids: IntArray = intArrayOf(0x2F300030)
 
     /** Device key → fids written raw as `state_raw_<FID>` by the sink. */
     val stateRawFids: Map<String, Set<Long>> = mapOf(
         "BYDAutoSettingDevice" to settingStateFids.map { it.toLong() and 0xFFFFFFFFL }.toSet(),
-        "BYDAutoPowerDevice" to powerStateFids.map { it.toLong() and 0xFFFFFFFFL }.toSet(),
         "BYDAutoChargingDevice" to extraChargingFids.map { it.toLong() and 0xFFFFFFFFL }.toSet(),
         "BYDAutoStatisticDevice" to statisticStateFids.map { it.toLong() and 0xFFFFFFFFL }.toSet()
     )

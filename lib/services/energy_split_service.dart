@@ -1,5 +1,6 @@
 // v0.2.23+222 — РАЗДЕЛЕНИЕ ЭНЕРГИИ ПОЕЗДКИ: движение / климат и подогрев /
-// прочее. v0.2.26+225: живое накопленное разделение открытой поездки
+// прочее. v0.2.31+230: модель v2 по току инвертора — движение / климат и
+// бортовая сеть ([computeEnergySplitV2], [computeEnergySplitAuto]). v0.2.26+225: живое накопленное разделение открытой поездки
 // ([EnergySplitService.live]) той же функцией, доли — [energySplitShares].
 //
 // Модель Друга 3 (05.11.2026, поездка 399), поправки к схеме согласованы
@@ -31,7 +32,16 @@ import '../data/database.dart';
 /// Друга 3; при смене коэффициентов меняется и [version], и тогда пересчёт
 /// с отправкой заново перезапишет облако (Друг 2, 05.11).
 class EnergySplitModel {
+  /// Модель v1: момент × обороты, база «прочего». Остаётся у поездок без
+  /// тока инвертора (все поездки до +230).
   static const String version = 'v1';
+
+  /// v0.2.31+230 — МОДЕЛЬ v2 (Друг 3, письмо 09.11). «Движение» = ∫V·I_инв,
+  /// «климат и бортовая сеть» = ∫V·I_бат − ∫V·I_инв, «прочее» = 0. Каждая
+  /// энергия интегрируется отдельно по своему току с удержанием последнего
+  /// значения, вычитание — только в конце: покадровая разность токов
+  /// шумит до −8.6 кВт. Порог и покрытие — те же, что у v1.
+  static const String versionV2 = 'v2';
   static const double kTraction = 1.030;
   static const double kRegen = 0.835;
   static const double baseKw = 0.65;
@@ -54,6 +64,8 @@ class EnergySplitModel {
     'pack_current',
     'motor_torque',
     'motor_rpm',
+    // v0.2.31+230: ток инвертора, сигнал модели v2.
+    'inverter_current',
   ];
 }
 
@@ -64,8 +76,12 @@ class EnergySplitResult {
   final double? motionKwh;
   final double? climateKwh;
   final double? otherKwh;
+  /// v0.2.31+230: какой моделью посчитано — [EnergySplitModel.version]
+  /// или [EnergySplitModel.versionV2].
+  final String model;
   const EnergySplitResult(this.packKwh, this.coverage, this.coveredSeconds,
-      this.motionKwh, this.climateKwh, this.otherKwh);
+      this.motionKwh, this.climateKwh, this.otherKwh,
+      {this.model = EnergySplitModel.version});
   bool get hasSplit => motionKwh != null;
 }
 
@@ -86,7 +102,10 @@ class EnergySplitResult {
 class LiveEnergySplit {
   final int tripId;
   final ({double motion, double climate, double other})? shares;
-  const LiveEnergySplit(this.tripId, this.shares);
+  /// v0.2.31+230: модель живого расчёта; у v2 строка «прочего» не нужна.
+  final String model;
+  const LiveEnergySplit(this.tripId, this.shares,
+      {this.model = EnergySplitModel.version});
 }
 
 /// Чистая функция, зеркало `split()` в tools/mirror_plus222_split.py.
@@ -144,6 +163,75 @@ EnergySplitResult computeEnergySplit(
   }
   return EnergySplitResult(ePack, cov, covered, eMotion, climate, other);
 }
+
+/// v0.2.31+230 — МОДЕЛЬ v2, зеркало `split_v2()` в
+/// tools/mirror_plus222_split.py.
+///
+/// Шаг 1 с, удержание последнего значения каждого сигнала с его первого
+/// сэмпла, как у v1. ∫V·I_бат и ∫V·I_инв копятся по отдельности;
+/// «климат и бортовая сеть» — их разность на уровне поездки. Если разность
+/// отрицательна (шум или поездка почти без нагрузок), климат = 0, движение
+/// = вся энергия батареи; если отрицательно движение (спуск с рекуперацией
+/// больше тяги), движение = 0, климат = вся энергия батареи. Сумма частей
+/// всегда равна энергии батареи; «прочее» = 0.
+EnergySplitResult computeEnergySplitV2(
+  List<({DateTime ts, String name, double v})> points,
+  DateTime start,
+  DateTime end,
+) {
+  final startS = start.millisecondsSinceEpoch / 1000.0;
+  final endS = end.millisecondsSinceEpoch / 1000.0;
+  final last = <String, double>{};
+  var i = 0;
+  var covered = 0;
+  var ePack = 0.0;
+  var eInv = 0.0;
+  for (var s = startS.ceil(); s < endS; s++) {
+    while (i < points.length &&
+        points[i].ts.millisecondsSinceEpoch / 1000.0 <= s) {
+      last[points[i].name] = points[i].v;
+      i++;
+    }
+    final v = last['pack_voltage_fine'] ?? last['pack_voltage'];
+    final iBat = last['pack_current'];
+    final iInv = last['inverter_current'];
+    if (v == null || iBat == null || iInv == null) continue;
+    covered++;
+    ePack += v * iBat / 1000.0 / 3600.0;
+    eInv += v * iInv / 1000.0 / 3600.0;
+  }
+  final dur = endS - startS;
+  final cov = dur > 0 ? covered / dur : 0.0;
+  if (dur < EnergySplitModel.minTripSeconds ||
+      cov < EnergySplitModel.minCoverage ||
+      ePack <= 0) {
+    return EnergySplitResult(ePack, cov, covered, null, null, null,
+        model: EnergySplitModel.versionV2);
+  }
+  var motion = eInv;
+  var climate = ePack - eInv;
+  if (climate < 0) {
+    climate = 0;
+    motion = ePack;
+  } else if (motion < 0) {
+    motion = 0;
+    climate = ePack;
+  }
+  return EnergySplitResult(ePack, cov, covered, motion, climate, 0.0,
+      model: EnergySplitModel.versionV2);
+}
+
+/// v0.2.31+230: выбор модели — ОДНО место для расчёта после закрытия и
+/// живой строки. Есть в поездке хоть один отсчёт тока инвертора — v2,
+/// иначе v1 (поездки до +230 и поездки, где поток Engine не пришёл).
+EnergySplitResult computeEnergySplitAuto(
+  List<({DateTime ts, String name, double v})> points,
+  DateTime start,
+  DateTime end,
+) =>
+    points.any((p) => p.name == 'inverter_current')
+        ? computeEnergySplitV2(points, start, end)
+        : computeEnergySplit(points, start, end);
 
 class EnergySplitService {
   EnergySplitService(this._db);
@@ -210,6 +298,7 @@ class EnergySplitService {
   }
 
   void dispose() {
+    _flushNoData();
     _sub?.cancel();
     _sub = null;
     _liveTimer?.cancel();
@@ -257,9 +346,10 @@ class EnergySplitService {
         live.value = null;
         return;
       }
-      final r = computeEnergySplit(_livePts, t.startedAt, now);
+      final r = computeEnergySplitAuto(_livePts, t.startedAt, now);
       live.value = LiveEnergySplit(
-          t.id, energySplitShares(r.motionKwh, r.climateKwh, r.otherKwh));
+          t.id, energySplitShares(r.motionKwh, r.climateKwh, r.otherKwh),
+          model: r.model);
     } catch (e) {
       debugPrint('EnergySplit: live pass failed: $e');
     } finally {
@@ -335,7 +425,7 @@ class EnergySplitService {
         noData++;
         continue;
       }
-      final r = computeEnergySplit(pts, t.startedAt, end);
+      final r = computeEnergySplitAuto(pts, t.startedAt, end);
       final used = t.energyUsedKwh;
       // Решение владельца 05.11: части в кВт·ч = доля по батарее ×
       // energy_used_kwh, чтобы их сумма совпадала со строкой «Энергия».
@@ -349,7 +439,7 @@ class EnergySplitService {
         motionKwh: r.motionKwh == null ? null : r.motionKwh! * k,
         climateKwh: r.climateKwh == null ? null : r.climateKwh! * k,
         otherKwh: r.otherKwh == null ? null : r.otherKwh! * k,
-        model: EnergySplitModel.version,
+        model: r.model,
       );
       debugPrint('EnergySplit: trip ${t.id} '
           '${r.hasSplit ? 'move=${(r.motionKwh! * k).toStringAsFixed(3)} '
@@ -358,13 +448,36 @@ class EnergySplitService {
           'windows=${r.coveredSeconds ~/ 60} '
           'coverage=${r.coverage.toStringAsFixed(2)} '
           'pack=${r.packKwh.toStringAsFixed(3)} used=$used '
-          'model=${EnergySplitModel.version}');
+          'model=${r.model}');
       // v0.2.30+229: любая записанная модель — на отправку (см. onTripsSplit).
       split.add(t.id);
     }
-    if (noData > 0) {
-      debugPrint('EnergySplit: $noData trip(s) without HAL data — skipped');
-    }
+    if (noData > 0) _noteNoData(noData);
     if (split.isNotEmpty) onTripsSplit?.call(split);
+  }
+
+  /// v0.2.31+230 — ОДНА СТРОКА НА ПРОХОД. Восстановление из облака вносит
+  /// поездки пачками, и каждая пачка запускала [_runPending] со своей
+  /// строкой «N trip(s) without HAL data — skipped»: в экспорте 09.11 11:20
+  /// это около 150 строк из 250 в app_log. Теперь счёт копится и пишется
+  /// одной строкой, когда пачки перестали приходить на [noDataQuiet].
+  /// Отметки в базе пишутся как прежде, сразу; откладывается только строка.
+  static const Duration noDataQuiet = Duration(seconds: 10);
+  int _noDataPending = 0;
+  Timer? _noDataTimer;
+
+  void _noteNoData(int n) {
+    _noDataPending += n;
+    _noDataTimer?.cancel();
+    _noDataTimer = Timer(noDataQuiet, _flushNoData);
+  }
+
+  void _flushNoData() {
+    _noDataTimer?.cancel();
+    _noDataTimer = null;
+    if (_noDataPending == 0) return;
+    debugPrint('EnergySplit: $_noDataPending trip(s) without HAL data — '
+        'skipped (local mark only)');
+    _noDataPending = 0;
   }
 }

@@ -1416,10 +1416,15 @@ class EnergySplitCard extends StatelessWidget {
     final packKwh = pack != null && pack > 0 ? pack : null;
     final total = packKwh ?? used ?? sum;
     final packLoss = packKwh != null && used != null ? used - packKwh : null;
+    // v0.2.31+230: у модели v2 две части — «Движение» и «Климат и
+    // бортовая сеть»; «прочего» в ней нет (оно равно 0), строки нет.
+    final v2 = trip.energySplitModel == EnergySplitModel.versionV2;
     final parts = <(String, double, Color)>[
       (S.of('trip.split_motion'), sh.motion, EnergySplitBar.motionColor),
-      (S.of('trip.split_climate'), sh.climate, EnergySplitBar.climateColor),
-      (S.of('trip.split_other'), sh.other, EnergySplitBar.otherColor),
+      (S.of(v2 ? 'trip.split_climate_board' : 'trip.split_climate'),
+          sh.climate, EnergySplitBar.climateColor),
+      if (!v2)
+        (S.of('trip.split_other'), sh.other, EnergySplitBar.otherColor),
     ];
     return Card(
       child: Padding(

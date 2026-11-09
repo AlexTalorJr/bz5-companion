@@ -218,6 +218,12 @@ class _LiveLogScreenState extends State<LiveLogScreen> {
                 label: const Text('GPS in motion'),
                 onPressed: () => _applyPreset(_LivelogPreset.gpsInMotion),
               ),
+              // v0.2.31+230: климатический блок 744 по ступеням климата.
+              ActionChip(
+                avatar: const Icon(Icons.ac_unit, size: 16),
+                label: const Text('Climate 744'),
+                onPressed: () => _applyPreset(_LivelogPreset.climate744),
+              ),
               // v0.2.20+219: part number (0105) of every registry ECU that
               // has no confirmed name yet, in chunks of kLiveLogMaxDids.
               for (final p in const [
@@ -588,6 +594,12 @@ enum _LivelogPreset {
   /// to ECU discovery. See handoff doc → pending sweeps.
   gpsInMotion,
 
+  /// v0.2.31+230: climate box 744/74C, seven DIDs, raw answers only (744
+  /// has no detailed spec, so nothing is scaled). Run on P through the
+  /// climate steps: 60 s off, 60 s AUTO 23, 60 s HI fan 7, off; then
+  /// windscreen defrost and recirculation on/off.
+  climate744,
+
   /// v0.2.20+219: read part number DID 0105 from every ECU in
   /// `allBz5Ecus` without a detailed spec (24 ECUs: all except 702, 740,
   /// 757, 782, 790, 791), split 10 + 10 + 4. The list is built from the
@@ -643,6 +655,15 @@ extension _LivelogPresetX on _LivelogPreset {
             ('790', '798', '002D'),
             ('791', '799', '0020'),
           ],
+        _LivelogPreset.climate744 => const [
+            ('744', '74C', '0007'),
+            ('744', '74C', '0008'),
+            ('744', '74C', '0009'),
+            ('744', '74C', '0010'),
+            ('744', '74C', '0011'),
+            ('744', '74C', '0014'),
+            ('744', '74C', '0022'),
+          ],
         _LivelogPreset.gpsInMotion => const [
             ('757', '75F', '0120'), // GPS data slot 1 (null when parked)
             ('757', '75F', '0121'), // GPS data slot 2
@@ -674,6 +695,7 @@ extension _LivelogPresetX on _LivelogPreset {
         _LivelogPreset.chargeStateHunt => 'AC plug/unplug toggle',
         _LivelogPreset.defaultDriving => 'driving',
         _LivelogPreset.gpsInMotion => 'driving, GPS test',
+        _LivelogPreset.climate744 => 'P+Ready, climate steps',
       };
 
   String get notes => switch (this) {
@@ -688,5 +710,8 @@ extension _LivelogPresetX on _LivelogPreset {
         _LivelogPreset.defaultDriving => '',
         _LivelogPreset.gpsInMotion =>
             'Looking for live lat/lon in 757/0120-0122 with motion + IMU fusion',
+        _LivelogPreset.climate744 =>
+            'Climate 744: 60 s off, 60 s AUTO 23, 60 s HI fan 7, off; '
+                'then windscreen defrost and recirculation on/off. Raw only.',
       };
 }

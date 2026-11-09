@@ -294,7 +294,6 @@ class _HalTestScreenState extends State<HalTestScreen> {
     'state_raw_48600008': 'SET_REAR_LEFT_SEAT_VENTILATING_STATE',
     'state_raw_48600010': 'SET_REAR_RIGHT_SEAT_VENTILATING_STATE',
     'state_raw_31000040': 'SET_STEERING_WHEEL_HEAT_STATE',
-    'state_raw_1CD0003D': 'POWER_LOW_VOLTAGE',
     'state_raw_44900842': 'CHARGING_IRON_BATTERY_POWER_MODE',
     'state_raw_2F300030': 'STATISTIC_DC_DC_STATE',
   };

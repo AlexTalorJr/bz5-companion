@@ -122,6 +122,22 @@ class _SweepScreenState extends State<SweepScreen> {
       startDid: '0000',
       endDid: '03FF',
     ),
+    // v0.2.31+230: the climate box 744 above 0x03FF, in two parts. Real
+    // sweep pace is about 0.44 s per DID, hence ~22 and ~30 min.
+    _SweepPreset(
+      name: 'Climate 744 mid',
+      description: '744 — climate box, 0x0400..0x0FFF (3072 DIDs, ~22 min)',
+      txList: ['744'],
+      startDid: '0400',
+      endDid: '0FFF',
+    ),
+    _SweepPreset(
+      name: 'Climate 744 upper',
+      description: '744 — climate box, 0x1000..0x1FFF (4096 DIDs, ~30 min)',
+      txList: ['744'],
+      startDid: '1000',
+      endDid: '1FFF',
+    ),
     _SweepPreset(
       name: 'GPS Asensing',
       description: '757 — GPS module, 0x0000..0x00FF (~2 min)',

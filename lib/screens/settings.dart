@@ -495,6 +495,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
         ..._devices.map((d) => _DeviceTile(result: d, onTap: () => _connect(svc, d))),
       ] else ...[
+        // v0.2.31+230: 12 В по адаптеру (ATRV) — только при живом BLE и
+        // после первого валидного отсчёта.
+        if (svc.adapterVoltage != null)
+          ListTile(
+            dense: true,
+            leading: const Icon(Icons.battery_charging_full),
+            title: Text(S.of('settings.adapter_12v').replaceFirst(
+                '{v}', svc.adapterVoltage!.toStringAsFixed(1))),
+          ),
         ListTile(
           leading: const Icon(Icons.link_off, color: Colors.red),
           title: Text(S.of('settings.disconnect')),
@@ -1263,8 +1272,14 @@ String _deviceMeLine(CloudSyncService cs) {
   if (cs.deviceMeFetchedAt == null) return S.of('cloud.device_me.unknown');
   if (cs.deviceMeLinked == false) return S.of('cloud.device_me.not_linked');
   final email = cs.deviceMeEmail ?? '?';
+  // v0.2.31+230: признак головы машины — в диагностику.
+  final hu = cs.vehicleHeadunitPresent;
+  final huLine = hu == null
+      ? ''
+      : ' · ${S.of(hu ? 'cloud.headunit_yes' : 'cloud.headunit_no')}'
+          '${hu && cs.vehicleHeadunitLastSeen != null ? ' (${cs.vehicleHeadunitLastSeen})' : ''}';
   return '${S.of('cloud.device_me.linked').replaceFirst('{email}', email)}'
-      ' · ${_deviceMeStatusLabel(cs.deviceMeStatus)}';
+      ' · ${_deviceMeStatusLabel(cs.deviceMeStatus)}$huLine';
 }
 
 /// Same status dictionary as /v2/account/me — the l10n keys are shared

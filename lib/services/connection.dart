@@ -502,6 +502,55 @@ class ConnectionService extends ChangeNotifier {
   /// ConnectionService never references the HAL class, only this bool callback.
   bool Function()? halOwnsTripCheck;
 
+  /// v0.2.31+230 — ГОЛОВА В МАШИНЕ ВЕДЁТ ПОЕЗДКИ. `true` — у машины есть
+  /// головное устройство с Companion (`vehicle.headunit.present` из
+  /// `/v2/device/me`, хранится в prefs CloudSyncService), и этот телефон не
+  /// голова: телефон не заводит OBD-поездки и не пишет снимки, иначе в
+  /// истории дубли поездок головы. Зонды UDS, Live Log, свип и ATRV
+  /// работают как прежде. null-колбэк или false — поведение как раньше.
+  /// Ставится в main.dart; AA2: колбэк, не класс.
+  bool Function()? headunitOwnsTripsCheck;
+
+  /// v0.2.31+230: позвать при каждом подключении донгла — main.dart
+  /// перечитывает `/v2/device/me`, чтобы признак головы был свежим к
+  /// моменту, когда опрос решает про поездку.
+  void Function()? onDongleConnected;
+
+  bool get _headunitOwnsTrips {
+    try {
+      return headunitOwnsTripsCheck?.call() ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // v0.2.31+230: 12 В адаптера (ATRV, раз в 5 с из Elm327Client.query).
+  double? _adapterVoltage;
+
+  /// 12 В по адаптеру — только при живом BLE и после первого валидного
+  /// отсчёта этого подключения.
+  double? get adapterVoltage => _client != null ? _adapterVoltage : null;
+
+  void _onAdapterVoltage(double v) {
+    _adapterVoltage = v;
+    // Время по часам телефона (insertHalSignal ставит now), метка
+    // `adapter_atrv`, источник 'adapter' — в экспорте отдельно от HAL.
+    db
+        .insertHalSignal(
+          tripId: _currentTripId,
+          targetKey: 'adapter',
+          subtype: 'ATRV',
+          name: 'adapter_atrv',
+          numeric: v,
+          source: 'adapter',
+        )
+        .catchError((Object e) {
+      debugPrint('ATRV: write failed — $e');
+      return 0;
+    });
+    notifyListeners();
+  }
+
   // v5: rolling cell spread for stable display
   final List<int> _cellSpreadHistory = [];
   static const int _cellSpreadHistoryMax = 10;
@@ -1434,6 +1483,13 @@ class ConnectionService extends ChangeNotifier {
         await _ble!.connect();
         _client = Elm327Client(_ble!);
         await _client!.initialize();
+        _adapterVoltage = null;
+        _client!.onAdapterVoltage = _onAdapterVoltage;
+        try {
+          onDongleConnected?.call();
+        } catch (e) {
+          debugPrint('onDongleConnected threw: $e');
+        }
         _adapterAddress = device.remoteId.str;
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('last_adapter', _adapterAddress!);
@@ -2732,6 +2788,13 @@ class ConnectionService extends ChangeNotifier {
       debugPrint('Trip creation suppressed — HAL owns trips in this mode.');
       return;
     }
+    // v0.2.31+230: у машины есть голова — поездки ведёт она.
+    if (_headunitOwnsTrips) {
+      _wantTripCreation = false;
+      debugPrint('Trip creation suppressed — the vehicle has a head unit '
+          '(device/me vehicle.headunit.present).');
+      return;
+    }
     if (_currentTripId != null) return;
     if (_pollCyclesSinceStart < 2) return;
     final hasOBC = readNumeric('782', '0057') != null;
@@ -3020,6 +3083,8 @@ class ConnectionService extends ChangeNotifier {
       return;
     }
     _lastSnapshotAt = now;
+    // v0.2.31+230: у машины есть голова — снимки пишет она.
+    if (_headunitOwnsTrips) return;
 
     final soc = readNumeric('790', '0005');
     final soh = readNumeric('790', '0029');
@@ -4181,6 +4246,9 @@ class ConnectionService extends ChangeNotifier {
       'charging_power_kw': chargingKw,
     };
 
+    // v0.2.31+230: у машины есть голова — в базу снимок не пишется, карта
+    // для буфера обмена остаётся.
+    if (_headunitOwnsTrips) return map;
     try {
       await db.insertSnapshot(SnapshotsCompanion(
         capturedAt: Value(now),

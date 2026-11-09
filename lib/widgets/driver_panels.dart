@@ -508,6 +508,8 @@ class TripMetricsPanel extends StatelessWidget {
             // v0.2.26+225: живое накопленное разделение энергии — одна
             // строка снизу. Ряды выше в Expanded и уступают ей высоту.
             _LiveEnergySplitRow(tripId: tripDbId, compact: compact),
+            // v0.2.31+230: климат и подогревы на стоянке.
+            _ParkedClimateRow(compact: compact),
           ],
         ),
       ),
@@ -563,7 +565,9 @@ class _LiveEnergySplitRow extends StatelessWidget {
                 for (final p in <(double, Color)>[
                   (sh.motion, EnergySplitBar.motionColor),
                   (sh.climate, EnergySplitBar.climateColor),
-                  (sh.other, EnergySplitBar.otherColor),
+                  // v0.2.31+230: у v2 «прочего» нет.
+                  if (v.model != EnergySplitModel.versionV2)
+                    (sh.other, EnergySplitBar.otherColor),
                 ])
                   Padding(
                     padding: const EdgeInsets.only(left: 10),
@@ -580,6 +584,51 @@ class _LiveEnergySplitRow extends StatelessWidget {
           ),
         );
       },
+    );
+  }
+}
+
+/// v0.2.31+230: «Климат и подогревы» на стоянке — одна строка снизу
+/// панели поездки (голова BZ5 и BZ3). Не считает и не решает: всё в
+/// [ParkedClimateMeter] (HalTelemetryService.parkedClimate). Строки нет вне
+/// P, при выключенном климате и до первого события AC_POWER_STATE.
+class _ParkedClimateRow extends StatelessWidget {
+  final bool compact;
+  const _ParkedClimateRow({required this.compact});
+
+  @override
+  Widget build(BuildContext context) {
+    final m = context.watch<HalTelemetryService>().parkedClimate;
+    final now = m.nowKw;
+    if (!m.active || now == null) return const SizedBox.shrink();
+    final mean = m.meanKw ?? now;
+    final fs = compact ? 11.0 : 13.0;
+    return Padding(
+      padding: EdgeInsets.only(top: compact ? 4 : 6),
+      child: Row(
+        children: [
+          Text(S.of('drv.parked_climate').toUpperCase(),
+              style: TextStyle(
+                  fontSize: compact ? 9 : 10,
+                  letterSpacing: 1.2,
+                  color: Colors.grey)),
+          const SizedBox(width: 10),
+          Text('${now.toStringAsFixed(1)} kW',
+              style: TextStyle(
+                  fontSize: fs,
+                  color: EnergySplitBar.climateColor,
+                  fontFeatures: const [FontFeature.tabularFigures()])),
+          const Spacer(),
+          Text(
+              '${S.of('drv.parked_climate_mean')} '
+              '${mean.toStringAsFixed(1)} kW · '
+              '${m.energyKwh.toStringAsFixed(2)} kWh',
+              style: TextStyle(
+                  fontSize: fs,
+                  color: Colors.grey,
+                  fontFeatures: const [FontFeature.tabularFigures()])),
+        ],
+      ),
     );
   }
 }

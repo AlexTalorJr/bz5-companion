@@ -1630,6 +1630,21 @@ class AppDatabase extends _$AppDatabase {
     return (delete(trips)..where((t) => t.id.equals(id))).go();
   }
 
+  /// v0.2.31+230: удаление поездки по облачному tombstone (`deleted_at`).
+  /// Одной транзакцией: ряды поездки (по id и по uuid поездки), ссылка
+  /// снимков на неё обнуляется (снимки — история батареи, они остаются),
+  /// затем сама строка. Схема не меняется.
+  Future<int> deleteTripWithSeries(int id, String uuid) {
+    return transaction(() async {
+      await (delete(tripSeries)
+            ..where((r) => r.tripId.equals(id) | r.tripClientUuid.equals(uuid)))
+          .go();
+      await (update(snapshots)..where((s) => s.tripId.equals(id)))
+          .write(const SnapshotsCompanion(tripId: Value(null)));
+      return (delete(trips)..where((t) => t.id.equals(id))).go();
+    });
+  }
+
   /// v0.1.29+35: trips whose startedAt falls in [from, to], oldest first.
   /// Backs the Trends period aggregation (cumulative + per-period charts).
   /// Ordered ascending so the aggregator can walk them chronologically
@@ -1720,11 +1735,13 @@ class AppDatabase extends _$AppDatabase {
     required String name,
     double? numeric,
     String? text,
+    // v0.2.31+230: 'adapter' — 12 В адаптера с телефона (ATRV).
+    String source = 'hal',
   }) {
     return into(halSamples).insert(HalSamplesCompanion(
       tripId: Value(tripId),
       timestamp: Value(DateTime.now()),
-      source: const Value('hal'),
+      source: Value(source),
       targetKey: Value(targetKey),
       subtype: Value(subtype),
       name: Value(name),

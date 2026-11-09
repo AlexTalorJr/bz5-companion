@@ -38,7 +38,10 @@ commit:  p078
 TelemetrySink.kt           28426f4a53bec05385b8e83e2bee56ebc77cc7d88d70405ba3e2834d0caf402a
 LiveTelemetrySubscriber.kt 925befca76c4d73065c6aa35a0f589846ab6bb74cf6a6213a09f4c525814642e
 ReflectionCache.kt         9cf45133f4f36937c399265d7c95fb866757c56336468a71cdf32c2752a38625
-TargetRegistry.kt          4c260db27c4ac5abf6275668e8d137564a3090de97b7c390f424097d7964acf4
-TelemetryDecoderTable.kt   85f5e951b745f8ed6a115e456ebb437b6e7b24f1b3798a6af24884df1226605c  recon v0.10.155
+TargetRegistry.kt          eca553ac5ebab8eae580cc2c8e55ae7db8f61434d0aa8d07ae6befb46a8c3ff4  recon v0.10.157.1
+TelemetryDecoderTable.kt   1538e1e58c43a048f25526d292f6cbbe8a51edfb79dd1dd46114009ebf7a6adc  recon v0.10.157.1
+# v0.2.31+230: TargetRegistry and TelemetryDecoderTable re-vendored from
+# recon v0.10.157.1 (commit b1b95ca). streamingTargets changed only by two
+# old-format Charging fids; the rest of p156/p157 is recon defaultTargets.
 # 6th file — BZ3 GETTERS engine, different recon version (per-line override):
 Bz3TelemetrySubscriber.kt  dca150f550d55fd63a6a87e1f86534b814700c70426ff5fce8255ef974a29a16  recon v0.10.79

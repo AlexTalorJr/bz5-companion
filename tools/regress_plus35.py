@@ -10760,9 +10760,11 @@ if int(pv) >= 199:
     # v0.2.23+222: recon p155 не несёт эту запись — она в overrides.
     _cc5_ovr = (root / 'android/app/src/main/kotlin/com/bz5companion'
                 '/bz5_companion/hal/CompanionDecoderOverrides.kt').read_text()
+    # v0.2.31+230: recon p156 активировал запись — перекрытие снято.
     _cc5 = (('Decoder("pack_voltage_fine", "V", ValueSource.DOUBLE,' in _cc_tab
-             if int(pv) < 222 else
+             if int(pv) < 222 or int(pv) >= 230 else
              '"BYDAutoChargingDevice|0x2FF00030" to Decoder(\n            "pack_voltage_fine", "V", ValueSource.DOUBLE,' in _cc5_ovr) and
+            (int(pv) < 230 or ('put("BYDAutoChargingDevice|0x2FF00030",' in _cc_tab and '0x2FF00030' not in _cc5_ovr.split('val extraStatisticFids')[0].replace('// v0.2.31+230: перекрытие 0x2FF00030', ''))) and
             "'pack_voltage_fine': (250, 500)," in _cc_hal and
             "'pack_voltage_fine': Duration(seconds: 6)," in _cc_hal and
             _cc5_sticky is not None and
@@ -11552,7 +11554,8 @@ if int(pv) >= 203:
         # v0.10.156). Руками вендоренный файл не правим — список ждёт
         # перевендоринга и обязан опустеть вместе с ним (номер, которого в
         # таблице уже нет, роняет гейт: список не должен жить дольше дела).
-        _cg5_pending = {0xDA09B, 0x72559, 0x4CFF3} if int(pv) >= 228 else set()
+        # v0.2.31+230: перевендоринг recon v0.10.157.1 — список пуст.
+        _cg5_pending = {0xDA09B, 0x72559, 0x4CFF3} if 228 <= int(pv) < 230 else set()
         _cg5_stale = [hex(f) for f in _cg5_pending if f not in {e[0] for e in _cg5_ent}]
         _cg5_absent = [hex(f) for f, _ in _cg5_ent if f not in _cg5_map and f not in _cg5_pending] + \
             [f'stale pending {x}' for x in _cg5_stale]
@@ -13127,8 +13130,11 @@ if int(pv) >= 222:
 
     # CX1: ТАБЛИЦА recon p155 И ФЛАГ НОСИТЕЛЯ ДО hal_samples.
     _cx1 = [
-        'TelemetryDecoderTable.kt   85f5e951b745f8ed6a115e456ebb437b6e7b24f1b3798a6af24884df1226605c  recon v0.10.155' in _cx_man,
-        '// SHA256: 85f5e951b745f8ed6a115e456ebb437b6e7b24f1b3798a6af24884df1226605c' in _cx_tab,
+        # v0.2.31+230: таблица — recon v0.10.157.1 (правило носителя то же).
+        ('TelemetryDecoderTable.kt   85f5e951b745f8ed6a115e456ebb437b6e7b24f1b3798a6af24884df1226605c  recon v0.10.155' in _cx_man) if int(pv) < 230 else
+        ('TelemetryDecoderTable.kt   1538e1e58c43a048f25526d292f6cbbe8a51edfb79dd1dd46114009ebf7a6adc  recon v0.10.157.1' in _cx_man),
+        ('// SHA256: 85f5e951b745f8ed6a115e456ebb437b6e7b24f1b3798a6af24884df1226605c' in _cx_tab) if int(pv) < 230 else
+        ('// SHA256: 1538e1e58c43a048f25526d292f6cbbe8a51edfb79dd1dd46114009ebf7a6adc' in _cx_tab),
         'val typeConflict: Boolean = false' in _cx_tab,
         'if (typeConflict) {\nm["type_conflict"] = true\nm["carrier"] = carrier.name' in _cx_sink,
         "typeConflict: m['type_conflict'] == true," in _cx_chn,
@@ -13141,9 +13147,10 @@ if int(pv) >= 222:
     # записи, которых нет в p155, держатся здесь.
     _cx2 = [
         '"BYDAutoAcDevice|' not in _cx_ovr,
-        '"BYDAutoChargingDevice|0x2FF00030" to Decoder(\n"pack_voltage_fine", "V", ValueSource.DOUBLE,' in _cx_ovr,
+        ('"BYDAutoChargingDevice|0x2FF00030" to Decoder(\n"pack_voltage_fine", "V", ValueSource.DOUBLE,' in _cx_ovr) if int(pv) < 230 else
+        ('"BYDAutoChargingDevice|0x2FF00030" to Decoder(' not in _cx_ovr),
         '0x47800020' not in _cx_ovr,
-        '// put("BYDAutoChargingDevice|0x2FF00030",' in _cx_tab and '// put("BYDAutoStatisticDevice|0x47800020",' in _cx_tab,
+        (('// put("BYDAutoChargingDevice|0x2FF00030",' in _cx_tab) if int(pv) < 230 else ('put("BYDAutoChargingDevice|0x2FF00030",\n            Decoder("pack_voltage_fine", "V", ValueSource.DOUBLE,' in _cx_tab)) and '// put("BYDAutoStatisticDevice|0x47800020",' in _cx_tab,
     ]
     if all(_cx2): ok('CX2 no AC override shadows p155; pack_voltage_fine, commented out in p155, is kept as a companion override; quarantined cell_temp_lowest stays out')
     else: fail(f'CX2 decoder layering drifted: {_cx2}')
@@ -13190,9 +13197,10 @@ if int(pv) >= 222:
         _cx4_num('baseKw') == _cx_mir.BASE_KW,
         f'static const int minTripSeconds = {_cx_mir.MIN_TRIP_S};' in _cx_es,
         _cx4_num('minCoverage') == _cx_mir.MIN_COVERAGE,
-        "final v = last['pack_voltage_fine'] ?? last['pack_voltage'];" in _cx_es,
+        # v0.2.31+230: v1 и v2 — по одному разу в каждой функции.
+        _cx_es.count("final v = last['pack_voltage_fine'] ?? last['pack_voltage'];") == (1 if int(pv) < 230 else 2),
         'if (climate < 0) {\nclimate = 0;\nother = residual;\n}' in _cx_es,
-        'cov < EnergySplitModel.minCoverage ||' in _cx_es,
+        _cx_es.count('cov < EnergySplitModel.minCoverage ||') == (1 if int(pv) < 230 else 2),
         _cx4_self,
     ]
     if all(_cx4): ok('CX4 the energy split matches its Python mirror (constants, fine-voltage first, trip-level residual) and the mirror self-tests pass')
@@ -13329,8 +13337,9 @@ if int(pv) >= 225:
     _cz2 = [
         'static const Duration liveInterval = Duration(minutes: 1);' in _cz_es,
         'Timer.periodic(liveInterval, (_) => unawaited(_liveTick()));' in _cz_es,
-        'final r = computeEnergySplit(_livePts, t.startedAt, now);' in _cz2_tick,
-        't.id, energySplitShares(r.motionKwh, r.climateKwh, r.otherKwh));' in _cz2_tick,
+        # v0.2.31+230: выбор модели — computeEnergySplitAuto (DE3).
+        ('final r = computeEnergySplit(_livePts, t.startedAt, now);' if int(pv) < 230 else 'final r = computeEnergySplitAuto(_livePts, t.startedAt, now);') in _cz2_tick,
+        ('t.id, energySplitShares(r.motionKwh, r.climateKwh, r.otherKwh));' if int(pv) < 230 else 't.id, energySplitShares(r.motionKwh, r.climateKwh, r.otherKwh),\nmodel: r.model);') in _cz2_tick,
         'if (_livePts.isEmpty) {\nlive.value = null;' in _cz2_tick,
         'final sh = energySplitShares(\ntrip.energyMotionKwh, trip.energyClimateKwh, trip.energyOtherKwh);' in _cz_td,
         'if (tripId == null || v == null || v.tripId != tripId) {' in _cz2_row,
@@ -13547,7 +13556,7 @@ if int(pv) >= 226:
         '"name" to "$prefix${String.format("%08X", fid32)}",' in _da7_fn,
         'private const val STATE_RAW_PREFIX = "state_raw_"' in _da_out and 'name.startsWith(STATE_RAW_PREFIX)) {' in _da_out,
         (('"BYDAutoLightDevice" to lightStateFids' if int(pv) < 227 else '"BYDAutoLightsDevice" to lightStateFids') in _da_ovr and '"BYDAutoSettingDevice" to settingStateFids' in _da_ovr and '"BYDAutoBodyworkDevice" to bodyworkStateFids' in _da_ovr and '"BYDAutoStatisticDevice" to statisticStateFids' in _da_ovr) if int(pv) < 228 else
-        ('"BYDAutoSettingDevice" to settingStateFids' in _da_ovr and '"BYDAutoPowerDevice" to powerStateFids' in _da_ovr and '"BYDAutoChargingDevice" to extraChargingFids' in _da_ovr and '"BYDAutoStatisticDevice" to statisticStateFids' in _da_ovr),
+        ('"BYDAutoSettingDevice" to settingStateFids' in _da_ovr and (('"BYDAutoPowerDevice" to powerStateFids' in _da_ovr) if int(pv) < 230 else ('powerStateFids' not in _da_ovr)) and '"BYDAutoChargingDevice" to extraChargingFids' in _da_ovr and '"BYDAutoStatisticDevice" to statisticStateFids' in _da_ovr),
         "if (e.name.startsWith('heat_raw_') || e.name.startsWith('state_raw_')) {" in _da_hts,
         "final kind = e.name.startsWith('state_raw_') ? 'state' : 'heat';" in _da_hts,
         (("for (final dev in const ['Bodywork', 'Light', 'Setting']) {" if int(pv) < 227 else "for (final dev in const ['Bodywork', 'Lights', 'Setting']) {") in _da_hts and "'BYDAuto${dev}Device'" in _da_hts) if int(pv) < 228 else
@@ -13657,10 +13666,14 @@ if int(pv) >= 228:
         _i = src.find(start)
         _j = src.find(end, _i + len(start)) if _i > -1 else -1
         return src[_i + len(start):_j] if -1 < _i < _j else ''
+    # v0.2.31+230: только streamingTargets — с p156 в defaultTargets recon
+    # тоже есть явный список Charging (Charging_priority), и первое
+    # совпадение по файлу брало его.
+    _db3_reg_st = _db_reg[_db_reg.find('fun streamingTargets('):]
     _db3_stat_prio = {int(x, 16) for x in re.findall(r'0x([0-9A-Fa-f]{8})',
-        _db3_block(_db_reg, 'val statisticPriority = intArrayOf(', '\n        )\n'))}
+        _db3_block(_db3_reg_st, 'val statisticPriority = intArrayOf(', '\n        )\n'))}
     _db3_chg_ids = {int(x, 16) for x in re.findall(r'0x([0-9A-Fa-f]{8})',
-        _db3_block(_db_reg, '"android.hardware.bydauto.charging.BYDAutoChargingDevice",\n            intArrayOf(', '\n            )'))}
+        _db3_block(_db3_reg_st, '"android.hardware.bydauto.charging.BYDAutoChargingDevice",\n            intArrayOf(', '\n            )'))}
     _db3_vendor = {
         'BYDAutoStatisticDevice': _db3_prefix('STATISTIC_', 64, False) | _db3_stat_prio,
         'BYDAutoChargingDevice': _db3_chg_ids,
@@ -13680,13 +13693,14 @@ if int(pv) >= 228:
     _db3_unsub = [f'{d}|{hex(v)}' for d, n in _db3_raw.items() for v in _db2_vals.get(n, []) if v not in _db3_sub.get(d, set())] + \
         [f'Instrument|{hex(v)}' for v in _db2_vals.get('extraInstrumentFids', []) if v not in _db3_sub['BYDAutoInstrumentDevice']]
     _db3 = [
-        len(_db3_stat_prio) >= 10 and len(_db3_chg_ids) >= 9,
+        len(_db3_stat_prio) >= 10 and len(_db3_chg_ids) >= (9 if int(pv) < 230 else 7),
         not _db3_dup,
         not _db3_unsub,
         '"BYDAutoChargingDevice" -> spec.copy(\nfeatureIds = spec.featureIds +\nCompanionDecoderOverrides.extraChargingFids\n)' in _db_own,
-        'TargetSpec(\n"BYDAutoPowerDevice_lowVoltage",\n"android.hardware.bydauto.power.BYDAutoPowerDevice",\nCompanionDecoderOverrides.powerStateFids\n)' in _db_own,
+        ('TargetSpec(\n"BYDAutoPowerDevice_lowVoltage",\n"android.hardware.bydauto.power.BYDAutoPowerDevice",\nCompanionDecoderOverrides.powerStateFids\n)' in _db_own) if int(pv) < 230 else
+        ('BYDAutoPowerDevice_lowVoltage' not in _db_own and 'powerStateFids' not in _db_own),
         'TargetSpec(\n"BYDAutoPowerDevice_canDataCollect",\n"android.hardware.bydauto.power.BYDAutoPowerDevice",\nintArrayOf(0x99000037.toInt(), 0x99000003.toInt()),' in _db_own,
-        '"BYDAutoPowerDevice" to powerStateFids' in _db_ovr and '"BYDAutoChargingDevice" to extraChargingFids' in _db_ovr,
+        (('"BYDAutoPowerDevice" to powerStateFids' in _db_ovr) if int(pv) < 230 else ('powerStateFids' not in _db_ovr)) and '"BYDAutoChargingDevice" to extraChargingFids' in _db_ovr,
     ]
     if all(_db3): ok('DB3 every raw-captured fid is in the effective subscription computed from the catalog by the vendor rule, no companion addition duplicates the vendor set; 12 V has its own Power registration, the GB32960 one is untouched')
     else: fail(f'DB3 subscription vs catalog drifted: {_db3} dup={_db3_dup} unsub={_db3_unsub}')
@@ -13701,9 +13715,9 @@ if int(pv) >= 228:
         'BYDAutoLightsDevice' not in _db_own and 'BYDAutoBodyworkDevice' not in _db_own,
         'BYDAUTO_LIGHT_' not in _db_man,
         'coolantSignal' not in _db_es and 'coolant' not in _db_es and 'countHalSamplesNamedBetween' not in _db_dbf,
-        _db4_keys == ['BYDAutoSettingDevice', 'BYDAutoPowerDevice_lowVoltage'],
+        _db4_keys == (['BYDAutoSettingDevice', 'BYDAutoPowerDevice_lowVoltage'] if int(pv) < 230 else ['BYDAutoSettingDevice']),
         set(_db4_keys) <= set(re.findall(r'TargetSpec\(\n"(\w+)",', _db_own)),
-        "'state_raw_1CD0003D': 'POWER_LOW_VOLTAGE'," in _db_ht and "'state_raw_44900842': 'CHARGING_IRON_BATTERY_POWER_MODE'," in _db_ht,
+        (("'state_raw_1CD0003D': 'POWER_LOW_VOLTAGE'," in _db_ht) if int(pv) < 230 else ('state_raw_1CD0003D' not in _db_ht)) and "'state_raw_44900842': 'CHARGING_IRON_BATTERY_POWER_MODE'," in _db_ht,
         'state_raw_3310' not in _db_ht and 'heat_raw_2FA00016' not in _db_ht and 'state_raw_2FC00042' not in _db_ht,
     ]
     if all(_db4): ok('DB4 Lights, Bodywork, LIGHT permissions and the coolant counter are gone; app_log registration lines name exactly the companion-added targets; HAL Test labels the two new signals')
@@ -13770,7 +13784,8 @@ if int(pv) >= 229:
         'if (fixed.isNotEmpty) onTripsRepaired?.call(fixed);' in _dc3_fn,
         all(f'{c}: const Value(null),' in _dc3_rep for c in ('energySplitCoverage', 'energyPackKwh', 'energyMotionKwh', 'energyClimateKwh', 'energyOtherKwh', 'energySplitModel')),
         't.energyUsedKwh.isNull() &' in _dc_db and 't.startedAt.isBiggerOrEqualValue(since))' in _dc_db,
-        'hal.onTripsRepaired = (ids) =>\nunawaited(ctx.read<CloudSyncService>().requeueTrips(ids));\nhal.init();' in _dc_main,
+        ('hal.onTripsRepaired = (ids) =>\nunawaited(ctx.read<CloudSyncService>().requeueTrips(ids));\nhal.init();' in _dc_main) if int(pv) < 230 else
+        ('hal.onTripsRepaired = (ids) =>\nunawaited(ctx.read<CloudSyncService>().requeueTrips(ids));' in _dc_main and _dc_main.find('hal.onTripsRepaired = (ids) =>') < _dc_main.find('hal.init();')),
     ]
     if all(_dc3): ok('DC3 trips with an integer start and empty energy are repaired from the first precise SOC (all conditions at once, split reset to rescale, re-sent via main wiring, after orphan recovery)')
     else: fail(f'DC3 start SOC repair drifted: {_dc3}')
@@ -13794,6 +13809,167 @@ if int(pv) >= 229:
     else: fail(f'DC4 split threshold / re-send drifted: {_dc4}')
 else:
     ok(f"Part DC skipped (build +{pv}, BZ3 inset / current decimal / start SOC / split threshold land in +229)")
+
+# ═══════ Part DE — 0.2.31+230: recon v0.10.157.1, ток инвертора, модель v2, климат на стоянке, ATRV, голова в машине, deleted_at ═══════
+if int(pv) >= 230:
+    # Отступы и пустые строки (остаются от снятых комментариев) убраны.
+    _de_f = lambda t: re.sub(r'\n\s*\n', '\n', re.sub(r'\n[ \t]+', '\n', t))
+    _de_rd = lambda pth: _de_f(_strip_comments_safe((root / pth).read_text()))
+    _de_kt = 'android/app/src/main/kotlin/com/bz5companion/bz5_companion/hal/'
+    _de_man = (root / (_de_kt + 'HAL_SYNC.manifest')).read_text()
+    _de_reg = (root / (_de_kt + 'TargetRegistry.kt')).read_text()
+    _de_tab = (root / (_de_kt + 'TelemetryDecoderTable.kt')).read_text()
+    _de_ovr = _de_rd(_de_kt + 'CompanionDecoderOverrides.kt')
+    _de_own = _de_rd(_de_kt + 'HalStreamOwner.kt')
+    _de_out = _de_rd(_de_kt + 'HalOut.kt')
+    _de_hts = _de_rd('lib/services/hal_telemetry_service.dart')
+    _de_es = _de_rd('lib/services/energy_split_service.dart')
+    _de_pc = _de_rd('lib/services/parked_climate.dart')
+    _de_dp = _de_rd('lib/widgets/driver_panels.dart')
+    _de_td = _de_rd('lib/screens/trip_detail.dart')
+    _de_elm = _de_rd('lib/ble/elm327_client.dart')
+    _de_con = _de_rd('lib/services/connection.dart')
+    _de_cs = _de_rd('lib/services/cloud_sync_service.dart')
+    _de_db = _de_rd('lib/data/database.dart')
+    _de_main = _de_rd('lib/main.dart')
+    _de_set = _de_rd('lib/screens/settings.dart')
+    _de_ll = _de_rd('lib/screens/live_log.dart')
+    _de_sw = _de_rd('lib/screens/sweep.dart')
+    _de_l10n = (root / 'lib/l10n/strings.dart').read_text()
+
+    # DE1: ПЕРЕВЕНДОРИНГ recon v0.10.157.1. Оба файла по манифесту и
+    # заголовку; потоковый список Charging без двух номеров старого формата;
+    # наша добавка 0x44900842 остаётся (в streamingTargets её нет);
+    # перекрытие pack_voltage_fine снято, запись — в таблице recon.
+    _de1_st = _de_reg[_de_reg.find('fun streamingTargets('):]
+    _de1 = [
+        'TargetRegistry.kt          eca553ac5ebab8eae580cc2c8e55ae7db8f61434d0aa8d07ae6befb46a8c3ff4  recon v0.10.157.1' in _de_man,
+        '// SHA256: eca553ac5ebab8eae580cc2c8e55ae7db8f61434d0aa8d07ae6befb46a8c3ff4' in _de_reg,
+        '// SHA256: 1538e1e58c43a048f25526d292f6cbbe8a51edfb79dd1dd46114009ebf7a6adc' in _de_tab,
+        '0x000B95EC' not in _de1_st and '0x000B4C9A' not in _de1_st and '0x44900842' not in _de1_st,
+        '"BYDAutoChargingDevice" -> spec.copy(\nfeatureIds = spec.featureIds +\nCompanionDecoderOverrides.extraChargingFids\n)' in _de_own,
+        '"BYDAutoChargingDevice|0x2FF00030" to Decoder(' not in _de_ovr,
+        'put("BYDAutoAcDevice|0x2FA00014",' in _de_tab and '0x000DA09B' not in _de_tab.split('// p156: three p082')[0],
+    ]
+    if all(_de1): ok('DE1 recon v0.10.157.1 vendored (manifest + headers); streaming Charging list loses two old-format fids; 0x44900842 stays a companion addition; pack_voltage_fine now comes from the recon table')
+    else: fail(f'DE1 re-vendoring drifted: {_de1}')
+
+    # DE2: ТОК ИНВЕРТОРА. Перекрытие под именем inverter_current, страж в
+    # _range (иначе событие отбрасывается), фоновый журнал с той же
+    # плотностью, что ток батареи; сигнал в списке модели.
+    _de2 = [
+        '"BYDAutoEngineDevice|0x40800008" to Decoder(\n"inverter_current", "A", ValueSource.DOUBLE,' in _de_ovr,
+        "'inverter_current': (-600, 600)," in _de_hts,
+        '"pack_current" to 1_000L,' in _de_out and '"inverter_current" to 1_000L,' in _de_out,
+        "'inverter_current',\n];" in _de_es,
+    ]
+    if all(_de2): ok('DE2 inverter current 0x40800008 decoded as inverter_current, consumed and logged every 3 s live, every 1 s in the background journal like pack_current')
+    else: fail(f'DE2 inverter current drifted: {_de2}')
+
+    # DE3: МОДЕЛЬ v2. Две энергии копятся отдельно, вычитание в конце;
+    # обрезки; выбор модели в одном месте и для закрытия, и для живой
+    # строки; записывается модель расчёта; у v2 нет строки «прочего».
+    _de3_i = _de_es.find('EnergySplitResult computeEnergySplitV2(')
+    _de3_fn = _de_es[_de3_i:_de_es.find('EnergySplitResult computeEnergySplitAuto(')] if _de3_i > -1 else ''
+    _de3 = [
+        'covered++;\nePack += v * iBat / 1000.0 / 3600.0;\neInv += v * iInv / 1000.0 / 3600.0;\n}\nfinal dur = endS - startS;' in _de3_fn,
+        "final iInv = last['inverter_current'];" in _de3_fn and "final v = last['pack_voltage_fine'] ?? last['pack_voltage'];" in _de3_fn,
+        'var motion = eInv;\nvar climate = ePack - eInv;\nif (climate < 0) {\nclimate = 0;\nmotion = ePack;\n} else if (motion < 0) {\nmotion = 0;\nclimate = ePack;\n}' in _de3_fn,
+        'return EnergySplitResult(ePack, cov, covered, motion, climate, 0.0,\nmodel: EnergySplitModel.versionV2);' in _de3_fn,
+        ") =>\npoints.any((p) => p.name == 'inverter_current')\n? computeEnergySplitV2(points, start, end)\n: computeEnergySplit(points, start, end);" in _de_es,
+        _de_es.count('computeEnergySplitAuto(') == 3 and 'model: r.model,\n);' in _de_es,
+        "static const String versionV2 = 'v2';" in _de_es,
+        "final v2 = trip.energySplitModel == EnergySplitModel.versionV2;" in _de_td and 'if (!v2)\n(S.of(\'trip.split_other\')' in _de_td,
+        'if (v.model != EnergySplitModel.versionV2)\n(sh.other, EnergySplitBar.otherColor),' in _de_dp,
+        all(_de_l10n.count(f"'{k}':") == 2 for k in ('trip.split_climate_board', 'drv.parked_climate', 'drv.parked_climate_mean', 'settings.adapter_12v', 'cloud.headunit_yes', 'cloud.headunit_no')),
+    ]
+    if all(_de3): ok('DE3 model v2: battery and inverter energies integrated separately and subtracted at the end, clamps keep parts summing to the pack, one model choice for close and live, the model is stored, v2 shows two parts')
+    else: fail(f'DE3 model v2 drifted: {_de3}')
+
+    # DE4: КЛИМАТ НА СТОЯНКЕ. База-параметр 0.45; только P и климат вкл.;
+    # подогревы не вычитаются; время по Stopwatch; кормится из потока и из
+    # смены ac_power_state; строка в панели; итог стоянки в app_log.
+    _de4 = [
+        'static const double baseKw = 0.45;' in _de_pc and 'static const Duration window = Duration(seconds: 30);' in _de_pc,
+        'if (!parked || acOn != true) return _end();' in _de_pc and 'final kw = math.max(0.0, packKw - baseKw);' in _de_pc,
+        'final Stopwatch _parkedClimateClock = Stopwatch()..start();' in _de_hts and 't: _parkedClimateClock.elapsed,' in _de_hts,
+        'parked: !streamStopped && halGear == 1,' in _de_hts and '_feedParkedClimate(streamStopped: true);' in _de_hts and 'acOn: ac == null ? null : ac == 1,' in _de_hts and 'packKw: halPowerKw,' in _de_hts,
+        '_logHalDiag(e, d);\n_feedParkedClimate();' in _de_hts,
+        "if (e.name == 'ac_power_state') {\n_feedParkedClimate();" in _de_hts,
+        "debugPrint('ParkedClimate: " in _de_hts,
+        '_ParkedClimateRow(compact: compact),' in _de_dp and 'if (!m.active || now == null) return const SizedBox.shrink();' in _de_dp,
+        'DateTime.now()' not in _de_pc,
+    ]
+    if all(_de4): ok('DE4 parked climate card: P and climate on only, battery power minus a 0.45 kW base, heaters not subtracted, monotonic clock, fed by the stream and by the climate switch, summary line in app_log')
+    else: fail(f'DE4 parked climate drifted: {_de4}')
+
+    # DE5: ОДНА СТРОКА «без данных HAL» НА ПРОХОД.
+    _de5 = [
+        "debugPrint('EnergySplit: $noData trip(s) without HAL data — skipped');" not in _de_es,
+        'if (noData > 0) _noteNoData(noData);' in _de_es,
+        '_noDataTimer = Timer(noDataQuiet, _flushNoData);' in _de_es and 'void dispose() {\n_flushNoData();' in _de_es,
+    ]
+    if all(_de5): ok('DE5 trips without HAL data are summed into one app_log line after the restore batches stop')
+    else: fail(f'DE5 no-data log drifted: {_de5}')
+
+    # DE6: ATRV. В единственном методе запроса, до заголовка; раз в 5 с
+    # по Stopwatch; без подписчика не шлётся; запись — источник adapter,
+    # имя adapter_atrv; строка в настройках только при живом BLE.
+    _de6_i = _de_elm.find('Future<List<EcuResponse>> query(')
+    _de6_q = _de_elm[_de6_i:_de6_i + 500]
+    _de6 = [
+        _de6_i > -1 and _de6_q.find('await _maybeAtrv();') > -1 and _de6_q.find('await _maybeAtrv();') < _de6_q.find('if (txId != null) await setHeader(txId);'),
+        'static const Duration atrvEvery = Duration(seconds: 5);' in _de_elm and 'if (_atrvClock.isRunning && _atrvClock.elapsed < atrvEvery) return;' in _de_elm,
+        'if (cb == null) return;' in _de_elm and "parseAtrv(await transport.sendRaw('ATRV'))" in _de_elm,
+        '_client!.onAdapterVoltage = _onAdapterVoltage;' in _de_con and "name: 'adapter_atrv'," in _de_con and "source: 'adapter'," in _de_con,
+        'double? get adapterVoltage => _client != null ? _adapterVoltage : null;' in _de_con,
+        'if (svc.adapterVoltage != null)' in _de_set,
+        "source: Value(source)," in _de_db and "String source = 'hal'," in _de_db,
+    ]
+    if all(_de6): ok('DE6 ATRV every 5 s in the single UDS query method before the header, never inside ISO-TP; written as adapter_atrv with source adapter; settings line only on live BLE after a valid reading')
+    else: fail(f'DE6 ATRV drifted: {_de6}')
+
+    # DE7: ГОЛОВА В МАШИНЕ. Телефон не заводит OBD-поездки и не пишет
+    # снимки; признак из device/me в prefs; не на самой голове; свежий при
+    # подключении донгла; нет поля — признак снят.
+    _de7 = [
+        "debugPrint('Trip creation suppressed — HAL owns trips in this mode.');\nreturn;\n}\nif (_headunitOwnsTrips) {\n_wantTripCreation = false;" in _de_con,
+        '_lastSnapshotAt = now;\nif (_headunitOwnsTrips) return;' in _de_con,
+        'if (_headunitOwnsTrips) return map;\ntry {\nawait db.insertSnapshot(' in _de_con,
+        'widget.svc.headunitOwnsTripsCheck = () =>\n!hal.canUseHal && cloud.vehicleHeadunitPresent == true;' in _de_main,
+        'widget.svc.onDongleConnected =\n() => unawaited(cloud.fetchDeviceMe());' in _de_main and 'onDongleConnected?.call();' in _de_con,
+        "final present = hu is Map<String, dynamic> ? hu['present'] : null;\nif (present is bool) {" in _de_cs,
+        '_vehicleHeadunitPresent = null;\n_vehicleHeadunitLastSeen = null;\nawait prefs.remove(_kVehicleHeadunitPresent);' in _de_cs,
+        '_vehicleHeadunitPresent = prefs.getBool(_kVehicleHeadunitPresent);' in _de_cs,
+        _de_cs.count('await prefs.remove(_kVehicleHeadunitPresent);') == 2,
+    ]
+    if all(_de7): ok('DE7 a phone in a car with a head unit creates no OBD trips and writes no snapshots (probes stay), flag from device/me kept in prefs, refreshed on dongle connect, never applied on the head unit itself')
+    else: fail(f'DE7 head-unit ownership drifted: {_de7}')
+
+    # DE8: deleted_at. Pull и restore; поездка с рядами; списки отправки.
+    _de8_i = _de_cs.find('Future<bool> _applyTripTombstone(')
+    _de8_fn = _de_cs[_de8_i:_de8_i + 1500] if _de8_i > -1 else ''
+    _de8 = [
+        "if (await _applyTripTombstone(raw, 'pull')) mapDirty = true;" in _de_cs,
+        "await _applyTripTombstone(raw, 'restore');" in _de_cs,
+        "tombstone skipped" not in _de_cs.replace("'CloudSync: $path -- tombstone skipped '", ''),
+        'await _db.deleteTripWithSeries(t.id, uuid);\n_pushedTripIds.remove(t.id);\n_repushTripIds.remove(t.id);' in _de8_fn,
+        'await _saveRepushTripIds(prefs);' in _de8_fn and '_pullTripMap.removeWhere((_, v) => v == t.id);' in _de8_fn,
+        'return transaction(() async {' in _de_db and 'r.tripId.equals(id) | r.tripClientUuid.equals(uuid)' in _de_db,
+    ]
+    if all(_de8): ok('DE8 a trip tombstone deletes the local trip with its series in pull and restore, and drops it from the pushed and re-send sets')
+    else: fail(f'DE8 deleted_at drifted: {_de8}')
+
+    # DE9: ПРЕСЕТЫ 744.
+    _de9 = [
+        "_LivelogPreset.climate744 => const [\n('744', '74C', '0007'),\n('744', '74C', '0008'),\n('744', '74C', '0009'),\n('744', '74C', '0010'),\n('744', '74C', '0011'),\n('744', '74C', '0014'),\n('744', '74C', '0022'),\n]," in _de_ll,
+        "onPressed: () => _applyPreset(_LivelogPreset.climate744)," in _de_ll,
+        "txList: ['744'],\nstartDid: '0400',\nendDid: '0FFF'," in _de_sw and "txList: ['744'],\nstartDid: '1000',\nendDid: '1FFF'," in _de_sw,
+    ]
+    if all(_de9): ok('DE9 Live Log preset Climate 744 (seven raw DIDs) and two 744 sweep presets 0400-0FFF and 1000-1FFF')
+    else: fail(f'DE9 744 presets drifted: {_de9}')
+else:
+    ok(f"Part DE skipped (build +{pv}, recon p157 / v2 / ATRV land in +230)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)

@@ -51,7 +51,42 @@ class Elm327Client {
   String? _currentHeader;
   String? _currentRxFilter;
 
+  /// v0.2.31+230 — 12 В АДАПТЕРА (ATRV) В ОБЩЕМ МЕТОДЕ ЗАПРОСА.
+  ///
+  /// Все запросы UDS — опрос, Live Log, свип, DTC — идут через [query].
+  /// Здесь, перед запросом, раз в [atrvEvery] уходит ATRV. `sendRaw`
+  /// возвращается только после ответа адаптера целиком, поэтому ATRV
+  /// никогда не попадает внутрь многокадровой передачи ISO-TP. AT CV не
+  /// трогаем: калибровку адаптера не меняем. Число разбирается до `V`;
+  /// ответ без числа или вне 5…20 В — отсчёт пропускается. Без
+  /// подписчика [onAdapterVoltage] ATRV не шлётся вовсе.
+  static const Duration atrvEvery = Duration(seconds: 5);
+  final Stopwatch _atrvClock = Stopwatch();
+  void Function(double volts)? onAdapterVoltage;
+
   Elm327Client(this.transport);
+
+  /// Разбор ответа ATRV: `12.6V`, `13.8 V`, с мусором до числа. null —
+  /// ответа нет или число вне здравого коридора 5…20 В.
+  static double? parseAtrv(String raw) {
+    final m = RegExp(r'(\d+(?:\.\d+)?)\s*V', caseSensitive: false)
+        .firstMatch(raw);
+    if (m == null) return null;
+    final v = double.tryParse(m.group(1)!);
+    if (v == null || v < 5 || v > 20) return null;
+    return v;
+  }
+
+  Future<void> _maybeAtrv() async {
+    final cb = onAdapterVoltage;
+    if (cb == null) return;
+    if (_atrvClock.isRunning && _atrvClock.elapsed < atrvEvery) return;
+    _atrvClock
+      ..reset()
+      ..start();
+    final v = parseAtrv(await transport.sendRaw('ATRV'));
+    if (v != null) cb(v);
+  }
 
   // ---------------- Initialization ----------------
   Future<AdapterInfo> initialize({String forceProtocol = '6'}) async {
@@ -103,6 +138,7 @@ class Elm327Client {
     String? rxId,
     Duration timeout = const Duration(seconds: 4),
   }) async {
+    await _maybeAtrv();
     if (txId != null) await setHeader(txId);
     if (rxId != null) await setRxFilter(rxId);
 

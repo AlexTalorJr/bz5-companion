@@ -1,7 +1,7 @@
 // === SHARED FROM bz5_recon — DO NOT EDIT (re-sync from recon) ===
 // Source: bz5-recon/android/app/src/main/kotlin/com/bz5/recon/live/TelemetryDecoderTable.kt
-// Synced: 2026-11-05 (recon v0.10.155, commit p155)
-// SHA256: 85f5e951b745f8ed6a115e456ebb437b6e7b24f1b3798a6af24884df1226605c
+// Synced: 2026-11-09 (recon v0.10.157.1, commit p157, b1b95ca)
+// SHA256: 1538e1e58c43a048f25526d292f6cbbe8a51edfb79dd1dd46114009ebf7a6adc
 package com.bz5companion.bz5_companion.hal
 
 // === SHARED CANDIDATE (bz5_recon ↔ bz5_companion) ===
@@ -132,10 +132,14 @@ object TelemetryDecoderTable {
         put("BYDAutoChargingDevice|0x2C100818",
             Decoder("charge_energy_kwh", "kWh", ValueSource.DOUBLE,
                 notes = "cumulative charge energy; monotonic accumulator (persists across sessions); active only while AC-charging; dE/dt≈1.74kW vs wall 2.6-3.1 (OBC+aux losses); scale 1.0"))
-        // HYPOTHESIS — needs corr-with primary pack_voltage on charge run:
-        // put("BYDAutoChargingDevice|0x2FF00030",
-        //     Decoder("pack_voltage_alt", "V", ValueSource.DOUBLE,
-        //         notes = "possibly high-side; not independently verified"))
+        // p156: confirmed pack_voltage_fine. DC-charge run 06.08 verified this
+        // as the high-resolution pack terminal voltage; it is the voltage the
+        // companion power/energy split runs on. Name/unit/type frozen to match
+        // companion (pack_voltage_fine / V / DOUBLE) so its hal_samples history
+        // and the companion override carry over without a break.
+        put("BYDAutoChargingDevice|0x2FF00030",
+            Decoder("pack_voltage_fine", "V", ValueSource.DOUBLE,
+                notes = "CHARGING_TOTAL_VOLTAGE; pack terminal V, high-res; verified DC-charge 06.08; powers energy split"))
 
         // ─── Energy (cells) ──────────────────────────────────────────────
         put("BYDAutoEnergyDevice|0x45400030",
@@ -206,25 +210,11 @@ object TelemetryDecoderTable {
             Decoder("battery_temp", "°C", ValueSource.INT,
                 notes = "STATISTIC_PROBE_HIGHEST_TEMP; canonical pack temperature; ~0.5 Hz stream; 21–22°C warm day; matches OEM cluster + OBD2 790/002F"))
 
-        // p082: temp candidates on profile devices (Energy/Charging). p083 update:
-        // 4 runs (3 AC-charge/city + 1 highway w/ launch) delivered ZERO events on
-        // all three — BUT every run was AC-charge + drive, NOT DC fast-charge. The
-        // names are telling: VTOV (vehicle-to-vehicle / DC path) and DC_CHARGING_
-        // PORT_TEMP. Working hypothesis (Alex): these sensors sit on the DC fast-
-        // charge tract and stay silent on AC (which routes through the onboard OBC)
-        // by design. NOT marked dead — kept as DC candidates, verify at a DC
-        // station. raw_trace writes BOTH int and dbl so carrier/scale settle
-        // offline once events flow. scale 1.0 placeholder; semantics unconfirmed
-        // (PORT_TEMP may be port not pack; MAX_TEMP_ALLOWED likely a limit).
-        put("BYDAutoEnergyDevice|0x000DA09B",
-            Decoder("battery_temp_port_candidate", "°C", ValueSource.DOUBLE,
-                notes = "p082 DC-CHARGE CANDIDATE; ENERGY_DC_CHARGING_PORT_TEMP; zero events on AC+drive; verify at DC station; scale 1.0; may be port not pack"))
-        put("BYDAutoChargingDevice|0x00072559",
-            Decoder("battery_temp_pwr_candidate", "°C", ValueSource.DOUBLE,
-                notes = "p082 DC-CHARGE CANDIDATE; CHARGING_VTOV_MAX_POWER_BATTERY_TEMP; zero events on AC+drive; verify at DC station; scale 1.0; strongest name"))
-        put("BYDAutoChargingDevice|0x0004CFF3",
-            Decoder("battery_temp_allowed_candidate", "°C", ValueSource.DOUBLE,
-                notes = "p082 DC-CHARGE CANDIDATE; CHARGING_VTOV_MAX_TEMP_ALLOWED; zero events on AC+drive; verify at DC station; scale 1.0; likely a LIMIT not a measurement"))
+        // p156: three p082 battery-temp candidates REMOVED. 0x000DA09B /
+        // 0x00072559 / 0x0004CFF3 are legacy-format fids absent from the bZ5
+        // firmware catalog (present by name only, under get()-only short
+        // numbers 0x30A/0x2F2/0x2F3). Zero events every run was the catalog
+        // mismatch, not a DC-vs-AC timing effect.
 
         // ─── Engine (names from firmware BYDAutoFeatureIds catalog, patch 075) ─
         // The firmware catalog resolved the long-running Engine fid guesses to
@@ -293,12 +283,14 @@ object TelemetryDecoderTable {
         // is the carrier rule case, not a scale puzzle: the value rides in the
         // double field and INT read the empty zero. Both setpoints go to ANY
         // until the ac_raw climate test records both fields per event.
+        // p156: ac_raw export 23.10 settled the carrier — setpoints ride in
+        // mDoubleValue (18.0/18.5/21.0/23.5, 0.5 step). Pinned DOUBLE.
         put("BYDAutoAcDevice|0x2FC00028",
-            Decoder("ac_temp_main", "°C", ValueSource.ANY,
-                notes = "AC_TEMP_MAIN (driver setpoint); trip-1 dbl 23 = setpoint; carrier ANY until ac_raw climate test"))
+            Decoder("ac_temp_main", "°C", ValueSource.DOUBLE,
+                notes = "AC_TEMP_MAIN (driver setpoint); ac_raw 23.10 dbl 18.0–23.5 step 0.5 — carrier DOUBLE confirmed"))
         put("BYDAutoAcDevice|0x2FC00030",
-            Decoder("ac_temp_deputy", "°C", ValueSource.ANY,
-                notes = "AC_TEMP_DEPUTY (passenger setpoint); carrier ANY until ac_raw climate test"))
+            Decoder("ac_temp_deputy", "°C", ValueSource.DOUBLE,
+                notes = "AC_TEMP_DEPUTY (passenger setpoint); ac_raw 23.10 dbl, carrier DOUBLE confirmed"))
         put("BYDAutoAcDevice|0x2FC0001C",
             Decoder("ac_wind_level", "", ValueSource.INT, notes = "AC_WIND_LEVEL (fan speed)"))
         put("BYDAutoAcDevice|0x2FC00018",
@@ -321,20 +313,40 @@ object TelemetryDecoderTable {
         // climate test (one action per 10 s, both fields logged) pins them.
         // 0x2FC00009 AC_COMPRESSOR_MODE is also the A/C-off marker for the
         // firehose correlation: CAN 0x02FC carries the same panel state.
+        // p156: ac_raw 23.10 showed every AC enum rides in mIntValue — pinned INT.
+        // Fids not yet seen live (0x2FA* PTC/warm) stay ANY until first event.
         put("BYDAutoAcDevice|0x2FC00009",
-            Decoder("ac_compressor_mode", "", ValueSource.ANY, notes = "AC_COMPRESSOR_MODE (A/C button); enum TBD; A/C off marker"))
+            Decoder("ac_compressor_mode", "", ValueSource.INT, notes = "AC_COMPRESSOR_MODE (A/C button); ac_raw int 0/1; A/C off marker; enum semantics TBD"))
         put("BYDAutoAcDevice|0x2FC0000A",
-            Decoder("ac_compressor_manual_sign", "", ValueSource.ANY, notes = "AC_COMPRESSOR_MANUAL_SIGN; manual-override flag; enum TBD"))
+            Decoder("ac_compressor_manual_sign", "", ValueSource.INT, notes = "AC_COMPRESSOR_MANUAL_SIGN; ac_raw int; manual-override flag"))
         put("BYDAutoAcDevice|0x2FC0000B",
-            Decoder("ac_windmode_manual_sign", "", ValueSource.ANY, notes = "AC_WINDMODE_MANUAL_SIGN; manual-override flag; enum TBD"))
+            Decoder("ac_windmode_manual_sign", "", ValueSource.INT, notes = "AC_WINDMODE_MANUAL_SIGN; ac_raw int; manual-override flag"))
         put("BYDAutoAcDevice|0x2FC0000C",
-            Decoder("ac_windlevel_manual_sign", "", ValueSource.ANY, notes = "AC_WINDLEVEL_MANUAL_SIGN; manual-override flag; enum TBD"))
+            Decoder("ac_windlevel_manual_sign", "", ValueSource.INT, notes = "AC_WINDLEVEL_MANUAL_SIGN; ac_raw int; manual-override flag"))
         put("BYDAutoAcDevice|0x2FC00016",
-            Decoder("ac_defrost_front_state", "", ValueSource.ANY, notes = "AC_DEFROST_FRONT_STATE; windscreen defrost; enum TBD"))
+            Decoder("ac_defrost_front_state", "", ValueSource.INT, notes = "AC_DEFROST_FRONT_STATE; windscreen defrost; ac_raw int enum"))
         put("BYDAutoAcDevice|0x2FA0000C",
-            Decoder("ac_ptc_state", "", ValueSource.ANY, notes = "AC_PTC_STATE; PTC heater state, not duty; not yet seen live"))
+            Decoder("ac_ptc_state", "", ValueSource.ANY, notes = "AC_PTC_STATE; PTC heater state, not duty; not yet seen live (0x2FA0 base)"))
         put("BYDAutoAcDevice|0x2FA00026",
             Decoder("ac_ptc_preheat_signal", "", ValueSource.ANY, notes = "AC_PTC_PREHEAT_SIGNAL; not yet seen live"))
+
+        // p156: remaining catalog-named AC fids (class Ac, v0.10.56). Those seen
+        // in ac_raw 23.10 are INT enums; the two 0x2FA0/0x4330 warm fids not yet
+        // seen live stay ANY. All enum semantics TBD by climate test.
+        put("BYDAutoAcDevice|0x2FC00024",
+            Decoder("ac_tempctrl_separate_state", "", ValueSource.INT, notes = "AC_TEMPCTRL_SEPARATE_STATE; dual-zone split on/off; ac_raw int"))
+        put("BYDAutoAcDevice|0x2FA00014",
+            Decoder("ac_max_cooling_state", "", ValueSource.INT, notes = "AC_MAX_COOLING_STATE; ac_raw int 0/1"))
+        put("BYDAutoAcDevice|0x2FA0000A",
+            Decoder("ac_ventilation_state", "", ValueSource.ANY, notes = "AC_VENTILATION_STATE; values not yet classified; carrier ANY"))
+        put("BYDAutoAcDevice|0x40600031",
+            Decoder("ac_defrost_rear_state", "", ValueSource.INT, notes = "AC_DEFROST_REAR_STATE; rear-window defrost; ac_raw int 0/1"))
+        put("BYDAutoAcDevice|0x44300008",
+            Decoder("ac_quick_clean_air", "", ValueSource.INT, notes = "AC_QUICK_CLEAN_AIR; ac_raw int 0/1"))
+        put("BYDAutoAcDevice|0x2FA0003C",
+            Decoder("ac_warm_state", "", ValueSource.ANY, notes = "AC_WARM_STATE; heat-pump/PTC warm mode; not yet seen live"))
+        put("BYDAutoAcDevice|0x43300020",
+            Decoder("ac_warm_type_flag", "", ValueSource.ANY, notes = "AC_WARM_TYPE_FLAG; warm source flag; not yet seen live"))
 
         // ─── Tyre (TPMS) — wheel positions from firmware catalog, patch 075 ──
         // Ground-truth confirmed (owner reading 2.7–2.9 bar, ~20°C). Pressure

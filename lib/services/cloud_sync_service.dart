@@ -369,6 +369,11 @@ class CloudSyncService extends ChangeNotifier {
   static const _kDeviceId = 'cloud_sync_device_id';
   static const _kVehicleId = 'cloud_sync_vehicle_id';
   static const _kVehicleName = 'cloud_sync_vehicle_name';
+  /// v0.2.31+230: `vehicle.headunit.present` из `/v2/device/me` (Друг 2,
+  /// client-api.md §1.3.1, схема DeviceMeHeadunit). Последнее известное
+  /// значение — без сети решает оно.
+  static const _kVehicleHeadunitPresent = 'cloud_sync_vehicle_headunit_present';
+  static const _kVehicleHeadunitLastSeen = 'cloud_sync_vehicle_headunit_last_seen';
   static const _kCursorTrip = 'cloud_sync_cursor_trip';
   static const _kCursorSnapshot = 'cloud_sync_cursor_snapshot';
   static const _kCursorSweep = 'cloud_sync_cursor_sweep';
@@ -662,6 +667,8 @@ class CloudSyncService extends ChangeNotifier {
     _deviceId = prefs.getString(_kDeviceId);
     _vehicleId = prefs.getString(_kVehicleId);
     _vehicleName = prefs.getString(_kVehicleName);
+    _vehicleHeadunitPresent = prefs.getBool(_kVehicleHeadunitPresent);
+    _vehicleHeadunitLastSeen = prefs.getString(_kVehicleHeadunitLastSeen);
     _cursorTrip = prefs.getInt(_kCursorTrip) ?? 0;
     _cursorSnapshot = prefs.getInt(_kCursorSnapshot) ?? 0;
     // v0.2.22+221 — КУРСОР СВИПОВ ОДИН РАЗ НАЗАД В НОЛЬ. До +221 прогон
@@ -1029,6 +1036,15 @@ class CloudSyncService extends ChangeNotifier {
   /// запроса. v0.2.2+201.
   Duration? _deviceMePeriod;
 
+  /// v0.2.31+230 — ЕСТЬ ЛИ У МАШИНЫ ГОЛОВА. null — неизвестно (сервер
+  /// без поля или ответа ещё не было): поведение телефона прежнее. Порогом
+  /// служит только `present`; `last_seen_at` — для показа в диагностике
+  /// (отозванные головы сервер не считает — решение 09.11).
+  bool? _vehicleHeadunitPresent;
+  String? _vehicleHeadunitLastSeen;
+  bool? get vehicleHeadunitPresent => _vehicleHeadunitPresent;
+  String? get vehicleHeadunitLastSeen => _vehicleHeadunitLastSeen;
+
   String? get deviceMeEmail => _deviceMeEmail;
   String? get deviceMeStatus => _deviceMeStatus;
   bool? get deviceMeLinked => _deviceMeLinked;
@@ -1116,12 +1132,33 @@ class CloudSyncService extends ChangeNotifier {
           _vehicleName = vname;
           await prefs.setString(_kVehicleName, vname);
         }
+        // v0.2.31+230: `vehicle.headunit {present, last_seen_at}`. Нет
+        // поля — признак снимается (поведение как до +230).
+        final hu = veh['headunit'];
+        final present = hu is Map<String, dynamic> ? hu['present'] : null;
+        if (present is bool) {
+          final ls = (hu as Map<String, dynamic>)['last_seen_at'];
+          _vehicleHeadunitPresent = present;
+          _vehicleHeadunitLastSeen = ls is String ? ls : null;
+          await prefs.setBool(_kVehicleHeadunitPresent, present);
+          if (ls is String) {
+            await prefs.setString(_kVehicleHeadunitLastSeen, ls);
+          } else {
+            await prefs.remove(_kVehicleHeadunitLastSeen);
+          }
+        } else {
+          _vehicleHeadunitPresent = null;
+          _vehicleHeadunitLastSeen = null;
+          await prefs.remove(_kVehicleHeadunitPresent);
+          await prefs.remove(_kVehicleHeadunitLastSeen);
+        }
       }
 
       _deviceMeFetchedAt = DateTime.now();
       debugPrint('CloudSync: device/me ok, '
           '${_deviceMeLinked == true ? '${_deviceMeEmail ?? '?'}, ${_deviceMeStatus ?? '?'}' : 'not linked'}'
-          ', vehicle=${_vehicleName ?? '?'} (${_vehicleId ?? '?'})');
+          ', vehicle=${_vehicleName ?? '?'} (${_vehicleId ?? '?'})'
+          ', headunit=${_vehicleHeadunitPresent ?? '?'}');
       notifyListeners();
     } catch (e) {
       // Network blip / malformed body — display-only plane, swallow.
@@ -1632,6 +1669,8 @@ class CloudSyncService extends ChangeNotifier {
     await prefs.remove(_kDeviceId);
     await prefs.remove(_kVehicleId);
     await prefs.remove(_kVehicleName);
+    await prefs.remove(_kVehicleHeadunitPresent);
+    await prefs.remove(_kVehicleHeadunitLastSeen);
     await prefs.remove(_kCursorTrip);
     await prefs.remove(_kCursorSnapshot);
     await prefs.remove(_kCursorSweep);
@@ -1647,6 +1686,8 @@ class CloudSyncService extends ChangeNotifier {
     _deviceId = null;
     _vehicleId = null;
     _vehicleName = null;
+    _vehicleHeadunitPresent = null;
+    _vehicleHeadunitLastSeen = null;
     _cursorTrip = 0;
     _cursorSnapshot = 0;
     _cursorSweep = 0;
@@ -3139,10 +3180,9 @@ class CloudSyncService extends ChangeNotifier {
         for (final raw in items) {
           if (raw is! Map<String, dynamic>) continue;
           if (raw['deleted_at'] != null) {
-            // Tombstones are reserved (contract) -- always null today;
-            // skip defensively if one ever appears.
-            debugPrint('CloudSync: pull -- tombstone skipped '
-                '(${raw['entity']}/${raw['client_uuid']})');
+            // v0.2.31+230: tombstone поездки удаляет её локально; прочие
+            // сущности по-прежнему пропускаются.
+            if (await _applyTripTombstone(raw, 'pull')) mapDirty = true;
             continue;
           }
           final data = raw['data'];
@@ -3286,6 +3326,38 @@ class CloudSyncService extends ChangeNotifier {
   /// есть, а в облаке его нет, поездка встаёт в список повторной
   /// отправки. Вставке и Restore это не нужно: вставка пишет в пустую
   /// строку, Restore существующие строки не обновляет.
+  /// v0.2.31+230 — ПРИЁМ `deleted_at` ДЛЯ ПОЕЗДОК. Друг 2 ставит его у
+  /// дублей (1011, 1012, 1210, 1211). Поездка ищется по client_uuid
+  /// конверта и удаляется вместе с рядами (`trip_series`); её id уходит из
+  /// множества отправленных и из списка повторной отправки (сохраняются
+  /// сразу), связь в карте pull снимается. Не поездка или поездки нет —
+  /// строка в лог, как раньше. Возвращает true, если карта pull менялась.
+  Future<bool> _applyTripTombstone(
+      Map<String, dynamic> raw, String path) async {
+    final uuid = raw['client_uuid'];
+    if (raw['entity'] != 'trips' || uuid is! String) {
+      debugPrint('CloudSync: $path -- tombstone skipped '
+          '(${raw['entity']}/$uuid)');
+      return false;
+    }
+    final t = await _db.getTripByClientUuid(uuid);
+    if (t == null) {
+      debugPrint('CloudSync: $path -- tombstone for absent trip $uuid');
+      return false;
+    }
+    await _db.deleteTripWithSeries(t.id, uuid);
+    _pushedTripIds.remove(t.id);
+    _repushTripIds.remove(t.id);
+    final before = _pullTripMap.length;
+    _pullTripMap.removeWhere((_, v) => v == t.id);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kPushedTripIds, jsonEncode(_pushedTripIds.toList()));
+    await _saveRepushTripIds(prefs);
+    debugPrint('CloudSync: $path -- trip ${t.id} deleted by tombstone ($uuid)');
+    notifyListeners();
+    return _pullTripMap.length != before;
+  }
+
   Future<_PullApply> _applyPulledTrip(Map<String, dynamic> data) async {
     final uuid = data['client_uuid'];
     final ctid = data['client_trip_id'];
@@ -3510,8 +3582,8 @@ class CloudSyncService extends ChangeNotifier {
       for (final raw in items) {
         if (raw is! Map<String, dynamic>) continue;
         if (raw['deleted_at'] != null) {
-          debugPrint('CloudSync: restore -- tombstone skipped '
-              '(${raw['entity']}/${raw['client_uuid']})');
+          // v0.2.31+230: см. [_applyTripTombstone].
+          await _applyTripTombstone(raw, 'restore');
           continue;
         }
         final data = raw['data'];
@@ -4735,7 +4807,7 @@ class CloudSyncService extends ChangeNotifier {
   /// Read app version from the static value baked into the build.
   /// We don't have package_info_plus as a dep — pubspec-version is
   /// hardcoded here. Update when bumping. Off-by-one tolerated.
-  Future<String> _readAppVersion() async => '0.2.30+229';
+  Future<String> _readAppVersion() async => '0.2.31+230';
 }
 
 // ─── Internal exceptions ────────────────────────────────────────────

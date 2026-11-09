@@ -127,15 +127,10 @@ object HalStreamOwner {
                 "BYDAutoSettingDevice",
                 "android.hardware.bydauto.setting.BYDAutoSettingDevice",
                 CompanionDecoderOverrides.settingStateFids
-            ),
-            // v0.2.29+228: 12 В — ОТДЕЛЬНАЯ регистрация на Power, регистрацию
-            // GB32960 ниже не трогаем. Ключ с суффиксом, как _canDataCollect:
-            // normalizeTargetKey сведёт его к BYDAutoPowerDevice.
-            TargetSpec(
-                "BYDAutoPowerDevice_lowVoltage",
-                "android.hardware.bydauto.power.BYDAutoPowerDevice",
-                CompanionDecoderOverrides.powerStateFids
             )
+            // v0.2.31+230: отдельная регистрация 12 В на Power снята — ноль
+            // событий за двое суток (Друг 3, 09.11). Регистрацию GB32960 ниже
+            // это не касается.
         )
         // v0.1.29+89: триггер GB32960-сбора плюс канал данных.
         // streamingTargets() (подмножество из восьми целей) не содержит
