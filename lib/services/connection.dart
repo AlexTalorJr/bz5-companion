@@ -4079,6 +4079,12 @@ class ConnectionService extends ChangeNotifier {
   /// Отбраковали — кэш остаётся пустым, и экран сам спускается на число
   /// машины. Решение владельца 11.08: пока нет записи с измеренной
   /// оценкой, показываем оценку машины.
+  /// v0.2.33+232: то же для замера UDS после прихода журнала из облака.
+  Future<void> reloadSohAfterCloud() async {
+    await loadSohEstimate();
+    notifyListeners();
+  }
+
   Future<void> loadSohEstimate() async {
     try {
       final row = await db.getLatestSohEstimate();

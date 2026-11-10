@@ -352,7 +352,15 @@ class _SpeedProfileScreenState extends State<SpeedProfileScreen> {
 
         if (bz3) {
           // BZ3 gets no columns — one portrait ribbon, canon §7.4.
-          return ListView(
+          // v0.2.33+232: SafeArea сверху. На BZ3 над приложением системная
+          // строка (часы, значки), а у этой вкладки нет ни AppBar, ни
+          // плашки атласа (§6.11: на «Замерах» её нет) — заголовок
+          // «Замеры» уходил под строку (фото владельца BZ3, 10.11). Тот же
+          // приём, что у «Вождения» (+109). На BZ5 и телефоне отступ
+          // сверху нулевой — ничего не меняется.
+          return SafeArea(
+            bottom: false,
+            child: ListView(
             padding: const EdgeInsets.fromLTRB(24, 20, 24, 20),
             children: [
               _ScreenHeader(isParked: _isParked, bz3: true),
@@ -364,6 +372,7 @@ class _SpeedProfileScreenState extends State<SpeedProfileScreen> {
               sleepNote,
               const SizedBox(height: 24),
             ],
+          ),
           );
         }
 

@@ -422,6 +422,10 @@ class CloudSyncService extends ChangeNotifier {
   // which trip ids it has already pushed (this set). _cursorTrip is
   // retained for stats (pending count) but no longer gates push.
   static const _kPushedTripIds = 'cloud_sync_pushed_trip_ids';
+  /// v0.2.33+232: uuid строк soh_history, принятых сервером. Множество
+  /// маленькое (десятки). Импорт архива его не переносит — тогда журнал
+  /// уходит ещё раз, сервер отвечает duplicates, вреда нет.
+  static const _kPushedSohUuids = 'cloud_sync_pushed_soh_uuids';
 
   // v0.2.26+225 — СПИСОК «ОТПРАВИТЬ ЕЩЁ РАЗ». Поездка, уже бывшая в
   // _pushedTripIds, но изменившаяся (разделение энергии), уходит повторно
@@ -533,6 +537,11 @@ class CloudSyncService extends ChangeNotifier {
   // since this device's registration. Loaded from SharedPrefs as a
   // JSON int list. See _kPushedTripIds doc above for rationale.
   final Set<int> _pushedTripIds = <int>{};
+  final Set<String> _pushedSohUuids = <String>{};
+
+  /// v0.2.33+232: строки журнала замеров ёмкости пришли с сервера —
+  /// main.dart перечитывает показ ёмкости (HAL и UDS). AA2: колбэк.
+  void Function()? onSohHistoryApplied;
 
   // v0.2.26+225: см. _kRepushTripIds.
   final Set<int> _repushTripIds = <int>{};
@@ -790,6 +799,17 @@ class CloudSyncService extends ChangeNotifier {
     // — acceptable in our scale, and avoids a subtle bug where the
     // migration would seed `pushed = closed-and-cursored` and then
     // skip the very re-push the +20 fix exists to enable.
+    final sohJson = prefs.getString(_kPushedSohUuids);
+    if (sohJson != null) {
+      try {
+        final decoded = jsonDecode(sohJson);
+        if (decoded is List) {
+          for (final v in decoded) {
+            if (v is String) _pushedSohUuids.add(v);
+          }
+        }
+      } catch (_) {/* bad blob — the journal re-sends, server dedups */}
+    }
     final pushedJson = prefs.getString(_kPushedTripIds);
     if (pushedJson != null) {
       try {
@@ -1616,6 +1636,8 @@ class CloudSyncService extends ChangeNotifier {
     // v0.1.29+20: pushed-trip-id set is identity-scoped; new device =
     // empty set = all closed trips will re-upload.
     await prefs.remove(_kPushedTripIds);
+    await prefs.remove(_kPushedSohUuids);
+    _pushedSohUuids.clear();
     // v0.1.29+117 (C1): uuid-mapping watermarks are identity-scoped too — a
     // fresh device_id means the server has no rows for this device yet, so
     // the mapping must replay after the data re-uploads (mapping runs at the
@@ -1678,6 +1700,8 @@ class CloudSyncService extends ChangeNotifier {
     await prefs.remove(_kCursorCanMonitor);  // v0.1.29+29
     // v0.1.29+20: pushed-trip-id set is identity-scoped.
     await prefs.remove(_kPushedTripIds);
+    await prefs.remove(_kPushedSohUuids);
+    _pushedSohUuids.clear();
     await prefs.remove(_kLastSuccessAt);
     await prefs.remove(_kLastError);
     await prefs.setBool(_kEnabled, false);
@@ -1717,6 +1741,8 @@ class CloudSyncService extends ChangeNotifier {
     // v0.1.29+20: "force full resync" means re-push everything; the
     // pushed-trip-id set is the main gate on trip push now.
     await prefs.remove(_kPushedTripIds);
+    await prefs.remove(_kPushedSohUuids);
+    _pushedSohUuids.clear();
     // v0.1.29+126: uuid-map watermarks are deliberately NOT reset here
     // anymore (they were in +117, when "replay everything" was assumed
     // idempotent — mapping replay answered `already_set`). That
@@ -1808,6 +1834,8 @@ class CloudSyncService extends ChangeNotifier {
       // (Друг 2, 23.07: no _ENTITY_MAP server-side either).
       await guardEntity('atlas_snapshots', _syncAtlasSnapshots);
       await guardEntity('atlas_reveals', _syncAtlasReveals);
+      // v0.2.33+232: замеры ёмкости батареи (журнал soh_history).
+      await guardEntity('soh_history', _syncSohHistory);
       await guardEntity('snapshots', _syncSnapshots);
       await guardEntity('sweeps', _syncSweeps);
       await guardEntity('livelogs', _syncLiveLogs);
@@ -2332,6 +2360,103 @@ class CloudSyncService extends ChangeNotifier {
       }
       await _db.markAtlasSnapshotsSynced(
           [for (final r in batch) r.id], DateTime.now());
+    }
+  }
+
+  /// v0.2.33+232 — ОТПРАВКА ЖУРНАЛА ЗАМЕРОВ ЁМКОСТИ. Сервер (Друг 2,
+  /// §3.12) отвергает ВСЮ пачку, если хоть одна строка вне диапазонов, и
+  /// повтор той же пачки снова получит 400 — поэтому строки проверяются
+  /// здесь, по его же правилам, и плохая не уходит никогда (строка в лог
+  /// на каждый цикл, пока она есть). Принятые uuid запоминаются.
+  static bool sohRowValid(double pct, double delta, String source) =>
+      pct >= 50 &&
+      pct <= 120 &&
+      delta >= 0 &&
+      delta <= 100 &&
+      (source == 'hal' || source == 'uds');
+
+  Future<void> _syncSohHistory() async {
+    final rows = await _db.sohHistoryForSync();
+    final todo = <SohHistoryData>[];
+    for (final r in rows) {
+      final u = r.clientUuid;
+      if (u == null || _pushedSohUuids.contains(u)) continue;
+      if (!sohRowValid(r.sohAhPct, r.deltaSocCovered, r.source)) {
+        debugPrint('CloudSync: soh_history row ${r.id} out of range — '
+            'kept local (${r.sohAhPct}% / ${r.deltaSocCovered}% / '
+            '${r.source})');
+        continue;
+      }
+      todo.add(r);
+    }
+    if (todo.isEmpty) return;
+    try {
+      await _postIngest(
+        '/v1/data/ingest/soh_history',
+        {
+          'items': [
+            for (final r in todo)
+              {
+                'client_uuid': r.clientUuid,
+                'computed_at': r.computedAt.toUtc().toIso8601String(),
+                'soh_ah_pct': r.sohAhPct,
+                'delta_soc_covered': r.deltaSocCovered,
+                'source': r.source,
+              }
+          ]
+        },
+        tolerateNotDeployed: true,
+      );
+    } on _EndpointNotDeployedException {
+      return;
+    }
+    _pushedSohUuids.addAll([for (final r in todo) r.clientUuid!]);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+        _kPushedSohUuids, jsonEncode(_pushedSohUuids.toList()));
+    debugPrint('CloudSync: soh_history pushed ${todo.length} row(s)');
+  }
+
+  /// v0.2.33+232: строка soh_history с сервера (pull и restore). Она уже
+  /// на сервере — uuid сразу в множество отправленных.
+  Future<bool> _applyPulledSohHistory(Map<String, dynamic> data) async {
+    final uuid = data['client_uuid'];
+    final at = data['computed_at'];
+    final pct = data['soh_ah_pct'];
+    final delta = data['delta_soc_covered'];
+    final src = data['source'];
+    if (uuid is! String ||
+        at is! String ||
+        pct is! num ||
+        delta is! num ||
+        src is! String) {
+      return false;
+    }
+    final DateTime t;
+    try {
+      t = DateTime.parse(at).toLocal();
+    } catch (_) {
+      return false;
+    }
+    _pushedSohUuids.add(uuid);
+    return _db.applyPulledSohHistory(
+      clientUuid: uuid,
+      computedAt: t,
+      sohAhPct: pct.toDouble(),
+      deltaSocCovered: delta.toDouble(),
+      source: src,
+    );
+  }
+
+  /// После прохода строк soh_history: сохранить множество и, если что-то
+  /// вставлено, перечитать показ ёмкости.
+  Future<void> _afterSohApplied(int inserted) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+        _kPushedSohUuids, jsonEncode(_pushedSohUuids.toList()));
+    if (inserted > 0) {
+      debugPrint('CloudSync: soh_history applied $inserted row(s)');
+      onSohHistoryApplied?.call();
     }
   }
 
@@ -3177,6 +3302,7 @@ class CloudSyncService extends ChangeNotifier {
         final seriesRows = <Map<String, dynamic>>[];
         final atlasRows = <Map<String, dynamic>>[];
         final revealRows = <Map<String, dynamic>>[];
+        final sohRows = <Map<String, dynamic>>[];
         for (final raw in items) {
           if (raw is! Map<String, dynamic>) continue;
           if (raw['deleted_at'] != null) {
@@ -3206,6 +3332,9 @@ class CloudSyncService extends ChangeNotifier {
               atlasRows.add(data);
             case 'atlas_reveals':
               revealRows.add(data);
+            // v0.2.33+232: журнал замеров ёмкости.
+            case 'soh_history':
+              sohRows.add(data);
           }
         }
         // -- Pass 1: trips --
@@ -3239,6 +3368,14 @@ class CloudSyncService extends ChangeNotifier {
         }
         for (final data in revealRows) {
           if (await _applyPulledAtlasReveal(data)) arIns++;
+        }
+        // -- Pass 6: soh_history (v0.2.33+232) --
+        if (sohRows.isNotEmpty) {
+          var sohIns = 0;
+          for (final data in sohRows) {
+            if (await _applyPulledSohHistory(data)) sohIns++;
+          }
+          await _afterSohApplied(sohIns);
         }
         final next = resp['next_since'];
         if (next is int && next > finalCursor) finalCursor = next;
@@ -3579,6 +3716,7 @@ class CloudSyncService extends ChangeNotifier {
       final seriesRows = <Map<String, dynamic>>[];
       final atlasRows = <Map<String, dynamic>>[];
       final revealRows = <Map<String, dynamic>>[];
+      final sohRows = <Map<String, dynamic>>[];
       for (final raw in items) {
         if (raw is! Map<String, dynamic>) continue;
         if (raw['deleted_at'] != null) {
@@ -3605,6 +3743,8 @@ class CloudSyncService extends ChangeNotifier {
             atlasRows.add(data);
           case 'atlas_reveals':
             revealRows.add(data);
+          case 'soh_history':
+            sohRows.add(data);
         }
       }
       tripsFetched += tripRows.length;
@@ -3719,6 +3859,15 @@ class CloudSyncService extends ChangeNotifier {
       }
       for (final data in revealRows) {
         if (await _applyPulledAtlasReveal(data)) ari++;
+      }
+
+      // ── apply pass 6: soh_history (v0.2.33+232) ──
+      if (sohRows.isNotEmpty) {
+        var sohIns = 0;
+        for (final data in sohRows) {
+          if (await _applyPulledSohHistory(data)) sohIns++;
+        }
+        await _afterSohApplied(sohIns);
       }
 
       pages++;
@@ -4807,7 +4956,7 @@ class CloudSyncService extends ChangeNotifier {
   /// Read app version from the static value baked into the build.
   /// We don't have package_info_plus as a dep — pubspec-version is
   /// hardcoded here. Update when bumping. Off-by-one tolerated.
-  Future<String> _readAppVersion() async => '0.2.32+231';
+  Future<String> _readAppVersion() async => '0.2.33+232';
 }
 
 // ─── Internal exceptions ────────────────────────────────────────────

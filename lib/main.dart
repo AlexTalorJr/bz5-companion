@@ -333,6 +333,12 @@ class _BZ5AppState extends State<BZ5App> with WidgetsBindingObserver {
                 !hal.canUseHal && cloud.vehicleHeadunitPresent == true;
             widget.svc.onDongleConnected =
                 () => unawaited(cloud.fetchDeviceMe());
+            // v0.2.33+232: замеры ёмкости пришли из облака — перечитать
+            // показ ёмкости и на HAL, и на UDS.
+            cloud.onSohHistoryApplied = () {
+              unawaited(hal.reloadSohAfterCloud());
+              unawaited(widget.svc.reloadSohAfterCloud());
+            };
             hal.init();
             // v0.1.56+155: arm the autostart net once the head-unit
             // verdict settles (no-op on phones).

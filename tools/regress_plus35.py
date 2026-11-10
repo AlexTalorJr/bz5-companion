@@ -10558,7 +10558,9 @@ if int(pv) >= 197:
     # пустую строку, и гейт упадёт на исправном коде. Поймано прогоном.
     _cb8_end = _cb_hal.find('void _accumulateHalTripStats()', _cb8_at)
     _cb8_body = _cb_hal[_cb8_at:_cb8_end] if -1 < _cb8_at < _cb8_end else ''
-    _cb8_hyd = _cb_hal.find('await loadHalSohEstimate();')
+    # v0.2.33+232: вызов в начале запуска ищется после самого метода —
+    # второй вызов (reloadSohAfterCloud, журнал из облака) стоит выше.
+    _cb8_hyd = _cb_hal.find('await loadHalSohEstimate();', _cb8_at)
     _cb8_rec = _cb_hal.find('await _recoverPendingSohSession();')
     # Исходов ШЕСТЬ: skip (посчитали в этом запуске), fail без базы,
     # narrow (охват записи меньше порога — +202), ok, none (записи нет) и
@@ -13901,7 +13903,7 @@ if int(pv) >= 230:
         '_logHalDiag(e, d);\n_feedParkedClimate();' in _de_hts,
         "if (e.name == 'ac_power_state') {\n_feedParkedClimate();" in _de_hts,
         "debugPrint('ParkedClimate: " in _de_hts,
-        '_ParkedClimateRow(compact: compact),' in _de_dp and 'if (!m.active || now == null) return const SizedBox.shrink();' in _de_dp,
+        (('_ParkedClimateRow(compact: compact),' if int(pv) < 232 else 'ParkedClimateRow(compact: compact),') in _de_dp) and 'if (!m.active || now == null) return const SizedBox.shrink();' in _de_dp,
         'DateTime.now()' not in _de_pc,
     ]
     if all(_de4): ok('DE4 parked climate card: P and climate on only, battery power minus a 0.45 kW base, heaters not subtracted, monotonic clock, fed by the stream and by the climate switch, summary line in app_log')
@@ -14018,6 +14020,61 @@ if int(pv) >= 231:
     else: fail(f'DF2 v2 scaling / sign drifted: {_df2}')
 else:
     ok(f"Part DF skipped (build +{pv}, v2 sign/scale and sweep blocks land in +231)")
+
+# ═══════ Part DG — 0.2.33+232: BZ3 верх «Замеров», климат на BZ3 без поездки, замеры ёмкости в облаке ═══════
+if int(pv) >= 232:
+    _dg_f = lambda t: re.sub(r'\n\s*\n', '\n', re.sub(r'\n[ \t]+', '\n', t))
+    _dg_rd = lambda pth: _dg_f(_strip_comments_safe((root / pth).read_text()))
+    _dg_sp = _dg_rd('lib/screens/speed_profile.dart')
+    _dg_tall = _dg_rd('lib/screens/driver_view_tall.dart')
+    _dg_dp = _dg_rd('lib/widgets/driver_panels.dart')
+    _dg_cs = _dg_rd('lib/services/cloud_sync_service.dart')
+    _dg_db = _dg_rd('lib/data/database.dart')
+    _dg_main = _dg_rd('lib/main.dart')
+    _dg_hts = _dg_rd('lib/services/hal_telemetry_service.dart')
+    _dg_con = _dg_rd('lib/services/connection.dart')
+
+    # DG1: «Замеры» на BZ3 под строкой состояния.
+    _dg1 = [
+        'if (bz3) {\nreturn SafeArea(\nbottom: false,\nchild: ListView(\npadding: const EdgeInsets.fromLTRB(24, 20, 24, 20),' in _dg_sp,
+    ]
+    if all(_dg1): ok('DG1 BZ3 «Замеры» ribbon sits below the system status bar (SafeArea top, like the Driver tab)')
+    else: fail(f'DG1 BZ3 measure top inset drifted: {_dg1}')
+
+    # DG2: климат на стоянке на BZ3 без поездки — та же строка, своя
+    # карточка; решение о показе — в строке.
+    _dg2 = [
+        '] else ...[\nconst SizedBox(height: 12),\nconst ParkedClimateRow(compact: false, standalone: true),\n],' in _dg_tall,
+        'return standalone ? Card(child: row) : row;' in _dg_dp,
+        'if (!m.active || now == null) return const SizedBox.shrink();' in _dg_dp,
+    ]
+    if all(_dg2): ok('DG2 BZ3 shows the parked climate row as its own card when no trip band is up; visibility is decided by the row')
+    else: fail(f'DG2 BZ3 parked climate drifted: {_dg2}')
+
+    # DG3: soh_history в облаке. Строки рождаются с uuid; старые получают
+    # uuid, замеры до +130 дописываются из soh_estimates; перед отправкой —
+    # проверка диапазонов сервера (400 на всю пачку); pull и restore
+    # вставляют строку и поднимают последний замер источника; показ
+    # перечитывается; множество отправленных сбрасывается вместе с прочими.
+    _dg3_push = _dg_cs[_dg_cs.find('Future<void> _syncSohHistory() async {'):_dg_cs.find('Future<bool> _applyPulledSohHistory(')]
+    _dg3 = [
+        "clientUuid: Value(uuidV7(time: computedAt)),\n),\n);\n}" in _dg_db,
+        'Future<List<SohHistoryData>> sohHistoryForSync() async {' in _dg_db and '..where((r) => r.clientUuid.isNull()))' in _dg_db,
+        "final rowId = source == 'hal' ? 2 : 1;" in _dg_db and 'if (cur == null || latest.computedAt.isAfter(cur.computedAt)) {' in _dg_db,
+        "pct >= 50 &&\npct <= 120 &&\ndelta >= 0 &&\ndelta <= 100 &&\n(source == 'hal' || source == 'uds');" in _dg_cs,
+        'if (!sohRowValid(r.sohAhPct, r.deltaSocCovered, r.source)) {' in _dg3_push and "'/v1/data/ingest/soh_history'," in _dg3_push,
+        '_pushedSohUuids.addAll([for (final r in todo) r.clientUuid!]);' in _dg3_push,
+        "await guardEntity('soh_history', _syncSohHistory);" in _dg_cs,
+        _dg_cs.count("case 'soh_history':\nsohRows.add(data);") == 2 and _dg_cs.count('if (await _applyPulledSohHistory(data)) sohIns++;') == 2,
+        '_pushedSohUuids.add(uuid);\nreturn _db.applyPulledSohHistory(' in _dg_cs,
+        _dg_cs.count('await prefs.remove(_kPushedSohUuids);\n_pushedSohUuids.clear();') == 3,
+        'cloud.onSohHistoryApplied = () {\nunawaited(hal.reloadSohAfterCloud());\nunawaited(widget.svc.reloadSohAfterCloud());\n};' in _dg_main,
+        'Future<void> reloadSohAfterCloud() async {\nawait loadHalSohEstimate();\nnotifyListeners();' in _dg_hts and 'Future<void> reloadSohAfterCloud() async {\nawait loadSohEstimate();\nnotifyListeners();' in _dg_con,
+    ]
+    if all(_dg3): ok('DG3 SOH journal syncs as soh_history: rows born with a uuid, legacy rows and pre-journal estimates backfilled, server ranges checked before push, pull and restore insert and lift the latest estimate, display reloads')
+    else: fail(f'DG3 soh_history sync drifted: {_dg3}')
+else:
+    ok(f"Part DG skipped (build +{pv}, BZ3 fixes and soh_history land in +232)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)

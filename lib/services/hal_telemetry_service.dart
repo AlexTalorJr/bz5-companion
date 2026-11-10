@@ -3279,6 +3279,14 @@ class HalTelemetryService extends ChangeNotifier
   /// the dashboard shows the last computed value before any new session.
   /// Best-effort — a missing/un-migrated DB just leaves the cache null and the
   /// UI falls through to the UDS estimate / BMS.
+  /// v0.2.33+232: журнал замеров ёмкости пришёл из облака — перечитать
+  /// замер HAL и обновить экран (зовётся из main.dart колбэком
+  /// CloudSyncService.onSohHistoryApplied).
+  Future<void> reloadSohAfterCloud() async {
+    await loadHalSohEstimate();
+    notifyListeners();
+  }
+
   Future<void> loadHalSohEstimate() async {
     // v0.1.29+116: never clobber a value already computed THIS run — the
     // crash-recovery path (_recoverPendingSohSession) fills the cache before

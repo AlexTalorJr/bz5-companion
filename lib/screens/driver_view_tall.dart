@@ -141,6 +141,12 @@ class _TallDriverContent extends StatelessWidget {
           const TripMetricsPanel(),
           const SizedBox(height: 12),
           const HalExtrasPanel(),
+        ] else ...[
+          // v0.2.33+232: стоянка с климатом без поездки — строка
+          // «Климат и подогревы» своей карточкой (в панели поездки её
+          // здесь нет). Показ решает сама строка.
+          const SizedBox(height: 12),
+          const ParkedClimateRow(compact: false, standalone: true),
         ],
 
         const SizedBox(height: 12),

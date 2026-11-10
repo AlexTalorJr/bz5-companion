@@ -2719,8 +2719,94 @@ class AppDatabase extends _$AppDatabase {
         computedAt: computedAt,
         deltaSocCovered: deltaSocCovered,
         source: source,
+        // v0.2.33+232: строка рождается с uuid — облачная синхронизация.
+        clientUuid: Value(uuidV7(time: computedAt)),
       ),
     );
+  }
+
+  /// v0.2.33+232 — ЗАМЕРЫ ЁМКОСТИ В ОБЛАКО (сущность soh_history, Друг 2,
+  /// client-api.md §3.12). Подготовка перед отправкой, одним проходом:
+  /// (1) последний замер каждого источника из soh_estimates, которого нет
+  /// в журнале (замеры до +130), дописывается в журнал; (2) строкам
+  /// журнала без uuid (все до +232) выдаётся uuid. Возвращает весь журнал —
+  /// он маленький, десятки строк за всё время.
+  Future<List<SohHistoryData>> sohHistoryForSync() async {
+    for (final e in await select(sohEstimates).get()) {
+      final src = e.source ?? 'uds';
+      final has = await (select(sohHistory)
+            ..where((r) =>
+                r.source.equals(src) & r.computedAt.equals(e.computedAt))
+            ..limit(1))
+          .getSingleOrNull();
+      if (has == null) {
+        await into(sohHistory).insert(SohHistoryCompanion.insert(
+          sohAhPct: e.sohAhPct,
+          computedAt: e.computedAt,
+          deltaSocCovered: e.deltaSocCovered,
+          source: src,
+          clientUuid: Value(uuidV7(time: e.computedAt)),
+        ));
+        debugPrint('SohHistory: estimate ${e.id} ($src) added to the journal');
+      }
+    }
+    final noUuid = await (select(sohHistory)
+          ..where((r) => r.clientUuid.isNull()))
+        .get();
+    for (final r in noUuid) {
+      await (update(sohHistory)..where((x) => x.id.equals(r.id))).write(
+          SohHistoryCompanion(clientUuid: Value(uuidV7(time: r.computedAt))));
+    }
+    return select(sohHistory).get();
+  }
+
+  /// v0.2.33+232: строка журнала с сервера (pull и restore). Журнал
+  /// неизменяемый: строка с тем же uuid или того же источника с тем же
+  /// временем уже есть — ничего не меняем. Новая строка вставляется, и
+  /// последний замер её источника в soh_estimates поднимается до самого
+  /// свежего в журнале (hal → строка 2, uds → строка 1), если он новее
+  /// записанного. Возвращает true, если строка вставлена.
+  Future<bool> applyPulledSohHistory({
+    required String clientUuid,
+    required DateTime computedAt,
+    required double sohAhPct,
+    required double deltaSocCovered,
+    required String source,
+  }) async {
+    final dup = await (select(sohHistory)
+          ..where((r) =>
+              r.clientUuid.equals(clientUuid) |
+              (r.source.equals(source) & r.computedAt.equals(computedAt)))
+          ..limit(1))
+        .getSingleOrNull();
+    if (dup != null) return false;
+    await into(sohHistory).insert(SohHistoryCompanion.insert(
+      sohAhPct: sohAhPct,
+      computedAt: computedAt,
+      deltaSocCovered: deltaSocCovered,
+      source: source,
+      clientUuid: Value(clientUuid),
+    ));
+    final rowId = source == 'hal' ? 2 : 1;
+    final latest = await (select(sohHistory)
+          ..where((r) => r.source.equals(source))
+          ..orderBy([
+            (r) => OrderingTerm(
+                expression: r.computedAt, mode: OrderingMode.desc)
+          ])
+          ..limit(1))
+        .getSingle();
+    final cur = await getLatestSohEstimate(rowId: rowId);
+    if (cur == null || latest.computedAt.isAfter(cur.computedAt)) {
+      await upsertSohEstimate(
+        sohAhPct: latest.sohAhPct,
+        computedAt: latest.computedAt,
+        deltaSocCovered: latest.deltaSocCovered,
+        rowId: rowId,
+        source: source,
+      );
+    }
+    return true;
   }
 
   /// v0.1.31+130: SOH history rows inside [from, to], ascending by

@@ -509,7 +509,7 @@ class TripMetricsPanel extends StatelessWidget {
             // строка снизу. Ряды выше в Expanded и уступают ей высоту.
             _LiveEnergySplitRow(tripId: tripDbId, compact: compact),
             // v0.2.31+230: климат и подогревы на стоянке.
-            _ParkedClimateRow(compact: compact),
+            ParkedClimateRow(compact: compact),
           ],
         ),
       ),
@@ -589,12 +589,18 @@ class _LiveEnergySplitRow extends StatelessWidget {
 }
 
 /// v0.2.31+230: «Климат и подогревы» на стоянке — одна строка снизу
-/// панели поездки (голова BZ5 и BZ3). Не считает и не решает: всё в
-/// [ParkedClimateMeter] (HalTelemetryService.parkedClimate). Строки нет вне
-/// P, при выключенном климате и до первого события AC_POWER_STATE.
-class _ParkedClimateRow extends StatelessWidget {
+/// панели поездки. Не считает и не решает: всё в [ParkedClimateMeter]
+/// (HalTelemetryService.parkedClimate). Строки нет вне P, при выключенном
+/// климате и до первого события AC_POWER_STATE.
+///
+/// v0.2.33+232: [standalone] — своя карточка. На BZ3 панель поездки видна
+/// только во время поездки, а стоянка с климатом бывает и без неё: там
+/// экран вождения ставит эту строку отдельно, когда панели нет.
+class ParkedClimateRow extends StatelessWidget {
   final bool compact;
-  const _ParkedClimateRow({required this.compact});
+  final bool standalone;
+  const ParkedClimateRow(
+      {super.key, required this.compact, this.standalone = false});
 
   @override
   Widget build(BuildContext context) {
@@ -603,8 +609,10 @@ class _ParkedClimateRow extends StatelessWidget {
     if (!m.active || now == null) return const SizedBox.shrink();
     final mean = m.meanKw ?? now;
     final fs = compact ? 11.0 : 13.0;
-    return Padding(
-      padding: EdgeInsets.only(top: compact ? 4 : 6),
+    final row = Padding(
+      padding: standalone
+          ? const EdgeInsets.symmetric(horizontal: 16, vertical: 12)
+          : EdgeInsets.only(top: compact ? 4 : 6),
       child: Row(
         children: [
           Text(S.of('drv.parked_climate').toUpperCase(),
@@ -630,6 +638,7 @@ class _ParkedClimateRow extends StatelessWidget {
         ],
       ),
     );
+    return standalone ? Card(child: row) : row;
   }
 }
 
