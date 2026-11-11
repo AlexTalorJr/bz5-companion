@@ -35,6 +35,7 @@ import 'package:drift/drift.dart' show Value;
 import '../data/database.dart';
 import 'bg_trip_builder.dart';
 import 'cell_pair.dart';
+import 'energy_split_service.dart';
 import 'hal_bg_journal.dart';
 import 'hal_telemetry_channel.dart';
 import 'native_car_channel.dart';
@@ -870,6 +871,16 @@ class HalTelemetryService extends ChangeNotifier
   // back-date to the stop) so the charge never contaminates end_soc /
   // distance / energy. Null until the first moving sample.
   _HalStopSnapshot? _halLastMovingSnapshot;
+  // v0.2.34+233: событийный счёт энергии открытой HAL-поездки. Живёт от
+  // _startHalTrip до _closeHalTrip; кормится в _onEvent каждым событием
+  // сигналов счёта со временем HAL. Суммы — в trips.extra раз в
+  // [_kEventEnergyPersist] и при закрытии. Записи идут одной очередью
+  // (_eventEnergyWrites): поздняя минутная запись не может лечь поверх
+  // итоговой.
+  EventEnergyAccumulator? _eventEnergy;
+  final Stopwatch _eventEnergyPersistClock = Stopwatch();
+  static const Duration _kEventEnergyPersist = Duration(minutes: 1);
+  Future<void> _eventEnergyWrites = Future<void>.value();
   // v0.1.29+106: watchdog flush clock. While a HAL trip is active, the trip's
   // aggregate snapshot + a last-alive timestamp are written to the row every
   // _kHalAliveFlush (on the speed ticks — no separate Timer). If the process is
@@ -1666,9 +1677,13 @@ class HalTelemetryService extends ChangeNotifier
   //    source): motor_rpm 0x28A00008 (RPM, slope 79.3 RPM per km/h vs
   //    speed r=0.968, recon-confirmed), motor_torque 0x28A00018 (Nm,
   //    signed — drive +, regen −, peak 330 Nm nameplate), motor_power
-  //    0x15100020 = ENGINE_POWER (kW, signed, peak 208 ≈ 200 kW spec;
-  //    confirmed power, NOT a current proxy). Shown only in the driver HAL
-  //    trip-split; held via the sticky cache and dimmed by isStale. ──
+  //    0x15100020 (kW, signed, whole kW). Shown only in the driver HAL
+  //    trip-split; held via the sticky cache and dimmed by isStale.
+  //    v0.2.34+233: несмотря на имя, это мощность БАТАРЕИ, а не вала:
+  //    по корпусу recon 09.11 её интеграл 3.37 кВт·ч при паке 3.60 и вале
+  //    2.03 (Друг 1, подтверждено Другом 3). Имя приходит из вендорной
+  //    таблицы recon и меняется там (решение владельца 11.11); здесь —
+  //    подпись «мощность батареи». ──
 
   double? get halMotorRpm => _heldValue('motor_rpm', _coreHold);
   bool get useHalForMotorRpm => _useHal('motor_rpm');
@@ -2149,6 +2164,9 @@ class HalTelemetryService extends ChangeNotifier
         at: now,
         soc: halSocForTrip,
         odometerKm: _heldValue('odometer', _coreHold),
+        // v0.2.34+233: суммы на момент последнего движения — закрытие по
+        // началу зарядки не должно унести в поездку энергию зарядки.
+        eventEnergy: _eventEnergy?.snapshot(),
       );
     }
 
@@ -2193,6 +2211,12 @@ class HalTelemetryService extends ChangeNotifier
     _resetHalTripAggregates();
     _halTripActive = true;
     _halTripStartedAt = DateTime.now();
+    // v0.2.34+233: событийный счёт — с начала поездки, минуты от него же.
+    _eventEnergy =
+        EventEnergyAccumulator(_halTripStartedAt!.millisecondsSinceEpoch);
+    _eventEnergyPersistClock
+      ..reset()
+      ..start();
     _halTripStartSoc = null;      // latched later, on first valid SOC frame
     _halTripStartSocPrecise = false;
     _halSpeedStartConfirmStart = null; // v0.1.29+104: clear speed-start clock
@@ -2536,6 +2560,11 @@ class HalTelemetryService extends ChangeNotifier
     _halTripTick?.cancel();
     _halTripTick = null;
     _halTripDbId = null;
+    // v0.2.34+233: суммы ушли в итоговую запись (_finalizeHalTripRow выше).
+    _eventEnergy = null;
+    _eventEnergyPersistClock
+      ..stop()
+      ..reset();
   }
 
   /// v0.1.29+106: snapshot of every HAL-trip aggregate, taken at one instant
@@ -2604,9 +2633,15 @@ class HalTelemetryService extends ChangeNotifier
     // field identically — a recovered orphan then carries exactly what a clean
     // close would have. See _collectHalTripAggregates for the per-field notes.
     final a = _collectHalTripAggregates(asOf: asOf);
+    // v0.2.34+233: итоговые событийные суммы ложатся в extra ДО endTrip.
+    // Служба разделения берёт поездку в расчёт, как только у неё появился
+    // endedAt, и читает суммы из extra: в обратном порядке она посчитала бы
+    // по hal_samples. Закрытие по началу зарядки (asOf) — суммы последнего
+    // движения; если их нет, суммы не пишутся (минутные остаются).
+    final ev = asOf != null ? asOf.eventEnergy : _eventEnergy?.snapshot();
     // Fire-and-forget; a DB error must never disturb the stream/lifecycle.
-    db
-        .endTrip(
+    (ev == null ? Future<void>.value() : _queueEventEnergyWrite(db, id, ev))
+        .then((_) => db.endTrip(
           id,
           endSoc: a.endSoc,
           endOdo: a.endOdo,
@@ -2630,7 +2665,7 @@ class HalTelemetryService extends ChangeNotifier
           // began (asOf = the stop). Null asOf → endTrip defaults to now, the
           // normal clean/park close.
           endedAt: asOf?.at,
-        )
+        ))
         // v0.1.29+93: freeze the speed-distribution histogram onto the row
         // from this trip's hal_samples speed series, so the chart renders in
         // history AND survives a DB wipe + cloud restore (mirrors the OBD2
@@ -2659,6 +2694,39 @@ class HalTelemetryService extends ChangeNotifier
     // момент выбора окна 14.08, и ни одной после поездок 15–17.08.
     // Поездки ГУ закрывает эта машина — крюк обязан стоять здесь же.
     unawaited(_rotateHalRetention());
+  }
+
+  /// v0.2.34+233: запись событийных сумм в extra — в очередь за прежними.
+  /// Ошибка записи не останавливает очередь и закрытие поездки.
+  Future<void> _queueEventEnergyWrite(
+      AppDatabase db, int tripId, EventEnergySums sums) {
+    final next = _eventEnergyWrites
+        .then((_) => db.mergeTripExtra(tripId, sums.toExtraPatch()))
+        .catchError((Object e) {
+      _noteDbFailure('eventEnergy', e);
+    });
+    _eventEnergyWrites = next;
+    return next;
+  }
+
+  /// v0.2.34+233: событие сигнала счёта → в суммы открытой поездки; раз в
+  /// [_kEventEnergyPersist] — суммы в extra (переживают смерть процесса:
+  /// восстановление сироты закроет поездку с ними). Время — метка HAL.
+  void _feedEventEnergy(HalEvent e, double v) {
+    final acc = _eventEnergy;
+    if (acc == null) return;
+    acc.add(e.name, v, e.ts);
+    final db = _diagDb;
+    final id = _halTripDbId;
+    if (db == null ||
+        id == null ||
+        _eventEnergyPersistClock.elapsed < _kEventEnergyPersist) {
+      return;
+    }
+    _eventEnergyPersistClock
+      ..reset()
+      ..start();
+    unawaited(_queueEventEnergyWrite(db, id, acc.snapshot()));
   }
 
   /// v0.2.9+208: зеркало одноимённого метода в ConnectionService —
@@ -3847,8 +3915,26 @@ class HalTelemetryService extends ChangeNotifier
         '(${missing.join(', ')})');
   }
 
-  Future<void> _startStream() async {
-    if (_running) return;
+  /// v0.2.34+233 — ОДИН ЗАПУСК ПОТОКА. Проверка `_running` стояла до
+  /// `await _hal.start()`, а `_running` ставится после него: два вызова
+  /// подряд (10.11 17:52:02, экспорт головы) оба прошли проверку и
+  /// подписались дважды — каждое событие приходило в _onEvent два раза.
+  /// Второй вызов теперь ждёт тот же запуск.
+  Future<void>? _streamStarting;
+
+  Future<void> _startStream() {
+    if (_running) return Future<void>.value();
+    final pending = _streamStarting;
+    if (pending != null) {
+      debugPrint('HAL: stream start already in flight — joined');
+      return pending;
+    }
+    final f = _startStreamOnce();
+    _streamStarting = f;
+    return f.whenComplete(() => _streamStarting = null);
+  }
+
+  Future<void> _startStreamOnce() async {
     // Listen FIRST (platform rejects start with HAL_NO_SINK otherwise).
     _sub = _hal.events.listen(_onEvent, onError: (Object _) {});
     final status = await _hal.start();
@@ -4007,6 +4093,9 @@ class HalTelemetryService extends ChangeNotifier
     // export shows the real HAL stream and matches recon's schema. Throttled
     // per-name so the ~15 Hz stream doesn't bloat the DB. No-op without DB.
     _logHalDiag(e, d);
+    // v0.2.34+233: событийный счёт энергии — до машины поездки, чтобы
+    // закрытие на этом же событии получило его в суммах.
+    _feedEventEnergy(e, d);
     _feedParkedClimate();
     // v0.2.0+199: замер изоляции пришёл — подтянуть норму. Место
     // выбрано здесь, а не в геттере: геттер читается на каждой
@@ -4298,7 +4387,10 @@ class _HalStopSnapshot {
   final DateTime at;
   final double? soc;
   final double? odometerKm;
-  const _HalStopSnapshot({required this.at, this.soc, this.odometerKm});
+  /// v0.2.34+233: событийные суммы на этот момент.
+  final EventEnergySums? eventEnergy;
+  const _HalStopSnapshot(
+      {required this.at, this.soc, this.odometerKm, this.eventEnergy});
 }
 
 /// v0.1.29+106: one HAL-trip aggregate snapshot. A Dart record (not a class)

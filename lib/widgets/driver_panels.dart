@@ -565,8 +565,8 @@ class _LiveEnergySplitRow extends StatelessWidget {
                 for (final p in <(double, Color)>[
                   (sh.motion, EnergySplitBar.motionColor),
                   (sh.climate, EnergySplitBar.climateColor),
-                  // v0.2.31+230: у v2 «прочего» нет.
-                  if (v.model != EnergySplitModel.versionV2)
+                  // v0.2.31+230: у v2 «прочего» нет; v0.2.34+233: и у v2s.
+                  if (!EnergySplitModel.twoParts(v.model))
                     (sh.other, EnergySplitBar.otherColor),
                 ])
                   Padding(

@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:drift/drift.dart' show Value;
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../ble/elm327_ble.dart';
 import '../ble/elm327_client.dart';
@@ -4364,6 +4365,38 @@ class ConnectionService extends ChangeNotifier {
   /// channel in that gap.
   bool get sweepRunning => _sweepRunning || _sweepQueueRunning;
 
+  // ────── v0.2.34+233: экран не гаснет, пока идёт работа по BLE ──────
+  //
+  // Цикл 037 (10.11): очередь свипа 116 пришла с сервера, экран свипа не
+  // был открыт, телефон погасил экран — и на 755 сработал watchdog_stall.
+  // Экраны свипа и Live Log держали экран сами, только пока открыты.
+  // Решение теперь одно и здесь: экран держится, пока идёт свип, очередь
+  // свипов или Live Log, кем бы они ни запущены (экран, мост, сервер), и
+  // пока открыт экран, попросивший об этом ([setScreenAwake]). Флаг окна
+  // Android (FLAG_KEEP_SCREEN_ON) действует, пока приложение на экране.
+  bool _screenAwake = false;
+  bool _keepAwakeOn = false;
+
+  /// Экран свипа и Live Log: держать экран, пока они открыты.
+  void setScreenAwake(bool on) {
+    _screenAwake = on;
+    _applyKeepAwake();
+  }
+
+  void _applyKeepAwake() {
+    final want = _screenAwake || sweepRunning || _liveLogRunning;
+    if (want == _keepAwakeOn) return;
+    _keepAwakeOn = want;
+    debugPrint('KeepAwake: ${want ? 'on' : 'off'} (screen=$_screenAwake '
+        'sweep=$sweepRunning liveLog=$_liveLogRunning)');
+    // Платформенный вызов без ожидания: отказ плагина не должен задержать
+    // ни свип, ни экран.
+    unawaited((want ? WakelockPlus.enable() : WakelockPlus.disable())
+        .catchError((Object e) {
+      debugPrint('KeepAwake: plugin failed: $e');
+    }));
+  }
+
   // ────── v0.2.20+219: multi-ECU sweep queue ──────
   //
   // One DID range swept over a list of TX addresses, one after another.
@@ -4576,6 +4609,7 @@ class ConnectionService extends ChangeNotifier {
     }
 
     _sweepQueueRunning = true;
+    _applyKeepAwake();
     _sweepQueueCancelled = false;
     _sweepQueueTotal = items.length;
     _sweepQueueIndex = 0;
@@ -4630,6 +4664,7 @@ class ConnectionService extends ChangeNotifier {
       debugPrint('runSweepQueue: ${runIds.length}/${items.length} runs, '
           'stop=$stopReason');
       _sweepQueueRunning = false;
+      _applyKeepAwake();
       _sweepQueueCancelled = false;
       if (wasPolling) {
         _polling = true;
@@ -4686,6 +4721,7 @@ class ConnectionService extends ChangeNotifier {
     final total = end - start + 1;
 
     _sweepRunning = true;
+    _applyKeepAwake();
     _sweepCancelled = false;
     _sweepDone = 0;
     _sweepTotal = total;
@@ -4995,6 +5031,7 @@ class ConnectionService extends ChangeNotifier {
       }
 
       _sweepRunning = false;
+      _applyKeepAwake();
       _sweepCancelled = false;
       _sweepLastProbeAt = null;
       // Don't clear _currentSweepRunId — UI may want to navigate to results.
@@ -5642,6 +5679,7 @@ class ConnectionService extends ChangeNotifier {
     if (didSpecs.isEmpty || didSpecs.length > kLiveLogMaxDids) return null;
 
     _liveLogRunning = true;
+    _applyKeepAwake();
     _liveLogCancelled = false;
     _liveLogCycle = 0;
     _liveLogLastRaw.clear();
@@ -6100,6 +6138,7 @@ class ConnectionService extends ChangeNotifier {
       }
 
       _liveLogRunning = false;
+      _applyKeepAwake();
       _liveLogCancelled = false;
       _liveLogLastEntryAt = null;
       if (wasPolling) {

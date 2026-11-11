@@ -13341,9 +13341,10 @@ if int(pv) >= 225:
         'static const Duration liveInterval = Duration(minutes: 1);' in _cz_es,
         'Timer.periodic(liveInterval, (_) => unawaited(_liveTick()));' in _cz_es,
         # v0.2.31+230: выбор модели — computeEnergySplitAuto (DE3).
-        ('final r = computeEnergySplit(_livePts, t.startedAt, now);' if int(pv) < 230 else 'final r = computeEnergySplitAuto(_livePts, t.startedAt, now);') in _cz2_tick,
+        # v0.2.34+233: выбор источника — computeTripEnergySplit (DH1).
+        ('final r = computeEnergySplit(_livePts, t.startedAt, now);' if int(pv) < 230 else 'final r = computeEnergySplitAuto(_livePts, t.startedAt, now);' if int(pv) < 233 else 'final r = computeTripEnergySplit(EventEnergySums.fromExtra(t.extra),\n_livePts, t.startedAt, now);') in _cz2_tick,
         ('t.id, energySplitShares(r.motionKwh, r.climateKwh, r.otherKwh));' if int(pv) < 230 else 't.id, energySplitShares(r.motionKwh, r.climateKwh, r.otherKwh),\nmodel: r.model);') in _cz2_tick,
-        'if (_livePts.isEmpty) {\nlive.value = null;' in _cz2_tick,
+        ('if (_livePts.isEmpty) {\nlive.value = null;' if int(pv) < 233 else 'if (_livePts.isEmpty && EventEnergySums.fromExtra(t.extra) == null) {\nlive.value = null;') in _cz2_tick,
         'final sh = energySplitShares(\ntrip.energyMotionKwh, trip.energyClimateKwh, trip.energyOtherKwh);' in _cz_td,
         'if (tripId == null || v == null || v.tripId != tripId) {' in _cz2_row,
         'computeEnergySplit' not in _cz_dp and 'halSignalsBetween' not in _cz_dp,
@@ -13414,7 +13415,7 @@ if int(pv) >= 225:
         f"static const _kSplitRepushSeeded = 'cloud_sync_split_repush_{'225' if int(pv) < 226 else '226'}';" in _cz_cs,
         "static const String repushTripIdsKey = 'cloud_sync_repush_trip_ids';" in _cz_imp,
         f"static const String splitRepushSeedKey = 'cloud_sync_split_repush_{'225' if int(pv) < 226 else '226'}';" in _cz_imp,
-        ('repushTripIdsKey,\nsplitRepushSeedKey,\n];' if int(pv) < 229 else 'repushTripIdsKey,\nsplitRepushSeedKey,\n\nsplitRecomputeKey,\n];') in _cz_imp,
+        ('repushTripIdsKey,\nsplitRepushSeedKey,\n];' if int(pv) < 229 else 'repushTripIdsKey,\nsplitRepushSeedKey,\n\nsplitRecomputeKey,\n];' if int(pv) < 233 else 'repushTripIdsKey,\nsplitRepushSeedKey,\n\nsplitRecomputeKey,\n\nsplitRelabelKey,\n];') in _cz_imp,
         -1 < _cz4_i_rm < _cz4_i_apply and 'await prefs.remove(repushTripIdsKey);' in _cz_imp,
         't.endedAt.isNotNull() & t.energySplitModel.isNotNull()' in _cz_db,
     ]
@@ -13881,12 +13882,14 @@ if int(pv) >= 230:
         ('var motion = eInv;\nvar climate = ePack - eInv;\nif (climate < 0) {\nclimate = 0;\nmotion = ePack;\n} else if (motion < 0) {\nmotion = 0;\nclimate = ePack;\n}' in _de3_fn) if int(pv) < 231 else
         ('var motion = eTraction - eRegen;\nvar climate = ePack - motion;\nif (climate < 0) {\nclimate = 0;\nmotion = ePack;\n}\nreturn EnergySplitResult(' in _de3_fn and 'motion = 0;' not in _de3_fn),
         ('return EnergySplitResult(ePack, cov, covered, motion, climate, 0.0,\nmodel: EnergySplitModel.versionV2);' in _de3_fn) if int(pv) < 231 else
-        ('return EnergySplitResult(ePack, cov, covered, motion, climate, 0.0,\nmodel: EnergySplitModel.versionV2,\ntractionKwh: eTraction,\nregenKwh: eRegen);' in _de3_fn),
+        ('return EnergySplitResult(ePack, cov, covered, motion, climate, 0.0,\nmodel: EnergySplitModel.versionV2,\ntractionKwh: eTraction,\nregenKwh: eRegen);' in _de3_fn) if int(pv) < 233 else
+        ('return EnergySplitResult(ePack, cov, covered, motion, climate, 0.0,\nmodel: EnergySplitModel.versionV2s,\ntractionKwh: eTraction,\nregenKwh: eRegen);' in _de3_fn),
         ") =>\npoints.any((p) => p.name == 'inverter_current')\n? computeEnergySplitV2(points, start, end)\n: computeEnergySplit(points, start, end);" in _de_es,
-        _de_es.count('computeEnergySplitAuto(') == 3 and 'model: r.model,\n);' in _de_es,
+        # v0.2.34+233: оба вызова идут через computeTripEnergySplit (DH1).
+        _de_es.count('computeEnergySplitAuto(') == (3 if int(pv) < 233 else 2) and 'model: r.model,\n);' in _de_es,
         "static const String versionV2 = 'v2';" in _de_es,
-        "final v2 = trip.energySplitModel == EnergySplitModel.versionV2;" in _de_td and 'if (!v2)\n(S.of(\'trip.split_other\')' in _de_td,
-        'if (v.model != EnergySplitModel.versionV2)\n(sh.other, EnergySplitBar.otherColor),' in _de_dp,
+        ("final v2 = trip.energySplitModel == EnergySplitModel.versionV2;" if int(pv) < 233 else "final v2 = EnergySplitModel.twoParts(trip.energySplitModel);") in _de_td and 'if (!v2)\n(S.of(\'trip.split_other\')' in _de_td,
+        ('if (v.model != EnergySplitModel.versionV2)\n(sh.other, EnergySplitBar.otherColor),' if int(pv) < 233 else 'if (!EnergySplitModel.twoParts(v.model))\n(sh.other, EnergySplitBar.otherColor),') in _de_dp,
         all(_de_l10n.count(f"'{k}':") == 2 for k in ('trip.split_climate_board', 'drv.parked_climate', 'drv.parked_climate_mean', 'settings.adapter_12v', 'cloud.headunit_yes', 'cloud.headunit_no')),
     ]
     if all(_de3): ok('DE3 model v2: battery and inverter energies integrated separately and subtracted at the end, clamps keep parts summing to the pack, one model choice for close and live, the model is stored, v2 shows two parts')
@@ -13900,7 +13903,7 @@ if int(pv) >= 230:
         'if (!parked || acOn != true) return _end();' in _de_pc and 'final kw = math.max(0.0, packKw - baseKw);' in _de_pc,
         'final Stopwatch _parkedClimateClock = Stopwatch()..start();' in _de_hts and 't: _parkedClimateClock.elapsed,' in _de_hts,
         'parked: !streamStopped && halGear == 1,' in _de_hts and '_feedParkedClimate(streamStopped: true);' in _de_hts and 'acOn: ac == null ? null : ac == 1,' in _de_hts and 'packKw: halPowerKw,' in _de_hts,
-        '_logHalDiag(e, d);\n_feedParkedClimate();' in _de_hts,
+        ('_logHalDiag(e, d);\n_feedParkedClimate();' if int(pv) < 233 else '_logHalDiag(e, d);\n_feedEventEnergy(e, d);\n_feedParkedClimate();') in _de_hts,
         "if (e.name == 'ac_power_state') {\n_feedParkedClimate();" in _de_hts,
         "debugPrint('ParkedClimate: " in _de_hts,
         (('_ParkedClimateRow(compact: compact),' if int(pv) < 232 else 'ParkedClimateRow(compact: compact),') in _de_dp) and 'if (!m.active || now == null) return const SizedBox.shrink();' in _de_dp,
@@ -14075,6 +14078,139 @@ if int(pv) >= 232:
     else: fail(f'DG3 soh_history sync drifted: {_dg3}')
 else:
     ok(f"Part DG skipped (build +{pv}, BZ3 fixes and soh_history land in +232)")
+
+# ═══════ Part DH — 0.2.34+233: событийный счёт энергии, v2s, один запуск потока HAL, экран телефона ═══════
+if int(pv) >= 233:
+    _dh_f = lambda t: re.sub(r'\n\s*\n', '\n', re.sub(r'\n[ \t]+', '\n', t))
+    _dh_rd = lambda pth: _dh_f(_strip_comments_safe((root / pth).read_text()))
+    _dh_es = _dh_rd('lib/services/energy_split_service.dart')
+    _dh_hts = _dh_rd('lib/services/hal_telemetry_service.dart')
+    _dh_db = _dh_rd('lib/data/database.dart')
+    _dh_imp = _dh_rd('lib/services/import_service.dart')
+    _dh_td = _dh_rd('lib/screens/trip_detail.dart')
+    _dh_con = _dh_rd('lib/services/connection.dart')
+    _dh_sw = _dh_rd('lib/screens/sweep.dart')
+    _dh_ll = _dh_rd('lib/screens/live_log.dart')
+    _dh_l10n = (root / 'lib/l10n/strings.dart').read_text()
+    _dh_mir = (root / 'tools/mirror_plus233_events.py').read_text()
+    _dh_fix = root / 'tools/data/recon_corpus_20261109_energy6.csv.gz'
+    _dh_test = root / 'test/event_energy_test.dart'
+
+    # DH0: ЗЕРКАЛО НА КОРПУСЕ. Правило событийного счёта и его эталон
+    # (корпус recon 09.11 18:10–19:00): пак 3.60, инвертор 2.72, вал
+    # 3.96/1.93, покрытие 2966 с, раскладка 2.72/0.87.
+    _dh0_out = ''
+    _dh0_rc = None
+    if _dh_fix.exists():
+        try:
+            _dh0 = subprocess.run([sys.executable, str(root / 'tools/mirror_plus233_events.py')],
+                                  cwd=root, capture_output=True, text=True, timeout=120)
+            _dh0_rc, _dh0_out = _dh0.returncode, (_dh0.stdout or '') + (_dh0.stderr or '')
+        except subprocess.TimeoutExpired:
+            _dh0_out = '(timeout)'
+    if _dh0_rc == 0 and 'mirror +233: PASS (0 failed)' in _dh0_out and \
+       'corpus: pack=3.595 trac=4.468 regen=1.745 net=2.723 shaft=3.958/1.927 cov=2966s neg=0 gaps=0 minutes=49 low=1 neg03=0' in _dh0_out:
+        ok('DH0 event mirror on the recon corpus 09.11: pack 3.60, inverter net 2.72, regen 1.75, shaft 3.96/1.93, 2966 s covered, no gaps; split 2.72/0.87 passes the checks')
+    else:
+        fail('DH0 event mirror on the corpus failed: ' + _dh0_out.strip().split('\n')[-1][:160])
+
+    # DH1: СЧЁТ И РАСКЛАДКА. Интервал между соседними событиями любого
+    # сигнала; держатся значения до события; разрыв > 5 с и отрицательный
+    # интервал не считаются, часы назад не идут; минуты от 30 с покрытия;
+    # проверки Друга 3; выбор источника — одно место для закрытия и живой
+    # строки; константы те же, что в зеркале; тест Dart на том же корпусе.
+    _dh1_i = _dh_es.find('void add(String name, double value, int tsMs) {')
+    _dh1_add = _dh_es[_dh1_i:_dh1_i + 600] if _dh1_i > -1 else ''
+    _dh1_j = _dh_es.find('EnergySplitResult? computeEnergySplitEvents(')
+    _dh1_sp = _dh_es[_dh1_j:_dh_es.find('EnergySplitResult computeTripEnergySplit(')] if _dh1_j > -1 else ''
+    _dh1 = [
+        'if (dt < 0) {\n_neg++;\n} else if (dt > gapMs) {\n_gaps++;\n} else if (dt > 0) {\n_integrate(tp, dt);\n}' in _dh1_add,
+        'if (tp == null || tsMs >= tp) _tPrev = tsMs;\n_last[name] = value;' in _dh1_add,
+        "final v = _last['pack_voltage_fine'] ?? _last['pack_voltage'];" in _dh_es and 'if (v != null && ib != null && ii != null) {\n_covMs += dt;' in _dh_es,
+        'final ps = tq * n * 2 * math.pi / 60 / 1000.0;' in _dh_es and '_mE += (pb - pi) * h;' in _dh_es,
+        'static const int gapMs = 5000;' in _dh_es and 'static const int minuteMinMs = 30000;' in _dh_es,
+        'GAP_MS = 5000' in _dh_mir and 'MINUTE_MIN_MS = 30000' in _dh_mir and 'REGEN_K, REGEN_ABS = 1.05, 0.05' in _dh_mir and 'LOW_KW, LOW_SHARE, NEG_KW = 0.2, 0.10, -0.3' in _dh_mir,
+        'static const double regenShaftK = 1.05;' in _dh_es and 'static const double regenShaftAbsKwh = 0.05;' in _dh_es and 'static const double boardLowKw = 0.2;' in _dh_es and 'static const double boardLowShare = 0.10;' in _dh_es and 'static const double boardNegKw = -0.3;' in _dh_es,
+        'if (cov < EnergySplitModel.minCoverage) return null;' in _dh1_sp,
+        "return partless('regen_above_shaft');" in _dh1_sp and "return partless('board_minutes');" in _dh1_sp,
+        'var motion = s.tractionKwh - s.regenKwh;\nvar climate = s.packKwh - motion;\nif (climate < 0) {\nclimate = 0;\nmotion = s.packKwh;\n}' in _dh1_sp,
+        '(events == null ? null : computeEnergySplitEvents(events, start, end)) ??\ncomputeEnergySplitAuto(points, start, end);' in _dh_es,
+        'final r = computeTripEnergySplit(ev, pts, t.startedAt, end);' in _dh_es and _dh_es.count('computeTripEnergySplit(') == 3,
+        "'${_eventsLog(r)}'" in _dh_es and "'${r.rejected == null ? '' : 'rejected=${r.rejected} '}';" in _dh_es,
+        _dh_fix.exists() and _dh_test.exists() and 'tools/data/recon_corpus_20261109_energy6.csv.gz' in _dh_test.read_text(),
+    ]
+    if all(_dh1): ok('DH1 event energy: held values over the interval between neighbouring events, gaps over 5 s and negative intervals skipped and counted, Friend 3 checks, one source choice for close and live, mirror constants equal, Dart test on the same corpus')
+    else: fail(f'DH1 event energy drifted: {_dh1}')
+
+    # DH2: ПРОВОДКА В HAL. Каждое событие сигнала счёта — со временем HAL;
+    # суммы живут с поездкой; раз в минуту и при закрытии — в extra
+    # слиянием, одной очередью; итог ложится ДО endTrip; закрытие по
+    # зарядке берёт суммы последнего движения.
+    _dh2_i = _dh_hts.find('void _finalizeHalTripRow({_HalStopSnapshot? asOf}) {')
+    _dh2_fin = _dh_hts[_dh2_i:_dh2_i + 1800] if _dh2_i > -1 else ''
+    _dh2 = [
+        'acc.add(e.name, v, e.ts);' in _dh_hts,
+        '_eventEnergy =\nEventEnergyAccumulator(_halTripStartedAt!.millisecondsSinceEpoch);' in _dh_hts,
+        '_eventEnergyPersistClock.elapsed < _kEventEnergyPersist' in _dh_hts and 'static const Duration _kEventEnergyPersist = Duration(minutes: 1);' in _dh_hts,
+        'final next = _eventEnergyWrites\n.then((_) => db.mergeTripExtra(tripId, sums.toExtraPatch()))' in _dh_hts and '_eventEnergyWrites = next;' in _dh_hts,
+        'final ev = asOf != null ? asOf.eventEnergy : _eventEnergy?.snapshot();' in _dh2_fin,
+        '(ev == null ? Future<void>.value() : _queueEventEnergyWrite(db, id, ev))\n.then((_) => db.endTrip(' in _dh2_fin,
+        'eventEnergy: _eventEnergy?.snapshot(),' in _dh_hts,
+        '_halTripDbId = null;\n_eventEnergy = null;' in _dh_hts,
+        "String toExtraPatch() =>\njsonEncode({'v': 1, extraKey: toJson()});" in _dh_es and "static const String extraKey = 'evE';" in _dh_es,
+    ]
+    if all(_dh2): ok('DH2 HAL wiring: every model-signal event with its HAL time, sums live with the trip, persisted to extra by merge every minute and at close in one queue, the final sums land before endTrip, a charge-onset close takes the last moving sums')
+    else: fail(f'DH2 event energy wiring drifted: {_dh2}')
+
+    # DH3: v2s И ПЕРЕСЧЁТ ПО ПРАВИЛУ. Раскладка по hal_samples — оценка
+    # v2s; каждая v2 без сумм — заново (данные есть) или метка (данных
+    # нет); флаг едет с базой; карточка пишет «оценка».
+    _dh3_i = _dh_es.find('Future<void> _relabelSampleV2() async {')
+    _dh3_fn = _dh_es[_dh3_i:_dh3_i + 1400] if _dh3_i > -1 else ''
+    _dh3 = [
+        "static const String versionV2s = 'v2s';" in _dh_es and 'static bool twoParts(String? model) =>\nmodel == versionV2 || model == versionV2s;' in _dh_es,
+        _dh_es.count('model: EnergySplitModel.versionV2s,') == 2,
+        'if (EventEnergySums.fromExtra(t.extra) != null) continue;' in _dh3_fn,
+        'if (since != null && !t.startedAt.isBefore(since)) {\nawait _db.clearEnergySplit(t.id);' in _dh3_fn and 'await _db.setEnergySplitModel(t.id, EnergySplitModel.versionV2s);' in _dh3_fn,
+        'unawaited(_relabelSampleV2());' in _dh_es,
+        "static const String relabelKey = 'energy_split_v2s_233';" in _dh_es and "static const String splitRelabelKey = 'energy_split_v2s_233';" in _dh_imp and 'await prefs.remove(splitRelabelKey);' in _dh_imp,
+        't.endedAt.isNotNull() & t.energySplitModel.equals(model)' in _dh_db and 'energySplitModel: Value(null),\n));' in _dh_db,
+        'final estimate = trip.energySplitModel == EnergySplitModel.versionV2s;' in _dh_td and "S.of('trip.split_estimate')" in _dh_td,
+        _dh_l10n.count("'trip.split_estimate':") == 2,
+    ]
+    if all(_dh3): ok('DH3 sample-based v2 is the estimate v2s; every v2 without event sums is recomputed (data here) or relabelled locally (no data); the flag travels with the database; the card says estimate')
+    else: fail(f'DH3 v2s relabel drifted: {_dh3}')
+
+    # DH4: motor_power — мощность батареи (подпись; имя меняет Друг 3).
+    _dh4 = [
+        "'drv.cell.motor_power': 'battery power'," in _dh_l10n and "'drv.cell.motor_power': 'мощность батареи'," in _dh_l10n,
+    ]
+    if all(_dh4): ok('DH4 motor_power is labelled battery power (the name stays until recon renames it)')
+    else: fail(f'DH4 motor_power label drifted: {_dh4}')
+
+    # DH5: ОДИН ЗАПУСК ПОТОКА HAL.
+    _dh5_i = _dh_hts.find('Future<void> _startStream() {')
+    _dh5_fn = _dh_hts[_dh5_i:_dh5_i + 500] if _dh5_i > -1 else ''
+    _dh5 = [
+        'if (_running) return Future<void>.value();\nfinal pending = _streamStarting;\nif (pending != null) {' in _dh5_fn and 'return pending;' in _dh5_fn,
+        'final f = _startStreamOnce();\n_streamStarting = f;\nreturn f.whenComplete(() => _streamStarting = null);' in _dh5_fn,
+        'Future<void> _startStreamOnce() async {\n_sub = _hal.events.listen(_onEvent' in _dh_hts,
+    ]
+    if all(_dh5): ok('DH5 a second HAL stream start joins the one in flight instead of subscribing twice')
+    else: fail(f'DH5 single-flight stream start drifted: {_dh5}')
+
+    # DH6: ЭКРАН ТЕЛЕФОНА. Одно решение в ConnectionService: свип, очередь,
+    # Live Log, кем бы ни запущены, и открытый экран; экраны сами
+    # плагин не зовут.
+    _dh6 = [
+        'final want = _screenAwake || sweepRunning || _liveLogRunning;' in _dh_con,
+        all(_dh_con.count(x + '\n_applyKeepAwake();') == 1 for x in ('_sweepQueueRunning = true;', '_sweepQueueRunning = false;', '_sweepRunning = true;', '_sweepRunning = false;', '_liveLogRunning = true;', '_liveLogRunning = false;')),
+        all('_keepAwakeSvc.setScreenAwake(true);' in t and '_keepAwakeSvc.setScreenAwake(false);' in t and 'WakelockPlus' not in t for t in (_dh_sw, _dh_ll)),
+    ]
+    if all(_dh6): ok('DH6 the phone screen stays on while a sweep, a sweep queue or Live Log runs, whoever started it, and while those screens are open; one decision in ConnectionService')
+    else: fail(f'DH6 keep-awake drifted: {_dh6}')
+else:
+    ok(f"Part DH skipped (build +{pv}, event energy and v2s land in +233)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)

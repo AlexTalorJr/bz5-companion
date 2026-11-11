@@ -1429,6 +1429,31 @@ class AppDatabase extends _$AppDatabase {
         energySplitModel: Value(null),
       ));
 
+  /// v0.2.34+233: закрытые поездки с моделью разделения [model] —
+  /// разовая перемаркировка `v2` по hal_samples в `v2s` (EnergySplitService).
+  Future<List<Trip>> closedTripsWithSplitModel(String model) => (select(trips)
+        ..where((t) => t.endedAt.isNotNull() & t.energySplitModel.equals(model))
+        ..orderBy([(t) => OrderingTerm(expression: t.id)]))
+      .get();
+
+  /// v0.2.34+233: снять разделение целиком — наблюдение EnergySplitService
+  /// посчитает поездку заново (покрытие и модель пусты = «не тронута»).
+  Future<void> clearEnergySplit(int tripId) =>
+      (update(trips)..where((t) => t.id.equals(tripId))).write(
+          const TripsCompanion(
+        energySplitCoverage: Value(null),
+        energyPackKwh: Value(null),
+        energyMotionKwh: Value(null),
+        energyClimateKwh: Value(null),
+        energyOtherKwh: Value(null),
+        energySplitModel: Value(null),
+      ));
+
+  /// v0.2.34+233: сменить только метку модели (части не трогаются).
+  Future<void> setEnergySplitModel(int tripId, String model) =>
+      (update(trips)..where((t) => t.id.equals(tripId)))
+          .write(TripsCompanion(energySplitModel: Value(model)));
+
   Future<List<Trip>> getAllTrips() {
     return (select(trips)
           ..orderBy(

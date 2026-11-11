@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
-import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../l10n/strings.dart';
 import '../services/connection.dart';
@@ -16,8 +15,9 @@ import 'sweep_results.dart';
 /// the standard Data & Export screen.
 ///
 /// Sweeps work in any car state. If running while driving, hand the device
-/// to a passenger. The screen keeps the display awake (wakelock_plus) so
-/// the bus doesn't drop mid-scan.
+/// to a passenger. The display stays awake while this screen is open and
+/// while any sweep runs (ConnectionService.setScreenAwake, +233) so the bus
+/// doesn't drop mid-scan.
 ///
 /// One active sweep at a time. Cancel takes effect within ~1 probe period.
 class SweepScreen extends StatefulWidget {
@@ -165,16 +165,21 @@ class _SweepScreenState extends State<SweepScreen> {
   /// v0.2.32+231: 0.4 → 0.44 — measured pace (sweep runs 21–22.10).
   static const double _kSecPerDid = 0.44;
 
+  // v0.2.34+233: экран держит ConnectionService — одно решение для
+  // открытого экрана и для работы, запущенной мостом или сервером. Ссылка
+  // берётся в initState: в dispose искать сервис по дереву уже нельзя.
+  late final ConnectionService _keepAwakeSvc;
+
   @override
   void initState() {
     super.initState();
-    // Keep screen on during sweeps
-    WakelockPlus.enable();
+    _keepAwakeSvc = context.read<ConnectionService>();
+    _keepAwakeSvc.setScreenAwake(true);
   }
 
   @override
   void dispose() {
-    WakelockPlus.disable();
+    _keepAwakeSvc.setScreenAwake(false);
     _txCtrl.dispose();
     _startCtrl.dispose();
     _endCtrl.dispose();

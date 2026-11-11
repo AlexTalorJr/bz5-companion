@@ -201,6 +201,8 @@ class ImportService {
     splitRepushSeedKey,
     // v0.2.30+229: разовый пересчёт разделения под порог 3 минуты.
     splitRecomputeKey,
+    // v0.2.34+233: разовая перемаркировка v2 по hal_samples в v2s.
+    splitRelabelKey,
   ];
 
   /// Литерал повторяет `_kSweepRewindDone` в CloudSyncService; расхождение
@@ -217,6 +219,10 @@ class ImportService {
   /// к базе — после импорта архива он должен пройти по новой базе.
   /// Литерал совпадает с EnergySplitService.recomputeKey.
   static const String splitRecomputeKey = 'energy_split_recompute_229';
+
+  /// v0.2.34+233: перемаркировка v2 → v2s тоже описывает базу. Литерал
+  /// совпадает с EnergySplitService.relabelKey.
+  static const String splitRelabelKey = 'energy_split_v2s_233';
 
   static List<String> get travellingKeys =>
       <String>[...ownerKeys, ...dbBoundKeys];
@@ -922,6 +928,7 @@ class ImportService {
     await prefs.remove(repushTripIdsKey);
     await prefs.remove(splitRepushSeedKey);
     await prefs.remove(splitRecomputeKey);
+    await prefs.remove(splitRelabelKey);
 
     var restored = 0;
     final prefsFile = File(p.join(support.path, _pendingPrefsName));

@@ -24,6 +24,8 @@ Model v2 (+230, Friend 3 letter 09.11), used when the trip has inverter_current:
   (|V*I_inv| for I_inv < 0), accumulated separately; motion may be negative
   (not clipped); v2 parts are NOT scaled to energy_used_kwh, they sum to
   the pack integral (energy_pack_kwh). v1 keeps its scaling.
+  +233: over hal_samples (3-4 s) this is an estimate, labelled v2s; model v2 is
+  the event-based one (tools/mirror_plus233_events.py).
 
 Usage:
   python3 tools/mirror_plus222_split.py               self-tests (CI-safe)
@@ -98,7 +100,7 @@ def split_v2(events, start_s, end_s):
     dur = end_s - start_s
     cov = covered / dur if dur > 0 else 0.0
     out = dict(pack=e_pack, traction=e_tr, regen=e_rg, coverage=cov, covered_s=covered,
-               motion=None, climate=None, other=None, model='v2')
+               motion=None, climate=None, other=None, model='v2s')
     if dur < MIN_TRIP_S or cov < MIN_COVERAGE or e_pack <= 0:
         return out
     motion = e_tr - e_rg
@@ -214,7 +216,8 @@ def _selftest():
     m1, c1, o1 = scaled(split_auto(ev3, 0, 1200), 2.0)
     check('v1 still scaled to energy_used', abs(m1 + c1 + o1 - 2.0) < 1e-9)
     # 13. Model choice: inverter_current present -> v2, absent -> v1.
-    check('auto picks v2 with inverter current', split_auto(evd, 0, 3600)['model'] == 'v2')
+    check('auto picks v2s (sample estimate, +233) with inverter current',
+          split_auto(evd, 0, 3600)['model'] == 'v2s')
     check('auto keeps v1 without it', split_auto(ev, 0, 1200)['model'] == 'v1')
     # 14. v2 needs all three signals: no inverter sample before t=400.
     ev14 = [(0, 'pack_voltage', 400.0), (0, 'pack_current', 2.0),

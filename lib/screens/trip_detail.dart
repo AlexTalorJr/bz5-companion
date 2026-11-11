@@ -1418,7 +1418,10 @@ class EnergySplitCard extends StatelessWidget {
     final packLoss = packKwh != null && used != null ? used - packKwh : null;
     // v0.2.31+230: у модели v2 две части — «Движение» и «Климат и
     // бортовая сеть»; «прочего» в ней нет (оно равно 0), строки нет.
-    final v2 = trip.energySplitModel == EnergySplitModel.versionV2;
+    // v0.2.34+233: у v2s те же две части; подпись «оценка» — раскладка
+    // по отсчётам 3–4 с, не по событиям.
+    final v2 = EnergySplitModel.twoParts(trip.energySplitModel);
+    final estimate = trip.energySplitModel == EnergySplitModel.versionV2s;
     final parts = <(String, double, Color)>[
       (S.of('trip.split_motion'), sh.motion, EnergySplitBar.motionColor),
       (S.of(v2 ? 'trip.split_climate_board' : 'trip.split_climate'),
@@ -1432,7 +1435,11 @@ class EnergySplitCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(S.of('trip.energy_split').toUpperCase(),
+            Text(
+                estimate
+                    ? '${S.of('trip.energy_split').toUpperCase()} · '
+                        '${S.of('trip.split_estimate').toUpperCase()}'
+                    : S.of('trip.energy_split').toUpperCase(),
                 style: const TextStyle(
                     fontSize: 11, letterSpacing: 1.5, color: Colors.grey)),
             const SizedBox(height: 10),
@@ -1470,7 +1477,8 @@ class EnergySplitCard extends StatelessWidget {
 
 /// v0.1.29+113: Tesla-style trip power profile. Replaces the HV-bus voltage
 /// chart (no HAL equivalent, low value). Loads the raw motor_power series
-/// (signed kW: + traction, − regen) from hal_samples and bins it into narrow
+/// (signed kW: + traction, − regen; v0.2.34+233: battery power despite the
+/// name, whole kW) from hal_samples and bins it into narrow
 /// bars over the trip's time span — each bar is the MEAN power in its bin
 /// (bin width = span / barCount). Raw data is never smoothed; only the
 /// display is binned, matching the "as in a Tesla" ask. Traction bars point

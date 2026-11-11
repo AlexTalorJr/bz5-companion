@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
-import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../data/ecu_registry.dart';
 import '../l10n/strings.dart';
@@ -78,15 +77,21 @@ class _LiveLogScreenState extends State<LiveLogScreen> {
     });
   }
 
+  // v0.2.34+233: экран держит ConnectionService — одно решение для
+  // открытого экрана и для работы, запущенной мостом или сервером. Ссылка
+  // берётся в initState: в dispose искать сервис по дереву уже нельзя.
+  late final ConnectionService _keepAwakeSvc;
+
   @override
   void initState() {
     super.initState();
-    WakelockPlus.enable();
+    _keepAwakeSvc = context.read<ConnectionService>();
+    _keepAwakeSvc.setScreenAwake(true);
   }
 
   @override
   void dispose() {
-    WakelockPlus.disable();
+    _keepAwakeSvc.setScreenAwake(false);
     _carStateCtrl.dispose();
     _notesCtrl.dispose();
     super.dispose();

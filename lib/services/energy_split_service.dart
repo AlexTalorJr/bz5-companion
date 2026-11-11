@@ -2,6 +2,11 @@
 // прочее. v0.2.31+230: модель v2 по току инвертора — движение / климат и
 // бортовая сеть ([computeEnergySplitV2], [computeEnergySplitAuto]). v0.2.26+225: живое накопленное разделение открытой поездки
 // ([EnergySplitService.live]) той же функцией, доли — [energySplitShares].
+// v0.2.34+233: событийный счёт ([EventEnergyAccumulator], копит
+// HalTelemetryService по каждому событию живого потока, суммы — в
+// trips.extra под [EventEnergySums.extraKey]); раскладка v2 по нему —
+// [computeEnergySplitEvents], выбор источника — [computeTripEnergySplit].
+// Раскладка по hal_samples (3–4 с) — оценка `v2s`.
 //
 // Модель Друга 3 (05.11.2026, поездка 399), поправки к схеме согласованы
 // 05.11. Коэффициенты — посекундная подгонка (сверка Друг 1 / Друг 3 05.11:
@@ -21,6 +26,7 @@
 // при первом запуске.
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
@@ -47,6 +53,19 @@ class EnergySplitModel {
   /// масштабируются к energy_used_kwh — их сумма равна energy_pack_kwh.
   /// v1 не меняется. Ни одна поездка v2 до +231 на сервер не ушла.
   static const String versionV2 = 'v2';
+
+  /// v0.2.34+233 — ОЦЕНКА. Та же раскладка v2, но по hal_samples, где
+  /// каждый сигнал записан раз в 3–4 с: по экспорту 10.11 она нефизична
+  /// (климат 45 %, рекуперация инвертора больше вала; Друг 3). Метку
+  /// получают поездки без событийных сумм — до +233, фоновые без живого
+  /// потока, с неполным покрытием сумм. С этого патча `v2` — только по
+  /// событиям ([computeEnergySplitEvents]).
+  static const String versionV2s = 'v2s';
+
+  /// v0.2.34+233: у v2 и v2s две части («Движение», «Климат и бортовая
+  /// сеть»), «прочего» нет. Одно место для карточки и живой строки.
+  static bool twoParts(String? model) =>
+      model == versionV2 || model == versionV2s;
   static const double kTraction = 1.030;
   static const double kRegen = 0.835;
   static const double baseKw = 0.65;
@@ -61,8 +80,16 @@ class EnergySplitModel {
   static const int minTripSeconds = 180;
   static const double minCoverage = 0.8;
 
+  /// v0.2.34+233: проверки событийной v2 (Друг 3, 10.11).
+  static const double regenShaftK = 1.05;
+  static const double regenShaftAbsKwh = 0.05;
+  static const double boardLowKw = 0.2;
+  static const double boardLowShare = 0.10;
+  static const double boardNegKw = -0.3;
+
   /// Сигналы модели. `pack_voltage_fine` предпочтительнее, `pack_voltage`
-  /// — запасной. `motor_power` не годится: целые кВт, на стоянке 1–2 кВт.
+  /// — запасной. `motor_power` не годится: целые кВт, на стоянке 1–2 кВт;
+  /// v0.2.34+233: и это мощность батареи, а не вала.
   static const List<String> signals = [
     'pack_voltage_fine',
     'pack_voltage',
@@ -88,11 +115,20 @@ class EnergySplitResult {
   /// (∫|V·I_инв| при I < 0), кВт·ч. Только для строки в app_log.
   final double? tractionKwh;
   final double? regenKwh;
+  /// v0.2.34+233: у событийной v2 — какая проверка Друга 3 не прошла
+  /// (`regen_above_shaft`, `board_minutes`); части тогда пусты. Только
+  /// для строки в app_log.
+  final String? rejected;
+  /// v0.2.34+233: суммы, по которым посчитано (событийная v2), — для
+  /// строки в app_log. null у v1 и v2s.
+  final EventEnergySums? events;
   const EnergySplitResult(this.packKwh, this.coverage, this.coveredSeconds,
       this.motionKwh, this.climateKwh, this.otherKwh,
       {this.model = EnergySplitModel.version,
       this.tractionKwh,
-      this.regenKwh});
+      this.regenKwh,
+      this.rejected,
+      this.events});
   bool get hasSplit => motionKwh != null;
 }
 
@@ -176,7 +212,9 @@ EnergySplitResult computeEnergySplit(
 }
 
 /// v0.2.31+230 — МОДЕЛЬ v2, зеркало `split_v2()` в
-/// tools/mirror_plus222_split.py.
+/// tools/mirror_plus222_split.py. v0.2.34+233: по hal_samples это оценка —
+/// метка [EnergySplitModel.versionV2s]; правило раскладки то же, что у
+/// событийной v2.
 ///
 /// Шаг 1 с, удержание последнего значения каждого сигнала с его первого
 /// сэмпла, как у v1. ∫V·I_бат, тяга (∫V·I_инв при I > 0) и рекуперация
@@ -224,7 +262,7 @@ EnergySplitResult computeEnergySplitV2(
       cov < EnergySplitModel.minCoverage ||
       ePack <= 0) {
     return EnergySplitResult(ePack, cov, covered, null, null, null,
-        model: EnergySplitModel.versionV2,
+        model: EnergySplitModel.versionV2s,
         tractionKwh: eTraction,
         regenKwh: eRegen);
   }
@@ -235,14 +273,15 @@ EnergySplitResult computeEnergySplitV2(
     motion = ePack;
   }
   return EnergySplitResult(ePack, cov, covered, motion, climate, 0.0,
-      model: EnergySplitModel.versionV2,
+      model: EnergySplitModel.versionV2s,
       tractionKwh: eTraction,
       regenKwh: eRegen);
 }
 
-/// v0.2.31+230: выбор модели — ОДНО место для расчёта после закрытия и
-/// живой строки. Есть в поездке хоть один отсчёт тока инвертора — v2,
-/// иначе v1 (поездки до +230 и поездки, где поток Engine не пришёл).
+/// v0.2.31+230: выбор модели по hal_samples. Есть в поездке хоть один
+/// отсчёт тока инвертора — v2 (с +233 — оценка v2s), иначе v1 (поездки
+/// до +230 и поездки, где поток Engine не пришёл). Над ним —
+/// [computeTripEnergySplit].
 EnergySplitResult computeEnergySplitAuto(
   List<({DateTime ts, String name, double v})> points,
   DateTime start,
@@ -251,6 +290,335 @@ EnergySplitResult computeEnergySplitAuto(
     points.any((p) => p.name == 'inverter_current')
         ? computeEnergySplitV2(points, start, end)
         : computeEnergySplit(points, start, end);
+
+/// v0.2.34+233 — СОБЫТИЙНЫЕ СУММЫ ПОЕЗДКИ. Снимок [EventEnergyAccumulator],
+/// неизменяемый: его кладёт HalTelemetryService в trips.extra (раз в минуту
+/// и при закрытии) и в снимок последнего движения (закрытие по началу
+/// зарядки). Ключ в extra — [extraKey]; остальные ключи extra не трогаются
+/// (запись слиянием, AppDatabase.mergeTripExtra), сервер хранит extra
+/// целиком (Друг 2).
+class EventEnergySums {
+  static const String extraKey = 'evE';
+  static const int format = 1;
+
+  /// Сигналы счёта; порядок задаёт индексы [counts].
+  static const List<String> signals = [
+    'pack_voltage_fine',
+    'pack_voltage',
+    'pack_current',
+    'inverter_current',
+    'motor_torque',
+    'motor_rpm',
+  ];
+
+  final double packKwh;
+  final double tractionKwh;
+  final double regenKwh;
+  final double shaftTractionKwh;
+  final double shaftRegenKwh;
+  final double coveredSeconds;
+  final int negativeIntervals;
+  final int gaps;
+  final List<int> counts;
+  final int minutes;
+  final int minutesLow;
+  final int minutesNegative;
+  final double? minuteMinKw;
+
+  const EventEnergySums({
+    required this.packKwh,
+    required this.tractionKwh,
+    required this.regenKwh,
+    required this.shaftTractionKwh,
+    required this.shaftRegenKwh,
+    required this.coveredSeconds,
+    required this.negativeIntervals,
+    required this.gaps,
+    required this.counts,
+    required this.minutes,
+    required this.minutesLow,
+    required this.minutesNegative,
+    required this.minuteMinKw,
+  });
+
+  /// Отношение рекуперации инвертора к рекуперации вала; null без вала.
+  double? get regenRatio =>
+      shaftRegenKwh > 0 ? regenKwh / shaftRegenKwh : null;
+
+  static double _r(double v) => (v * 100000).roundToDouble() / 100000;
+
+  Map<String, dynamic> toJson() => {
+        'f': format,
+        'pack': _r(packKwh),
+        'trac': _r(tractionKwh),
+        'regen': _r(regenKwh),
+        'shTrac': _r(shaftTractionKwh),
+        'shRegen': _r(shaftRegenKwh),
+        'covS': _r(coveredSeconds),
+        'neg': negativeIntervals,
+        'gaps': gaps,
+        'n': {
+          for (var i = 0; i < signals.length; i++) signals[i]: counts[i],
+        },
+        'min': {
+          'n': minutes,
+          'low': minutesLow,
+          'neg': minutesNegative,
+          if (minuteMinKw != null) 'minKw': _r(minuteMinKw!),
+        },
+      };
+
+  /// Патч для AppDatabase.mergeTripExtra: версия блоба общая для всех
+  /// писателей extra (`v: 1`), суммы — своим ключом.
+  String toExtraPatch() =>
+      jsonEncode({'v': 1, extraKey: toJson()});
+
+  /// Суммы из extra поездки; null — ключа нет или он не читается.
+  static EventEnergySums? fromExtra(String? extra) {
+    if (extra == null || extra.isEmpty) return null;
+    try {
+      final obj = jsonDecode(extra);
+      if (obj is! Map) return null;
+      final m = obj[extraKey];
+      if (m is! Map || m['f'] != format) return null;
+      double d(Object? v) => v is num ? v.toDouble() : double.nan;
+      int i(Object? v) => v is num ? v.toInt() : 0;
+      final n = m['n'];
+      final mn = m['min'];
+      final r = EventEnergySums(
+        packKwh: d(m['pack']),
+        tractionKwh: d(m['trac']),
+        regenKwh: d(m['regen']),
+        shaftTractionKwh: d(m['shTrac']),
+        shaftRegenKwh: d(m['shRegen']),
+        coveredSeconds: d(m['covS']),
+        negativeIntervals: i(m['neg']),
+        gaps: i(m['gaps']),
+        counts: [for (final s in signals) n is Map ? i(n[s]) : 0],
+        minutes: mn is Map ? i(mn['n']) : 0,
+        minutesLow: mn is Map ? i(mn['low']) : 0,
+        minutesNegative: mn is Map ? i(mn['neg']) : 0,
+        minuteMinKw: mn is Map && mn['minKw'] is num
+            ? (mn['minKw'] as num).toDouble()
+            : null,
+      );
+      final core = [
+        r.packKwh,
+        r.tractionKwh,
+        r.regenKwh,
+        r.shaftTractionKwh,
+        r.shaftRegenKwh,
+        r.coveredSeconds,
+      ];
+      return core.any((x) => x.isNaN) ? null : r;
+    } catch (_) {
+      return null;
+    }
+  }
+}
+
+/// v0.2.34+233 — СОБЫТИЙНЫЙ СЧЁТ ЭНЕРГИИ, зеркало `Acc` в
+/// tools/mirror_plus233_events.py (там же правило и эталон корпуса).
+///
+/// Время события — метка HAL (мс), а не приход пачки. Интервал — между
+/// соседними событиями ЛЮБОГО сигнала счёта; по нему интегрируются
+/// значения, которые держались ДО нового события. Значение не протухает
+/// (поток шлёт по изменению). Интервал больше [gapMs] не считается и
+/// считается разрывом; отрицательный не считается и считается отдельно;
+/// часы при этом назад не идут. Покрытие — время, где известны V и оба
+/// тока. Бортовая сеть по минутам поездки = (E_пак − E_инв) / покрытое
+/// время минуты; минута учитывается от [minuteMinMs] покрытия.
+class EventEnergyAccumulator {
+  EventEnergyAccumulator(this.startMs);
+
+  /// Начало поездки (мс) — отсчёт минут.
+  final int startMs;
+  static const int gapMs = 5000;
+  static const int minuteMinMs = 30000;
+
+  final Map<String, double> _last = {};
+  int? _tPrev;
+  double _pack = 0;
+  double _trac = 0;
+  double _regen = 0;
+  double _shTrac = 0;
+  double _shRegen = 0;
+  int _covMs = 0;
+  int _neg = 0;
+  int _gaps = 0;
+  final List<int> _counts = List<int>.filled(EventEnergySums.signals.length, 0);
+  int _mIdx = -1;
+  double _mE = 0;
+  int _mCov = 0;
+  int _minutes = 0;
+  int _mLow = 0;
+  int _mNeg = 0;
+  double? _mMin;
+
+  void add(String name, double value, int tsMs) {
+    final ci = EventEnergySums.signals.indexOf(name);
+    if (ci < 0) return;
+    _counts[ci]++;
+    final tp = _tPrev;
+    if (tp != null) {
+      final dt = tsMs - tp;
+      if (dt < 0) {
+        _neg++;
+      } else if (dt > gapMs) {
+        _gaps++;
+      } else if (dt > 0) {
+        _integrate(tp, dt);
+      }
+    }
+    if (tp == null || tsMs >= tp) _tPrev = tsMs;
+    _last[name] = value;
+  }
+
+  void _integrate(int tp, int dt) {
+    final h = dt / 3600000.0;
+    final v = _last['pack_voltage_fine'] ?? _last['pack_voltage'];
+    final ib = _last['pack_current'];
+    final ii = _last['inverter_current'];
+    if (v != null && ib != null && ii != null) {
+      _covMs += dt;
+      final pb = v * ib / 1000.0;
+      final pi = v * ii / 1000.0;
+      _pack += pb * h;
+      if (pi > 0) {
+        _trac += pi * h;
+      } else {
+        _regen -= pi * h;
+      }
+      final idx = math.max(0, tp - startMs) ~/ 60000;
+      if (idx != _mIdx) {
+        if (_mIdx >= 0) {
+          final kw = _minuteKw(_mE, _mCov);
+          if (kw != null) {
+            _minutes++;
+            if (kw < EnergySplitModel.boardLowKw) _mLow++;
+            if (kw < EnergySplitModel.boardNegKw) _mNeg++;
+            _mMin = _mMin == null ? kw : math.min(_mMin!, kw);
+          }
+        }
+        _mIdx = idx;
+        _mE = 0;
+        _mCov = 0;
+      }
+      _mE += (pb - pi) * h;
+      _mCov += dt;
+    }
+    final tq = _last['motor_torque'];
+    final n = _last['motor_rpm'];
+    if (tq != null && n != null) {
+      final ps = tq * n * 2 * math.pi / 60 / 1000.0;
+      if (ps > 0) {
+        _shTrac += ps * h;
+      } else {
+        _shRegen -= ps * h;
+      }
+    }
+  }
+
+  static double? _minuteKw(double e, int covMs) =>
+      covMs < minuteMinMs ? null : e / (covMs / 3600000.0);
+
+  /// Снимок. Открытая минута учитывается так же, как закрытая, если
+  /// покрыта от [minuteMinMs]; само накопление не меняется.
+  EventEnergySums snapshot() {
+    var minutes = _minutes;
+    var low = _mLow;
+    var neg = _mNeg;
+    var mn = _mMin;
+    if (_mIdx >= 0) {
+      final kw = _minuteKw(_mE, _mCov);
+      if (kw != null) {
+        minutes++;
+        if (kw < EnergySplitModel.boardLowKw) low++;
+        if (kw < EnergySplitModel.boardNegKw) neg++;
+        mn = mn == null ? kw : math.min(mn, kw);
+      }
+    }
+    return EventEnergySums(
+      packKwh: _pack,
+      tractionKwh: _trac,
+      regenKwh: _regen,
+      shaftTractionKwh: _shTrac,
+      shaftRegenKwh: _shRegen,
+      coveredSeconds: _covMs / 1000.0,
+      negativeIntervals: _neg,
+      gaps: _gaps,
+      counts: List<int>.unmodifiable(_counts),
+      minutes: minutes,
+      minutesLow: low,
+      minutesNegative: neg,
+      minuteMinKw: mn,
+    );
+  }
+}
+
+/// v0.2.34+233 — РАСКЛАДКА v2 ПО СОБЫТИЙНЫМ СУММАМ, зеркало
+/// `split_events()` в tools/mirror_plus233_events.py.
+///
+/// null — суммы покрывают меньше [EnergySplitModel.minCoverage] поездки
+/// (живой поток подхватил поездку на ходу, поток прерывался): тогда берётся
+/// оценка по hal_samples ([computeTripEnergySplit]). Движение = тяга −
+/// рекуперация инвертора, климат = пак − движение (< 0 → 0, движение =
+/// пак), прочее 0, без масштаба. Проверки Друга 3: рекуперация инвертора
+/// не больше вала × [EnergySplitModel.regenShaftK] +
+/// [EnergySplitModel.regenShaftAbsKwh]; минут бортовой сети ниже
+/// [EnergySplitModel.boardLowKw] не больше [EnergySplitModel.boardLowShare],
+/// ни одной ниже [EnergySplitModel.boardNegKw]. Не прошла — частей нет,
+/// пак остаётся.
+EnergySplitResult? computeEnergySplitEvents(
+    EventEnergySums s, DateTime start, DateTime end) {
+  final dur = end.difference(start).inMilliseconds / 1000.0;
+  final cov = dur > 0 ? math.min(1.0, s.coveredSeconds / dur) : 0.0;
+  if (cov < EnergySplitModel.minCoverage) return null;
+  final covered = s.coveredSeconds.round();
+  EnergySplitResult partless([String? why]) => EnergySplitResult(
+      s.packKwh, cov, covered, null, null, null,
+      model: EnergySplitModel.versionV2,
+      tractionKwh: s.tractionKwh,
+      regenKwh: s.regenKwh,
+      rejected: why,
+      events: s);
+  if (dur < EnergySplitModel.minTripSeconds || s.packKwh <= 0) {
+    return partless();
+  }
+  if (s.regenKwh >
+      s.shaftRegenKwh * EnergySplitModel.regenShaftK +
+          EnergySplitModel.regenShaftAbsKwh) {
+    return partless('regen_above_shaft');
+  }
+  if (s.minutes > 0 &&
+      (s.minutesLow > EnergySplitModel.boardLowShare * s.minutes ||
+          s.minutesNegative > 0)) {
+    return partless('board_minutes');
+  }
+  var motion = s.tractionKwh - s.regenKwh;
+  var climate = s.packKwh - motion;
+  if (climate < 0) {
+    climate = 0;
+    motion = s.packKwh;
+  }
+  return EnergySplitResult(s.packKwh, cov, covered, motion, climate, 0.0,
+      model: EnergySplitModel.versionV2,
+      tractionKwh: s.tractionKwh,
+      regenKwh: s.regenKwh,
+      events: s);
+}
+
+/// v0.2.34+233 — ВЫБОР ИСТОЧНИКА, ОДНО место для расчёта после закрытия и
+/// живой строки: есть событийные суммы с достаточным покрытием — v2 по
+/// ним; иначе — по hal_samples ([computeEnergySplitAuto]: v2s или v1).
+EnergySplitResult computeTripEnergySplit(
+  EventEnergySums? events,
+  List<({DateTime ts, String name, double v})> points,
+  DateTime start,
+  DateTime end,
+) =>
+    (events == null ? null : computeEnergySplitEvents(events, start, end)) ??
+    computeEnergySplitAuto(points, start, end);
 
 class EnergySplitService {
   EnergySplitService(this._db);
@@ -272,6 +640,10 @@ class EnergySplitService {
   /// новый порог (см. [_recomputePartless]). Ключ привязан к базе —
   /// ImportService снимает его при импорте архива.
   static const String recomputeKey = 'energy_split_recompute_229';
+
+  /// v0.2.34+233: разовая перемаркировка `v2` без событийных сумм в `v2s`
+  /// (см. [_relabelSampleV2]). Привязан к базе, как [recomputeKey].
+  static const String relabelKey = 'energy_split_v2s_233';
 
   StreamSubscription<List<Trip>>? _sub;
   bool _busy = false;
@@ -310,6 +682,7 @@ class EnergySplitService {
 
   void start() {
     unawaited(_recomputePartless());
+    unawaited(_relabelSampleV2());
     _sub ??= _db.watchTripsAwaitingSplit().listen((_) => unawaited(_kick()));
     _liveTimer ??=
         Timer.periodic(liveInterval, (_) => unawaited(_liveTick()));
@@ -361,11 +734,15 @@ class EnergySplitService {
         _livePts.addAll(rows);
         if (!ordered) _livePts.sort((a, b) => a.ts.compareTo(b.ts));
       }
-      if (_livePts.isEmpty) {
+      if (_livePts.isEmpty && EventEnergySums.fromExtra(t.extra) == null) {
         live.value = null;
         return;
       }
-      final r = computeEnergySplitAuto(_livePts, t.startedAt, now);
+      // v0.2.34+233: тот же выбор источника, что после закрытия. Суммы
+      // HalTelemetryService кладёт в extra раз в минуту — живая строка
+      // отстаёт от них не больше чем на такт.
+      final r = computeTripEnergySplit(EventEnergySums.fromExtra(t.extra),
+          _livePts, t.startedAt, now);
       live.value = LiveEnergySplit(
           t.id, energySplitShares(r.motionKwh, r.climateKwh, r.otherKwh),
           model: r.model);
@@ -394,6 +771,42 @@ class EnergySplitService {
           'recompute (threshold ${EnergySplitModel.minTripSeconds} s, +229)');
     } catch (e) {
       debugPrint('EnergySplit: recompute pass failed: $e');
+    }
+  }
+
+  /// v0.2.34+233 — ПЕРЕСЧЁТ ПО ПРАВИЛУ, А НЕ ПО СПИСКУ. Каждая закрытая
+  /// поездка с моделью `v2` без событийных сумм посчитана по hal_samples —
+  /// это оценка. Если её hal_samples ещё здесь (начало не раньше первого
+  /// сэмпла), разделение снимается, наблюдение посчитает её заново (`v2s`
+  /// по нынешнему правилу, части в сумме = пак) и отправит: повтор с
+  /// моделью заменяет на сервере все шесть полей (Друг 2). Если данных
+  /// нет — меняется только локальная метка, без отправки: на сервере
+  /// поездку поправит устройство, у которого данные есть, а телефон не
+  /// шлёт чужие поездки.
+  Future<void> _relabelSampleV2() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (prefs.getBool(relabelKey) ?? false) return;
+      final since = await _db.earliestHalSampleAt();
+      var recompute = 0;
+      var relabel = 0;
+      for (final t in await _db.closedTripsWithSplitModel(
+          EnergySplitModel.versionV2)) {
+        if (EventEnergySums.fromExtra(t.extra) != null) continue;
+        if (since != null && !t.startedAt.isBefore(since)) {
+          await _db.clearEnergySplit(t.id);
+          recompute++;
+        } else {
+          await _db.setEnergySplitModel(t.id, EnergySplitModel.versionV2s);
+          relabel++;
+        }
+      }
+      await prefs.setBool(relabelKey, true);
+      debugPrint('EnergySplit: v2 without event sums -> v2s: '
+          '$recompute recomputed from hal_samples, $relabel relabelled '
+          'locally (+233)');
+    } catch (e) {
+      debugPrint('EnergySplit: v2s relabel pass failed: $e');
     }
   }
 
@@ -431,11 +844,16 @@ class EnergySplitService {
     for (final t in pending) {
       final end = t.endedAt;
       if (end == null) continue;
-      final pts = (first == null || end.isBefore(first))
+      // v0.2.34+233: событийные суммы поездки. Если по ним считается
+      // (computeTripEnergySplit возьмёт их), hal_samples не читаются.
+      final ev = EventEnergySums.fromExtra(t.extra);
+      final byEvents = ev != null &&
+          computeEnergySplitEvents(ev, t.startedAt, end) != null;
+      final pts = (byEvents || first == null || end.isBefore(first))
           ? const <({DateTime ts, String name, double v})>[]
           : await _db.halSignalsBetween(
               t.startedAt, end, EnergySplitModel.signals);
-      if (pts.isEmpty) {
+      if (!byEvents && pts.isEmpty) {
         // Нет данных HAL — поездка с телефона, чужая из облака или старше
         // хранения. Отметка только локальная (покрытие 0, модель пуста):
         // такая поездка НЕ шлёт полей разделения и не может стереть
@@ -444,7 +862,7 @@ class EnergySplitService {
         noData++;
         continue;
       }
-      final r = computeEnergySplitAuto(pts, t.startedAt, end);
+      final r = computeTripEnergySplit(ev, pts, t.startedAt, end);
       final used = t.energyUsedKwh;
       // Решение владельца 05.11: части в кВт·ч = доля по батарее ×
       // energy_used_kwh, чтобы их сумма совпадала со строкой «Энергия».
@@ -475,12 +893,36 @@ class EnergySplitService {
           'pack=${r.packKwh.toStringAsFixed(3)} used=$used '
           '${r.tractionKwh == null ? '' : 'traction=${r.tractionKwh!.toStringAsFixed(3)} '
               'regen=${r.regenKwh!.toStringAsFixed(3)} '}'
+          '${_eventsLog(r)}'
           'model=${r.model}');
       // v0.2.30+229: любая записанная модель — на отправку (см. onTripsSplit).
       split.add(t.id);
     }
     if (noData > 0) _noteNoData(noData);
     if (split.isNotEmpty) onTripsSplit?.call(split);
+  }
+
+  /// v0.2.34+233: подробности событийной v2 для строки EnergySplit —
+  /// маркер для проверки по экспорту (покрытие, разрывы, отрицательные
+  /// интервалы, рекуперация инвертор/вал, минуты бортовой сети, число
+  /// событий по сигналам и причина отказа, если проверка не прошла).
+  static String _eventsLog(EnergySplitResult r) {
+    final e = r.events;
+    if (e == null) return '';
+    final ratio = e.regenRatio;
+    final counts = [
+      for (var i = 0; i < EventEnergySums.signals.length; i++)
+        '${EventEnergySums.signals[i]}:${e.counts[i]}'
+    ].join(',');
+    return 'events cov=${e.coveredSeconds.toStringAsFixed(0)}s '
+        'gaps=${e.gaps} neg=${e.negativeIntervals} '
+        'shaft=${e.shaftTractionKwh.toStringAsFixed(3)}/'
+        '${e.shaftRegenKwh.toStringAsFixed(3)} '
+        'regen_ratio=${ratio == null ? '-' : ratio.toStringAsFixed(3)} '
+        'minutes=${e.minutes} low=${e.minutesLow} below_neg=${e.minutesNegative} '
+        'min_kw=${e.minuteMinKw == null ? '-' : e.minuteMinKw!.toStringAsFixed(2)} '
+        'n=$counts '
+        '${r.rejected == null ? '' : 'rejected=${r.rejected} '}';
   }
 
   /// v0.2.31+230 — ОДНА СТРОКА НА ПРОХОД. Восстановление из облака вносит

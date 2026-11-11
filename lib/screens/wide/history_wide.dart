@@ -973,7 +973,8 @@ String _fmtDuration(Duration d) {
 
 /// v0.1.29+113: Tesla-style trip power profile. Replaces the HV-bus voltage
 /// chart (no HAL equivalent, low value). Loads the raw motor_power series
-/// (signed kW: + traction, − regen) from hal_samples and bins it into narrow
+/// (signed kW: + traction, − regen; v0.2.34+233: battery power despite the
+/// name, whole kW) from hal_samples and bins it into narrow
 /// bars over the trip's time span — each bar is the MEAN power in its bin
 /// (bin width = span / barCount). Raw data is never smoothed; only the
 /// display is binned, matching the "as in a Tesla" ask. Traction bars point
