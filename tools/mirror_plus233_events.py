@@ -25,6 +25,8 @@ regen * 1.05 + 0.05 kWh; minutes below 0.2 kW <= 10 % and none below -0.3 kW. A 
 check leaves the parts empty, the pack total stays. Sums with coverage below 0.8 of the
 trip are not used: the sample-based estimate (v2s) is taken instead.
 
+Battery regen (+234): integral of V*I_bat where it is negative, same intervals.
+
 Reference (recon corpus 09.11 18:10-19:00, tools/data/recon_corpus_20261109_energy6.csv.gz):
 pack 3.60, inverter net 2.72, inverter regen 1.75, shaft 3.96 / 1.93, coverage 2966 of
 3000 s, 0 negative intervals, 0 gaps; split 2.72 / 0.87.
@@ -51,6 +53,7 @@ class Acc:
         self.last = {}
         self.t_prev = None
         self.pack = self.trac = self.regen = self.sh_trac = self.sh_regen = 0.0
+        self.regen_bat = 0.0  # +234: battery-side regen, V*I_bat < 0
         self.cov_ms = 0
         self.neg = self.gaps = 0
         self.counts = [0] * len(SIGNALS)
@@ -100,6 +103,8 @@ class Acc:
             pb = v * ib / 1000.0
             pi = v * ii / 1000.0
             self.pack += pb * h
+            if pb < 0:
+                self.regen_bat += -pb * h
             if pi > 0:
                 self.trac += pi * h
             else:
@@ -131,7 +136,7 @@ class Acc:
                 neg += kw < NEG_KW
                 mn = kw if mn is None else min(mn, kw)
         return dict(pack=self.pack, trac=self.trac, regen=self.regen, sh_trac=self.sh_trac,
-                    sh_regen=self.sh_regen, cov_s=self.cov_ms / 1000.0, neg=self.neg,
+                    sh_regen=self.sh_regen, regen_bat=self.regen_bat, cov_s=self.cov_ms / 1000.0, neg=self.neg,
                     gaps=self.gaps, counts=list(self.counts), minutes=minutes, m_low=low,
                     m_neg=neg, m_min=mn)
 
@@ -279,6 +284,11 @@ def _selftest():
     ok('corpus split 2.72 / 0.87, checks pass',
        r['rejected'] is None and abs(r['motion'] - 2.72) < 0.01 and abs(r['climate'] - 0.87) < 0.01)
     ok('corpus parts sum to pack', abs(r['motion'] + r['climate'] - r['pack']) < 1e-9)
+    # +234: battery-side regen. Below inverter regen by the on-board load in
+    # those seconds (Friend 3); recon 09.11 counter 0x2D0 +1.6 vs 1.57.
+    print(f"  corpus +234: regen_bat={s['regen_bat']:.3f}")
+    ok('corpus battery regen below inverter regen, near counter 1.6',
+       0 < s['regen_bat'] < s['regen'] and abs(s['regen_bat'] - 1.57) < 0.06)
     print(f"mirror +233: {'PASS' if not fails else 'FAIL'} ({len(fails)} failed)")
     return fails
 

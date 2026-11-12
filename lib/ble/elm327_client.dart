@@ -88,6 +88,12 @@ class Elm327Client {
     if (v != null) cb(v);
   }
 
+  /// v0.2.35+234: одна команда ATRV адаптеру, без UDS — для режима
+  /// «только ATRV» (ConnectionService.runAtrvOnly): запросы UDS будят
+  /// шлюз, шину и DC-DC, и точку «машина спит» с ними не снять.
+  Future<double?> readAdapterVoltage() async =>
+      parseAtrv(await transport.sendRaw('ATRV'));
+
   // ---------------- Initialization ----------------
   Future<AdapterInfo> initialize({String forceProtocol = '6'}) async {
     info.version = await transport.sendRaw('ATZ', timeout: const Duration(seconds: 5));

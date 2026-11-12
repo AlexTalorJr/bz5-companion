@@ -401,6 +401,9 @@ class BridgeDiagService extends ChangeNotifier {
         case 'bleStartCanMonitor':
           body = _handleBleStartCanMonitor(args);
           break;
+        case 'bleStartAtrvOnly':
+          body = _handleBleStartAtrvOnly(args);
+          break;
         case 'bleStopActiveOperation':
           body = _handleBleStopActiveOperation(args);
           break;
@@ -409,7 +412,8 @@ class BridgeDiagService extends ChangeNotifier {
               'Command kind "$kind" not implemented in this client yet. '
               'BridgeDiagService Turn B supports BLE only '
               '(bleStartSweep / bleStartSweepQueue / bleStartLiveLog / '
-              'bleStartCanMonitor / bleStopActiveOperation). '
+              'bleStartCanMonitor / bleStartAtrvOnly / '
+              'bleStopActiveOperation). '
               'Native handlers come in Turn C.');
       }
     } catch (e, st) {
@@ -447,7 +451,8 @@ class BridgeDiagService extends ChangeNotifier {
       _svc.sweepRunning ||
       _svc.liveLogRunning ||
       _svc.dtcScanRunning ||
-      _svc.canMonitorRunning;
+      _svc.canMonitorRunning ||
+      _svc.atrvOnlyRunning;
 
   /// bleStartSweep: fire-and-forget. Validates args, checks state,
   /// then kicks off ConnectionService.runSweep() WITHOUT awaiting —
@@ -754,6 +759,44 @@ class BridgeDiagService extends ChangeNotifier {
     return {'ok': true, 'result': result};
   }
 
+  /// v0.2.35+234 — bleStartAtrvOnly: напряжение адаптера раз в 5 с без
+  /// единого UDS-запроса, на [duration_sec] (1..3600) секунд или до
+  /// bleStopActiveOperation. Огонь-и-забыл, как Live Log.
+  Map<String, dynamic> _handleBleStartAtrvOnly(Map<String, dynamic> args) {
+    final durationRaw = args['duration_sec'];
+    if (durationRaw is! num) {
+      return _err('parse', 'duration_sec missing or not numeric');
+    }
+    final durationSec = durationRaw.toInt();
+    if (durationSec <= 0 || durationSec > 3600) {
+      return _err('validation',
+          'duration_sec must be in (0..3600], got $durationSec');
+    }
+    if (!_svc.isBleConnected) {
+      return _err('not_connected',
+          'No live BLE link to ELM327; pair the adapter first');
+    }
+    if (_bleBusy) {
+      return _err('busy',
+          'Another BLE operation in progress '
+          '(sweep=${_svc.sweepRunning} '
+          'livelog=${_svc.liveLogRunning} '
+          'dtc=${_svc.dtcScanRunning} '
+          'atrvonly=${_svc.atrvOnlyRunning})');
+    }
+    unawaited(_svc
+        .runAtrvOnly(maxDuration: Duration(seconds: durationSec))
+        .then((n) {
+      debugPrint('BridgeDiag: bleStartAtrvOnly finished, readings=$n');
+    }).catchError((Object e, StackTrace st) {
+      debugPrint('BridgeDiag: bleStartAtrvOnly threw: $e\n$st');
+    }));
+    return {
+      'ok': true,
+      'result': {'started': true, 'kind': 'atrvonly'},
+    };
+  }
+
   /// bleStartCanMonitor: fire-and-forget. Validates args, checks state,
   /// then kicks off ConnectionService.runCanMonitor() WITHOUT awaiting —
   /// the session runs for [duration_sec] seconds (or until stopped via
@@ -878,6 +921,11 @@ class BridgeDiagService extends ChangeNotifier {
     if (_svc.canMonitorRunning) {
       _svc.cancelCanMonitor();
       stopped.add('canmonitor');
+    }
+    // v0.2.35+234: и режим «только ATRV».
+    if (_svc.atrvOnlyRunning) {
+      _svc.cancelAtrvOnly();
+      stopped.add('atrvonly');
     }
     debugPrint('BridgeDiag: bleStopActiveOperation cancelled: $stopped');
     return {

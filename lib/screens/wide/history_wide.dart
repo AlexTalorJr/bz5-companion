@@ -973,8 +973,8 @@ String _fmtDuration(Duration d) {
 
 /// v0.1.29+113: Tesla-style trip power profile. Replaces the HV-bus voltage
 /// chart (no HAL equivalent, low value). Loads the raw motor_power series
-/// (signed kW: + traction, − regen; v0.2.34+233: battery power despite the
-/// name, whole kW) from hal_samples and bins it into narrow
+/// (signed kW: + traction, − regen; battery power, whole kW; named
+/// battery_power_kw since +234, motor_power before) from hal_samples and bins it into narrow
 /// bars over the trip's time span — each bar is the MEAN power in its bin
 /// (bin width = span / barCount). Raw data is never smoothed; only the
 /// display is binned, matching the "as in a Tesla" ask. Traction bars point
@@ -1024,8 +1024,13 @@ class _PowerBarCard extends StatelessWidget {
   /// branch and drives the honesty caption (LTTB-240 coarsens a long
   /// trip's shape; the bins over ≤240 points are still correct means).
   Future<(List<double>, bool)> _bins() async {
-    final rows =
-        await svc.db.getHalSamplesForTripByName(trip.id, 'motor_power');
+    // v0.2.35+234: battery_power_kw (recon p158); поездки до +234 хранят
+    // тот же ряд под старым именем motor_power.
+    var rows =
+        await svc.db.getHalSamplesForTripByName(trip.id, 'battery_power_kw');
+    if (rows.length < 2) {
+      rows = await svc.db.getHalSamplesForTripByName(trip.id, 'motor_power');
+    }
     if (rows.length >= 2) {
       return (
         _binPoints([for (final r in rows) (r.timestamp, r.numericValue)]),

@@ -99,15 +99,10 @@ object CompanionDecoderOverrides {
         // 0x47800020 cell_temp_lowest p155 поместил в карантин (оба поля —
         // мусор ~1e9), и его не возвращаем: решение владельца 05.11.
 
-        // v0.2.31+230 — ТОК ИНВЕРТОРА. ENGINE_MOTOR_CONTROL_ELEC 0x40800008,
-        // А, поле double, плюс = разряд, около 0.75 Гц, на P ровно 0
-        // (Друг 3, письмо 09.11). В таблице recon он всё ещё
-        // `motor_current_candidate`; Друг 3 переведёт его в активные под
-        // этим именем, тогда перекрытие снимается. На нём стоит модель
-        // разделения энергии v2: «движение» = ∫V·I_инв.
-        "BYDAutoEngineDevice|0x40800008" to Decoder(
-            "inverter_current", "A", ValueSource.DOUBLE,
-            notes = "ENGINE_MOTOR_CONTROL_ELEC; inverter DC input current, discharge-positive; 0 in P (Friend 3, 09.11)"),
+        // v0.2.35+234: перекрытие 0x40800008 inverter_current снято —
+        // recon p158 перевёл его в активные под тем же именем, единицей и
+        // полем (A, DOUBLE, плюс = разряд). История hal_samples и модель
+        // разделения продолжаются без разрыва.
 
         // v0.2.23+222: the seven AC candidates added here in +219
         // (0x2FC00009/0A/0B/0C/16, 0x2FA0000C/26) moved into the vendored

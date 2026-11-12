@@ -904,8 +904,8 @@ class HalExtrasPanel extends StatelessWidget {
         v('motor_torque', hal.halMotorTorqueNm, (x) => x.toStringAsFixed(0)),
         'Nm');
     final mPower = cell(
-        'drv.cell.motor_power',
-        v('motor_power', hal.halMotorPowerKw, (x) => x.toStringAsFixed(0)),
+        'drv.cell.battery_power',
+        v('battery_power_kw', hal.halBatteryPowerKw, (x) => x.toStringAsFixed(0)),
         'kW');
     final motorTemp = cell('drv.cell.motor_temp',
         v('motor_temp', hal.halMotorTempC, (x) => x.toStringAsFixed(0)), '°C');

@@ -12,6 +12,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:bz5_companion/services/energy_split_service.dart';
+import 'package:bz5_companion/services/firehose_check.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 const int _refStartMs = 1794237000000; // 09.11.2026 18:10 +03:00
@@ -66,6 +67,9 @@ void main() {
     expect(s.minutesLow, 1);
     expect(s.minutesNegative, 0);
     expect(s.minuteMinKw, closeTo(0.15, 0.005));
+    // v0.2.35+234: рекуперация в батарею — меньше инверторной, у счётчика
+    // 0x2D0 за ту поездку +1.6 (Друг 3: ∫V·I(−) 1.57).
+    expect(s.batteryRegenKwh, closeTo(1.583, 0.005));
   });
 
   test('corpus 09.11: split 2.72 / 0.87, checks pass, parts sum to pack', () {
@@ -98,6 +102,7 @@ void main() {
     expect(back.regenKwh, closeTo(s.regenKwh, 1e-4));
     expect(back.counts, s.counts);
     expect(back.minutes, s.minutes);
+    expect(back.batteryRegenKwh, closeTo(s.batteryRegenKwh!, 1e-4));
     expect(EventEnergySums.fromExtra('{"v":1,"speedHist":[1]}'), isNull);
     expect(EventEnergySums.fromExtra('not json'), isNull);
   });
@@ -155,5 +160,68 @@ void main() {
         isNull);
     expect(EnergySplitModel.twoParts(EnergySplitModel.versionV2s), isTrue);
     expect(EnergySplitModel.twoParts(EnergySplitModel.version), isFalse);
+  });
+
+  test('firehose counters: first and last per trip, status kept', () {
+    final acc = EventEnergyAccumulator(0);
+    acc.firehoseStatus = FirehoseCheck.ok;
+    acc.addFirehose('gb_cycle_discharge_kwh', 0.0);
+    acc.addFirehose('gb_cycle_discharge_kwh', 1.7);
+    acc.addFirehose('gb_cycle_regen_kwh', 0.4);
+    acc.addFirehose('fh_energy_state', 2); // контрольное поле не копится
+    final s = acc.snapshot();
+    expect(s.firehose['gb_cycle_discharge_kwh'], (0.0, 1.7));
+    expect(s.firehose.containsKey('fh_energy_state'), isFalse);
+    final back = EventEnergySums.fromExtra(s.toExtraPatch())!;
+    expect(back.firehoseStatus, FirehoseCheck.ok);
+    expect(back.firehose['gb_cycle_regen_kwh'], (0.4, 0.4));
+  });
+
+  test('firehose check: match -> ok, divergence held 10 s -> mismatch until the next trip', () {
+    final c = FirehoseCheck();
+    expect(c.feed('ac_temp_main', 22.5, 0), isFalse);
+    expect(c.feed('fh_ac_temp_main_c', 22.5, 500), isTrue);
+    expect(c.state, FirehoseCheck.ok);
+    // Короткое расхождение на смене уставки — норма.
+    c.feed('ac_temp_main', 23.0, 1000);
+    expect(c.state, FirehoseCheck.ok);
+    c.feed('fh_ac_temp_main_c', 23.0, 1800);
+    expect(c.state, FirehoseCheck.ok);
+    // Расхождение дольше 10 с — mismatch, и обратно не возвращается.
+    c.feed('fh_energy_state', 2, 2000);
+    c.feed('energy_state', 5, 2100);
+    expect(c.feed('fh_energy_state', 2, 13000), isTrue);
+    expect(c.state, FirehoseCheck.mismatch);
+    c.feed('fh_energy_state', 5, 14000);
+    expect(c.state, FirehoseCheck.mismatch);
+    // Новая поездка — проверка заново, совпадение снова даёт ok.
+    c.resetForTrip();
+    expect(c.state, FirehoseCheck.unchecked);
+    expect(c.feed('energy_state', 5, 20000), isTrue);
+    expect(c.state, FirehoseCheck.ok);
+  });
+
+  test('v2s estimate goes through the same checks: regen above shaft -> no parts', () {
+    // 10 минут по 3 с: пак 10 кВт, инвертор то тяга, то рекуперация 40 кВт,
+    // вал рекуперации нет (момент всегда > 0) — рекуперация инвертора
+    // больше вала, как у поездки 1223 (12.11).
+    final start = DateTime.fromMillisecondsSinceEpoch(0);
+    final pts = <({DateTime ts, String name, double v})>[];
+    for (var t = 0; t <= 600; t += 3) {
+      final ts = DateTime.fromMillisecondsSinceEpoch(t * 1000);
+      pts.add((ts: ts, name: 'pack_voltage', v: 400));
+      pts.add((ts: ts, name: 'pack_current', v: 25));
+      pts.add((ts: ts, name: 'inverter_current', v: (t ~/ 3).isEven ? 60 : -100));
+      pts.add((ts: ts, name: 'motor_torque', v: 50));
+      pts.add((ts: ts, name: 'motor_rpm', v: 3000));
+    }
+    final end = DateTime.fromMillisecondsSinceEpoch(600 * 1000);
+    final raw = computeEnergySplitV2(pts, start, end);
+    expect(raw.hasSplit, isTrue);
+    final r = computeEnergySplitAuto(pts, start, end);
+    expect(r.model, EnergySplitModel.versionV2s);
+    expect(r.rejected, 'regen_above_shaft');
+    expect(r.hasSplit, isFalse);
+    expect(r.packKwh, raw.packKwh);
   });
 }

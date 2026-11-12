@@ -4384,7 +4384,8 @@ class ConnectionService extends ChangeNotifier {
   }
 
   void _applyKeepAwake() {
-    final want = _screenAwake || sweepRunning || _liveLogRunning;
+    final want =
+        _screenAwake || sweepRunning || _liveLogRunning || _atrvOnlyRunning;
     if (want == _keepAwakeOn) return;
     _keepAwakeOn = want;
     debugPrint('KeepAwake: ${want ? 'on' : 'off'} (screen=$_screenAwake '
@@ -4395,6 +4396,113 @@ class ConnectionService extends ChangeNotifier {
         .catchError((Object e) {
       debugPrint('KeepAwake: plugin failed: $e');
     }));
+  }
+
+  // ────── v0.2.35+234: режим «только ATRV» ──────
+  //
+  // Сессия с донглом (Друг 3, 12.11): точка «без DC-DC» снимается на
+  // запертой машине, а любой UDS-запрос через OBD будит шлюз, шину и с ними
+  // DC-DC. Здесь — только команда ATRV адаптеру раз в [atrvOnlyEvery], без
+  // единого UDS-запроса; обычный опрос на это время остановлен (он тоже
+  // шлёт UDS). Не идёт вместе с Live Log, свипом, очередью, DTC и CAN-
+  // монитором. Отсчёты пишутся тем же путём, что ATRV в запросах
+  // (`adapter_atrv` в hal_samples). Если машина не уснула, напряжение не
+  // опустится ниже ~13.5 В — это видно в экспорте.
+  static const Duration atrvOnlyEvery = Duration(seconds: 5);
+  static const Duration atrvOnlyMax = Duration(hours: 1);
+  bool _atrvOnlyRunning = false;
+  bool _atrvOnlyCancelled = false;
+  int _atrvOnlyCount = 0;
+  bool get atrvOnlyRunning => _atrvOnlyRunning;
+  int get atrvOnlyCount => _atrvOnlyCount;
+
+  void cancelAtrvOnly() {
+    if (_atrvOnlyRunning) _atrvOnlyCancelled = true;
+  }
+
+  /// Число отсчётов или null, если режим не стартовал (нет адаптера или
+  /// канал занят).
+  Future<int?> runAtrvOnly({Duration? maxDuration}) async {
+    if (_client == null) return null;
+    if (_atrvOnlyRunning ||
+        sweepRunning ||
+        _liveLogRunning ||
+        _dtcScanRunning ||
+        _canMonitorRunning) {
+      return null;
+    }
+    _atrvOnlyRunning = true;
+    _applyKeepAwake();
+    _atrvOnlyCancelled = false;
+    _atrvOnlyCount = 0;
+    final wasPolling = _polling;
+    if (wasPolling) {
+      _polling = false;
+      await _waitForPollIdle();
+    }
+    final limit = maxDuration ?? atrvOnlyMax;
+    debugPrint('AtrvOnly: start — polling paused, no UDS, '
+        'every ${atrvOnlyEvery.inSeconds} s, up to ${limit.inMinutes} min');
+    notifyListeners();
+    final clock = Stopwatch()..start();
+    var exit = 'completed';
+    double? vMin;
+    double? vMax;
+    try {
+      while (true) {
+        if (_atrvOnlyCancelled) {
+          exit = 'cancelled';
+          break;
+        }
+        if (_ble != null && !_ble!.isConnected) {
+          exit = 'ble_dropped';
+          break;
+        }
+        if (_ble?.isWedged == true) {
+          exit = 'ble_wedged';
+          break;
+        }
+        if (clock.elapsed >= limit) {
+          exit = 'max_duration';
+          break;
+        }
+        final client = _client;
+        if (client == null) {
+          exit = 'client_gone';
+          break;
+        }
+        final v = await client
+            .readAdapterVoltage()
+            .timeout(const Duration(seconds: 3), onTimeout: () => null);
+        if (v != null) {
+          _atrvOnlyCount++;
+          vMin = vMin == null ? v : (v < vMin ? v : vMin);
+          vMax = vMax == null ? v : (v > vMax ? v : vMax);
+          _onAdapterVoltage(v);
+        }
+        // Пауза кусками: отмена срабатывает за четверть секунды.
+        final next = clock.elapsed + atrvOnlyEvery;
+        while (!_atrvOnlyCancelled && clock.elapsed < next) {
+          await Future<void>.delayed(const Duration(milliseconds: 250));
+        }
+      }
+    } catch (e) {
+      exit = 'error: $e';
+    } finally {
+      _atrvOnlyRunning = false;
+      _applyKeepAwake();
+      _atrvOnlyCancelled = false;
+      if (wasPolling) {
+        _polling = true;
+        _pollLoop();
+      }
+      debugPrint('AtrvOnly: stop exit=$exit readings=$_atrvOnlyCount '
+          'min=${vMin?.toStringAsFixed(2) ?? '-'} '
+          'max=${vMax?.toStringAsFixed(2) ?? '-'} '
+          'after ${clock.elapsed.inSeconds} s');
+      notifyListeners();
+    }
+    return _atrvOnlyCount;
   }
 
   // ────── v0.2.20+219: multi-ECU sweep queue ──────
@@ -4594,7 +4702,7 @@ class ConnectionService extends ChangeNotifier {
     if (txList.isEmpty) return null;
     if (_client == null) return null;
     if (sweepRunning || _liveLogRunning || _dtcScanRunning ||
-        _canMonitorRunning) {
+        _canMonitorRunning || _atrvOnlyRunning) {
       return null;
     }
     final blocks = sweepBlocks(startDidHex, endDidHex, blockSize);
@@ -4705,6 +4813,8 @@ class ConnectionService extends ChangeNotifier {
   }) async {
     if (_client == null) return null;
     if (_sweepRunning) return null;
+    // v0.2.35+234: и с режимом «только ATRV».
+    if (_atrvOnlyRunning) return null;
     // v0.1.15: mutual exclusion with Live Log — both use the single BLE
     // channel via _client.readDid, concurrent invocations would interleave
     // requests/responses and corrupt both data streams.
@@ -5086,6 +5196,8 @@ class ConnectionService extends ChangeNotifier {
     if (sweepRunning) return null;
     if (_liveLogRunning) return null;
     if (_dtcScanRunning) return null;
+    // v0.2.35+234: и режим «только ATRV».
+    if (_atrvOnlyRunning) return null;
     if (durationSec < 1 || durationSec > 600) return null;
     if (!_ble!.isConnected) return null;
 
@@ -5671,6 +5783,8 @@ class ConnectionService extends ChangeNotifier {
   }) async {
     if (_client == null) return null;
     if (_liveLogRunning) return null;
+    // v0.2.35+234: и с режимом «только ATRV».
+    if (_atrvOnlyRunning) return null;
     // v0.1.15: mutual exclusion with sweep — see runSweep for rationale.
     if (sweepRunning) return null;
     if (_dtcScanRunning) return null;
@@ -6185,6 +6299,10 @@ class ConnectionService extends ChangeNotifier {
     }
     // v0.1.29+28: also exclude CAN passive monitor.
     if (_canMonitorRunning) {
+      return [];
+    }
+    // v0.2.35+234: и режим «только ATRV».
+    if (_atrvOnlyRunning) {
       return [];
     }
     _dtcScanRunning = true;

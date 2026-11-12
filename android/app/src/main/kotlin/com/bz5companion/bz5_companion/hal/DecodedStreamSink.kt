@@ -33,6 +33,7 @@ package com.bz5companion.bz5_companion.hal
 
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicBoolean
@@ -292,9 +293,51 @@ class DecodedStreamSink(
             }
         }
 
+        if (emitFirehoseFields(bufData, subtype, timestampMs)) queued = true
+
         if (queued && drainScheduled.compareAndSet(false, true)) {
             mainHandler.post { drain() }
         }
+    }
+
+    // ─── v0.2.35+234: поля firehose по таблице recon (FirehoseFieldTable) ───
+    //
+    // Таблица вендорная (recon p158), её не правим: кадр → поля → сырое →
+    // физика. Подтверждённые поля (`confirmed`) уходят физикой с каждым
+    // кадром (около 1 Гц, остаток 0x2EE — раз в 30 с); в hal_samples их
+    // прореживает обычный порог записи. Кандидаты — сырыми, под именем
+    // поля, не чаще раза в [FIREHOSE_CANDIDATE_MIN_MS] на имя: dcdc_byte6_raw
+    // меняется почти каждый кадр (Друг 3, 12.11). Часы — монотонные.
+    // Сверку контрольных полей с HAL делает Dart (HalTelemetryService).
+    // События HAL приходят с потоков биндера — карта общая для них.
+    private val firehoseCandidateLast = ConcurrentHashMap<String, Long>()
+    private val FIREHOSE_CANDIDATE_MIN_MS = 5_000L
+
+    private fun emitFirehoseFields(
+        bufData: ByteArray,
+        subtype: Long,
+        timestampMs: Long,
+    ): Boolean {
+        val frame = FirehoseFieldTable.parse(bufData) ?: return false
+        val fields = FirehoseFieldTable.fieldsFor(frame.first, frame.second)
+        if (fields.isEmpty()) return false
+        var queued = false
+        val now = SystemClock.elapsedRealtime()
+        for (f in fields) {
+            val raw = FirehoseFieldTable.extractRaw(f, bufData) ?: continue
+            if (f.confirmed) {
+                queue.add(bigDataSignalMap(
+                    f.name, f.unit, FirehoseFieldTable.physical(f, raw), subtype, timestampMs))
+                queued = true
+            } else {
+                val last = firehoseCandidateLast[f.name]
+                if (last != null && now - last < FIREHOSE_CANDIDATE_MIN_MS) continue
+                firehoseCandidateLast[f.name] = now
+                queue.add(bigDataSignalMap(f.name, "raw", raw.toDouble(), subtype, timestampMs))
+                queued = true
+            }
+        }
+        return queued
     }
 
     /**

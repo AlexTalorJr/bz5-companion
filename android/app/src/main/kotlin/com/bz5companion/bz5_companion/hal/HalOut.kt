@@ -143,7 +143,8 @@ class JournalHalOut(private val ctx: Context) : HalOut {
             "pack_current" to 1_000L,
             "speed" to 1_000L,
             "soc_precise" to 1_000L,
-            "motor_power" to 1_000L,
+            // v0.2.35+234: recon p158 — motor_power стал battery_power_kw.
+            "battery_power_kw" to 1_000L,
             // v0.2.31+230: ток инвертора — второй ток модели разделения v2;
             // та же плотность, что у тока батареи, иначе разность токов
             // считалась бы по рядам разной частоты.
@@ -171,12 +172,31 @@ class JournalHalOut(private val ctx: Context) : HalOut {
         )
 
         /**
+         * v0.2.35+234 — FIREHOSE В ЖУРНАЛЕ. Поля firehose (recon p158)
+         * приходят с каждым кадром, около 1 Гц на кадр, и без своего порога
+         * получили бы общие 3 с — полтора десятка новых имён, тот же провал
+         * бюджета, что у `soh` в +185. Для фоновой поездки нужны только
+         * подтверждённые поля, и то по концу: им минута. Кандидаты в
+         * журнал не идут вовсе — они для сверки в живом потоке. Списки
+         * берутся из вендорной таблицы, а не повторяются здесь. Объявлены
+         * ДО [THROTTLE_BY_NAME]: свойства объекта инициализируются по порядку
+         * текста, иначе склейка получила бы null.
+         */
+        val FIREHOSE_CONFIRMED_MS: Map<String, Long> =
+            FirehoseFieldTable.fields.filter { it.confirmed }
+                .associate { it.name to 60_000L }
+        val FIREHOSE_JOURNAL_SKIP: Set<String> =
+            FirehoseFieldTable.fields.filter { !it.confirmed }
+                .map { it.name }.toSet()
+
+        /**
          * Порог для имени. Три карты, а не одна, только ради читаемости
          * намерения — склеены они здесь, и склеены ОДИН РАЗ на класс, а
          * не на кадр: `emit` зовётся десятки раз в секунду.
          */
         val THROTTLE_BY_NAME: Map<String, Long> =
-            THROTTLE_FAST_MS + THROTTLE_MEDIUM_MS + THROTTLE_SLOW_MS
+            THROTTLE_FAST_MS + THROTTLE_MEDIUM_MS + THROTTLE_SLOW_MS +
+                FIREHOSE_CONFIRMED_MS
 
         fun throttleFor(name: String): Long =
             THROTTLE_BY_NAME[name] ?: THROTTLE_MS
@@ -341,6 +361,11 @@ class JournalHalOut(private val ctx: Context) : HalOut {
             // нужны для построчного сравнения с recon, и на этот вопрос
             // фоновый сбор не отвечает. В счётчиках они уже учтены.
             if (name == RAW_NAME) {
+                dropped.incrementAndGet()
+                continue
+            }
+            // v0.2.35+234: кандидаты firehose в журнал не пишутся.
+            if (name in FIREHOSE_JOURNAL_SKIP) {
                 dropped.incrementAndGet()
                 continue
             }

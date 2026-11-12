@@ -1,7 +1,7 @@
 // === SHARED FROM bz5_recon — DO NOT EDIT (re-sync from recon) ===
 // Source: bz5-recon/android/app/src/main/kotlin/com/bz5/recon/live/TelemetryDecoderTable.kt
-// Synced: 2026-11-09 (recon v0.10.157.1, commit p157, b1b95ca)
-// SHA256: 1538e1e58c43a048f25526d292f6cbbe8a51edfb79dd1dd46114009ebf7a6adc
+// Synced: 2026-11-12 (recon v0.10.158, commit p158, 2b280a2)
+// SHA256: f1266c282092474e31e6ccbf09f8e65945bacccfbbe262fad680742918ee32b2
 package com.bz5companion.bz5_companion.hal
 
 // === SHARED CANDIDATE (bz5_recon ↔ bz5_companion) ===
@@ -232,9 +232,15 @@ object TelemetryDecoderTable {
         put("BYDAutoEngineDevice|0x28A00018",
             Decoder("motor_torque", "Nm", ValueSource.DOUBLE,
                 notes = "ENGINE_DRIVER_MOTOR_TORQUE; signed, peak 330 Nm = nameplate; T×ω matches ENGINE_POWER & 200kW"))
+        // p158: renamed motor_power → battery_power_kw. Despite the catalog
+        // name ENGINE_POWER this is battery-side power in whole kW: over recon
+        // 09.11 18:10–19:00 its integral is 3.37 kWh against ∫V·I_bat 3.60 and
+        // shaft ∫T·ω 2.03 (Companion +233 check). It tracks V×I_bat, rounded
+        // toward zero, so it reads ~0.3 kW low on average. Fine as a display
+        // value, never integrate it for energy; use V×I instead.
         put("BYDAutoEngineDevice|0x15100020",
-            Decoder("motor_power", "kW", ValueSource.INT,
-                notes = "ENGINE_POWER; signed; peak 208≈200kW nameplate; = torque×ω ratio 0.99-1.03 (trip-3)"))
+            Decoder("battery_power_kw", "kW", ValueSource.INT,
+                notes = "ENGINE_POWER; battery-side power, whole kW, signed; = V×I_bat rounded toward zero; 09.11 ∫ 3.37 vs ∫V·I 3.60; display only, do not integrate"))
         put("BYDAutoEngineDevice|0x3DB00010",
             Decoder("motor_temp", "°C", ValueSource.INT,
                 notes = "ENGINE_DRIVER_MOTOR_TEMP; 30–44 °C observed"))
@@ -244,14 +250,16 @@ object TelemetryDecoderTable {
         put("BYDAutoEngineDevice|0x40F00008",
             Decoder("motor_control_voltage", "V", ValueSource.INT,
                 notes = "ENGINE_DRIVER_MOTOR_CONTROL_VOLTAGE; inverter DC bus, tracks pack V (r=0.889) but distinct"))
-        // p083: motor-side current candidate. On 18:29 launch run ranged
-        // -156..+513 A (mDoubleValue), sign tracking traction/regen, amplitude
-        // slightly wider than pack_current (513 vs 494). Hypothesis: motor/phase
-        // current, independent of pack_current. Added to raw_trace this patch to
-        // regress pointwise vs pack_current (0x2D300018). Name provisional.
+        // p158: PROMOTED. ENGINE_MOTOR_CONTROL_ELEC is the inverter DC-link
+        // current, discharge-positive like pack_current. Exactly 0 in P (recon
+        // 09.11). ~0.75 Hz event stream. Recon 09.11 18:10–19:00: ∫V·I_inv
+        // 2.73 kWh vs ∫T·ω 2.02 (drivetrain losses ~1 kW while moving),
+        // ∫V·(I_bat − I_inv) 0.91 kWh (climate + 12 V side). Inverter regen
+        // 1.74 vs shaft regen 1.93 (efficiency 0.90). Companion +233
+        // event-integral reproduces these within 0.03 kWh.
         put("BYDAutoEngineDevice|0x40800008",
-            Decoder("motor_current_candidate", "A", ValueSource.DOUBLE,
-                notes = "p083 CANDIDATE; -156..+513 A; sign=traction/regen; wider than pack_current; verify independence via raw_trace regression"))
+            Decoder("inverter_current", "A", ValueSource.DOUBLE,
+                notes = "ENGINE_MOTOR_CONTROL_ELEC; inverter DC current, + = discharge; 0 in P; ~0.75 Hz; I_bat − I_inv = climate + 12 V load; verified recon 09.11 + Companion +233"))
 
         // ─── Gearbox (patch 067 trip-1 partial decode) ───────────────────
         put("BYDAutoGearboxDevice|0x0FB00020",
@@ -292,17 +300,17 @@ object TelemetryDecoderTable {
             Decoder("ac_temp_deputy", "°C", ValueSource.DOUBLE,
                 notes = "AC_TEMP_DEPUTY (passenger setpoint); ac_raw 23.10 dbl, carrier DOUBLE confirmed"))
         put("BYDAutoAcDevice|0x2FC0001C",
-            Decoder("ac_wind_level", "", ValueSource.INT, notes = "AC_WIND_LEVEL (fan speed)"))
+            Decoder("ac_wind_level", "", ValueSource.INT, notes = "AC_WIND_LEVEL (fan speed); 0 when off, 1–7, 7 = max (field 07.11/09.11)"))
         put("BYDAutoAcDevice|0x2FC00018",
-            Decoder("ac_wind_mode", "", ValueSource.INT, notes = "AC_WIND_MODE (airflow direction)"))
+            Decoder("ac_wind_mode", "", ValueSource.INT, notes = "AC_WIND_MODE (airflow direction); 5 = windscreen with defrost front (09.11); seen 1,2,4,6,7, others TBD"))
         put("BYDAutoAcDevice|0x2FC00014",
             Decoder("ac_cycle_mode", "", ValueSource.INT, notes = "AC_CYCLE_MODE (recirc/fresh)"))
         put("BYDAutoAcDevice|0x2FC00010",
-            Decoder("ac_power_state", "", ValueSource.INT, notes = "AC_POWER_STATE (on/off)"))
+            Decoder("ac_power_state", "", ValueSource.INT, notes = "AC_POWER_STATE; 0 = off, 1 = on (owner-confirmed 07.11)"))
         put("BYDAutoAcDevice|0x2FC00012",
-            Decoder("ac_ctrl_mode", "", ValueSource.INT, notes = "AC_CTRL_MODE (auto/manual)"))
+            Decoder("ac_ctrl_mode", "", ValueSource.INT, notes = "AC_CTRL_MODE; 0 = AUTO, 1 = manual (07.11)"))
         put("BYDAutoAcDevice|0x2FC00038",
-            Decoder("ac_temp_out", "°C", ValueSource.INT, notes = "AC_TEMP_OUT (outside temp); INT carries 27–30°C, DOUBLE was 0"))
+            Decoder("ac_temp_out", "°C", ValueSource.INT, notes = "AC_TEMP_OUT (outside temp); INT °C; 5→4 on 09.11 evening matched street and Companion; push on change only, may be silent in short sessions"))
 
         // ─── AC — remaining catalog-named fids (patch 155) ────────────────
         // Names are exact from the firmware BYDAutoFeatureIds catalog (recon
@@ -316,7 +324,7 @@ object TelemetryDecoderTable {
         // p156: ac_raw 23.10 showed every AC enum rides in mIntValue — pinned INT.
         // Fids not yet seen live (0x2FA* PTC/warm) stay ANY until first event.
         put("BYDAutoAcDevice|0x2FC00009",
-            Decoder("ac_compressor_mode", "", ValueSource.INT, notes = "AC_COMPRESSOR_MODE (A/C button); ac_raw int 0/1; A/C off marker; enum semantics TBD"))
+            Decoder("ac_compressor_mode", "", ValueSource.INT, notes = "AC_COMPRESSOR_MODE (A/C button); 1 = A/C on, 0 = off (07.11); forced 0 by ventilation mode"))
         put("BYDAutoAcDevice|0x2FC0000A",
             Decoder("ac_compressor_manual_sign", "", ValueSource.INT, notes = "AC_COMPRESSOR_MANUAL_SIGN; ac_raw int; manual-override flag"))
         put("BYDAutoAcDevice|0x2FC0000B",
@@ -324,7 +332,7 @@ object TelemetryDecoderTable {
         put("BYDAutoAcDevice|0x2FC0000C",
             Decoder("ac_windlevel_manual_sign", "", ValueSource.INT, notes = "AC_WINDLEVEL_MANUAL_SIGN; ac_raw int; manual-override flag"))
         put("BYDAutoAcDevice|0x2FC00016",
-            Decoder("ac_defrost_front_state", "", ValueSource.INT, notes = "AC_DEFROST_FRONT_STATE; windscreen defrost; ac_raw int enum"))
+            Decoder("ac_defrost_front_state", "", ValueSource.INT, notes = "AC_DEFROST_FRONT_STATE; 1 = windscreen defrost on, WIND_MODE goes 5 (09.11 recon + Companion)"))
         put("BYDAutoAcDevice|0x2FA0000C",
             Decoder("ac_ptc_state", "", ValueSource.ANY, notes = "AC_PTC_STATE; PTC heater state, not duty; not yet seen live (0x2FA0 base)"))
         put("BYDAutoAcDevice|0x2FA00026",
@@ -334,13 +342,14 @@ object TelemetryDecoderTable {
         // in ac_raw 23.10 are INT enums; the two 0x2FA0/0x4330 warm fids not yet
         // seen live stay ANY. All enum semantics TBD by climate test.
         put("BYDAutoAcDevice|0x2FC00024",
-            Decoder("ac_tempctrl_separate_state", "", ValueSource.INT, notes = "AC_TEMPCTRL_SEPARATE_STATE; dual-zone split on/off; ac_raw int"))
+            Decoder("ac_tempctrl_separate_state", "", ValueSource.INT, notes = "AC_TEMPCTRL_SEPARATE_STATE; 1 = dual-zone, 0 = synced; drops to 0 on power off, max cooling, ventilation (07.11)"))
         put("BYDAutoAcDevice|0x2FA00014",
-            Decoder("ac_max_cooling_state", "", ValueSource.INT, notes = "AC_MAX_COOLING_STATE; ac_raw int 0/1"))
+            Decoder("ac_max_cooling_state", "", ValueSource.INT, notes = "AC_MAX_COOLING_STATE; 1 = max cooling (owner-confirmed 07.11): fan 7, recirc, both setpoints forced 18.0"))
+        // p158: carrier pinned INT — 07.11 events were int 0/1 with dbl 0.
         put("BYDAutoAcDevice|0x2FA0000A",
-            Decoder("ac_ventilation_state", "", ValueSource.ANY, notes = "AC_VENTILATION_STATE; values not yet classified; carrier ANY"))
+            Decoder("ac_ventilation_state", "", ValueSource.INT, notes = "AC_VENTILATION_STATE; 1 = fan-only ventilation: compressor forced 0, CTRL_MODE manual (07.11)"))
         put("BYDAutoAcDevice|0x40600031",
-            Decoder("ac_defrost_rear_state", "", ValueSource.INT, notes = "AC_DEFROST_REAR_STATE; rear-window defrost; ac_raw int 0/1"))
+            Decoder("ac_defrost_rear_state", "", ValueSource.INT, notes = "AC_DEFROST_REAR_STATE; 1 = rear-window heater on; ~+0.4 kW at the battery (09.11 18:58)"))
         put("BYDAutoAcDevice|0x44300008",
             Decoder("ac_quick_clean_air", "", ValueSource.INT, notes = "AC_QUICK_CLEAN_AIR; ac_raw int 0/1"))
         put("BYDAutoAcDevice|0x2FA0003C",

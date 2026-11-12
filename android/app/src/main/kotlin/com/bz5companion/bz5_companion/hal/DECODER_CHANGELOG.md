@@ -478,6 +478,162 @@ Values are raw enums; companion shows them as raw badges at most.
 
 ---
 
+## v0.10.156 (patch 156) — 2026-11-06 — pack_voltage_fine active, AC catalog carriers, energy-split subs, dead-fid cleanup
+
+### ~ CHANGE  BYDAutoChargingDevice|0x2FF00030  pack_voltage_fine ACTIVATED
+          was commented HYPOTHESIS "pack_voltage_alt"; DC-charge 06.08 confirmed
+          it is the high-res pack terminal voltage the companion energy split
+          runs on. Name/unit/type frozen to companion: pack_voltage_fine / V /
+          DOUBLE. Companion override can be removed after vendoring.
+          → put("BYDAutoChargingDevice|0x2FF00030",
+                Decoder("pack_voltage_fine", "V", ValueSource.DOUBLE, ...))
+
+### ~ CHANGE  AC setpoint carriers pinned from ac_raw 23.10 (was ANY in p155)
+          0x2FC00028 ac_temp_main  ANY → DOUBLE  (dbl 18.0–23.5 step 0.5)
+          0x2FC00030 ac_temp_deputy ANY → DOUBLE
+          0x2FC00009/0A/0B/0C, 0x2FC00016  ANY → INT  (int enums in ac_raw)
+          0x2FA0000C ac_ptc_state, 0x2FA00026 ac_ptc_preheat_signal stay ANY
+          (not yet seen live).
+
+### + ADD  7 catalog-named AC fids (class Ac, v0.10.56)
+          INT (seen as int enums in ac_raw 23.10):
++ ADD  0x2FC00024 ac_tempctrl_separate_state  INT
++ ADD  0x2FA00014 ac_max_cooling_state         INT
++ ADD  0x40600031 ac_defrost_rear_state        INT
++ ADD  0x44300008 ac_quick_clean_air           INT
+          ANY (not yet seen live):
++ ADD  0x2FA0000A ac_ventilation_state         ANY
++ ADD  0x2FA0003C ac_warm_state                ANY
++ ADD  0x43300020 ac_warm_type_flag            ANY
+
+### - REMOVE  3 dead p082 battery-temp candidate decoders
+          0x000DA09B battery_temp_port_candidate
+          0x00072559 battery_temp_pwr_candidate
+          0x0004CFF3 battery_temp_allowed_candidate
+          legacy-format fids absent from the bZ5 catalog; the real catalog
+          entries sit under get()-only short numbers 0x30A/0x2F2/0x2F3. Zero
+          events every run was the catalog mismatch, not DC-vs-AC timing.
+
+### ~ TargetRegistry (recon-only, not table)
+          - Removed 21 legacy-format fids absent from bZ5 catalog from the
+            Energy/Charging/Statistic priority specs (the 3 above plus
+            0x000B4C9A CHARGING_POWER, 0x000D4B3F, 0x00062686, 0x000D7696,
+            0x0009B8E6, 0x000F33B4, 0x000B95EC, 0x000C1311, 0x0005F84D,
+            0x000FF694, 0x0006A408, 0x00090D49, 0x000A4490, 0x00049367,
+            0x000C4B18, 0x00040A7D, 0x000CCE5F, 0x000EF358).
+          - Fixed 0x2FF00020 → 0x2FF00820 (CHARGING_CHARGE_TEMPERATURE_CTL_STATE
+            typo; correct catalog value) in both the priority spec and RollupSink
+            RAW_TRACE_SUBTYPES.
+          - Charging priority += 0x32300018 (CHARGE_POWER_DD), 0x44F00833
+            (AC_CHARGING_CURRENT), 0x44900842 (IRON_BATTERY_POWER_MODE).
+          - New separate registration BYDAutoPowerDevice_lowvoltage for
+            0x1CD0003D POWER_LOW_VOLTAGE, kept apart from the two GB32960
+            Power regs so it cannot perturb the 0x99000020 BigData stream.
+            Added to RAW_TRACE_SUBTYPES to settle volts-vs-flag offline.
+
+### ~ TelemetryStateProbe (recon-only)
+          getInstance census extended from 15 to all 34 BYDAuto*Device class
+          names (adds Setting, Engine, Motor, Signal, Qcfs, Reminder,
+          VehicleData, Func, Aux, Brake, Adas, Cpu, Steerwheel, Acquisition,
+          VehicleHealth, Sensor, Collision, Radar, Ac). Read-only; records
+          OK / class_not_found / SecurityException(<perm>). Answers the Setting
+          question for companion without a trip.
+
+### Active decoder count: 74 → 78  (+7 AC new, −3 dead candidates; 9 carrier/activation changes net 0)
+
+### New SHA256 (v0.10.156)
+(recompute after apply; TelemetryDecoderTable.kt, RollupSink.kt, TargetRegistry.kt changed.)
+
+---
+
+## v0.10.157 (patch 157) — 2026-11-07 — subscription gaps for energy/charging, cross-device experiments
+
+### Decoder table: no change
+          TelemetryDecoderTable.kt is untouched. Active decoder count stays 78.
+          New fids below are subscribed raw only; no decoder until field data
+          shows type and scale (p083 rule).
+
+### ~ TargetRegistry (recon defaultTargets only; streamingTargets unchanged)
+          - New helper pickPushIds(): read-only AND non-legacy (fid top byte
+            != 0), deduplicated. Legacy numbers are get()-only (need _GET).
+          - Charging harvest: pickReadOnlyIds(…, 80) → pickPushIds(…, 120).
+            Old slice spent 50 of 80 slots on legacy numbers. Now all 110
+            read-only push/flag CHARGING_ fids are subscribed, including
+            CAP_STATE_AC 0x4FB00020, CAP_STATE_DC 0x4FB00018,
+            AC_CHARGING_CURRENT_TYPE 0x44F00831, BATTERRY_DEVICE_STATE
+            0x2EB00018, CHARGE_REST_TIME_DD 0x32300038, STOP_QUANTITY_SETTING
+            0x2FF00828, LOW_POWER_CHARGING_INDICATION_SIGN 0x2FF0081C,
+            SMART_CHARGING_STATE 0x44900840, VTOV_DISCHARGE_QUANTITY
+            0x2EB00820, DISCHARGE_STATE_VTOL 0x2F40080B.
+          - Statistic harvest: prefix STATISTIC_ ∪ STATISTICS_ (non-_SET).
+            Adds 10 fids, e.g. AVERAGE_INSTANT_EV_LAST_200M 0x35906010,
+            PURE_ELECTRIC_DRVING_RANGE_MODE 0x32700028. Head stays 64, tail
+            grows 20 → 30.
+          - Cross-device experiments, each its own target key:
+            BYDAutoEnergyDevice_xdev    0x1CD0003D POWER_LOW_VOLTAGE
+            BYDAutoChargingDevice_xdev  0x1CD0003D POWER_LOW_VOLTAGE
+            BYDAutoStatisticDevice_xdev 0x49503040 INSTRUMENT_DD_OUT_TEMP,
+                                        0x4950303F INSTRUMENT_UNIT_TEMPERATURE
+            Question: does a fid arrive on a granted device whose catalog class
+            does not own its name? Power and Instrument deliver nothing to us.
+
+### For companion (Друг 1)
+          Nothing to sync in the table. If you want the same Charging coverage,
+          the gaps are in streamingTargets' explicit Charging list; wait for
+          field data from a charge session before adding decoders.
+
+### New SHA256 (v0.10.157)
+(recompute after apply; TargetRegistry.kt changed.)
+
+---
+
+## v0.10.158 (patch 158) — 2026-11-12 — inverter_current, battery_power_kw, AC enums, firehose field table
+
+### ~ TelemetryDecoderTable (active count unchanged)
+          - BYDAutoEngineDevice|0x40800008: motor_current_candidate →
+            **inverter_current** (A, DOUBLE, + = discharge). Inverter DC
+            current, 0 in P. Recon 09.11: ∫V·I_inv 2.73 kWh, ∫T·ω 2.02,
+            ∫V·(I_bat − I_inv) 0.91. Companion +233 event integral matches.
+            Companion: drop your inverter_current override.
+          - BYDAutoEngineDevice|0x15100020: motor_power → **battery_power_kw**.
+            Battery-side power in whole kW (≈ V×I_bat, rounded toward zero),
+            not shaft power: 09.11 ∫ 3.37 vs ∫V·I 3.60 vs ∫T·ω 2.03. Display
+            only, never integrate.
+          - AC notes now carry field-confirmed enums: POWER_STATE 0/1,
+            CTRL_MODE 0 = AUTO / 1 = manual, COMPRESSOR_MODE 1 = on,
+            WIND_LEVEL 0–7, WIND_MODE 5 = windscreen with DEFROST_FRONT,
+            MAX_COOLING, TEMPCTRL_SEPARATE, DEFROST_REAR, TEMP_OUT (°C INT).
+          - BYDAutoAcDevice|0x2FA0000A ac_ventilation_state: carrier ANY → INT.
+
+### + FirehoseFieldTable.kt (new shared file)
+          Decodes catalog fields straight from BigData firehose frames
+          (0x99000020), including classes we cannot open (Gb, Bodywork,
+          Power). Rule: fid 0xCCC PP LLL → CAN ID CCC, page PP (buffer byte
+          4), start bit (LLL and 0xFF) − 8, Intel bit order over the payload
+          (buffer bytes 6…). Checked on AC_TEMP_MAIN/DEPUTY vs HAL (35/35),
+          ENERGY_STATE vs HAL, GB counters vs ∫V·I.
+          CONFIRMED: gb_remaining_energy_kwh (0x2EE), gb_cycle_discharge_kwh
+          and gb_cycle_regen_kwh (0x2D0), plus three rule-check fields.
+          CANDIDATE (raw only): dcdc_byte6_raw (0x2C7, likely 12 V load
+          current), ac_temp_out_raw, bodywork_battery_voltage_level,
+          gb_dcdc_state_alarm, gb_dcdc_temp_alarm, bodywork_power_level,
+          energy_bcm_state, smart_charging_state_2nd.
+          Recon writes them per chunk under snapshot.firehose_fields (count,
+          min/max/last raw, last value, change log capped at 64).
+          Frame overview for all 123 CAN ID/page pairs: FIREHOSE_FRAMES.md.
+
+### For companion (Друг 1)
+          Rename motor_power → battery_power_kw on screens, gates and the
+          power_kw cloud series in one patch, as agreed. Vendor
+          FirehoseFieldTable.kt if your BigData path sees 0x99000020 frames;
+          show only CONFIRMED fields. Remaining energy and per-cycle
+          discharge/regen give an independent check of the v2 trip totals.
+
+### New SHA256 (v0.10.158)
+(recompute after apply: TelemetryDecoderTable.kt, FirehoseFieldTable.kt.)
+
+---
+
 <!--
 TEMPLATE for the next entry — copy below this line, fill in, delete the comment:
                  Decoder("param_name", "unit", ValueSource.SOURCE))

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -155,7 +157,9 @@ class _LiveLogScreenState extends State<LiveLogScreen> {
         ? S.of('sw.busy_sweep')
         : svc.dtcScanRunning
             ? S.of('sw.busy_dtc')
-            : null;
+            : svc.atrvOnlyRunning
+                ? S.of('ll.busy_atrv')
+                : null;
     final canStart = busyReason == null;
 
     return ListView(
@@ -317,6 +321,30 @@ class _LiveLogScreenState extends State<LiveLogScreen> {
             onPressed: (canStart && _entries.every((e) => e.isValid))
                 ? () => _start(svc)
                 : null,
+          ),
+        ),
+        const SizedBox(height: 8),
+        // v0.2.35+234: режим «только ATRV» — напряжение адаптера раз в 5 с
+        // без UDS-запросов (точка «машина спит», Друг 3). Решение о старте
+        // и запретах — в ConnectionService.runAtrvOnly.
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          child: OutlinedButton.icon(
+            icon: Icon(svc.atrvOnlyRunning ? Icons.stop : Icons.battery_std),
+            label: Text(svc.atrvOnlyRunning
+                ? S
+                    .of('ll.atrv_only_stop')
+                    .replaceFirst('{n}', '${svc.atrvOnlyCount}')
+                    .replaceFirst(
+                        '{v}', svc.adapterVoltage?.toStringAsFixed(2) ?? '—')
+                : S.of('ll.atrv_only_start')),
+            onPressed: svc.atrvOnlyRunning
+                ? svc.cancelAtrvOnly
+                : (svc.isBleConnected &&
+                        !svc.sweepRunning &&
+                        !svc.dtcScanRunning)
+                    ? () => unawaited(svc.runAtrvOnly())
+                    : null,
           ),
         ),
         const SizedBox(height: 8),

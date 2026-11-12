@@ -13135,9 +13135,12 @@ if int(pv) >= 222:
     _cx1 = [
         # v0.2.31+230: таблица — recon v0.10.157.1 (правило носителя то же).
         ('TelemetryDecoderTable.kt   85f5e951b745f8ed6a115e456ebb437b6e7b24f1b3798a6af24884df1226605c  recon v0.10.155' in _cx_man) if int(pv) < 230 else
-        ('TelemetryDecoderTable.kt   1538e1e58c43a048f25526d292f6cbbe8a51edfb79dd1dd46114009ebf7a6adc  recon v0.10.157.1' in _cx_man),
+        ('TelemetryDecoderTable.kt   1538e1e58c43a048f25526d292f6cbbe8a51edfb79dd1dd46114009ebf7a6adc  recon v0.10.157.1' in _cx_man) if int(pv) < 234 else
+        # v0.2.35+234: recon v0.10.158 (DI1).
+        ('TelemetryDecoderTable.kt   f1266c282092474e31e6ccbf09f8e65945bacccfbbe262fad680742918ee32b2  recon v0.10.158' in _cx_man),
         ('// SHA256: 85f5e951b745f8ed6a115e456ebb437b6e7b24f1b3798a6af24884df1226605c' in _cx_tab) if int(pv) < 230 else
-        ('// SHA256: 1538e1e58c43a048f25526d292f6cbbe8a51edfb79dd1dd46114009ebf7a6adc' in _cx_tab),
+        ('// SHA256: 1538e1e58c43a048f25526d292f6cbbe8a51edfb79dd1dd46114009ebf7a6adc' in _cx_tab) if int(pv) < 234 else
+        ('// SHA256: f1266c282092474e31e6ccbf09f8e65945bacccfbbe262fad680742918ee32b2' in _cx_tab),
         'val typeConflict: Boolean = false' in _cx_tab,
         'if (typeConflict) {\nm["type_conflict"] = true\nm["carrier"] = carrier.name' in _cx_sink,
         "typeConflict: m['type_conflict'] == true," in _cx_chn,
@@ -13415,7 +13418,7 @@ if int(pv) >= 225:
         f"static const _kSplitRepushSeeded = 'cloud_sync_split_repush_{'225' if int(pv) < 226 else '226'}';" in _cz_cs,
         "static const String repushTripIdsKey = 'cloud_sync_repush_trip_ids';" in _cz_imp,
         f"static const String splitRepushSeedKey = 'cloud_sync_split_repush_{'225' if int(pv) < 226 else '226'}';" in _cz_imp,
-        ('repushTripIdsKey,\nsplitRepushSeedKey,\n];' if int(pv) < 229 else 'repushTripIdsKey,\nsplitRepushSeedKey,\n\nsplitRecomputeKey,\n];' if int(pv) < 233 else 'repushTripIdsKey,\nsplitRepushSeedKey,\n\nsplitRecomputeKey,\n\nsplitRelabelKey,\n];') in _cz_imp,
+        ('repushTripIdsKey,\nsplitRepushSeedKey,\n];' if int(pv) < 229 else 'repushTripIdsKey,\nsplitRepushSeedKey,\n\nsplitRecomputeKey,\n];' if int(pv) < 233 else 'repushTripIdsKey,\nsplitRepushSeedKey,\n\nsplitRecomputeKey,\n\nsplitRelabelKey,\n];' if int(pv) < 234 else 'repushTripIdsKey,\nsplitRepushSeedKey,\n\nsplitRecomputeKey,\n\nsplitRelabelKey,\n\nsplitRecheckKey,\n];') in _cz_imp,
         -1 < _cz4_i_rm < _cz4_i_apply and 'await prefs.remove(repushTripIdsKey);' in _cz_imp,
         't.endedAt.isNotNull() & t.energySplitModel.isNotNull()' in _cz_db,
     ]
@@ -13849,7 +13852,7 @@ if int(pv) >= 230:
     _de1 = [
         'TargetRegistry.kt          eca553ac5ebab8eae580cc2c8e55ae7db8f61434d0aa8d07ae6befb46a8c3ff4  recon v0.10.157.1' in _de_man,
         '// SHA256: eca553ac5ebab8eae580cc2c8e55ae7db8f61434d0aa8d07ae6befb46a8c3ff4' in _de_reg,
-        '// SHA256: 1538e1e58c43a048f25526d292f6cbbe8a51edfb79dd1dd46114009ebf7a6adc' in _de_tab,
+        ('// SHA256: 1538e1e58c43a048f25526d292f6cbbe8a51edfb79dd1dd46114009ebf7a6adc' if int(pv) < 234 else '// SHA256: f1266c282092474e31e6ccbf09f8e65945bacccfbbe262fad680742918ee32b2') in _de_tab,
         '0x000B95EC' not in _de1_st and '0x000B4C9A' not in _de1_st and '0x44900842' not in _de1_st,
         '"BYDAutoChargingDevice" -> spec.copy(\nfeatureIds = spec.featureIds +\nCompanionDecoderOverrides.extraChargingFids\n)' in _de_own,
         '"BYDAutoChargingDevice|0x2FF00030" to Decoder(' not in _de_ovr,
@@ -13862,7 +13865,9 @@ if int(pv) >= 230:
     # _range (иначе событие отбрасывается), фоновый журнал с той же
     # плотностью, что ток батареи; сигнал в списке модели.
     _de2 = [
-        '"BYDAutoEngineDevice|0x40800008" to Decoder(\n"inverter_current", "A", ValueSource.DOUBLE,' in _de_ovr,
+        # v0.2.35+234: перекрытие снято — запись в таблице recon p158 (DI1).
+        ('"BYDAutoEngineDevice|0x40800008" to Decoder(\n"inverter_current", "A", ValueSource.DOUBLE,' in _de_ovr) if int(pv) < 234 else
+        ('"BYDAutoEngineDevice|0x40800008"' not in _de_ovr and 'Decoder("inverter_current", "A", ValueSource.DOUBLE,' in _de_tab),
         "'inverter_current': (-600, 600)," in _de_hts,
         '"pack_current" to 1_000L,' in _de_out and '"inverter_current" to 1_000L,' in _de_out,
         "'inverter_current',\n];" in _de_es,
@@ -13884,7 +13889,9 @@ if int(pv) >= 230:
         ('return EnergySplitResult(ePack, cov, covered, motion, climate, 0.0,\nmodel: EnergySplitModel.versionV2);' in _de3_fn) if int(pv) < 231 else
         ('return EnergySplitResult(ePack, cov, covered, motion, climate, 0.0,\nmodel: EnergySplitModel.versionV2,\ntractionKwh: eTraction,\nregenKwh: eRegen);' in _de3_fn) if int(pv) < 233 else
         ('return EnergySplitResult(ePack, cov, covered, motion, climate, 0.0,\nmodel: EnergySplitModel.versionV2s,\ntractionKwh: eTraction,\nregenKwh: eRegen);' in _de3_fn),
-        ") =>\npoints.any((p) => p.name == 'inverter_current')\n? computeEnergySplitV2(points, start, end)\n: computeEnergySplit(points, start, end);" in _de_es,
+        # v0.2.35+234: оценка v2s проходит проверки (DI6).
+        (") =>\npoints.any((p) => p.name == 'inverter_current')\n? computeEnergySplitV2(points, start, end)\n: computeEnergySplit(points, start, end);" if int(pv) < 234 else
+         ") =>\npoints.any((p) => p.name == 'inverter_current')\n? checkSampleSplit(computeEnergySplitV2(points, start, end), points,\nstart)\n: computeEnergySplit(points, start, end);") in _de_es,
         # v0.2.34+233: оба вызова идут через computeTripEnergySplit (DH1).
         _de_es.count('computeEnergySplitAuto(') == (3 if int(pv) < 233 else 2) and 'model: r.model,\n);' in _de_es,
         "static const String versionV2 = 'v2';" in _de_es,
@@ -13903,7 +13910,7 @@ if int(pv) >= 230:
         'if (!parked || acOn != true) return _end();' in _de_pc and 'final kw = math.max(0.0, packKw - baseKw);' in _de_pc,
         'final Stopwatch _parkedClimateClock = Stopwatch()..start();' in _de_hts and 't: _parkedClimateClock.elapsed,' in _de_hts,
         'parked: !streamStopped && halGear == 1,' in _de_hts and '_feedParkedClimate(streamStopped: true);' in _de_hts and 'acOn: ac == null ? null : ac == 1,' in _de_hts and 'packKw: halPowerKw,' in _de_hts,
-        ('_logHalDiag(e, d);\n_feedParkedClimate();' if int(pv) < 233 else '_logHalDiag(e, d);\n_feedEventEnergy(e, d);\n_feedParkedClimate();') in _de_hts,
+        ('_logHalDiag(e, d);\n_feedParkedClimate();' if int(pv) < 233 else '_logHalDiag(e, d);\n_feedEventEnergy(e, d);\n_feedParkedClimate();' if int(pv) < 234 else '_logHalDiag(e, d);\n_feedEventEnergy(e, d);\n_feedFirehose(e, d);\n_feedParkedClimate();') in _de_hts,
         "if (e.name == 'ac_power_state') {\n_feedParkedClimate();" in _de_hts,
         "debugPrint('ParkedClimate: " in _de_hts,
         (('_ParkedClimateRow(compact: compact),' if int(pv) < 232 else 'ParkedClimateRow(compact: compact),') in _de_dp) and 'if (!m.active || now == null) return const SizedBox.shrink();' in _de_dp,
@@ -14124,19 +14131,26 @@ if int(pv) >= 233:
     _dh1_j = _dh_es.find('EnergySplitResult? computeEnergySplitEvents(')
     _dh1_sp = _dh_es[_dh1_j:_dh_es.find('EnergySplitResult computeTripEnergySplit(')] if _dh1_j > -1 else ''
     _dh1 = [
-        'if (dt < 0) {\n_neg++;\n} else if (dt > gapMs) {\n_gaps++;\n} else if (dt > 0) {\n_integrate(tp, dt);\n}' in _dh1_add,
+        ('if (dt < 0) {\n_neg++;\n} else if (dt > ' + ('gapMs' if int(pv) < 234 else 'maxGapMs') + ') {\n_gaps++;\n} else if (dt > 0) {\n_integrate(tp, dt);\n}') in _dh1_add,
         'if (tp == null || tsMs >= tp) _tPrev = tsMs;\n_last[name] = value;' in _dh1_add,
         "final v = _last['pack_voltage_fine'] ?? _last['pack_voltage'];" in _dh_es and 'if (v != null && ib != null && ii != null) {\n_covMs += dt;' in _dh_es,
         'final ps = tq * n * 2 * math.pi / 60 / 1000.0;' in _dh_es and '_mE += (pb - pi) * h;' in _dh_es,
         'static const int gapMs = 5000;' in _dh_es and 'static const int minuteMinMs = 30000;' in _dh_es,
+        # v0.2.35+234: предел интервала — параметр (поток 5 с, отсчёты 10 с, DI6).
+        ('} else if (dt > gapMs) {' if int(pv) < 234 else 'EventEnergyAccumulator(this.startMs, {this.maxGapMs = gapMs});') in _dh_es,
         'GAP_MS = 5000' in _dh_mir and 'MINUTE_MIN_MS = 30000' in _dh_mir and 'REGEN_K, REGEN_ABS = 1.05, 0.05' in _dh_mir and 'LOW_KW, LOW_SHARE, NEG_KW = 0.2, 0.10, -0.3' in _dh_mir,
         'static const double regenShaftK = 1.05;' in _dh_es and 'static const double regenShaftAbsKwh = 0.05;' in _dh_es and 'static const double boardLowKw = 0.2;' in _dh_es and 'static const double boardLowShare = 0.10;' in _dh_es and 'static const double boardNegKw = -0.3;' in _dh_es,
-        'if (cov < EnergySplitModel.minCoverage) return null;' in _dh1_sp,
-        "return partless('regen_above_shaft');" in _dh1_sp and "return partless('board_minutes');" in _dh1_sp,
+        # v0.2.35+234: правило покрытия вынесено в eventSumsCoverTrip (DI3).
+        ('if (cov < EnergySplitModel.minCoverage) return null;' if int(pv) < 234 else 'if (!eventSumsCoverTrip(s, start, end)) return null;') in _dh1_sp,
+        (("return partless('regen_above_shaft');" in _dh1_sp and "return partless('board_minutes');" in _dh1_sp) if int(pv) < 234 else
+         ('final why = energySplitCheck(s);\nif (why != null) return partless(why);' in _dh1_sp and
+          "if (s.regenKwh >\ns.shaftRegenKwh * EnergySplitModel.regenShaftK +\nEnergySplitModel.regenShaftAbsKwh) {\nreturn 'regen_above_shaft';\n}" in _dh_es and
+          "s.minutesNegative > 0)) {\nreturn 'board_minutes';\n}\nreturn null;\n}" in _dh_es)),
         'var motion = s.tractionKwh - s.regenKwh;\nvar climate = s.packKwh - motion;\nif (climate < 0) {\nclimate = 0;\nmotion = s.packKwh;\n}' in _dh1_sp,
         '(events == null ? null : computeEnergySplitEvents(events, start, end)) ??\ncomputeEnergySplitAuto(points, start, end);' in _dh_es,
         'final r = computeTripEnergySplit(ev, pts, t.startedAt, end);' in _dh_es and _dh_es.count('computeTripEnergySplit(') == 3,
-        "'${_eventsLog(r)}'" in _dh_es and "'${r.rejected == null ? '' : 'rejected=${r.rejected} '}';" in _dh_es,
+        ("'${_eventsLog(r)}'" in _dh_es and "'${r.rejected == null ? '' : 'rejected=${r.rejected} '}';" in _dh_es) if int(pv) < 234 else
+        ("'${_eventsLog(r)}'\n'${r.rejected == null ? '' : 'rejected=${r.rejected} '}'\n'model=${r.model}');" in _dh_es),
         _dh_fix.exists() and _dh_test.exists() and 'tools/data/recon_corpus_20261109_energy6.csv.gz' in _dh_test.read_text(),
     ]
     if all(_dh1): ok('DH1 event energy: held values over the interval between neighbouring events, gaps over 5 s and negative intervals skipped and counted, Friend 3 checks, one source choice for close and live, mirror constants equal, Dart test on the same corpus')
@@ -14153,7 +14167,9 @@ if int(pv) >= 233:
         '_eventEnergy =\nEventEnergyAccumulator(_halTripStartedAt!.millisecondsSinceEpoch);' in _dh_hts,
         '_eventEnergyPersistClock.elapsed < _kEventEnergyPersist' in _dh_hts and 'static const Duration _kEventEnergyPersist = Duration(minutes: 1);' in _dh_hts,
         'final next = _eventEnergyWrites\n.then((_) => db.mergeTripExtra(tripId, sums.toExtraPatch()))' in _dh_hts and '_eventEnergyWrites = next;' in _dh_hts,
-        'final ev = asOf != null ? asOf.eventEnergy : _eventEnergy?.snapshot();' in _dh2_fin,
+        # v0.2.35+234: выбор сумм на закрытии — _eventEnergyAt (DI3).
+        ('final ev = asOf != null ? asOf.eventEnergy : _eventEnergy?.snapshot();' in _dh2_fin) if int(pv) < 234 else
+        ('final ev = _eventEnergyAt(asOf);' in _dh2_fin and 'EventEnergySums? _eventEnergyAt(_HalStopSnapshot? asOf) =>\nasOf != null ? asOf.eventEnergy : _eventEnergy?.snapshot();' in _dh_hts),
         '(ev == null ? Future<void>.value() : _queueEventEnergyWrite(db, id, ev))\n.then((_) => db.endTrip(' in _dh2_fin,
         'eventEnergy: _eventEnergy?.snapshot(),' in _dh_hts,
         '_halTripDbId = null;\n_eventEnergy = null;' in _dh_hts,
@@ -14183,7 +14199,9 @@ if int(pv) >= 233:
 
     # DH4: motor_power — мощность батареи (подпись; имя меняет Друг 3).
     _dh4 = [
-        "'drv.cell.motor_power': 'battery power'," in _dh_l10n and "'drv.cell.motor_power': 'мощность батареи'," in _dh_l10n,
+        # v0.2.35+234: ключ и имя сигнала — battery_power (recon p158, DI1).
+        (("'drv.cell.motor_power': 'battery power'," in _dh_l10n and "'drv.cell.motor_power': 'мощность батареи'," in _dh_l10n) if int(pv) < 234 else
+         ("'drv.cell.battery_power': 'battery power'," in _dh_l10n and "'drv.cell.battery_power': 'мощность батареи'," in _dh_l10n)),
     ]
     if all(_dh4): ok('DH4 motor_power is labelled battery power (the name stays until recon renames it)')
     else: fail(f'DH4 motor_power label drifted: {_dh4}')
@@ -14203,7 +14221,8 @@ if int(pv) >= 233:
     # Live Log, кем бы ни запущены, и открытый экран; экраны сами
     # плагин не зовут.
     _dh6 = [
-        'final want = _screenAwake || sweepRunning || _liveLogRunning;' in _dh_con,
+        # v0.2.35+234: и режим «только ATRV» (DI5).
+        ('final want = _screenAwake || sweepRunning || _liveLogRunning;' if int(pv) < 234 else 'final want =\n_screenAwake || sweepRunning || _liveLogRunning || _atrvOnlyRunning;') in _dh_con,
         all(_dh_con.count(x + '\n_applyKeepAwake();') == 1 for x in ('_sweepQueueRunning = true;', '_sweepQueueRunning = false;', '_sweepRunning = true;', '_sweepRunning = false;', '_liveLogRunning = true;', '_liveLogRunning = false;')),
         all('_keepAwakeSvc.setScreenAwake(true);' in t and '_keepAwakeSvc.setScreenAwake(false);' in t and 'WakelockPlus' not in t for t in (_dh_sw, _dh_ll)),
     ]
@@ -14211,6 +14230,134 @@ if int(pv) >= 233:
     else: fail(f'DH6 keep-awake drifted: {_dh6}')
 else:
     ok(f"Part DH skipped (build +{pv}, event energy and v2s land in +233)")
+
+# ═══════ Part DI — 0.2.35+234: recon v0.10.158, firehose, рекуперация в батарею, режим «только ATRV» ═══════
+if int(pv) >= 234:
+    _di_f = lambda t: re.sub(r'\n\s*\n', '\n', re.sub(r'\n[ \t]+', '\n', t))
+    _di_rd = lambda pth: _di_f(_strip_comments_safe((root / pth).read_text()))
+    _di_hal = 'android/app/src/main/kotlin/com/bz5companion/bz5_companion/hal/'
+    _di_man = (root / (_di_hal + 'HAL_SYNC.manifest')).read_text()
+    _di_tab = (root / (_di_hal + 'TelemetryDecoderTable.kt')).read_text()
+    _di_fht = (root / (_di_hal + 'FirehoseFieldTable.kt')).read_text()
+    _di_ovr = _di_rd(_di_hal + 'CompanionDecoderOverrides.kt')
+    _di_out = _di_rd(_di_hal + 'HalOut.kt')
+    _di_sink = _di_rd(_di_hal + 'DecodedStreamSink.kt')
+    _di_hts = _di_rd('lib/services/hal_telemetry_service.dart')
+    _di_es = _di_rd('lib/services/energy_split_service.dart')
+    _di_fc = _di_rd('lib/services/firehose_check.dart')
+    _di_td = _di_rd('lib/screens/trip_detail.dart')
+    _di_hw = _di_rd('lib/screens/wide/history_wide.dart')
+    _di_cs = _di_rd('lib/services/cloud_sync_service.dart')
+    _di_dp = _di_rd('lib/widgets/driver_panels.dart')
+    _di_con = _di_rd('lib/services/connection.dart')
+    _di_cl = _di_rd('lib/ble/elm327_client.dart')
+    _di_br = _di_rd('lib/services/bridge_diag_service.dart')
+    _di_ll = _di_rd('lib/screens/live_log.dart')
+    _di_l10n = (root / 'lib/l10n/strings.dart').read_text()
+    _di_mir = (root / 'tools/mirror_plus233_events.py').read_text()
+
+    # DI1: СИНХРОНИЗАЦИЯ С RECON v0.10.158. Таблица и таблица firehose —
+    # вендорные с SHA; перекрытие тока инвертора снято; motor_power →
+    # battery_power_kw везде, где сигнал потребляется; ряды истории читают
+    # оба имени (сначала новое).
+    _di1 = [
+        'TelemetryDecoderTable.kt   f1266c282092474e31e6ccbf09f8e65945bacccfbbe262fad680742918ee32b2  recon v0.10.158' in _di_man,
+        'FirehoseFieldTable.kt      b1a0986d938c188f5a2f6b045ce7ec96bdc89559b461aae6e4356668612a25c8  recon v0.10.158' in _di_man,
+        '// SHA256: f1266c282092474e31e6ccbf09f8e65945bacccfbbe262fad680742918ee32b2' in _di_tab and '// SHA256: b1a0986d938c188f5a2f6b045ce7ec96bdc89559b461aae6e4356668612a25c8' in _di_fht,
+        'Decoder("battery_power_kw", "kW", ValueSource.INT,' in _di_tab and '"BYDAutoEngineDevice|0x40800008"' not in _di_ovr,
+        "'battery_power_kw': Duration(milliseconds: 1500)," in _di_hts and "'battery_power_kw': (-250, 250)," in _di_hts and "'motor_rpm', 'motor_torque', 'battery_power_kw'," in _di_hts,
+        "double? get halBatteryPowerKw => _heldValue('battery_power_kw', _coreHold);" in _di_hts and "v('battery_power_kw', hal.halBatteryPowerKw," in _di_dp,
+        '"battery_power_kw" to 1_000L,' in _di_out and '"motor_power"' not in _di_out,
+        all("var rows =\nawait svc.db.getHalSamplesForTripByName(trip.id, 'battery_power_kw');\nif (rows.length < 2) {\nrows = await svc.db.getHalSamplesForTripByName(trip.id, 'motor_power');" in t for t in (_di_td, _di_hw)),
+        "halNames: ['battery_power_kw', 'motor_power'])," in _di_cs,
+        "'motor_power'" not in _di_hts and "'motor_power'" not in _di_dp,
+    ]
+    if all(_di1): ok('DI1 recon v0.10.158 vendored (table + firehose table, SHA in manifest and headers), inverter override dropped, battery_power_kw consumed everywhere, history reads the new name then motor_power')
+    else: fail(f'DI1 recon v0.10.158 sync drifted: {_di1}')
+
+    # DI2: FIREHOSE В СИНКЕ. Поля по вендорной таблице: подтверждённые —
+    # физикой с каждым кадром, кандидаты — сырыми не чаще 5 с на имя, по
+    # монотонным часам, карта общая для потоков биндера.
+    _di2 = [
+        'if (emitFirehoseFields(bufData, subtype, timestampMs)) queued = true\nif (queued && drainScheduled.compareAndSet(false, true)) {' in _di_sink,
+        'val frame = FirehoseFieldTable.parse(bufData) ?: return false\nval fields = FirehoseFieldTable.fieldsFor(frame.first, frame.second)' in _di_sink,
+        'if (f.confirmed) {\nqueue.add(bigDataSignalMap(\nf.name, f.unit, FirehoseFieldTable.physical(f, raw), subtype, timestampMs))' in _di_sink,
+        'if (last != null && now - last < FIREHOSE_CANDIDATE_MIN_MS) continue' in _di_sink and 'private val FIREHOSE_CANDIDATE_MIN_MS = 5_000L' in _di_sink,
+        'val now = SystemClock.elapsedRealtime()' in _di_sink and 'private val firehoseCandidateLast = ConcurrentHashMap<String, Long>()' in _di_sink,
+        'queue.add(bigDataSignalMap(f.name, "raw", raw.toDouble(), subtype, timestampMs))' in _di_sink,
+    ]
+    if all(_di2): ok('DI2 firehose fields decoded by the vendored table in the sink: confirmed as physics every frame, candidates raw at most every 5 s per name on a monotonic clock')
+    else: fail(f'DI2 firehose sink drifted: {_di2}')
+
+    # DI3: СВЕРКА FIREHOSE И РЕКУПЕРАЦИЯ В БАТАРЕЮ. Контрольные пары с HAL,
+    # расхождение 10 с → mismatch до перезапуска; состояние и счётчики —
+    # в суммах поездки и в строке EnergySplit; рекуперация поездки — в
+    # батарею по событиям при покрытии (одно правило с раскладкой).
+    _di3 = [
+        "'fh_ac_temp_main_c': 'ac_temp_main'," in _di_fc and "'fh_ac_temp_deputy_c': 'ac_temp_deputy'," in _di_fc and "'fh_energy_state': 'energy_state'," in _di_fc,
+        'static const int mismatchHoldMs = 10000;' in _di_fc and 'if (state == unchecked) state = ok;' in _di_fc and 'if (tsMs - since >= mismatchHoldMs) {\nstate = mismatch;' in _di_fc,
+        '_feedEventEnergy(e, d);\n_feedFirehose(e, d);' in _di_hts and 'if (_firehoseCheck.feed(e.name, v, e.ts)) {' in _di_hts and '_eventEnergy?.firehoseStatus = st;' in _di_hts and '_eventEnergy?.addFirehose(e.name, v);' in _di_hts,
+        '_firehoseCheck.resetForTrip();\n_eventEnergy!.firehoseStatus = _firehoseCheck.state;' in _di_hts and 'void resetForTrip() {\nstate = unchecked;\nlastDetail = null;\n_mismatchSince.clear();\n}' in _di_fc,
+        # Журнал фона: подтверждённые поля firehose — раз в минуту,
+        # кандидаты — не пишутся (уроки +185); списки из вендорной таблицы.
+        'FirehoseFieldTable.fields.filter { it.confirmed }\n.associate { it.name to 60_000L }' in _di_out and 'THROTTLE_FAST_MS + THROTTLE_MEDIUM_MS + THROTTLE_SLOW_MS +\nFIREHOSE_CONFIRMED_MS' in _di_out and 'if (name in FIREHOSE_JOURNAL_SKIP) {\ndropped.incrementAndGet()\ncontinue\n}' in _di_out,
+        'if (pb < 0) _regenBat -= pb * h;' in _di_es and 'batteryRegenKwh: _regenBat,' in _di_es and "if (batteryRegenKwh != null) 'regenBat': _r(batteryRegenKwh!)," in _di_es,
+        'if (pb < 0:' not in _di_mir and "            if pb < 0:\n                self.regen_bat += -pb * h" in _di_mir,
+        'eventSumsCoverTrip(ev, start, asOf?.at ?? DateTime.now())\n? ev.batteryRegenKwh\n: null;' in _di_hts and 'regenKwh: evRegen ?? (_halRegenEnergyKwh > 0 ? _halRegenEnergyKwh : null),' in _di_hts,
+        'if (!eventSumsCoverTrip(s, start, end)) return null;' in _di_es,
+        "'${_firehoseLog(e)}'" in _di_es and "'fh_dis=${delta('gb_cycle_discharge_kwh')} '" in _di_es and "if (!down && d < 0) return 'reset';" in _di_es,
+    ]
+    if all(_di3): ok('DI3 firehose control fields checked against HAL (10 s divergence -> untrusted until the next trip), journal keeps confirmed fields once a minute and drops candidates, counters per trip into evE and the EnergySplit line; trip regen is battery-side by events under the same coverage rule as the split')
+    else: fail(f'DI3 firehose check / battery regen drifted: {_di3}')
+
+    # DI4: КАРТОЧКА ПО ВАРИАНТУ 1. Итог по SOC; энергия пака — строкой
+    # «из батареи по току»; разница подписана честно; рекуперация — в батарею.
+    _di4 = [
+        "if (packKwh != null)\nPadding(" in _di_td and "Expanded(child: Text(S.of('trip.split_from_battery'))),\nText('${packKwh.toStringAsFixed(2)} kWh')," in _di_td,
+        _di_l10n.count("'trip.split_from_battery':") == 2 and "'trip.split_pack_loss': 'Разница с расходом по SOC'," in _di_l10n,
+        "'trip.regen_recovered': '⚡ {kwh} кВт·ч в батарею · пик {peak} кВт'," in _di_l10n,
+    ]
+    if all(_di4): ok('DI4 trip total stays SOC-based, the card shows the pack energy as from the battery by current, the difference row and battery regen are labelled')
+    else: fail(f'DI4 card labels drifted: {_di4}')
+
+    # DI5: РЕЖИМ «ТОЛЬКО ATRV». Одна команда ATRV, ни одного UDS-запроса;
+    # опрос на паузе; взаимное исключение со всеми операциями канала;
+    # экран держится; кнопка на Live Log и команда моста.
+    _di5_i = _di_con.find('Future<int?> runAtrvOnly({Duration? maxDuration}) async {')
+    _di5_j = _di_con.find('return _atrvOnlyCount;\n}', _di5_i)
+    _di5_fn = _di_con[_di5_i:_di5_j] if -1 < _di5_i < _di5_j else ''
+    _di5 = [
+        "Future<double?> readAdapterVoltage() async =>\nparseAtrv(await transport.sendRaw('ATRV'));" in _di_cl,
+        'readDid' not in _di5_fn and 'query(' not in _di5_fn and '.readAdapterVoltage()' in _di5_fn,
+        'if (wasPolling) {\n_polling = false;\nawait _waitForPollIdle();\n}' in _di5_fn and 'if (wasPolling) {\n_polling = true;\n_pollLoop();\n}' in _di5_fn,
+        '_atrvOnlyRunning = true;\n_applyKeepAwake();' in _di5_fn and '_atrvOnlyRunning = false;\n_applyKeepAwake();' in _di5_fn,
+        _di_con.count('if (_atrvOnlyRunning) return null;') == 3 and 'if (_atrvOnlyRunning) {\nreturn [];\n}' in _di_con and '_canMonitorRunning || _atrvOnlyRunning) {\nreturn null;' in _di_con,
+        "case 'bleStartAtrvOnly':\nbody = _handleBleStartAtrvOnly(args);" in _di_br and '_svc.canMonitorRunning ||\n_svc.atrvOnlyRunning;' in _di_br and "_svc.cancelAtrvOnly();\nstopped.add('atrvonly');" in _di_br,
+        '? svc.cancelAtrvOnly\n' in _di_ll and '? () => unawaited(svc.runAtrvOnly())' in _di_ll,
+        "debugPrint('AtrvOnly: stop exit=$exit readings=$_atrvOnlyCount '" in _di5_fn,
+    ]
+    if all(_di5): ok('DI5 ATRV-only mode: one ATRV command every 5 s and no UDS, polling paused and restored, exclusive with every channel user, screen kept on, Live Log button and bridge command')
+    else: fail(f'DI5 ATRV-only mode drifted: {_di5}')
+
+    # DI6: ПРОВЕРКИ ДРУГА 3 И ДЛЯ ОЦЕНКИ v2s. Одна функция проверки на оба
+    # пути; оценка по hal_samples проверяется суммами тех же отсчётов с
+    # пределом 10 с; разовая перепроверка v2s с частями по правилу.
+    _di6_i = _di_es.find('Future<void> _recheckSampleSplits() async {')
+    _di6_fn = _di_es[_di6_i:_di6_i + 1100] if _di6_i > -1 else ''
+    _di_imp = _di_rd('lib/services/import_service.dart')
+    _di6 = [
+        'String? energySplitCheck(EventEnergySums s) {' in _di_es and _di_es.count('energySplitCheck(') == 3,
+        "? checkSampleSplit(computeEnergySplitV2(points, start, end), points,\nstart)" in _di_es,
+        'final acc = EventEnergyAccumulator(start.millisecondsSinceEpoch,\nmaxGapMs: EventEnergyAccumulator.sampleGapMs);' in _di_es and 'static const int sampleGapMs = 10000;' in _di_es,
+        '} else if (dt > maxGapMs) {' in _di_es,
+        'final why = energySplitCheck(acc.snapshot());\nif (why == null) return r;\nreturn EnergySplitResult(\nr.packKwh, r.coverage, r.coveredSeconds, null, null, null,' in _di_es,
+        'if (t.energyMotionKwh == null) continue;\nif (t.startedAt.isBefore(since)) continue;\nawait _db.clearEnergySplit(t.id);' in _di6_fn and 'unawaited(_recheckSampleSplits());' in _di_es,
+        "static const String recheckKey = 'energy_split_v2s_checks_234';" in _di_es and "static const String splitRecheckKey = 'energy_split_v2s_checks_234';" in _di_imp and 'await prefs.remove(splitRecheckKey);' in _di_imp,
+    ]
+    if all(_di6): ok('DI6 the Friend 3 checks run for the v2s sample estimate too (one check function, sums of the same samples with a 10 s limit); v2s trips with parts are re-checked once by rule')
+    else: fail(f'DI6 v2s checks drifted: {_di6}')
+else:
+    ok(f"Part DI skipped (build +{pv}, recon v0.10.158 / firehose / ATRV-only land in +234)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)

@@ -2108,7 +2108,9 @@ class CloudSyncService extends ChangeNotifier {
         halNames: ['probe_highest_temp', 'battery_temp_bigdata']),
     (series: 'pack_voltage_v', ecuTx: '740', did: '0022',
         halNames: ['pack_voltage']),
-    (series: 'power_kw', ecuTx: null, did: null, halNames: ['motor_power']),
+    // v0.2.35+234: battery_power_kw (recon p158), motor_power — до +234.
+    (series: 'power_kw', ecuTx: null, did: null,
+        halNames: ['battery_power_kw', 'motor_power']),
   ];
 
   static const int _kTripSeriesMaxPoints = 240;
@@ -4956,7 +4958,7 @@ class CloudSyncService extends ChangeNotifier {
   /// Read app version from the static value baked into the build.
   /// We don't have package_info_plus as a dep — pubspec-version is
   /// hardcoded here. Update when bumping. Off-by-one tolerated.
-  Future<String> _readAppVersion() async => '0.2.34+233';
+  Future<String> _readAppVersion() async => '0.2.35+234';
 }
 
 // ─── Internal exceptions ────────────────────────────────────────────

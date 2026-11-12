@@ -288,8 +288,35 @@ EnergySplitResult computeEnergySplitAuto(
   DateTime end,
 ) =>
     points.any((p) => p.name == 'inverter_current')
-        ? computeEnergySplitV2(points, start, end)
+        ? checkSampleSplit(computeEnergySplitV2(points, start, end), points,
+            start)
         : computeEnergySplit(points, start, end);
+
+/// v0.2.35+234 — ПРОВЕРКА ОЦЕНКИ v2s. Те же проверки, что у событийной v2
+/// ([energySplitCheck]), по суммам тех же отсчётов hal_samples через
+/// [EventEnergyAccumulator] с пределом [EventEnergyAccumulator.sampleGapMs].
+/// Не прошла — частей нет, пак, тяга и рекуперация остаются, причина — в
+/// [EnergySplitResult.rejected] (строка EnergySplit в app_log).
+EnergySplitResult checkSampleSplit(
+  EnergySplitResult r,
+  List<({DateTime ts, String name, double v})> points,
+  DateTime start,
+) {
+  if (!r.hasSplit) return r;
+  final acc = EventEnergyAccumulator(start.millisecondsSinceEpoch,
+      maxGapMs: EventEnergyAccumulator.sampleGapMs);
+  for (final p in points) {
+    acc.add(p.name, p.v, p.ts.millisecondsSinceEpoch);
+  }
+  final why = energySplitCheck(acc.snapshot());
+  if (why == null) return r;
+  return EnergySplitResult(
+      r.packKwh, r.coverage, r.coveredSeconds, null, null, null,
+      model: r.model,
+      tractionKwh: r.tractionKwh,
+      regenKwh: r.regenKwh,
+      rejected: why);
+}
 
 /// v0.2.34+233 — СОБЫТИЙНЫЕ СУММЫ ПОЕЗДКИ. Снимок [EventEnergyAccumulator],
 /// неизменяемый: его кладёт HalTelemetryService в trips.extra (раз в минуту
@@ -339,7 +366,30 @@ class EventEnergySums {
     required this.minutesLow,
     required this.minutesNegative,
     required this.minuteMinKw,
+    this.batteryRegenKwh,
+    this.firehose = const {},
+    this.firehoseStatus,
   });
+
+  /// v0.2.35+234: рекуперация В БАТАРЕЮ — ∫V·I_бат при токе батареи < 0
+  /// по тем же интервалам. Меньше рекуперации инвертора на бортовую сеть
+  /// в эти секунды (Друг 3). null в суммах до +234.
+  final double? batteryRegenKwh;
+
+  /// v0.2.35+234: поля firehose за поездку — первое и последнее значение
+  /// подтверждённых счётчиков ([firehoseTripFields]), только для сверки
+  /// итога в app_log. Состояние сверки контрольных полей с HAL на момент
+  /// снимка — [firehoseStatus] (`ok`, `unchecked`, `mismatch`).
+  final Map<String, (double, double)> firehose;
+  final String? firehoseStatus;
+
+  /// Подтверждённые поля firehose, первое и последнее значение которых
+  /// копится за поездку (recon FirehoseFieldTable, p158).
+  static const List<String> firehoseTripFields = [
+    'gb_cycle_discharge_kwh',
+    'gb_cycle_regen_kwh',
+    'gb_remaining_energy_kwh',
+  ];
 
   /// Отношение рекуперации инвертора к рекуперации вала; null без вала.
   double? get regenRatio =>
@@ -366,6 +416,13 @@ class EventEnergySums {
           'neg': minutesNegative,
           if (minuteMinKw != null) 'minKw': _r(minuteMinKw!),
         },
+        if (batteryRegenKwh != null) 'regenBat': _r(batteryRegenKwh!),
+        if (firehoseStatus != null || firehose.isNotEmpty)
+          'fh': {
+            if (firehoseStatus != null) 'st': firehoseStatus,
+            for (final e in firehose.entries)
+              e.key: [_r(e.value.$1), _r(e.value.$2)],
+          },
       };
 
   /// Патч для AppDatabase.mergeTripExtra: версия блоба общая для всех
@@ -401,6 +458,23 @@ class EventEnergySums {
         minuteMinKw: mn is Map && mn['minKw'] is num
             ? (mn['minKw'] as num).toDouble()
             : null,
+        batteryRegenKwh:
+            m['regenBat'] is num ? (m['regenBat'] as num).toDouble() : null,
+        firehose: {
+          if (m['fh'] is Map)
+            for (final e in (m['fh'] as Map).entries)
+              if (e.value is List &&
+                  (e.value as List).length == 2 &&
+                  (e.value as List)[0] is num &&
+                  (e.value as List)[1] is num)
+                e.key as String: (
+                  ((e.value as List)[0] as num).toDouble(),
+                  ((e.value as List)[1] as num).toDouble()
+                ),
+        },
+        firehoseStatus: m['fh'] is Map && (m['fh'] as Map)['st'] is String
+            ? (m['fh'] as Map)['st'] as String
+            : null,
       );
       final core = [
         r.packKwh,
@@ -429,11 +503,17 @@ class EventEnergySums {
 /// тока. Бортовая сеть по минутам поездки = (E_пак − E_инв) / покрытое
 /// время минуты; минута учитывается от [minuteMinMs] покрытия.
 class EventEnergyAccumulator {
-  EventEnergyAccumulator(this.startMs);
+  EventEnergyAccumulator(this.startMs, {this.maxGapMs = gapMs});
+
+  /// v0.2.35+234: предел интервала. Для живого потока — [gapMs]; для
+  /// проверки оценки по hal_samples (каждый сигнал раз в 3–4 с, интервалы
+  /// между соседними строками до ~6 с) — [sampleGapMs].
+  final int maxGapMs;
 
   /// Начало поездки (мс) — отсчёт минут.
   final int startMs;
   static const int gapMs = 5000;
+  static const int sampleGapMs = 10000;
   static const int minuteMinMs = 30000;
 
   final Map<String, double> _last = {};
@@ -441,6 +521,21 @@ class EventEnergyAccumulator {
   double _pack = 0;
   double _trac = 0;
   double _regen = 0;
+  double _regenBat = 0;
+  final Map<String, double> _fhFirst = {};
+  final Map<String, double> _fhLast = {};
+
+  /// v0.2.35+234: состояние сверки firehose с HAL; ставит
+  /// HalTelemetryService при каждой смене и в начале поездки.
+  String? firehoseStatus;
+
+  /// v0.2.35+234: значение подтверждённого поля firehose — первое и
+  /// последнее за поездку. Другие имена не копятся.
+  void addFirehose(String name, double value) {
+    if (!EventEnergySums.firehoseTripFields.contains(name)) return;
+    _fhFirst.putIfAbsent(name, () => value);
+    _fhLast[name] = value;
+  }
   double _shTrac = 0;
   double _shRegen = 0;
   int _covMs = 0;
@@ -464,7 +559,7 @@ class EventEnergyAccumulator {
       final dt = tsMs - tp;
       if (dt < 0) {
         _neg++;
-      } else if (dt > gapMs) {
+      } else if (dt > maxGapMs) {
         _gaps++;
       } else if (dt > 0) {
         _integrate(tp, dt);
@@ -484,6 +579,7 @@ class EventEnergyAccumulator {
       final pb = v * ib / 1000.0;
       final pi = v * ii / 1000.0;
       _pack += pb * h;
+      if (pb < 0) _regenBat -= pb * h;
       if (pi > 0) {
         _trac += pi * h;
       } else {
@@ -542,6 +638,11 @@ class EventEnergyAccumulator {
       packKwh: _pack,
       tractionKwh: _trac,
       regenKwh: _regen,
+      batteryRegenKwh: _regenBat,
+      firehose: {
+        for (final k in _fhFirst.keys) k: (_fhFirst[k]!, _fhLast[k]!),
+      },
+      firehoseStatus: firehoseStatus,
       shaftTractionKwh: _shTrac,
       shaftRegenKwh: _shRegen,
       coveredSeconds: _covMs / 1000.0,
@@ -554,6 +655,38 @@ class EventEnergyAccumulator {
       minuteMinKw: mn,
     );
   }
+}
+
+/// v0.2.35+234 — ПРОВЕРКИ ДРУГА 3, ОДНО МЕСТО для событийной v2 и для
+/// оценки v2s по hal_samples: рекуперация инвертора не больше вала ×
+/// [EnergySplitModel.regenShaftK] + [EnergySplitModel.regenShaftAbsKwh];
+/// минут бортовой сети ниже [EnergySplitModel.boardLowKw] не больше
+/// [EnergySplitModel.boardLowShare], ни одной ниже
+/// [EnergySplitModel.boardNegKw]. null — проверки пройдены, иначе причина.
+/// До +234 оценка v2s шла без проверок; по экспорту 12.11 ни одна из шести
+/// поездок v2s их не прошла (1223: климат 48 %, Друг 2).
+String? energySplitCheck(EventEnergySums s) {
+  if (s.regenKwh >
+      s.shaftRegenKwh * EnergySplitModel.regenShaftK +
+          EnergySplitModel.regenShaftAbsKwh) {
+    return 'regen_above_shaft';
+  }
+  if (s.minutes > 0 &&
+      (s.minutesLow > EnergySplitModel.boardLowShare * s.minutes ||
+          s.minutesNegative > 0)) {
+    return 'board_minutes';
+  }
+  return null;
+}
+
+/// v0.2.35+234 — ПОКРЫВАЮТ ЛИ СУММЫ ПОЕЗДКУ. Одно правило для раскладки
+/// ([computeEnergySplitEvents]) и для рекуперации поездки
+/// (HalTelemetryService): суммы берутся, только если покрыто не меньше
+/// [EnergySplitModel.minCoverage] времени поездки.
+bool eventSumsCoverTrip(EventEnergySums s, DateTime start, DateTime end) {
+  final dur = end.difference(start).inMilliseconds / 1000.0;
+  if (dur <= 0) return false;
+  return math.min(1.0, s.coveredSeconds / dur) >= EnergySplitModel.minCoverage;
 }
 
 /// v0.2.34+233 — РАСКЛАДКА v2 ПО СОБЫТИЙНЫМ СУММАМ, зеркало
@@ -571,9 +704,9 @@ class EventEnergyAccumulator {
 /// пак остаётся.
 EnergySplitResult? computeEnergySplitEvents(
     EventEnergySums s, DateTime start, DateTime end) {
+  if (!eventSumsCoverTrip(s, start, end)) return null;
   final dur = end.difference(start).inMilliseconds / 1000.0;
-  final cov = dur > 0 ? math.min(1.0, s.coveredSeconds / dur) : 0.0;
-  if (cov < EnergySplitModel.minCoverage) return null;
+  final cov = math.min(1.0, s.coveredSeconds / dur);
   final covered = s.coveredSeconds.round();
   EnergySplitResult partless([String? why]) => EnergySplitResult(
       s.packKwh, cov, covered, null, null, null,
@@ -585,16 +718,8 @@ EnergySplitResult? computeEnergySplitEvents(
   if (dur < EnergySplitModel.minTripSeconds || s.packKwh <= 0) {
     return partless();
   }
-  if (s.regenKwh >
-      s.shaftRegenKwh * EnergySplitModel.regenShaftK +
-          EnergySplitModel.regenShaftAbsKwh) {
-    return partless('regen_above_shaft');
-  }
-  if (s.minutes > 0 &&
-      (s.minutesLow > EnergySplitModel.boardLowShare * s.minutes ||
-          s.minutesNegative > 0)) {
-    return partless('board_minutes');
-  }
+  final why = energySplitCheck(s);
+  if (why != null) return partless(why);
   var motion = s.tractionKwh - s.regenKwh;
   var climate = s.packKwh - motion;
   if (climate < 0) {
@@ -645,6 +770,10 @@ class EnergySplitService {
   /// (см. [_relabelSampleV2]). Привязан к базе, как [recomputeKey].
   static const String relabelKey = 'energy_split_v2s_233';
 
+  /// v0.2.35+234: разовая перепроверка v2s с частями (см.
+  /// [_recheckSampleSplits]). Привязан к базе.
+  static const String recheckKey = 'energy_split_v2s_checks_234';
+
   StreamSubscription<List<Trip>>? _sub;
   bool _busy = false;
   bool _again = false;
@@ -683,6 +812,7 @@ class EnergySplitService {
   void start() {
     unawaited(_recomputePartless());
     unawaited(_relabelSampleV2());
+    unawaited(_recheckSampleSplits());
     _sub ??= _db.watchTripsAwaitingSplit().listen((_) => unawaited(_kick()));
     _liveTimer ??=
         Timer.periodic(liveInterval, (_) => unawaited(_liveTick()));
@@ -810,6 +940,35 @@ class EnergySplitService {
     }
   }
 
+  /// v0.2.35+234 — ПЕРЕПРОВЕРКА ОЦЕНОК ПО ПРАВИЛУ. Каждая закрытая поездка
+  /// v2s с частями посчитана без проверок Друга 3. Если её hal_samples
+  /// ещё здесь, разделение снимается; наблюдение посчитает её заново, уже
+  /// с проверками ([checkSampleSplit]), и отправит — пустые части на
+  /// сервере стирают старые (правило Друга 2). Без данных поездку проверить
+  /// нечем, и она не трогается.
+  Future<void> _recheckSampleSplits() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (prefs.getBool(recheckKey) ?? false) return;
+      final since = await _db.earliestHalSampleAt();
+      var n = 0;
+      if (since != null) {
+        for (final t in await _db.closedTripsWithSplitModel(
+            EnergySplitModel.versionV2s)) {
+          if (t.energyMotionKwh == null) continue;
+          if (t.startedAt.isBefore(since)) continue;
+          await _db.clearEnergySplit(t.id);
+          n++;
+        }
+      }
+      await prefs.setBool(recheckKey, true);
+      debugPrint('EnergySplit: v2s with parts re-checked: $n cleared for '
+          'recompute with the Friend 3 checks (+234)');
+    } catch (e) {
+      debugPrint('EnergySplit: v2s re-check pass failed: $e');
+    }
+  }
+
   static bool _sortedByTs(List<({DateTime ts, String name, double v})> xs) {
     for (var i = 1; i < xs.length; i++) {
       if (xs[i].ts.isBefore(xs[i - 1].ts)) return false;
@@ -894,6 +1053,7 @@ class EnergySplitService {
           '${r.tractionKwh == null ? '' : 'traction=${r.tractionKwh!.toStringAsFixed(3)} '
               'regen=${r.regenKwh!.toStringAsFixed(3)} '}'
           '${_eventsLog(r)}'
+          '${r.rejected == null ? '' : 'rejected=${r.rejected} '}'
           'model=${r.model}');
       // v0.2.30+229: любая записанная модель — на отправку (см. onTripsSplit).
       split.add(t.id);
@@ -922,7 +1082,29 @@ class EnergySplitService {
         'minutes=${e.minutes} low=${e.minutesLow} below_neg=${e.minutesNegative} '
         'min_kw=${e.minuteMinKw == null ? '-' : e.minuteMinKw!.toStringAsFixed(2)} '
         'n=$counts '
-        '${r.rejected == null ? '' : 'rejected=${r.rejected} '}';
+        '${e.batteryRegenKwh == null ? '' : 'regen_bat=${e.batteryRegenKwh!.toStringAsFixed(3)} '}'
+        '${_firehoseLog(e)}';
+  }
+
+  /// v0.2.35+234: сверка итога со счётчиками firehose (Друг 3): разряд и
+  /// заряд за цикл включения (0x2D0, шаг 0.1 кВт·ч, сброс при выключении —
+  /// сравнивать только по концу поездки) и остаток пака (0x2EE). Значение
+  /// меньше начального у счётчика — сброс внутри поездки, разность не
+  /// пишется. `fh_st` — сверка контрольных полей с HAL; при `mismatch`
+  /// числа firehose недостоверны.
+  static String _firehoseLog(EventEnergySums e) {
+    if (e.firehose.isEmpty && e.firehoseStatus == null) return '';
+    String delta(String k, {bool down = false}) {
+      final v = e.firehose[k];
+      if (v == null) return '-';
+      final d = down ? v.$1 - v.$2 : v.$2 - v.$1;
+      if (!down && d < 0) return 'reset';
+      return d.toStringAsFixed(1);
+    }
+    return 'fh_st=${e.firehoseStatus ?? '-'} '
+        'fh_dis=${delta('gb_cycle_discharge_kwh')} '
+        'fh_reg=${delta('gb_cycle_regen_kwh')} '
+        'fh_rem_drop=${delta('gb_remaining_energy_kwh', down: true)} ';
   }
 
   /// v0.2.31+230 — ОДНА СТРОКА НА ПРОХОД. Восстановление из облака вносит

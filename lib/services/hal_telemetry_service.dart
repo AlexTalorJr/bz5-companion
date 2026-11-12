@@ -36,6 +36,7 @@ import '../data/database.dart';
 import 'bg_trip_builder.dart';
 import 'cell_pair.dart';
 import 'energy_split_service.dart';
+import 'firehose_check.dart';
 import 'hal_bg_journal.dart';
 import 'hal_telemetry_channel.dart';
 import 'native_car_channel.dart';
@@ -280,7 +281,8 @@ class HalTelemetryService extends ChangeNotifier
     // the driver HAL split populated across brief gaps (dims via isStale).
     'motor_rpm': Duration(milliseconds: 1500),
     'motor_torque': Duration(milliseconds: 1500),
-    'motor_power': Duration(milliseconds: 1500),
+    // v0.2.35+234: recon p158 — motor_power стал battery_power_kw.
+    'battery_power_kw': Duration(milliseconds: 1500),
     // v0.1.29+82: brake_pedal is EDGE-triggered (frame on change only) and
     // now STICKY — halBrakePedalPressed reads the held _lastGood value, not
     // halFresh, so this window is no longer the gate. Kept (used by isStale/
@@ -388,14 +390,14 @@ class HalTelemetryService extends ChangeNotifier
     // выравнивание кадра, а вся езда назад, и на панели обороты в заднем
     // ходу гасли.
     //
-    // Страж `motor_power` НЕ трогаем сознательно. Он отбраковывает 6
+    // Страж `battery_power_kw` (до +234 `motor_power`) НЕ трогаем сознательно. Он отбраковывает 6
     // замеров из 8863, и все шесть — ровно 3095 с 0x15100020 в разные
     // дни. Одинаковое до цифры значение — это метка «нет данных» от
     // машины, а не настоящая мощность 3 МВт. Здесь страж работает как
     // задумано.
     'motor_rpm': (-25000, 25000),
     'motor_torque': (-400, 400),
-    'motor_power': (-250, 250),
+    'battery_power_kw': (-250, 250),
     // v0.1.29+80: brake-pedal toggle (GEARBOX_BRAKE_PEDAL, already decoded
     // by the vendored DecoderTable and pushed via the Gearbox subscription;
     // adding it to _range is what makes the service actually CONSUME it).
@@ -508,7 +510,7 @@ class HalTelemetryService extends ChangeNotifier
     'probe_highest_temp', 'motor_temp', 'inverter_temp',
     // v0.1.29+75: motor signals held across brief drive-stream gaps so
     // the driver HAL split stays populated (dims via isStale when ageing).
-    'motor_rpm', 'motor_torque', 'motor_power',
+    'motor_rpm', 'motor_torque', 'battery_power_kw',
     // v0.2.8+207: флаг кабеля — событийный (1 при втыкании, 0 при
     // выдёргивании, между ними часы тишины); без липкости значение
     // пропадает на первом же удержании _lastGood.
@@ -881,6 +883,10 @@ class HalTelemetryService extends ChangeNotifier
   final Stopwatch _eventEnergyPersistClock = Stopwatch();
   static const Duration _kEventEnergyPersist = Duration(minutes: 1);
   Future<void> _eventEnergyWrites = Future<void>.value();
+  // v0.2.35+234: сверка контрольных полей firehose с HAL (заново на каждую
+  // поездку) и её состояние в суммах поездки.
+  final FirehoseCheck _firehoseCheck = FirehoseCheck();
+  String get firehoseState => _firehoseCheck.state;
   // v0.1.29+106: watchdog flush clock. While a HAL trip is active, the trip's
   // aggregate snapshot + a last-alive timestamp are written to the row every
   // _kHalAliveFlush (on the speed ticks — no separate Timer). If the process is
@@ -1679,11 +1685,11 @@ class HalTelemetryService extends ChangeNotifier
   //    signed — drive +, regen −, peak 330 Nm nameplate), motor_power
   //    0x15100020 (kW, signed, whole kW). Shown only in the driver HAL
   //    trip-split; held via the sticky cache and dimmed by isStale.
-  //    v0.2.34+233: несмотря на имя, это мощность БАТАРЕИ, а не вала:
-  //    по корпусу recon 09.11 её интеграл 3.37 кВт·ч при паке 3.60 и вале
-  //    2.03 (Друг 1, подтверждено Другом 3). Имя приходит из вендорной
-  //    таблицы recon и меняется там (решение владельца 11.11); здесь —
-  //    подпись «мощность батареи». ──
+  //    v0.2.34+233: это мощность БАТАРЕИ, а не вала: по корпусу recon
+  //    09.11 её интеграл 3.37 кВт·ч при паке 3.60 и вале 2.03.
+  //    v0.2.35+234: recon p158 переименовал её в `battery_power_kw`; в
+  //    hal_samples до +234 она лежит под `motor_power`, графики читают
+  //    оба имени. Только для показа, не интегрировать. ──
 
   double? get halMotorRpm => _heldValue('motor_rpm', _coreHold);
   bool get useHalForMotorRpm => _useHal('motor_rpm');
@@ -1691,8 +1697,8 @@ class HalTelemetryService extends ChangeNotifier
   double? get halMotorTorqueNm => _heldValue('motor_torque', _coreHold);
   bool get useHalForMotorTorque => _useHal('motor_torque');
 
-  double? get halMotorPowerKw => _heldValue('motor_power', _coreHold);
-  bool get useHalForMotorPower => _useHal('motor_power');
+  double? get halBatteryPowerKw => _heldValue('battery_power_kw', _coreHold);
+  bool get useHalForBatteryPower => _useHal('battery_power_kw');
 
   // ── BigData battery signals (v0.1.29+84). Recon confirmed these flow via
   //    DecodedStreamSink on v0.10.68 and ground-truth-matched them, so no
@@ -2217,6 +2223,9 @@ class HalTelemetryService extends ChangeNotifier
     _eventEnergyPersistClock
       ..reset()
       ..start();
+    // v0.2.35+234: сверка firehose — заново на каждую поездку.
+    _firehoseCheck.resetForTrip();
+    _eventEnergy!.firehoseStatus = _firehoseCheck.state;
     _halTripStartSoc = null;      // latched later, on first valid SOC frame
     _halTripStartSocPrecise = false;
     _halSpeedStartConfirmStart = null; // v0.1.29+104: clear speed-start clock
@@ -2581,6 +2590,16 @@ class HalTelemetryService extends ChangeNotifier
   /// derive from trip_a / start-SOC deltas captured while driving, so they stay
   /// correct; only the absolute end anchors need the back-date.
   _HalTripAgg _collectHalTripAggregates({_HalStopSnapshot? asOf}) {
+    // v0.2.35+234: рекуперация поездки — в батарею по событиям, если суммы
+    // покрывают поездку (то же правило, что у раскладки); иначе — прежний
+    // счёт по секундным тикам мощности батареи.
+    final ev = _eventEnergyAt(asOf);
+    final start = _halTripStartedAt;
+    final evRegen = ev != null &&
+            start != null &&
+            eventSumsCoverTrip(ev, start, asOf?.at ?? DateTime.now())
+        ? ev.batteryRegenKwh
+        : null;
     return (
       endSoc: asOf?.soc ?? halSocForTrip,
       // v0.1.48+147 (K5): third link — last-good odometer. Field case id93
@@ -2606,7 +2625,7 @@ class HalTelemetryService extends ChangeNotifier
       // moving/idle split, which is wrong).
       movingSecs: _halSpeedSamples > 0 ? _halSpeedSamples : null,
       idleSecs: _halIdleSeconds > 0 ? _halIdleSeconds : null,
-      regenKwh: _halRegenEnergyKwh > 0 ? _halRegenEnergyKwh : null,
+      regenKwh: evRegen ?? (_halRegenEnergyKwh > 0 ? _halRegenEnergyKwh : null),
       minTemp: _halTripMinTempC,
       maxTemp: _halTripMaxTempC,
       maxSpread: _halTripMaxCellSpreadMv,
@@ -2638,7 +2657,7 @@ class HalTelemetryService extends ChangeNotifier
     // endedAt, и читает суммы из extra: в обратном порядке она посчитала бы
     // по hal_samples. Закрытие по началу зарядки (asOf) — суммы последнего
     // движения; если их нет, суммы не пишутся (минутные остаются).
-    final ev = asOf != null ? asOf.eventEnergy : _eventEnergy?.snapshot();
+    final ev = _eventEnergyAt(asOf);
     // Fire-and-forget; a DB error must never disturb the stream/lifecycle.
     (ev == null ? Future<void>.value() : _queueEventEnergyWrite(db, id, ev))
         .then((_) => db.endTrip(
@@ -2694,6 +2713,28 @@ class HalTelemetryService extends ChangeNotifier
     // момент выбора окна 14.08, и ни одной после поездок 15–17.08.
     // Поездки ГУ закрывает эта машина — крюк обязан стоять здесь же.
     unawaited(_rotateHalRetention());
+  }
+
+  /// v0.2.35+234: суммы на момент закрытия — одно место для итоговой
+  /// записи и для агрегатов поездки. Закрытие по началу зарядки (asOf) —
+  /// суммы последнего движения.
+  EventEnergySums? _eventEnergyAt(_HalStopSnapshot? asOf) =>
+      asOf != null ? asOf.eventEnergy : _eventEnergy?.snapshot();
+
+  /// v0.2.35+234: поле firehose — сверка контрольных полей с HAL (обе
+  /// стороны приходят сюда же) и первое/последнее значение счётчиков за
+  /// поездку. Смена состояния сверки — строка в app_log и в суммы поездки.
+  void _feedFirehose(HalEvent e, double v) {
+    if (_firehoseCheck.feed(e.name, v, e.ts)) {
+      final st = _firehoseCheck.state;
+      debugPrint(st == FirehoseCheck.mismatch
+          ? 'Firehose: control fields DIVERGE from HAL '
+              '(${_firehoseCheck.lastDetail}) — firehose values untrusted '
+              'until the next trip'
+          : 'Firehose: control fields match HAL — firehose values trusted');
+      _eventEnergy?.firehoseStatus = st;
+    }
+    _eventEnergy?.addFirehose(e.name, v);
   }
 
   /// v0.2.34+233: запись событийных сумм в extra — в очередь за прежними.
@@ -4096,6 +4137,7 @@ class HalTelemetryService extends ChangeNotifier
     // v0.2.34+233: событийный счёт энергии — до машины поездки, чтобы
     // закрытие на этом же событии получило его в суммах.
     _feedEventEnergy(e, d);
+    _feedFirehose(e, d);
     _feedParkedClimate();
     // v0.2.0+199: замер изоляции пришёл — подтянуть норму. Место
     // выбрано здесь, а не в геттере: геттер читается на каждой

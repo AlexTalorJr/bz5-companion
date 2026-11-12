@@ -1394,9 +1394,10 @@ String _fmtDur(int? seconds) {
 ///
 /// v0.2.27+226: части в kWh — доля × энергия пака (интеграл V·I за
 /// поездку, `energyPackKwh`), сумма частей = энергия пака. Разница с
-/// «Энергией» поездки (она считается по SOC) — отдельной строкой «Потери
-/// пака и погрешность SOC»; она бывает отрицательной и показывается как
-/// есть (поездка 1131 при 5–6 °C: 8.7 %, 399: 1.7 %, Друг 3 06.11). Без
+/// «Энергией» поездки (она считается по SOC) — отдельной строкой «Разница
+/// с расходом по SOC» (до +234 «Потери пака и погрешность SOC»: по Другу 3
+/// это в основном шаг и сглаживание SOC); она бывает отрицательной и
+/// показывается как есть (поездка 1131 при 5–6 °C: 8.7 %, 399: 1.7 %, Друг 3 06.11). Без
 /// энергии пака — прежний показ от `energyUsedKwh`, без строки. Меняется
 /// только показ: хранимые и отправляемые части остаются в масштабе
 /// `energyUsedKwh` (правило Друга 2), доли и живая строка те же.
@@ -1445,6 +1446,16 @@ class EnergySplitCard extends StatelessWidget {
             const SizedBox(height: 10),
             EnergySplitBar(shares: sh),
             const SizedBox(height: 10),
+            // v0.2.35+234: итог поездки остаётся по SOC (решение владельца
+            // 12.11); энергия пака по току — отдельной строкой, от неё доли.
+            if (packKwh != null)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 2),
+                child: Row(children: [
+                  Expanded(child: Text(S.of('trip.split_from_battery'))),
+                  Text('${packKwh.toStringAsFixed(2)} kWh'),
+                ]),
+              ),
             for (final p in parts)
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 2),
@@ -1477,8 +1488,8 @@ class EnergySplitCard extends StatelessWidget {
 
 /// v0.1.29+113: Tesla-style trip power profile. Replaces the HV-bus voltage
 /// chart (no HAL equivalent, low value). Loads the raw motor_power series
-/// (signed kW: + traction, − regen; v0.2.34+233: battery power despite the
-/// name, whole kW) from hal_samples and bins it into narrow
+/// (signed kW: + traction, − regen; battery power, whole kW; named
+/// battery_power_kw since +234, motor_power before) from hal_samples and bins it into narrow
 /// bars over the trip's time span — each bar is the MEAN power in its bin
 /// (bin width = span / barCount). Raw data is never smoothed; only the
 /// display is binned, matching the "as in a Tesla" ask. Traction bars point
@@ -1528,8 +1539,13 @@ class _PowerBarCard extends StatelessWidget {
   /// branch and drives the honesty caption (LTTB-240 coarsens a long
   /// trip's shape; the bins over ≤240 points are still correct means).
   Future<(List<double>, bool)> _bins() async {
-    final rows =
-        await svc.db.getHalSamplesForTripByName(trip.id, 'motor_power');
+    // v0.2.35+234: battery_power_kw (recon p158); поездки до +234 хранят
+    // тот же ряд под старым именем motor_power.
+    var rows =
+        await svc.db.getHalSamplesForTripByName(trip.id, 'battery_power_kw');
+    if (rows.length < 2) {
+      rows = await svc.db.getHalSamplesForTripByName(trip.id, 'motor_power');
+    }
     if (rows.length >= 2) {
       return (
         _binPoints([for (final r in rows) (r.timestamp, r.numericValue)]),

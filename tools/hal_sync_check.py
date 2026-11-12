@@ -105,10 +105,11 @@ def check_vendoring():
         return
     # v0.1.29+107: 6 vendored files — the original 5 (recon p078) plus the
     # BZ3 engine Bz3TelemetrySubscriber.kt (recon p100 / v0.10.79).
-    if len(files) != 6:
-        fail(f"manifest lists {len(files)} files, expected 6")
+    # v0.2.35+234: 7 — plus FirehoseFieldTable.kt (recon v0.10.158).
+    if len(files) != 7:
+        fail(f"manifest lists {len(files)} files, expected 7")
         return
-    ok(f"manifest: default version {default_version}, 6 files")
+    ok(f"manifest: default version {default_version}, 7 files")
 
     for fname, (sha, per_line_ver) in files.items():
         # the version this file's header must declare: its own if given,
