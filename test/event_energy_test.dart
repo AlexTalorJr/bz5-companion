@@ -67,6 +67,9 @@ void main() {
     expect(s.minutesLow, 1);
     expect(s.minutesNegative, 0);
     expect(s.minuteMinKw, closeTo(0.15, 0.005));
+    // v0.2.36+235: ни одной минуты ниже −0.3, серий нет.
+    expect(s.minutesBelowRun, 0);
+    expect(s.negRunMax, 0);
     // v0.2.35+234: рекуперация в батарею — меньше инверторной, у счётчика
     // 0x2D0 за ту поездку +1.6 (Друг 3: ∫V·I(−) 1.57).
     expect(s.batteryRegenKwh, closeTo(1.583, 0.005));
@@ -103,6 +106,8 @@ void main() {
     expect(back.counts, s.counts);
     expect(back.minutes, s.minutes);
     expect(back.batteryRegenKwh, closeTo(s.batteryRegenKwh!, 1e-4));
+    expect(back.negRunMax, s.negRunMax);
+    expect(back.minutesBelowRun, s.minutesBelowRun);
     expect(EventEnergySums.fromExtra('{"v":1,"speedHist":[1]}'), isNull);
     expect(EventEnergySums.fromExtra('not json'), isNull);
   });
@@ -125,7 +130,12 @@ void main() {
   });
 
   test('checks: regen above shaft and bad board minutes leave no parts', () {
-    EventEnergySums sums({double regen = 1.0, int low = 0, int neg = 0}) =>
+    EventEnergySums sums(
+            {double regen = 1.0,
+            int low = 0,
+            int neg = 0,
+            int neg3 = 0,
+            int? run = 0}) =>
         EventEnergySums(
           packKwh: 3.0,
           tractionKwh: 3.0,
@@ -140,6 +150,8 @@ void main() {
           minutesLow: low,
           minutesNegative: neg,
           minuteMinKw: 0.5,
+          minutesBelowRun: neg3,
+          negRunMax: run,
         );
     final a = DateTime.fromMillisecondsSinceEpoch(0);
     final b = DateTime.fromMillisecondsSinceEpoch(1000000);
@@ -151,7 +163,20 @@ void main() {
     expect(r1.packKwh, 3.0);
     expect(computeEnergySplitEvents(sums(low: 2), a, b)!.rejected,
         'board_minutes');
-    expect(computeEnergySplitEvents(sums(neg: 1), a, b)!.rejected,
+    expect(
+        computeEnergySplitEvents(sums(neg: 1, neg3: 1, run: 1), a, b)!
+            .rejected,
+        'board_minutes');
+    // v0.2.36+235: одна минута между −0.5 и −0.3 кВт проходит, две подряд
+    // ниже −0.3 — нет, две порознь — проходят.
+    expect(computeEnergySplitEvents(sums(neg3: 1, run: 1), a, b)!.rejected,
+        isNull);
+    expect(computeEnergySplitEvents(sums(neg3: 2, run: 2), a, b)!.rejected,
+        'board_minutes');
+    expect(computeEnergySplitEvents(sums(neg3: 2, run: 1), a, b)!.rejected,
+        isNull);
+    // Суммы до +235 (серии не считались): прежнее правило.
+    expect(computeEnergySplitEvents(sums(neg3: 1, run: null), a, b)!.rejected,
         'board_minutes');
     // Покрытие ниже 0.8 поездки — суммы не берутся (оценка по hal_samples).
     expect(
@@ -160,6 +185,44 @@ void main() {
         isNull);
     expect(EnergySplitModel.twoParts(EnergySplitModel.versionV2s), isTrue);
     expect(EnergySplitModel.twoParts(EnergySplitModel.version), isFalse);
+  });
+
+  test('board minutes +235: runs below -0.3 kW counted on neighbouring minutes',
+      () {
+    // Бортовая сеть минуты = (E_пак − E_инв) / покрытое время; инвертор 0,
+    // мощность минуты задаёт ток батареи при 400 В.
+    EventEnergySums minutes(List<double> kws) {
+      final acc = EventEnergyAccumulator(0);
+      var t = 0;
+      for (final kw in kws) {
+        for (var k = 0; k < 60000; k += 1000) {
+          acc.add('pack_voltage', 400, t + k);
+          acc.add('inverter_current', 0, t + k);
+          acc.add('pack_current', kw * 1000 / 400, t + k);
+        }
+        t += 60000;
+      }
+      acc.add('pack_current', 0, t);
+      return acc.snapshot();
+    }
+
+    final apart = minutes([1.0, -0.4, 1.0, -0.4, 1.0]);
+    expect(apart.minutesBelowRun, 2);
+    expect(apart.negRunMax, 1);
+    expect(apart.minutesNegative, 0);
+    final together = minutes([1.0, -0.4, -0.4, 1.0]);
+    expect(together.negRunMax, 2);
+    final last = minutes([1.0, -0.6]);
+    expect(last.minutesNegative, 1);
+    expect(last.negRunMax, 1);
+    // Суммы до +235 в extra: `neg` — минуты ниже −0.3, серии нет.
+    final old = EventEnergySums.fromExtra(
+        '{"v":1,"evE":{"f":1,"pack":1,"trac":1,"regen":0,"shTrac":1,'
+        '"shRegen":0,"covS":600,"neg":0,"gaps":0,"n":{},'
+        '"min":{"n":10,"low":0,"neg":1}}}')!;
+    expect(old.negRunMax, isNull);
+    expect(old.minutesBelowRun, 1);
+    expect(energySplitCheck(old), 'board_minutes');
   });
 
   test('firehose counters: first and last per trip, status kept', () {

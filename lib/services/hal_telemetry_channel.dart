@@ -77,6 +77,13 @@ class HalEvent {
   final bool typeConflict;
   final String? carrier;
 
+  /// v0.2.36+235: поле firehose (recon FirehoseFieldTable) — статус по
+  /// вендорной таблице: [firehoseConfirmed] или `candidate`; null у всех
+  /// остальных событий. Ставит DecodedStreamSink (ключ `fh`). Ветка Dart
+  /// различает только подтверждённые, всё прочее — кандидат.
+  final String? firehose;
+  static const String firehoseConfirmed = 'confirmed';
+
   const HalEvent({
     required this.name,
     required this.unit,
@@ -90,6 +97,7 @@ class HalEvent {
     this.text,
     this.typeConflict = false,
     this.carrier,
+    this.firehose,
   });
 
   factory HalEvent.fromMap(Map<Object?, Object?> m) => HalEvent(
@@ -105,6 +113,7 @@ class HalEvent {
         text: m['text'] as String?,
         typeConflict: m['type_conflict'] == true,
         carrier: m['carrier'] as String?,
+        firehose: m['fh'] as String?,
       );
 
   @override

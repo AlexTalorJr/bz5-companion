@@ -310,8 +310,14 @@ class DecodedStreamSink(
     // меняется почти каждый кадр (Друг 3, 12.11). Часы — монотонные.
     // Сверку контрольных полей с HAL делает Dart (HalTelemetryService).
     // События HAL приходят с потоков биндера — карта общая для них.
+    // v0.2.36+235: каждое событие поля несёт ключ `fh` — `confirmed` или
+    // `candidate` по вендорной таблице. Dart ведёт поля firehose своей
+    // веткой по этому ключу, а не по списку имён: в +234 имён не было в
+    // фильтре `_range`, и все поля выбрасывались до сверки и записи.
     private val firehoseCandidateLast = ConcurrentHashMap<String, Long>()
     private val FIREHOSE_CANDIDATE_MIN_MS = 5_000L
+    private val FIREHOSE_CONFIRMED = "confirmed"
+    private val FIREHOSE_CANDIDATE = "candidate"
 
     private fun emitFirehoseFields(
         bufData: ByteArray,
@@ -327,13 +333,15 @@ class DecodedStreamSink(
             val raw = FirehoseFieldTable.extractRaw(f, bufData) ?: continue
             if (f.confirmed) {
                 queue.add(bigDataSignalMap(
-                    f.name, f.unit, FirehoseFieldTable.physical(f, raw), subtype, timestampMs))
+                    f.name, f.unit, FirehoseFieldTable.physical(f, raw), subtype, timestampMs,
+                    firehose = FIREHOSE_CONFIRMED))
                 queued = true
             } else {
                 val last = firehoseCandidateLast[f.name]
                 if (last != null && now - last < FIREHOSE_CANDIDATE_MIN_MS) continue
                 firehoseCandidateLast[f.name] = now
-                queue.add(bigDataSignalMap(f.name, "raw", raw.toDouble(), subtype, timestampMs))
+                queue.add(bigDataSignalMap(f.name, "raw", raw.toDouble(), subtype, timestampMs,
+                    firehose = FIREHOSE_CANDIDATE))
                 queued = true
             }
         }
@@ -346,6 +354,8 @@ class DecodedStreamSink(
      * Dart side routes it like any other signal. The canonical key is built
      * from the BigData target + subtype via the same vendored helpers the
      * decoder path uses, so the Dart allowlist/freshness see a normal name.
+     * v0.2.36+235: [firehose] — статус поля firehose (`confirmed` или
+     * `candidate`) под ключом `fh`; у прочих сигналов BigData там null.
      */
     private fun bigDataSignalMap(
         name: String,
@@ -353,8 +363,10 @@ class DecodedStreamSink(
         value: Double,
         subtype: Long,
         timestampMs: Long,
+        firehose: String? = null,
     ): Map<String, Any?> =
         mapOf(
+            "fh" to firehose,
             "name" to name,
             "unit" to unit,
             "value" to value,

@@ -30,6 +30,12 @@ class FirehoseCheck {
     for (final e in pairs.entries) e.value: e.key,
   };
 
+  /// v0.2.36+235: имена HAL-стороны пар. HalTelemetryService кормит их в
+  /// сверку до веток, которые их забирают (`ac_` — журнал климата,
+  /// `energy_state` нет в фильтре `_range`): в +234 обе стороны
+  /// выбрасывались раньше сверки, и она стояла в `unchecked`.
+  static bool isHalSide(String name) => _halToFh.containsKey(name);
+
   String state = unchecked;
   String? lastDetail;
   final Map<String, double> _last = {};

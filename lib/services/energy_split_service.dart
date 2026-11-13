@@ -85,7 +85,13 @@ class EnergySplitModel {
   static const double regenShaftAbsKwh = 0.05;
   static const double boardLowKw = 0.2;
   static const double boardLowShare = 0.10;
-  static const double boardNegKw = -0.3;
+
+  /// v0.2.36+235 (Друг 3, 13.11): одиночная минута ниже [boardNegKw]
+  /// бракует части (было −0.3); две минуты подряд ниже [boardRunKw] —
+  /// тоже. Корпус 09.11 проходит: минимум 0.15 кВт.
+  static const double boardNegKw = -0.5;
+  static const double boardRunKw = -0.3;
+  static const int boardRunMinutes = 2;
 
   /// Сигналы модели. `pack_voltage_fine` предпочтительнее, `pack_voltage`
   /// — запасной. `motor_power` не годится: целые кВт, на стоянке 1–2 кВт;
@@ -352,6 +358,13 @@ class EventEnergySums {
   final int minutesNegative;
   final double? minuteMinKw;
 
+  /// v0.2.36+235: минут ниже [EnergySplitModel.boardRunKw] и самая длинная
+  /// серия таких минут подряд (соседние минуты поездки, обе учтены).
+  /// [negRunMax] null — суммы записаны до +235: тогда `neg` в extra
+  /// считал минуты ниже −0.3, и проверка берёт прежнее правило.
+  final int minutesBelowRun;
+  final int? negRunMax;
+
   const EventEnergySums({
     required this.packKwh,
     required this.tractionKwh,
@@ -366,6 +379,8 @@ class EventEnergySums {
     required this.minutesLow,
     required this.minutesNegative,
     required this.minuteMinKw,
+    this.minutesBelowRun = 0,
+    this.negRunMax = 0,
     this.batteryRegenKwh,
     this.firehose = const {},
     this.firehoseStatus,
@@ -414,6 +429,8 @@ class EventEnergySums {
           'n': minutes,
           'low': minutesLow,
           'neg': minutesNegative,
+          'neg3': minutesBelowRun,
+          if (negRunMax != null) 'run': negRunMax,
           if (minuteMinKw != null) 'minKw': _r(minuteMinKw!),
         },
         if (batteryRegenKwh != null) 'regenBat': _r(batteryRegenKwh!),
@@ -458,6 +475,11 @@ class EventEnergySums {
         minuteMinKw: mn is Map && mn['minKw'] is num
             ? (mn['minKw'] as num).toDouble()
             : null,
+        // До +235 ключей `run` и `neg3` нет, `neg` — минуты ниже −0.3.
+        minutesBelowRun: mn is Map
+            ? i(mn['run'] is num ? mn['neg3'] : mn['neg'])
+            : 0,
+        negRunMax: mn is Map && mn['run'] is num ? i(mn['run']) : null,
         batteryRegenKwh:
             m['regenBat'] is num ? (m['regenBat'] as num).toDouble() : null,
         firehose: {
@@ -549,6 +571,11 @@ class EventEnergyAccumulator {
   int _mLow = 0;
   int _mNeg = 0;
   double? _mMin;
+  // v0.2.36+235: минуты ниже boardRunKw и серии подряд.
+  int _mNeg3 = 0;
+  int _runLen = 0;
+  int _runLastIdx = -2;
+  int _runMax = 0;
 
   void add(String name, double value, int tsMs) {
     final ci = EventEnergySums.signals.indexOf(name);
@@ -594,6 +621,12 @@ class EventEnergyAccumulator {
             if (kw < EnergySplitModel.boardLowKw) _mLow++;
             if (kw < EnergySplitModel.boardNegKw) _mNeg++;
             _mMin = _mMin == null ? kw : math.min(_mMin!, kw);
+            if (kw < EnergySplitModel.boardRunKw) {
+              _mNeg3++;
+              _runLen = _runLastIdx == _mIdx - 1 ? _runLen + 1 : 1;
+              _runLastIdx = _mIdx;
+              _runMax = math.max(_runMax, _runLen);
+            }
           }
         }
         _mIdx = idx;
@@ -625,6 +658,8 @@ class EventEnergyAccumulator {
     var low = _mLow;
     var neg = _mNeg;
     var mn = _mMin;
+    var neg3 = _mNeg3;
+    var runMax = _runMax;
     if (_mIdx >= 0) {
       final kw = _minuteKw(_mE, _mCov);
       if (kw != null) {
@@ -632,6 +667,11 @@ class EventEnergyAccumulator {
         if (kw < EnergySplitModel.boardLowKw) low++;
         if (kw < EnergySplitModel.boardNegKw) neg++;
         mn = mn == null ? kw : math.min(mn, kw);
+        if (kw < EnergySplitModel.boardRunKw) {
+          neg3++;
+          final run = _runLastIdx == _mIdx - 1 ? _runLen + 1 : 1;
+          runMax = math.max(runMax, run);
+        }
       }
     }
     return EventEnergySums(
@@ -653,6 +693,8 @@ class EventEnergyAccumulator {
       minutesLow: low,
       minutesNegative: neg,
       minuteMinKw: mn,
+      minutesBelowRun: neg3,
+      negRunMax: runMax,
     );
   }
 }
@@ -662,7 +704,10 @@ class EventEnergyAccumulator {
 /// [EnergySplitModel.regenShaftK] + [EnergySplitModel.regenShaftAbsKwh];
 /// минут бортовой сети ниже [EnergySplitModel.boardLowKw] не больше
 /// [EnergySplitModel.boardLowShare], ни одной ниже
-/// [EnergySplitModel.boardNegKw]. null — проверки пройдены, иначе причина.
+/// [EnergySplitModel.boardNegKw] и не больше одной подряд ниже
+/// [EnergySplitModel.boardRunKw] (+235). Суммы до +235 ([negRunMax] null)
+/// — прежнее правило: ни одной минуты ниже −0.3. null — проверки пройдены,
+/// иначе причина.
 /// До +234 оценка v2s шла без проверок; по экспорту 12.11 ни одна из шести
 /// поездок v2s их не прошла (1223: климат 48 %, Друг 2).
 String? energySplitCheck(EventEnergySums s) {
@@ -671,9 +716,13 @@ String? energySplitCheck(EventEnergySums s) {
           EnergySplitModel.regenShaftAbsKwh) {
     return 'regen_above_shaft';
   }
+  final run = s.negRunMax;
   if (s.minutes > 0 &&
       (s.minutesLow > EnergySplitModel.boardLowShare * s.minutes ||
-          s.minutesNegative > 0)) {
+          (run == null
+              ? s.minutesBelowRun > 0
+              : s.minutesNegative > 0 ||
+                  run >= EnergySplitModel.boardRunMinutes))) {
     return 'board_minutes';
   }
   return null;
@@ -700,8 +749,9 @@ bool eventSumsCoverTrip(EventEnergySums s, DateTime start, DateTime end) {
 /// не больше вала × [EnergySplitModel.regenShaftK] +
 /// [EnergySplitModel.regenShaftAbsKwh]; минут бортовой сети ниже
 /// [EnergySplitModel.boardLowKw] не больше [EnergySplitModel.boardLowShare],
-/// ни одной ниже [EnergySplitModel.boardNegKw]. Не прошла — частей нет,
-/// пак остаётся.
+/// ни одной ниже [EnergySplitModel.boardNegKw], не две подряд ниже
+/// [EnergySplitModel.boardRunKw] ([energySplitCheck]). Не прошла — частей
+/// нет, пак остаётся.
 EnergySplitResult? computeEnergySplitEvents(
     EventEnergySums s, DateTime start, DateTime end) {
   if (!eventSumsCoverTrip(s, start, end)) return null;
@@ -1080,6 +1130,7 @@ class EnergySplitService {
         '${e.shaftRegenKwh.toStringAsFixed(3)} '
         'regen_ratio=${ratio == null ? '-' : ratio.toStringAsFixed(3)} '
         'minutes=${e.minutes} low=${e.minutesLow} below_neg=${e.minutesNegative} '
+        'below_run=${e.minutesBelowRun} run=${e.negRunMax ?? '-'} '
         'min_kw=${e.minuteMinKw == null ? '-' : e.minuteMinKw!.toStringAsFixed(2)} '
         'n=$counts '
         '${e.batteryRegenKwh == null ? '' : 'regen_bat=${e.batteryRegenKwh!.toStringAsFixed(3)} '}'

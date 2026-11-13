@@ -13910,7 +13910,7 @@ if int(pv) >= 230:
         'if (!parked || acOn != true) return _end();' in _de_pc and 'final kw = math.max(0.0, packKw - baseKw);' in _de_pc,
         'final Stopwatch _parkedClimateClock = Stopwatch()..start();' in _de_hts and 't: _parkedClimateClock.elapsed,' in _de_hts,
         'parked: !streamStopped && halGear == 1,' in _de_hts and '_feedParkedClimate(streamStopped: true);' in _de_hts and 'acOn: ac == null ? null : ac == 1,' in _de_hts and 'packKw: halPowerKw,' in _de_hts,
-        ('_logHalDiag(e, d);\n_feedParkedClimate();' if int(pv) < 233 else '_logHalDiag(e, d);\n_feedEventEnergy(e, d);\n_feedParkedClimate();' if int(pv) < 234 else '_logHalDiag(e, d);\n_feedEventEnergy(e, d);\n_feedFirehose(e, d);\n_feedParkedClimate();') in _de_hts,
+        ('_logHalDiag(e, d);\n_feedParkedClimate();' if int(pv) < 233 else '_logHalDiag(e, d);\n_feedEventEnergy(e, d);\n_feedParkedClimate();' if int(pv) < 234 else '_logHalDiag(e, d);\n_feedEventEnergy(e, d);\n_feedFirehose(e, d);\n_feedParkedClimate();' if int(pv) < 235 else '_logHalDiag(e, d);\n_feedEventEnergy(e, d);\n_trackChargePresence(e.name, d);\n_feedParkedClimate();') in _de_hts,
         "if (e.name == 'ac_power_state') {\n_feedParkedClimate();" in _de_hts,
         "debugPrint('ParkedClimate: " in _de_hts,
         (('_ParkedClimateRow(compact: compact),' if int(pv) < 232 else 'ParkedClimateRow(compact: compact),') in _de_dp) and 'if (!m.active || now == null) return const SizedBox.shrink();' in _de_dp,
@@ -14138,14 +14138,17 @@ if int(pv) >= 233:
         'static const int gapMs = 5000;' in _dh_es and 'static const int minuteMinMs = 30000;' in _dh_es,
         # v0.2.35+234: предел интервала — параметр (поток 5 с, отсчёты 10 с, DI6).
         ('} else if (dt > gapMs) {' if int(pv) < 234 else 'EventEnergyAccumulator(this.startMs, {this.maxGapMs = gapMs});') in _dh_es,
-        'GAP_MS = 5000' in _dh_mir and 'MINUTE_MIN_MS = 30000' in _dh_mir and 'REGEN_K, REGEN_ABS = 1.05, 0.05' in _dh_mir and 'LOW_KW, LOW_SHARE, NEG_KW = 0.2, 0.10, -0.3' in _dh_mir,
-        'static const double regenShaftK = 1.05;' in _dh_es and 'static const double regenShaftAbsKwh = 0.05;' in _dh_es and 'static const double boardLowKw = 0.2;' in _dh_es and 'static const double boardLowShare = 0.10;' in _dh_es and 'static const double boardNegKw = -0.3;' in _dh_es,
+        'GAP_MS = 5000' in _dh_mir and 'MINUTE_MIN_MS = 30000' in _dh_mir and 'REGEN_K, REGEN_ABS = 1.05, 0.05' in _dh_mir and
+        # v0.2.36+235: порог одиночной минуты −0.5, серия подряд ниже −0.3 (DJ3).
+        ('LOW_KW, LOW_SHARE, NEG_KW = 0.2, 0.10, -0.3' if int(pv) < 235 else 'LOW_KW, LOW_SHARE, NEG_KW = 0.2, 0.10, -0.5\nRUN_KW, RUN_MINUTES = -0.3, 2') in _dh_mir,
+        'static const double regenShaftK = 1.05;' in _dh_es and 'static const double regenShaftAbsKwh = 0.05;' in _dh_es and 'static const double boardLowKw = 0.2;' in _dh_es and 'static const double boardLowShare = 0.10;' in _dh_es and ('static const double boardNegKw = -0.3;' if int(pv) < 235 else 'static const double boardNegKw = -0.5;\nstatic const double boardRunKw = -0.3;\nstatic const int boardRunMinutes = 2;') in _dh_es,
         # v0.2.35+234: правило покрытия вынесено в eventSumsCoverTrip (DI3).
         ('if (cov < EnergySplitModel.minCoverage) return null;' if int(pv) < 234 else 'if (!eventSumsCoverTrip(s, start, end)) return null;') in _dh1_sp,
         (("return partless('regen_above_shaft');" in _dh1_sp and "return partless('board_minutes');" in _dh1_sp) if int(pv) < 234 else
          ('final why = energySplitCheck(s);\nif (why != null) return partless(why);' in _dh1_sp and
           "if (s.regenKwh >\ns.shaftRegenKwh * EnergySplitModel.regenShaftK +\nEnergySplitModel.regenShaftAbsKwh) {\nreturn 'regen_above_shaft';\n}" in _dh_es and
-          "s.minutesNegative > 0)) {\nreturn 'board_minutes';\n}\nreturn null;\n}" in _dh_es)),
+          ("s.minutesNegative > 0)) {\nreturn 'board_minutes';\n}\nreturn null;\n}" if int(pv) < 235 else
+           "? s.minutesBelowRun > 0\n: s.minutesNegative > 0 ||\nrun >= EnergySplitModel.boardRunMinutes))) {\nreturn 'board_minutes';\n}\nreturn null;\n}") in _dh_es)),
         'var motion = s.tractionKwh - s.regenKwh;\nvar climate = s.packKwh - motion;\nif (climate < 0) {\nclimate = 0;\nmotion = s.packKwh;\n}' in _dh1_sp,
         '(events == null ? null : computeEnergySplitEvents(events, start, end)) ??\ncomputeEnergySplitAuto(points, start, end);' in _dh_es,
         'final r = computeTripEnergySplit(ev, pts, t.startedAt, end);' in _dh_es and _dh_es.count('computeTripEnergySplit(') == 3,
@@ -14212,7 +14215,8 @@ if int(pv) >= 233:
     _dh5 = [
         'if (_running) return Future<void>.value();\nfinal pending = _streamStarting;\nif (pending != null) {' in _dh5_fn and 'return pending;' in _dh5_fn,
         'final f = _startStreamOnce();\n_streamStarting = f;\nreturn f.whenComplete(() => _streamStarting = null);' in _dh5_fn,
-        'Future<void> _startStreamOnce() async {\n_sub = _hal.events.listen(_onEvent' in _dh_hts,
+        # v0.2.36+235: перед подпиской — сброс флагов кабеля и тока (DJ2).
+        ('Future<void> _startStreamOnce() async {\n_sub = _hal.events.listen(_onEvent' if int(pv) < 235 else 'Future<void> _startStreamOnce() async {\n_forgetChargePresence(packCurrent: true, why: \'stream start\');\n_halChargeByCurrentLogged = false;\n_sub = _hal.events.listen(_onEvent') in _dh_hts,
     ]
     if all(_dh5): ok('DH5 a second HAL stream start joins the one in flight instead of subscribing twice')
     else: fail(f'DH5 single-flight stream start drifted: {_dh5}')
@@ -14281,10 +14285,11 @@ if int(pv) >= 234:
     _di2 = [
         'if (emitFirehoseFields(bufData, subtype, timestampMs)) queued = true\nif (queued && drainScheduled.compareAndSet(false, true)) {' in _di_sink,
         'val frame = FirehoseFieldTable.parse(bufData) ?: return false\nval fields = FirehoseFieldTable.fieldsFor(frame.first, frame.second)' in _di_sink,
-        'if (f.confirmed) {\nqueue.add(bigDataSignalMap(\nf.name, f.unit, FirehoseFieldTable.physical(f, raw), subtype, timestampMs))' in _di_sink,
+        # v0.2.36+235: статус поля — ключом `fh` (DJ1).
+        ('if (f.confirmed) {\nqueue.add(bigDataSignalMap(\nf.name, f.unit, FirehoseFieldTable.physical(f, raw), subtype, timestampMs))' if int(pv) < 235 else 'if (f.confirmed) {\nqueue.add(bigDataSignalMap(\nf.name, f.unit, FirehoseFieldTable.physical(f, raw), subtype, timestampMs,\nfirehose = FIREHOSE_CONFIRMED))') in _di_sink,
         'if (last != null && now - last < FIREHOSE_CANDIDATE_MIN_MS) continue' in _di_sink and 'private val FIREHOSE_CANDIDATE_MIN_MS = 5_000L' in _di_sink,
         'val now = SystemClock.elapsedRealtime()' in _di_sink and 'private val firehoseCandidateLast = ConcurrentHashMap<String, Long>()' in _di_sink,
-        'queue.add(bigDataSignalMap(f.name, "raw", raw.toDouble(), subtype, timestampMs))' in _di_sink,
+        ('queue.add(bigDataSignalMap(f.name, "raw", raw.toDouble(), subtype, timestampMs))' if int(pv) < 235 else 'queue.add(bigDataSignalMap(f.name, "raw", raw.toDouble(), subtype, timestampMs,\nfirehose = FIREHOSE_CANDIDATE))') in _di_sink,
     ]
     if all(_di2): ok('DI2 firehose fields decoded by the vendored table in the sink: confirmed as physics every frame, candidates raw at most every 5 s per name on a monotonic clock')
     else: fail(f'DI2 firehose sink drifted: {_di2}')
@@ -14296,7 +14301,8 @@ if int(pv) >= 234:
     _di3 = [
         "'fh_ac_temp_main_c': 'ac_temp_main'," in _di_fc and "'fh_ac_temp_deputy_c': 'ac_temp_deputy'," in _di_fc and "'fh_energy_state': 'energy_state'," in _di_fc,
         'static const int mismatchHoldMs = 10000;' in _di_fc and 'if (state == unchecked) state = ok;' in _di_fc and 'if (tsMs - since >= mismatchHoldMs) {\nstate = mismatch;' in _di_fc,
-        '_feedEventEnergy(e, d);\n_feedFirehose(e, d);' in _di_hts and 'if (_firehoseCheck.feed(e.name, v, e.ts)) {' in _di_hts and '_eventEnergy?.firehoseStatus = st;' in _di_hts and '_eventEnergy?.addFirehose(e.name, v);' in _di_hts,
+        # v0.2.36+235: сверку кормят ветки до фильтра _range (DJ1).
+        ('_feedEventEnergy(e, d);\n_feedFirehose(e, d);' if int(pv) < 235 else '_logHalDiag(e, d, every: _kFirehoseSampleEvery);\n_feedFirehose(e, d);') in _di_hts and 'if (_firehoseCheck.feed(e.name, v, e.ts)) {' in _di_hts and '_eventEnergy?.firehoseStatus = st;' in _di_hts and '_eventEnergy?.addFirehose(e.name, v);' in _di_hts,
         '_firehoseCheck.resetForTrip();\n_eventEnergy!.firehoseStatus = _firehoseCheck.state;' in _di_hts and 'void resetForTrip() {\nstate = unchecked;\nlastDetail = null;\n_mismatchSince.clear();\n}' in _di_fc,
         # Журнал фона: подтверждённые поля firehose — раз в минуту,
         # кандидаты — не пишутся (уроки +185); списки из вендорной таблицы.
@@ -14358,6 +14364,103 @@ if int(pv) >= 234:
     else: fail(f'DI6 v2s checks drifted: {_di6}')
 else:
     ok(f"Part DI skipped (build +{pv}, recon v0.10.158 / firehose / ATRV-only land in +234)")
+
+# ═══════ Part DJ — 0.2.36+235: путь firehose до фильтра, экран зарядки, порог бортовой сети ═══════
+if int(pv) >= 235:
+    _dj_f = lambda t: re.sub(r'\n\s*\n', '\n', re.sub(r'\n[ \t]+', '\n', t))
+    _dj_rd = lambda pth: _dj_f(_strip_comments_safe((root / pth).read_text()))
+    _dj_hal = 'android/app/src/main/kotlin/com/bz5companion/bz5_companion/hal/'
+    _dj_sink = _dj_rd(_dj_hal + 'DecodedStreamSink.kt')
+    _dj_hts = _dj_rd('lib/services/hal_telemetry_service.dart')
+    _dj_ch = _dj_rd('lib/services/hal_telemetry_channel.dart')
+    _dj_fc = _dj_rd('lib/services/firehose_check.dart')
+    _dj_es = _dj_rd('lib/services/energy_split_service.dart')
+    _dj_ban = _dj_rd('lib/widgets/charging_banner.dart')
+    _dj_mir = (root / 'tools/mirror_plus233_events.py').read_text()
+    _dj_test = (root / 'test/event_energy_test.dart').read_text()
+
+    # Тело _onEvent: от сигнатуры до следующего метода.
+    _dj_oi = _dj_hts.find('void _onEvent(HalEvent e) {')
+    _dj_oj = _dj_hts.find('\nvoid ', _dj_oi + 10) if _dj_oi > -1 else -1
+    _dj_on = _dj_hts[_dj_oi:_dj_oj] if -1 < _dj_oi < _dj_oj else ''
+    def _dj_at(needle, txt=None):
+        t = _dj_on if txt is None else txt
+        return t.find(needle)
+    _dj_p_big = _dj_at("if (e.name == 'bigdata_raw') {")
+    _dj_p_fh = _dj_at('if (e.firehose != null) {\n_onFirehoseField(e);\nreturn;\n}')
+    _dj_p_hal = _dj_at('if (FirehoseCheck.isHalSide(e.name)) {\nfinal v = e.value;\nif (v != null) _feedFirehose(e, v.toDouble());\n}')
+    _dj_p_gun = _dj_at("if (e.name == 'charging_gun_state') {")
+    _dj_p_acraw = _dj_at("if (e.name.startsWith('ac_raw_')) {")
+    _dj_p_ac = _dj_at("if (e.name.startsWith('ac_')) {")
+    _dj_p_rng = _dj_at('final guard = _range[e.name];')
+
+    # DJ1: ПУТЬ FIREHOSE ДО ФИЛЬТРА. Проверяется ПОРЯДОК веток в _onEvent,
+    # а не наличие кода: в +234 код сверки был, а событие до него не
+    # доходило. Признак поля — ключ `fh` из синка; подтверждённые — в
+    # hal_samples раз в секунду и в сверку, кандидаты — только в
+    # hal_samples; HAL-сторона пар — до веток `ac_` и `_range`; порог
+    # записи — по монотонным часам.
+    _dj1_i = _dj_hts.find('void _onFirehoseField(HalEvent e) {')
+    _dj1_fn = _dj_hts[_dj1_i:_dj_hts.find('\nvoid ', _dj1_i + 10)] if _dj1_i > -1 else ''
+    _dj1_k = _dj_hts.find('void _logHalDiag(HalEvent e, double value,')
+    _dj1_log = _dj_hts[_dj1_k:_dj1_k + 500] if _dj1_k > -1 else ''
+    _dj1 = [
+        -1 < _dj_p_big < _dj_p_fh < _dj_p_hal < _dj_p_acraw < _dj_p_ac < _dj_p_rng and _dj_on.count('if (e.firehose != null) {') == 1 and _dj_on.count('FirehoseCheck.isHalSide(') == 1,
+        '_feedFirehose(' not in _dj_on[_dj_p_rng:] and _dj_hts.count('_feedFirehose(') == 3,
+        'if (e.firehose == HalEvent.firehoseConfirmed) {\n_logHalDiag(e, d, every: _kFirehoseSampleEvery);\n_feedFirehose(e, d);\n} else {\n_logHalDiag(e, d, every: Duration.zero);\n}' in _dj1_fn and '_latest' not in _dj1_fn,
+        'static const Duration _kFirehoseSampleEvery = Duration(seconds: 1);' in _dj_hts,
+        'final nowMs = _halDiagClock.elapsedMilliseconds;' in _dj1_log and 'DateTime.now()' not in _dj1_log and 'if (last != null && nowMs - last < every.inMilliseconds) return;' in _dj1_log and 'final Stopwatch _halDiagClock = Stopwatch()..start();' in _dj_hts,
+        '"fh" to firehose,' in _dj_sink and 'private val FIREHOSE_CONFIRMED = "confirmed"' in _dj_sink and 'private val FIREHOSE_CANDIDATE = "candidate"' in _dj_sink,
+        "firehose: m['fh'] as String?," in _dj_ch and "static const String firehoseConfirmed = 'confirmed';" in _dj_ch and "firehoseCandidate" not in _dj_ch,
+        'static bool isHalSide(String name) => _halToFh.containsKey(name);' in _dj_fc,
+    ]
+    if all(_dj1): ok('DJ1 firehose path: own branch in _onEvent before ac_ and the _range filter (order checked), HAL side of the pairs fed before them, confirmed fields to hal_samples once a second and into the check, candidates to hal_samples only, write threshold on a monotonic clock, status key fh from the sink')
+    else: fail(f'DJ1 firehose path drifted: {_dj1}')
+
+    # DJ2: ЭКРАН ЗАРЯДКИ. Пистолет доходит до _latest (ветка без return и
+    # без своей записи); флаги кабеля и ток забываются на старте потока,
+    # флаги — в начале движения; признак по току (P, скорость 0, ток после
+    # старта ниже −1 А) — в halChargingActive, то есть в условии баннера.
+    _dj2_gun = _dj_on[_dj_p_gun:_dj_p_acraw] if -1 < _dj_p_gun < _dj_p_acraw else ''
+    _dj2_i = _dj_hts.find('bool get halChargingActive {')
+    _dj2_act = _dj_hts[_dj2_i:_dj2_i + 300] if _dj2_i > -1 else ''
+    _dj2_j = _dj_hts.find('bool get _halChargeByCurrent {')
+    _dj2_e = _dj_hts.find('return pi != null && pi < _kHalChargeOnsetA;\n}', _dj2_j)
+    _dj2_by = _dj_hts[_dj2_j:_dj2_e + 47] if -1 < _dj2_j < _dj2_e else ''
+    _dj2_k = _dj_hts.find('void _forgetChargePresence(')
+    _dj2_fg = _dj_hts[_dj2_k:_dj_hts.find('\nvoid ', _dj2_k + 10)] if _dj2_k > -1 else ''
+    _dj2 = [
+        _dj2_gun != '' and 'return;' not in _dj2_gun and 'insertHalSignal' not in _dj2_gun and "debugPrint('Charge: gun state" in _dj2_gun,
+        "'charging_gun_state': (0, 15)," in _dj_hts and "'charger_connect_state': (0, 15)," in _dj_hts,
+        'if (!_running) return false;\nif (_halChargeByCurrent) return true;\nif (!_halSohCharging) return false;' in _dj2_act,
+        # Передача P решает без скорости (скорость в P застревает на 1–7
+        # км/ч, экспорт 13.11); скорость — только пока передачи нет.
+        'if (gear != null) {\nif (gear.round() != 1) return false;\n} else {\nfinal speed = halValue(\'speed\');\nif (speed == null || speed > _halMovingKmh) return false;\n}' in _dj2_by and "final gun = halValue('charging_gun_state');\nif (gun != null && gun < 1.5) return false;" in _dj2_by and 'return pi != null && pi < _kHalChargeOnsetA;' in _dj2_by and 'static const double _kHalChargeOnsetA = -1.0;' in _dj_hts,
+        "if (_latest.remove(n) != null) had = true;\nif (_lastGood.remove(n) != null) had = true;" in _dj2_fg and "if (packCurrent) 'pack_current'," in _dj2_fg and "static const _kChargePresenceNames = ['charging_gun_state', 'charger_connect_state'];" in _dj_hts,
+        "Future<void> _startStreamOnce() async {\n_forgetChargePresence(packCurrent: true, why: 'stream start');" in _dj_hts,
+        "if (name == 'gear_enum') {\nfinal g = v.round();\nif (g != 1 && g != 0) {\n_forgetChargePresence(packCurrent: false, why: 'gear $g');\n}\n}" in _dj_hts and '_halWasMoving' not in _dj_hts and '_trackChargePresence(e.name, d);' in _dj_on[_dj_p_rng:],
+        '(hal.halChargerConnected ?? false) ||\nhal.halChargingActive;' in _dj_ban and '_halChargeByCurrent' not in _dj_ban,
+        "'Charge: onset by current (I=" in _dj_hts and "'Charge: current criterion off (I=" in _dj_hts and "debugPrint('Charge: cable flags reset ($why)');" in _dj_hts,
+    ]
+    if all(_dj2): ok('DJ2 charging screen: gun state reaches _latest, cable flags and pack current forgotten at stream start, flags at motion start, current criterion (P, speed 0, post-start current below -1 A, no debounce) inside halChargingActive = the banner condition, app_log markers')
+    else: fail(f'DJ2 charging screen drifted: {_dj2}')
+
+    # DJ3: ПОРОГ БОРТОВОЙ СЕТИ (Друг 3, 13.11). Одиночная минута ниже −0.5,
+    # две соседние ниже −0.3 — брак; суммы до +235 — прежнее правило;
+    # зеркало и Dart-тест держат то же.
+    _dj3 = [
+        'static const double boardNegKw = -0.5;\nstatic const double boardRunKw = -0.3;\nstatic const int boardRunMinutes = 2;' in _dj_es,
+        _dj_es.count('_runLen = _runLastIdx == _mIdx - 1 ? _runLen + 1 : 1;') == 1 and 'final run = _runLastIdx == _mIdx - 1 ? _runLen + 1 : 1;' in _dj_es and _dj_es.count('if (kw < EnergySplitModel.boardRunKw) {') == 2,
+        "'neg3': minutesBelowRun,\nif (negRunMax != null) 'run': negRunMax," in _dj_es and "negRunMax: mn is Map && mn['run'] is num ? i(mn['run']) : null," in _dj_es and "? i(mn['run'] is num ? mn['neg3'] : mn['neg'])" in _dj_es,
+        '(run == null\n? s.minutesBelowRun > 0\n: s.minutesNegative > 0 ||\nrun >= EnergySplitModel.boardRunMinutes))) {' in _dj_es,
+        "'below_run=${e.minutesBelowRun} run=${e.negRunMax ?? '-'} '" in _dj_es,
+        "bad_neg = s['m_neg3'] > 0 if run is None else (s['m_neg'] > 0 or run >= RUN_MINUTES)" in _dj_mir and "self.run_len = self.run_len + 1 if self.run_last_idx == self.m_idx - 1 else 1" in _dj_mir,
+        "test('board minutes +235: runs below -0.3 kW counted on neighbouring minutes'," in _dj_test and "expect(energySplitCheck(old), 'board_minutes');" in _dj_test and 'expect(together.negRunMax, 2);' in _dj_test,
+    ]
+    if all(_dj3): ok('DJ3 board minutes: one below -0.5 kW or two neighbouring below -0.3 kW reject the parts, sums before +235 keep the old rule, counts in extra and the EnergySplit line, mirror and Dart test hold the same')
+    else: fail(f'DJ3 board minute rule drifted: {_dj3}')
+else:
+    ok(f"Part DJ skipped (build +{pv}, firehose path / charging screen / board rule land in +235)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
