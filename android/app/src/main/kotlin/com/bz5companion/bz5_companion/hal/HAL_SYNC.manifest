@@ -38,8 +38,8 @@ commit:  p078
 TelemetrySink.kt           28426f4a53bec05385b8e83e2bee56ebc77cc7d88d70405ba3e2834d0caf402a
 LiveTelemetrySubscriber.kt 925befca76c4d73065c6aa35a0f589846ab6bb74cf6a6213a09f4c525814642e
 ReflectionCache.kt         9cf45133f4f36937c399265d7c95fb866757c56336468a71cdf32c2752a38625
-TargetRegistry.kt          eca553ac5ebab8eae580cc2c8e55ae7db8f61434d0aa8d07ae6befb46a8c3ff4  recon v0.10.157.1
-TelemetryDecoderTable.kt   f1266c282092474e31e6ccbf09f8e65945bacccfbbe262fad680742918ee32b2  recon v0.10.158
+TargetRegistry.kt          0c7682b2f8a64ef348c9bef008a369da0bda0c207e298c98fe1c685b681bab5c  recon v0.10.159
+TelemetryDecoderTable.kt   5eab12fd107bc0c3c88eb01fb1cf7101db279e4d0e6fb99f41858bbcb4bfb47a  recon v0.10.159
 # v0.2.31+230: TargetRegistry and TelemetryDecoderTable re-vendored from
 # recon v0.10.157.1 (commit b1b95ca). streamingTargets changed only by two
 # old-format Charging fids; the rest of p156/p157 is recon defaultTargets.
@@ -47,7 +47,14 @@ TelemetryDecoderTable.kt   f1266c282092474e31e6ccbf09f8e65945bacccfbbe262fad6807
 # (commit 2b280a2): inverter_current promoted (companion override removed),
 # motor_power renamed battery_power_kw, AC notes, ac_ventilation_state INT.
 # TargetRegistry body is unchanged in v0.10.158 (same SHA), header kept.
-# 7th file — firehose field table, recon v0.10.158 (patch 158):
-FirehoseFieldTable.kt      b1a0986d938c188f5a2f6b045ce7ec96bdc89559b461aae6e4356668612a25c8  recon v0.10.158
+# v0.2.37+236: all three re-vendored from recon v0.10.159 (commit bfaec3c).
+# TelemetryDecoderTable: charging_device_state, charging_working_status,
+# charging_gun_connect_state, charger_connect_state active (the companion
+# overrides for the last two and for charge_energy_kwh are removed; the gun
+# signal takes the recon name). TargetRegistry.streamingTargets: Charging
+# list + 0x2EB00018, 0x2C30080A. FirehoseFieldTable: fh_temp_out_c and four
+# charging fields confirmed, ac_temp_out_raw gone, three new candidates.
+# 7th file — firehose field table, first vendored from recon v0.10.158:
+FirehoseFieldTable.kt      47c1edfe0e8d97a52503ced4d6a4563618fee05767c1fc5129fe28d17d68e960  recon v0.10.159
 # 6th file — BZ3 GETTERS engine, different recon version (per-line override):
 Bz3TelemetrySubscriber.kt  dca150f550d55fd63a6a87e1f86534b814700c70426ff5fce8255ef974a29a16  recon v0.10.79

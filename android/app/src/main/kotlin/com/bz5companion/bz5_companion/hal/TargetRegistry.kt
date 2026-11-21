@@ -1,7 +1,7 @@
 // === SHARED FROM bz5_recon — DO NOT EDIT (re-sync from recon) ===
 // Source: bz5-recon/android/app/src/main/kotlin/com/bz5/recon/live/TargetRegistry.kt
-// Synced: 2026-11-09 (recon v0.10.157.1, commit p157, b1b95ca)
-// SHA256: eca553ac5ebab8eae580cc2c8e55ae7db8f61434d0aa8d07ae6befb46a8c3ff4
+// Synced: 2026-11-21 (recon v0.10.159, commit p159, bfaec3c)
+// SHA256: 0c7682b2f8a64ef348c9bef008a369da0bda0c207e298c98fe1c685b681bab5c
 package com.bz5companion.bz5_companion.hal
 
 import android.content.Context
@@ -561,7 +561,10 @@ object TargetRegistry {
             "android.hardware.bydauto.charging.BYDAutoChargingDevice",
             intArrayOf(
                 0x2D300008.toInt(), 0x2D300018.toInt(), 0x2FF00030.toInt(),
-                0x1AC01010.toInt(), 0x2EB00832.toInt(), 0x0A50000D.toInt(), 0x2C100818.toInt()
+                0x1AC01010.toInt(), 0x2EB00832.toInt(), 0x0A50000D.toInt(), 0x2C100818.toInt(),
+                // p159: charging state machine for companion's charging detector.
+                0x2EB00018.toInt(),  // CHARGING_BATTERRY_DEVICE_STATE
+                0x2C30080A.toInt()   // CHARGING_SYSTEM_WORKING_STATUS (AC only)
             )
         ))
 

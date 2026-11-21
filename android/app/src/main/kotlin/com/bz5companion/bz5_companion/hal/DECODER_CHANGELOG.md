@@ -634,6 +634,57 @@ Values are raw enums; companion shows them as raw badges at most.
 
 ---
 
+## v0.10.159 (patch 159) — 2026-11-21 — charging state machine (AC + DC), outside temperature, DC-aware capture state
+
+### + TelemetryDecoderTable (active count +4)
+          - 0x2EB00018 **charging_device_state**: 15 rest, 0 starting, 1 charging,
+            2 stopping. AC and DC.
+          - 0x2C30080A **charging_working_status**: on-board charger, AC only:
+            0 rest, 1 starting, 2 charging, 3 stopping. No events on DC.
+          - 0x2EB00832 **charging_gun_connect_state**: 1 no gun, 2 AC, 3 DC.
+          - 0x0A50000D **charger_connect_state**: 1 connected, 0 not.
+          ~ 0x2C100818 charge_energy_kwh notes: per plug-in OBC counter, 0 at
+            plug-in, reset on unplug, silent on DC, rate 0.52–0.75 of energy
+            into the pack. NOT energy charged.
+          ~ 0x2FC00038 ac_temp_out notes: same value as fh_temp_out_c.
+          Calibration: AC 13.11 plug-in, 14.11 two unplugs, DC 20.11.
+
+### ~ TargetRegistry.streamingTargets
+          Charging list + 0x2EB00018, 0x2C30080A (gun and charger-connect were
+          already there).
+
+### ~ FirehoseFieldTable
+          CONFIRMED (new):
+            fh_temp_out_c (0x2FC, 48, 8, raw − 128 °C) — replaces candidate
+              ac_temp_out_raw (same bits); 4/4 HAL transitions matched.
+            fh_charging_device_state (0x2EB, 16, 4) — 15/0/1/2, AC and DC.
+            fh_charging_gun_connect_state (0x2EB, 42, 3) — 0 none, 1 AC, 2 DC.
+            fh_charging_type (0x2EB, 48, 4) — 8 none, 9 AC, 11 DC (width now 4).
+            fh_obc_working_status (0x2C3, 2, 4) — AC only, frame idle on DC.
+          CANDIDATE (new): fh_charging_ctrl_byte0 (0x2EB byte 0: 6/2/5/4),
+            fh_obc_gun_identification (0x2C3, 46, 2), fh_vtov_discharge_quantity.
+          ~ gb_cycle_regen_kwh: counts ALL energy into the pack, regen and
+            charging (AC +44.3 vs +45.1 remaining; DC +2.3 vs ∫V·I 2.27).
+          ~ gb_cycle_*: reset rule unknown, not per power cycle; use end − start
+            and treat a drop as a reset.
+
+### ~ RawCaptureSink (recon only)
+          Capture state CHARGING now also from fh_charging_device_state = 1, so
+          DC charges are tagged (20.11 DC session was all UNKNOWN).
+
+### For companion (Друг 1)
+          - Charging detector: DEVICE_STATE 1 = charging, 2 = stopping, 15 = rest;
+            gun 2/3 (HAL) or 1/2 (firehose) gives AC/DC.
+          - WORKING_STATUS and CHARGING_CAPACITY are AC-only.
+          - Energy charged: gb_cycle_regen_kwh end − start, or ∫V·I.
+          - Outside temperature for the atlas: fh_temp_out_c.
+          - ac_temp_out_raw is gone; rename in your raw candidate log.
+
+### New SHA256 (v0.10.159)
+(recompute after apply: TargetRegistry.kt, TelemetryDecoderTable.kt, FirehoseFieldTable.kt.)
+
+---
+
 <!--
 TEMPLATE for the next entry — copy below this line, fill in, delete the comment:
                  Decoder("param_name", "unit", ValueSource.SOURCE))

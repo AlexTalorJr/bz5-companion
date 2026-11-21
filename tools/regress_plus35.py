@@ -4284,6 +4284,12 @@ if int(pv) >= 143:
     _ovr_energy = ('"BYDAutoChargingDevice|0x2C100818"' in _ovr6 and
                    '"charge_energy_kwh"' in _ovr6 and
                    'charge_energy_kwh_candidate' not in _ovr6)
+    if int(pv) >= 236:
+        # v0.2.37+236: recon p159 несёт декодер в вендорной таблице,
+        # перекрытие снято (DK1).
+        _tbl6 = (root / 'android/app/src/main/kotlin/com/bz5companion/bz5_companion/hal/TelemetryDecoderTable.kt').read_text()
+        _ovr_energy = ('put("BYDAutoChargingDevice|0x2C100818",\n            Decoder("charge_energy_kwh", "kWh", ValueSource.DOUBLE,' in _tbl6 and
+                       '"BYDAutoChargingDevice|0x2C100818" to Decoder(' not in _ovr6)
     if _ovr_energy and \
        _reg6.count('0x2C100818') >= 2 and \
        "'charge_energy_kwh': (0," in _hal6 and \
@@ -4307,9 +4313,18 @@ if int(pv) >= 143:
         # значение подключено (липкость, страж, геттер, заголовок — цепь
         # держит CL2). Инвариант этой эры: старого имени в декодере нет,
         # журнальный крюк следует за новым именем.
-        if '"charging_gun_state"' in _ovr6 and \
-           '"charging_gun_connect_candidate"' not in _ovr6 and \
-           "if (e.name == 'charging_gun_state')" in _hal6:
+        # v0.2.37+236: имя recon p159 — charging_gun_connect_state, запись
+        # в вендорной таблице, перекрытие снято (DK1).
+        if int(pv) >= 236:
+            _ap4_ok = ('Decoder("charging_gun_connect_state", "", ValueSource.INT,' in (root / 'android/app/src/main/kotlin/com/bz5companion/bz5_companion/hal/TelemetryDecoderTable.kt').read_text() and
+                       '"BYDAutoChargingDevice|0x2EB00832" to Decoder(' not in _ovr6 and
+                       "if (e.name == 'charging_gun_connect_state')" in _hal6 and
+                       "'charging_gun_state'" not in _hal6)
+        else:
+            _ap4_ok = ('"charging_gun_state"' in _ovr6 and
+                       '"charging_gun_connect_candidate"' not in _ovr6 and
+                       "if (e.name == 'charging_gun_state')" in _hal6)
+        if _ap4_ok:
             ok('AP4 gun state matured in +208: renamed, hook follows')
         else:
             fail('AP4 gun state rename incomplete')
@@ -5765,7 +5780,7 @@ if int(pv) >= 151:
                             if int(pv) >= 166
                             else sps.count('cell.energyKwh = 0;') == 1)
                         if '_freezeChunk(key, cell, band, win, nowMs);' in sps \
-                           and sps.count('_freezeChunk(') == 2 \
+                           and sps.count('_freezeChunk(') == (2 if int(pv) < 236 else 3) \
                            and _bb13_reset \
                            and 'c.frozenTimeS = 0;' in sps \
                            and _bb13_cross in sps \
@@ -6278,13 +6293,16 @@ if int(pv) >= 166:
     # BE2: отказ оставляет след и повторяется. Без повтора единственный
     # отказ означал бы «никогда»: переход через порог случается ровно
     # один раз за круг накопления.
+    # v0.2.37+236: клетка с предварительной долей снимок не пишет (DK5).
+    _be2_if = ('if (crossed || retry) {' if int(pv) < 236
+               else 'if ((crossed && !cell.hasProvisional) || retry) {')
     _be2 = ('_freezeRetry.add(key);' in _be_freeze and
             '_freezeRetry.remove(key)' in _be_tick and
             'final retry =' in _be_tick and
-            'if (crossed || retry) {' in _be_tick and
+            _be2_if in _be_tick and
             # событие — только на настоящем переходе, не на повторе
             _be_tick.find('_maybeGenerateReveal(') <
-            _be_tick.find('if (crossed || retry) {') and
+            _be_tick.find(_be2_if) and
             'if (crossed) {' in _be_tick)
     if _be2:
         ok('BE2 a failed insert is retried on the next qualified tick; '
@@ -11842,8 +11860,10 @@ if int(pv) >= 207:
     _ck_sticky_m = re.search(r"_stickyNames\s*=\s*\{(.*?)\}",
                              _ck_hal, re.S)
     _ck_bits = [
-        '"BYDAutoChargingDevice|0x0A50000D"' in _ck_kt
-        and '"charger_connect_state"' in _ck_kt,
+        # v0.2.37+236: запись — в вендорной таблице recon p159 (DK1).
+        ('"BYDAutoChargingDevice|0x0A50000D"' in _ck_kt
+         and '"charger_connect_state"' in _ck_kt) if int(pv) < 236 else
+        ('put("BYDAutoChargingDevice|0x0A50000D",\n            Decoder("charger_connect_state", "", ValueSource.INT,' in (root / 'android/app/src/main/kotlin/com/bz5companion/bz5_companion/hal/TelemetryDecoderTable.kt').read_text()),
         _ck_sticky_m is not None
         and "'charger_connect_state'" in _ck_sticky_m.group(1),
         "halValue('charger_connect_state')" in _ck_hal,
@@ -11881,7 +11901,9 @@ if int(pv) >= 208:
     _cl_range_m = re.search(r"_range\s*=\s*\{(.*?)\n  \};", _cl_hal, re.S)
     _cl_body = _cl_range_m.group(1) if _cl_range_m else ''
     _cl_names = ('motor_control_voltage', 'ev_range', 'avg_consumption_50km',
-                 'epb_state', 'cell_temp_lowest', 'charging_gun_state',
+                 'epb_state', 'cell_temp_lowest',
+                 # v0.2.37+236: имя recon p159.
+                 'charging_gun_state' if int(pv) < 236 else 'charging_gun_connect_state',
                  'tyre_pressure_fl', 'tyre_pressure_fr', 'tyre_pressure_rl',
                  'tyre_pressure_rr', 'tyre_temp_fl', 'tyre_temp_fr',
                  'tyre_temp_rl', 'tyre_temp_rr', 'radar_obstacle_left',
@@ -11894,7 +11916,8 @@ if int(pv) >= 208:
                  'radar_state_front_right_mid', 'radar_state_right_rear')
     _cl_miss = [n for n in _cl_names if ("'" + n + "'") not in _cl_body]
     _cl_temp_ok = "'cell_temp_lowest': (-40, 150)," in _cl_body
-    _cl_gun_ok = "'charging_gun_state': (0, 15)," in _cl_body
+    _cl_gun_ok = ("'charging_gun_state': (0, 15)," if int(pv) < 236
+                  else "'charging_gun_connect_state': (0, 15),") in _cl_body
     if not _cl_miss and _cl_temp_ok and _cl_gun_ok:
         ok('CL1 the 29 field-harvested guards stand, temp band kills the '
            '1e9 junk, gun band holds the enum')
@@ -11908,11 +11931,14 @@ if int(pv) >= 208:
     _cl_ban = _strip_comments_safe(
         (root / 'lib/widgets/charging_banner.dart').read_text())
     _cl_sticky_m = re.search(r"_stickyNames\s*=\s*\{(.*?)\}", _cl_hal, re.S)
+    # v0.2.37+236: имя recon p159, запись в вендорной таблице (DK1).
+    _cl2_gun = 'charging_gun_state' if int(pv) < 236 else 'charging_gun_connect_state'
     _cl2_bits = [
-        '"charging_gun_state"' in _cl_kt,
+        ('"charging_gun_state"' in _cl_kt) if int(pv) < 236 else
+        ('"charging_gun_connect_state"' in (root / 'android/app/src/main/kotlin/com/bz5companion/bz5_companion/hal/TelemetryDecoderTable.kt').read_text()),
         _cl_sticky_m is not None
-        and "'charging_gun_state'" in _cl_sticky_m.group(1),
-        "halValue('charging_gun_state')" in _cl_hal,
+        and ("'" + _cl2_gun + "'") in _cl_sticky_m.group(1),
+        ("halValue('" + _cl2_gun + "')") in _cl_hal,
         'halChargerTypeLabel' in _cl_ban,
     ]
     if all(_cl2_bits):
@@ -11985,9 +12011,13 @@ if int(pv) >= 210:
     _cm3_m = re.search(
         r"halChargerConnected \{(.*?)\n  \}", _cm_hal, re.S)
     _cm3_body = _cm3_m.group(1) if _cm3_m else ''
-    if ("halValue('charging_gun_state')" in _cm3_body
-            and _cm3_body.find("charging_gun_state")
-                < _cm3_body.find("charger_connect_state")):
+    # v0.2.37+236: имя recon p159; первым в геттере — этап зарядки (DK2).
+    _cm3_gun = 'charging_gun_state' if int(pv) < 236 else 'charging_gun_connect_state'
+    if (("halValue('" + _cm3_gun + "')") in _cm3_body
+            and _cm3_body.find(_cm3_gun)
+                < _cm3_body.find("charger_connect_state")
+            and (int(pv) < 236 or -1 < _cm3_body.find('halChargeStage')
+                 < _cm3_body.find(_cm3_gun))):
         ok('CM3 gun state is the primary cable source, flag secondary')
     else:
         fail('CM3 gun-primary ordering broken in halChargerConnected')
@@ -12051,7 +12081,9 @@ if int(pv) >= 212:
         'hal.halChargeSessionFromStart' in _co_view,
         "final String sinceLaunchHint = S.of('chg.since_app_launch');"
         in _co_view,
-        "hint: fromStart ? '' : sinceLaunchHint," in _co_view,
+        # v0.2.37+236: у «залито» свой источник начала (DK3).
+        ("hint: fromStart ? '' : sinceLaunchHint," if int(pv) < 236
+         else "hint: chargedFromStart ? '' : sinceLaunchHint,") in _co_view,
         "hint: fromStart ? S.of('chg.session_sub') : sinceLaunchHint,"
         in _co_view,
         _co_l10n.count("'chg.since_app_launch':") == 2,
@@ -12767,7 +12799,8 @@ if int(pv) >= 219:
                  '2FA0000C', '2FA00026'}
     _cu6_names_ok = all(n.upper() in _cu6_cat.get(int(f, 16), [])
                         for f, n in _cu6_ac)
-    _cu6_i_gun = _cu_hts.find("if (e.name == 'charging_gun_state') {")
+    _cu6_i_gun = _cu_hts.find("if (e.name == 'charging_gun_state') {" if int(pv) < 236
+                              else "if (e.name == 'charging_gun_connect_state') {")
     _cu6_i_ac = _cu_hts.find("if (e.name.startsWith('ac_')) {")
     _cu6_i_rng = _cu_hts.find('final guard = _range[e.name];')
     _cu6_i_map = _cu_hts.find('static const Map<String, (double, double)> _range = {')
@@ -13137,10 +13170,13 @@ if int(pv) >= 222:
         ('TelemetryDecoderTable.kt   85f5e951b745f8ed6a115e456ebb437b6e7b24f1b3798a6af24884df1226605c  recon v0.10.155' in _cx_man) if int(pv) < 230 else
         ('TelemetryDecoderTable.kt   1538e1e58c43a048f25526d292f6cbbe8a51edfb79dd1dd46114009ebf7a6adc  recon v0.10.157.1' in _cx_man) if int(pv) < 234 else
         # v0.2.35+234: recon v0.10.158 (DI1).
-        ('TelemetryDecoderTable.kt   f1266c282092474e31e6ccbf09f8e65945bacccfbbe262fad680742918ee32b2  recon v0.10.158' in _cx_man),
+        ('TelemetryDecoderTable.kt   f1266c282092474e31e6ccbf09f8e65945bacccfbbe262fad680742918ee32b2  recon v0.10.158' in _cx_man) if int(pv) < 236 else
+        # v0.2.37+236: recon v0.10.159 (DK1).
+        ('TelemetryDecoderTable.kt   5eab12fd107bc0c3c88eb01fb1cf7101db279e4d0e6fb99f41858bbcb4bfb47a  recon v0.10.159' in _cx_man),
         ('// SHA256: 85f5e951b745f8ed6a115e456ebb437b6e7b24f1b3798a6af24884df1226605c' in _cx_tab) if int(pv) < 230 else
         ('// SHA256: 1538e1e58c43a048f25526d292f6cbbe8a51edfb79dd1dd46114009ebf7a6adc' in _cx_tab) if int(pv) < 234 else
-        ('// SHA256: f1266c282092474e31e6ccbf09f8e65945bacccfbbe262fad680742918ee32b2' in _cx_tab),
+        ('// SHA256: f1266c282092474e31e6ccbf09f8e65945bacccfbbe262fad680742918ee32b2' in _cx_tab) if int(pv) < 236 else
+        ('// SHA256: 5eab12fd107bc0c3c88eb01fb1cf7101db279e4d0e6fb99f41858bbcb4bfb47a' in _cx_tab),
         'val typeConflict: Boolean = false' in _cx_tab,
         'if (typeConflict) {\nm["type_conflict"] = true\nm["carrier"] = carrier.name' in _cx_sink,
         "typeConflict: m['type_conflict'] == true," in _cx_chn,
@@ -13650,7 +13686,8 @@ if int(pv) >= 228:
     _db2_shut = [f'{d}|{hex(v)} ({w}) on a closed class' for d, v, w in _db2_use if d in _db2_closed]
     _db2_cls = re.findall(r'TargetSpec\(\n"\w+",\n"android\.hardware\.bydauto\.[\w.]+\.(BYDAuto\w+Device)",', _db_own)
     _db2_cls_shut = [c for c in _db2_cls if c in _db2_closed]
-    _db2 = [len(_db2_use) >= 20, not _db2_bad, not _db2_shut, not _db2_unmapped,
+    # v0.2.37+236: три перекрытия зарядки ушли в вендорную таблицу (DK1).
+    _db2 = [len(_db2_use) >= (20 if int(pv) < 236 else 17), not _db2_bad, not _db2_shut, not _db2_unmapped,
             len(_db2_cls) >= 4, not _db2_cls_shut]
     if all(_db2): ok(f'DB2 all {len(_db2_use)} companion-layer fids exist on their device class in the bZ5 catalog as push (flagbit only 0x99xxxxxx), and no companion target sits on a class closed on 11.06')
     else: fail(f'DB2 companion fid / class not valid on bZ5: {_db2} {_db2_bad + _db2_shut + _db2_unmapped + _db2_cls_shut}')
@@ -13850,9 +13887,10 @@ if int(pv) >= 230:
     # перекрытие pack_voltage_fine снято, запись — в таблице recon.
     _de1_st = _de_reg[_de_reg.find('fun streamingTargets('):]
     _de1 = [
-        'TargetRegistry.kt          eca553ac5ebab8eae580cc2c8e55ae7db8f61434d0aa8d07ae6befb46a8c3ff4  recon v0.10.157.1' in _de_man,
-        '// SHA256: eca553ac5ebab8eae580cc2c8e55ae7db8f61434d0aa8d07ae6befb46a8c3ff4' in _de_reg,
-        ('// SHA256: 1538e1e58c43a048f25526d292f6cbbe8a51edfb79dd1dd46114009ebf7a6adc' if int(pv) < 234 else '// SHA256: f1266c282092474e31e6ccbf09f8e65945bacccfbbe262fad680742918ee32b2') in _de_tab,
+        # v0.2.37+236: оба файла — recon v0.10.159 (DK1).
+        ('TargetRegistry.kt          eca553ac5ebab8eae580cc2c8e55ae7db8f61434d0aa8d07ae6befb46a8c3ff4  recon v0.10.157.1' if int(pv) < 236 else 'TargetRegistry.kt          0c7682b2f8a64ef348c9bef008a369da0bda0c207e298c98fe1c685b681bab5c  recon v0.10.159') in _de_man,
+        ('// SHA256: eca553ac5ebab8eae580cc2c8e55ae7db8f61434d0aa8d07ae6befb46a8c3ff4' if int(pv) < 236 else '// SHA256: 0c7682b2f8a64ef348c9bef008a369da0bda0c207e298c98fe1c685b681bab5c') in _de_reg,
+        ('// SHA256: 1538e1e58c43a048f25526d292f6cbbe8a51edfb79dd1dd46114009ebf7a6adc' if int(pv) < 234 else '// SHA256: f1266c282092474e31e6ccbf09f8e65945bacccfbbe262fad680742918ee32b2' if int(pv) < 236 else '// SHA256: 5eab12fd107bc0c3c88eb01fb1cf7101db279e4d0e6fb99f41858bbcb4bfb47a') in _de_tab,
         '0x000B95EC' not in _de1_st and '0x000B4C9A' not in _de1_st and '0x44900842' not in _de1_st,
         '"BYDAutoChargingDevice" -> spec.copy(\nfeatureIds = spec.featureIds +\nCompanionDecoderOverrides.extraChargingFids\n)' in _de_own,
         '"BYDAutoChargingDevice|0x2FF00030" to Decoder(' not in _de_ovr,
@@ -13910,7 +13948,7 @@ if int(pv) >= 230:
         'if (!parked || acOn != true) return _end();' in _de_pc and 'final kw = math.max(0.0, packKw - baseKw);' in _de_pc,
         'final Stopwatch _parkedClimateClock = Stopwatch()..start();' in _de_hts and 't: _parkedClimateClock.elapsed,' in _de_hts,
         'parked: !streamStopped && halGear == 1,' in _de_hts and '_feedParkedClimate(streamStopped: true);' in _de_hts and 'acOn: ac == null ? null : ac == 1,' in _de_hts and 'packKw: halPowerKw,' in _de_hts,
-        ('_logHalDiag(e, d);\n_feedParkedClimate();' if int(pv) < 233 else '_logHalDiag(e, d);\n_feedEventEnergy(e, d);\n_feedParkedClimate();' if int(pv) < 234 else '_logHalDiag(e, d);\n_feedEventEnergy(e, d);\n_feedFirehose(e, d);\n_feedParkedClimate();' if int(pv) < 235 else '_logHalDiag(e, d);\n_feedEventEnergy(e, d);\n_trackChargePresence(e.name, d);\n_feedParkedClimate();') in _de_hts,
+        ('_logHalDiag(e, d);\n_feedParkedClimate();' if int(pv) < 233 else '_logHalDiag(e, d);\n_feedEventEnergy(e, d);\n_feedParkedClimate();' if int(pv) < 234 else '_logHalDiag(e, d);\n_feedEventEnergy(e, d);\n_feedFirehose(e, d);\n_feedParkedClimate();' if int(pv) < 235 else '_logHalDiag(e, d);\n_feedEventEnergy(e, d);\n_trackChargePresence(e.name, d);\n_feedParkedClimate();' if int(pv) < 236 else '_logHalDiag(e, d,\nevery: _kChargeEventNames.contains(e.name)\n? Duration.zero\n: _halDiagThrottle);\n_feedEventEnergy(e, d);\n_trackChargePresence(e.name, d);\n_feedParkedClimate();') in _de_hts,
         "if (e.name == 'ac_power_state') {\n_feedParkedClimate();" in _de_hts,
         "debugPrint('ParkedClimate: " in _de_hts,
         (('_ParkedClimateRow(compact: compact),' if int(pv) < 232 else 'ParkedClimateRow(compact: compact),') in _de_dp) and 'if (!m.active || now == null) return const SizedBox.shrink();' in _de_dp,
@@ -14216,7 +14254,7 @@ if int(pv) >= 233:
         'if (_running) return Future<void>.value();\nfinal pending = _streamStarting;\nif (pending != null) {' in _dh5_fn and 'return pending;' in _dh5_fn,
         'final f = _startStreamOnce();\n_streamStarting = f;\nreturn f.whenComplete(() => _streamStarting = null);' in _dh5_fn,
         # v0.2.36+235: перед подпиской — сброс флагов кабеля и тока (DJ2).
-        ('Future<void> _startStreamOnce() async {\n_sub = _hal.events.listen(_onEvent' if int(pv) < 235 else 'Future<void> _startStreamOnce() async {\n_forgetChargePresence(packCurrent: true, why: \'stream start\');\n_halChargeByCurrentLogged = false;\n_sub = _hal.events.listen(_onEvent') in _dh_hts,
+        ('Future<void> _startStreamOnce() async {\n_sub = _hal.events.listen(_onEvent' if int(pv) < 235 else 'Future<void> _startStreamOnce() async {\n_forgetChargePresence(packCurrent: true, why: \'stream start\');\n_halChargeByCurrentLogged = false;\n_sub = _hal.events.listen(_onEvent' if int(pv) < 236 else 'Future<void> _startStreamOnce() async {\n_forgetChargePresence(packCurrent: true, why: \'stream start\');\n_halChargeByCurrentLogged = false;\n_chargeStageEverLogged = false;\n_chargeStageLogged = null;\n_chargedThisPlugIn = false;\n_sub = _hal.events.listen(_onEvent') in _dh_hts,
     ]
     if all(_dh5): ok('DH5 a second HAL stream start joins the one in flight instead of subscribing twice')
     else: fail(f'DH5 single-flight stream start drifted: {_dh5}')
@@ -14265,9 +14303,10 @@ if int(pv) >= 234:
     # battery_power_kw везде, где сигнал потребляется; ряды истории читают
     # оба имени (сначала новое).
     _di1 = [
-        'TelemetryDecoderTable.kt   f1266c282092474e31e6ccbf09f8e65945bacccfbbe262fad680742918ee32b2  recon v0.10.158' in _di_man,
-        'FirehoseFieldTable.kt      b1a0986d938c188f5a2f6b045ce7ec96bdc89559b461aae6e4356668612a25c8  recon v0.10.158' in _di_man,
-        '// SHA256: f1266c282092474e31e6ccbf09f8e65945bacccfbbe262fad680742918ee32b2' in _di_tab and '// SHA256: b1a0986d938c188f5a2f6b045ce7ec96bdc89559b461aae6e4356668612a25c8' in _di_fht,
+        # v0.2.37+236: обе таблицы — recon v0.10.159 (DK1).
+        ('TelemetryDecoderTable.kt   f1266c282092474e31e6ccbf09f8e65945bacccfbbe262fad680742918ee32b2  recon v0.10.158' if int(pv) < 236 else 'TelemetryDecoderTable.kt   5eab12fd107bc0c3c88eb01fb1cf7101db279e4d0e6fb99f41858bbcb4bfb47a  recon v0.10.159') in _di_man,
+        ('FirehoseFieldTable.kt      b1a0986d938c188f5a2f6b045ce7ec96bdc89559b461aae6e4356668612a25c8  recon v0.10.158' if int(pv) < 236 else 'FirehoseFieldTable.kt      47c1edfe0e8d97a52503ced4d6a4563618fee05767c1fc5129fe28d17d68e960  recon v0.10.159') in _di_man,
+        (('// SHA256: f1266c282092474e31e6ccbf09f8e65945bacccfbbe262fad680742918ee32b2' in _di_tab and '// SHA256: b1a0986d938c188f5a2f6b045ce7ec96bdc89559b461aae6e4356668612a25c8' in _di_fht) if int(pv) < 236 else ('// SHA256: 5eab12fd107bc0c3c88eb01fb1cf7101db279e4d0e6fb99f41858bbcb4bfb47a' in _di_tab and '// SHA256: 47c1edfe0e8d97a52503ced4d6a4563618fee05767c1fc5129fe28d17d68e960' in _di_fht)),
         'Decoder("battery_power_kw", "kW", ValueSource.INT,' in _di_tab and '"BYDAutoEngineDevice|0x40800008"' not in _di_ovr,
         "'battery_power_kw': Duration(milliseconds: 1500)," in _di_hts and "'battery_power_kw': (-250, 250)," in _di_hts and "'motor_rpm', 'motor_torque', 'battery_power_kw'," in _di_hts,
         "double? get halBatteryPowerKw => _heldValue('battery_power_kw', _coreHold);" in _di_hts and "v('battery_power_kw', hal.halBatteryPowerKw," in _di_dp,
@@ -14302,8 +14341,8 @@ if int(pv) >= 234:
         "'fh_ac_temp_main_c': 'ac_temp_main'," in _di_fc and "'fh_ac_temp_deputy_c': 'ac_temp_deputy'," in _di_fc and "'fh_energy_state': 'energy_state'," in _di_fc,
         'static const int mismatchHoldMs = 10000;' in _di_fc and 'if (state == unchecked) state = ok;' in _di_fc and 'if (tsMs - since >= mismatchHoldMs) {\nstate = mismatch;' in _di_fc,
         # v0.2.36+235: сверку кормят ветки до фильтра _range (DJ1).
-        ('_feedEventEnergy(e, d);\n_feedFirehose(e, d);' if int(pv) < 235 else '_logHalDiag(e, d, every: _kFirehoseSampleEvery);\n_feedFirehose(e, d);') in _di_hts and 'if (_firehoseCheck.feed(e.name, v, e.ts)) {' in _di_hts and '_eventEnergy?.firehoseStatus = st;' in _di_hts and '_eventEnergy?.addFirehose(e.name, v);' in _di_hts,
-        '_firehoseCheck.resetForTrip();\n_eventEnergy!.firehoseStatus = _firehoseCheck.state;' in _di_hts and 'void resetForTrip() {\nstate = unchecked;\nlastDetail = null;\n_mismatchSince.clear();\n}' in _di_fc,
+        ('_feedEventEnergy(e, d);\n_feedFirehose(e, d);' if int(pv) < 235 else '_logHalDiag(e, d, every: _kFirehoseSampleEvery);\n_feedFirehose(e, d);' if int(pv) < 236 else '_logHalDiag(e, d, every: _kFirehoseSampleEvery);\n}\n_feedFirehose(e, d);\n_consumeFirehose(e.name, d);') in _di_hts and 'if (_firehoseCheck.feed(e.name, v, e.ts)) {' in _di_hts and '_eventEnergy?.firehoseStatus = st;' in _di_hts and '_eventEnergy?.addFirehose(e.name, v);' in _di_hts,
+        ('_firehoseCheck.resetForTrip();\n_eventEnergy!.firehoseStatus = _firehoseCheck.state;' if int(pv) < 236 else '_firehoseCheck.resetForTrip();\n_outsideTempCheck.resetForTrip();\n_eventEnergy!.firehoseStatus = _firehoseCheck.state;') in _di_hts and 'void resetForTrip() {\nstate = unchecked;\nlastDetail = null;\n_mismatchSince.clear();\n}' in _di_fc,
         # Журнал фона: подтверждённые поля firehose — раз в минуту,
         # кандидаты — не пишутся (уроки +185); списки из вендорной таблицы.
         'FirehoseFieldTable.fields.filter { it.confirmed }\n.associate { it.name to 60_000L }' in _di_out and 'THROTTLE_FAST_MS + THROTTLE_MEDIUM_MS + THROTTLE_SLOW_MS +\nFIREHOSE_CONFIRMED_MS' in _di_out and 'if (name in FIREHOSE_JOURNAL_SKIP) {\ndropped.incrementAndGet()\ncontinue\n}' in _di_out,
@@ -14389,7 +14428,9 @@ if int(pv) >= 235:
     _dj_p_big = _dj_at("if (e.name == 'bigdata_raw') {")
     _dj_p_fh = _dj_at('if (e.firehose != null) {\n_onFirehoseField(e);\nreturn;\n}')
     _dj_p_hal = _dj_at('if (FirehoseCheck.isHalSide(e.name)) {\nfinal v = e.value;\nif (v != null) _feedFirehose(e, v.toDouble());\n}')
-    _dj_p_gun = _dj_at("if (e.name == 'charging_gun_state') {")
+    # v0.2.37+236: имя recon p159 (DK1).
+    _dj_gun = 'charging_gun_state' if int(pv) < 236 else 'charging_gun_connect_state'
+    _dj_p_gun = _dj_at("if (e.name == '" + _dj_gun + "') {")
     _dj_p_acraw = _dj_at("if (e.name.startsWith('ac_raw_')) {")
     _dj_p_ac = _dj_at("if (e.name.startsWith('ac_')) {")
     _dj_p_rng = _dj_at('final guard = _range[e.name];')
@@ -14406,8 +14447,13 @@ if int(pv) >= 235:
     _dj1_log = _dj_hts[_dj1_k:_dj1_k + 500] if _dj1_k > -1 else ''
     _dj1 = [
         -1 < _dj_p_big < _dj_p_fh < _dj_p_hal < _dj_p_acraw < _dj_p_ac < _dj_p_rng and _dj_on.count('if (e.firehose != null) {') == 1 and _dj_on.count('FirehoseCheck.isHalSide(') == 1,
-        '_feedFirehose(' not in _dj_on[_dj_p_rng:] and _dj_hts.count('_feedFirehose(') == 3,
-        'if (e.firehose == HalEvent.firehoseConfirmed) {\n_logHalDiag(e, d, every: _kFirehoseSampleEvery);\n_feedFirehose(e, d);\n} else {\n_logHalDiag(e, d, every: Duration.zero);\n}' in _dj1_fn and '_latest' not in _dj1_fn,
+        '_feedFirehose(' not in _dj_on[_dj_p_rng:] and _dj_hts.count('_feedFirehose(') == 3 and '_consumeFirehose(' not in _dj_on,
+        # v0.2.37+236: поля-состояния — на смену значения и раз в минуту;
+        # поля с потребителями идут в _latest только через _consumeFirehose
+        # (DK2); кандидат по-прежнему мимо.
+        (('if (e.firehose == HalEvent.firehoseConfirmed) {\n_logHalDiag(e, d, every: _kFirehoseSampleEvery);\n_feedFirehose(e, d);\n} else {\n_logHalDiag(e, d, every: Duration.zero);\n}' in _dj1_fn) if int(pv) < 236 else
+         ('if (e.firehose == HalEvent.firehoseConfirmed) {\nif (_fhStateNames.contains(e.name)) {\nfinal changed = _fhStateLast[e.name] != d;\n_fhStateLast[e.name] = d;\n_logHalDiag(e, d,\nevery: changed ? Duration.zero : _kFirehoseStateEvery);\n} else {\n_logHalDiag(e, d, every: _kFirehoseSampleEvery);\n}\n_feedFirehose(e, d);\n_consumeFirehose(e.name, d);\n} else {\n_logHalDiag(e, d, every: Duration.zero);\n}' in _dj1_fn))
+        and '_latest' not in _dj1_fn,
         'static const Duration _kFirehoseSampleEvery = Duration(seconds: 1);' in _dj_hts,
         'final nowMs = _halDiagClock.elapsedMilliseconds;' in _dj1_log and 'DateTime.now()' not in _dj1_log and 'if (last != null && nowMs - last < every.inMilliseconds) return;' in _dj1_log and 'final Stopwatch _halDiagClock = Stopwatch()..start();' in _dj_hts,
         '"fh" to firehose,' in _dj_sink and 'private val FIREHOSE_CONFIRMED = "confirmed"' in _dj_sink and 'private val FIREHOSE_CANDIDATE = "candidate"' in _dj_sink,
@@ -14423,7 +14469,7 @@ if int(pv) >= 235:
     # старта ниже −1 А) — в halChargingActive, то есть в условии баннера.
     _dj2_gun = _dj_on[_dj_p_gun:_dj_p_acraw] if -1 < _dj_p_gun < _dj_p_acraw else ''
     _dj2_i = _dj_hts.find('bool get halChargingActive {')
-    _dj2_act = _dj_hts[_dj2_i:_dj2_i + 300] if _dj2_i > -1 else ''
+    _dj2_act = _dj_hts[_dj2_i:_dj2_i + 400] if _dj2_i > -1 else ''
     _dj2_j = _dj_hts.find('bool get _halChargeByCurrent {')
     _dj2_e = _dj_hts.find('return pi != null && pi < _kHalChargeOnsetA;\n}', _dj2_j)
     _dj2_by = _dj_hts[_dj2_j:_dj2_e + 47] if -1 < _dj2_j < _dj2_e else ''
@@ -14431,12 +14477,13 @@ if int(pv) >= 235:
     _dj2_fg = _dj_hts[_dj2_k:_dj_hts.find('\nvoid ', _dj2_k + 10)] if _dj2_k > -1 else ''
     _dj2 = [
         _dj2_gun != '' and 'return;' not in _dj2_gun and 'insertHalSignal' not in _dj2_gun and "debugPrint('Charge: gun state" in _dj2_gun,
-        "'charging_gun_state': (0, 15)," in _dj_hts and "'charger_connect_state': (0, 15)," in _dj_hts,
-        'if (!_running) return false;\nif (_halChargeByCurrent) return true;\nif (!_halSohCharging) return false;' in _dj2_act,
+        ("'" + _dj_gun + "': (0, 15),") in _dj_hts and "'charger_connect_state': (0, 15)," in _dj_hts,
+        # v0.2.37+236: первым — этап зарядки, признак по току запасной (DK2).
+        ('if (!_running) return false;\nif (_halChargeByCurrent) return true;\nif (!_halSohCharging) return false;' if int(pv) < 236 else 'if (!_running) return false;\nfinal stage = halChargeStage;\nif (stage != null) return stage == ChargeStage.charging;\nif (_halChargeByCurrent) return true;\nif (!_halSohCharging) return false;') in _dj2_act,
         # Передача P решает без скорости (скорость в P застревает на 1–7
         # км/ч, экспорт 13.11); скорость — только пока передачи нет.
-        'if (gear != null) {\nif (gear.round() != 1) return false;\n} else {\nfinal speed = halValue(\'speed\');\nif (speed == null || speed > _halMovingKmh) return false;\n}' in _dj2_by and "final gun = halValue('charging_gun_state');\nif (gun != null && gun < 1.5) return false;" in _dj2_by and 'return pi != null && pi < _kHalChargeOnsetA;' in _dj2_by and 'static const double _kHalChargeOnsetA = -1.0;' in _dj_hts,
-        "if (_latest.remove(n) != null) had = true;\nif (_lastGood.remove(n) != null) had = true;" in _dj2_fg and "if (packCurrent) 'pack_current'," in _dj2_fg and "static const _kChargePresenceNames = ['charging_gun_state', 'charger_connect_state'];" in _dj_hts,
+        'if (gear != null) {\nif (gear.round() != 1) return false;\n} else {\nfinal speed = halValue(\'speed\');\nif (speed == null || speed > _halMovingKmh) return false;\n}' in _dj2_by and ("final gun = halValue('" + _dj_gun + "');\nif (gun != null && gun < 1.5) return false;") in _dj2_by and 'return pi != null && pi < _kHalChargeOnsetA;' in _dj2_by and 'static const double _kHalChargeOnsetA = -1.0;' in _dj_hts,
+        "if (_latest.remove(n) != null) had = true;\nif (_lastGood.remove(n) != null) had = true;" in _dj2_fg and "if (packCurrent) 'pack_current'," in _dj2_fg and ("static const _kChargePresenceNames = ['charging_gun_state', 'charger_connect_state'];" if int(pv) < 236 else "static const _kChargePresenceNames = [\n'charging_gun_connect_state',\n'charger_connect_state',\n'charging_device_state',\n];") in _dj_hts,
         "Future<void> _startStreamOnce() async {\n_forgetChargePresence(packCurrent: true, why: 'stream start');" in _dj_hts,
         "if (name == 'gear_enum') {\nfinal g = v.round();\nif (g != 1 && g != 0) {\n_forgetChargePresence(packCurrent: false, why: 'gear $g');\n}\n}" in _dj_hts and '_halWasMoving' not in _dj_hts and '_trackChargePresence(e.name, d);' in _dj_on[_dj_p_rng:],
         '(hal.halChargerConnected ?? false) ||\nhal.halChargingActive;' in _dj_ban and '_halChargeByCurrent' not in _dj_ban,
@@ -14461,6 +14508,181 @@ if int(pv) >= 235:
     else: fail(f'DJ3 board minute rule drifted: {_dj3}')
 else:
     ok(f"Part DJ skipped (build +{pv}, firehose path / charging screen / board rule land in +235)")
+
+# ─────────────── Part DK — +236: зарядка по DEVICE_STATE, атлас по наружной температуре ───────────────
+if int(pv) >= 236:
+    _dk_hts = _dj_rd('lib/services/hal_telemetry_service.dart')
+    _dk_cs = _dj_rd('lib/services/charge_state.dart')
+    _dk_sps = _dj_rd('lib/services/speed_profile_service.dart')
+    _dk_ban = _dj_rd('lib/widgets/charging_banner.dart')
+    _dk_view = _dj_rd('lib/screens/wide/charging_view_wide.dart')
+    _dk_l10n = (root / 'lib/l10n/strings.dart').read_text()
+    _dk_man = (root / (_dj_hal + 'HAL_SYNC.manifest')).read_text()
+    _dk_tab = (root / (_dj_hal + 'TelemetryDecoderTable.kt')).read_text()
+    _dk_reg = (root / (_dj_hal + 'TargetRegistry.kt')).read_text()
+    _dk_fht = (root / (_dj_hal + 'FirehoseFieldTable.kt')).read_text()
+    _dk_ovr = _dj_rd(_dj_hal + 'CompanionDecoderOverrides.kt')
+    _dk_mir = root / 'tools/mirror_plus236_charge.py'
+    _dk_t1 = (root / 'test/charge_state_test.dart').read_text()
+    _dk_t2 = (root / 'test/speed_profile_engine_test.dart').read_text()
+    _dk_oi = _dk_hts.find('void _onEvent(HalEvent e) {')
+    _dk_on = _dk_hts[_dk_oi:_dk_hts.find('\nvoid ', _dk_oi + 10)] if _dk_oi > -1 else ''
+    def _dk_fn(txt, head):
+        # Тело от заголовка до парной закрывающей скобки (счёт скобок от
+        # последней «{» заголовка).
+        i = txt.find(head)
+        if i < 0: return ''
+        depth = 0
+        for j in range(i + len(head) - 1, len(txt)):
+            ch = txt[j]
+            if ch == '{': depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0: return txt[i:j + 1]
+        return ''
+
+    # DK1: СИНХРОНИЗАЦИЯ С RECON v0.10.159. Три файла по манифесту и
+    # заголовкам; четыре декодера зарядки в вендорной таблице, их
+    # перекрытий в companion нет; подписка Charging получила два номера;
+    # наружная температура и поля зарядки firehose подтверждены, кандидата
+    # ac_temp_out_raw нет; старого имени пистолета в Dart нет.
+    _dk1_st = _dk_reg[_dk_reg.find('fun streamingTargets('):]
+    _dk1 = [
+        all(x in _dk_man for x in (
+            'TargetRegistry.kt          0c7682b2f8a64ef348c9bef008a369da0bda0c207e298c98fe1c685b681bab5c  recon v0.10.159',
+            'TelemetryDecoderTable.kt   5eab12fd107bc0c3c88eb01fb1cf7101db279e4d0e6fb99f41858bbcb4bfb47a  recon v0.10.159',
+            'FirehoseFieldTable.kt      47c1edfe0e8d97a52503ced4d6a4563618fee05767c1fc5129fe28d17d68e960  recon v0.10.159')),
+        '// SHA256: 0c7682b2f8a64ef348c9bef008a369da0bda0c207e298c98fe1c685b681bab5c' in _dk_reg and '// SHA256: 47c1edfe0e8d97a52503ced4d6a4563618fee05767c1fc5129fe28d17d68e960' in _dk_fht,
+        all(x in _dk_tab for x in (
+            'put("BYDAutoChargingDevice|0x2EB00018",\n            Decoder("charging_device_state", "", ValueSource.INT,',
+            'put("BYDAutoChargingDevice|0x2C30080A",\n            Decoder("charging_working_status", "", ValueSource.INT,',
+            'put("BYDAutoChargingDevice|0x2EB00832",\n            Decoder("charging_gun_connect_state", "", ValueSource.INT,',
+            'put("BYDAutoChargingDevice|0x0A50000D",\n            Decoder("charger_connect_state", "", ValueSource.INT,')),
+        not any(('"BYDAutoChargingDevice|' + f + '" to Decoder(') in _dk_ovr for f in ('0x2C100818', '0x0A50000D', '0x2EB00832', '0x2EB00018', '0x2C30080A')),
+        '0x2EB00018.toInt()' in _dk1_st and '0x2C30080A.toInt()' in _dk1_st,
+        all(('FirehoseField("' + n + '",') in _dk_fht for n in ('fh_temp_out_c', 'fh_charging_device_state', 'fh_charging_gun_connect_state', 'fh_charging_type', 'fh_obc_working_status')) and 'FirehoseField("fh_temp_out_c", 0x02FC, 0, 48, 8, 1.0, -128.0, unit = "°C",\n            confirmed = true' in _dk_fht and '"ac_temp_out_raw"' not in _dk_fht,
+        "'charging_gun_state'" not in _dk_hts and "'ac_temp_out_raw'" not in _dk_hts,
+        'v0.10.159 (patch 159)' in (root / (_dj_hal + 'DECODER_CHANGELOG.md')).read_text(),
+    ]
+    if all(_dk1): ok('DK1 recon v0.10.159 vendored (three files, SHA in manifest and headers): four charging decoders in the shared table with no companion overrides, Charging subscription gains DEVICE_STATE and WORKING_STATUS, firehose outside temperature and charging fields confirmed, the gun signal carries the recon name in Dart')
+    else: fail(f'DK1 recon v0.10.159 sync drifted: {_dk1}')
+
+    # DK2: ЭТАП ЗАРЯДКИ — ОДНО МЕСТО РЕШЕНИЯ. Правило в charge_state.dart;
+    # firehose первым, событие HAL вторым; halChargingActive и
+    # halChargerConnected читают этап первыми; поля firehose с потребителями
+    # идут в _latest только при достоверном firehose и только через
+    # _consumeFirehose; расхождение сверки убирает их; смена этапа — строка
+    # app_log и перерисовка; экран и баннер этап только показывают.
+    _dk2_stage = _dk_fn(_dk_cs, 'ChargeStage? chargeStageOf({\ndouble? deviceState,\ndouble? gun,\nbool chargedThisPlugIn = false,\n}) {')
+    _dk2_in = _dk_fn(_dk_hts, '({double? ds, double? gun, bool fromFirehose}) get _chargeInputs {')
+    _dk2_get = _dk_fn(_dk_hts, 'ChargeStage? get halChargeStage {')
+    _dk2_con = _dk_fn(_dk_hts, 'bool? get halChargerConnected {')
+    _dk2_use = _dk_fn(_dk_hts, 'void _consumeFirehose(String name, double d) {')
+    _dk2_trk = _dk_fn(_dk_hts, 'void _trackChargeStage() {')
+    _dk2_prs = _dk_fn(_dk_hts, 'void _trackChargePresence(String name, double v) {')
+    _dk2 = [
+        'enum ChargeStage {\nnone,\nplugged,\nhandshake,\ncharging,\nfinished,\n}' in _dk_cs,
+        'if (deviceState == null) return null;\nfinal int ds = deviceState.round();\nif (ds != 0 && ds != 1 && ds != 2 && ds != 15) return null;\nif (gun != null && gun.round() == 1) return ChargeStage.none;\nswitch (ds) {\ncase 0:\nreturn ChargeStage.handshake;\ncase 1:\nreturn ChargeStage.charging;\ncase 2:\nreturn ChargeStage.finished;\ndefault:\nif (gun == null) return ChargeStage.none;\nreturn chargedThisPlugIn ? ChargeStage.finished : ChargeStage.plugged;\n}' in _dk2_stage
+        # Память подключения: ставят 1 и 2, снимает только «пистолета нет»;
+        # ведёт её _trackChargeStage до расчёта этапа, сбрасывают старт и
+        # остановка потока и сброс флагов кабеля.
+        and "if (gun != null && gun.round() == 1) return false;\nif (deviceState != null) {\nfinal int ds = deviceState.round();\nif (ds == 1 || ds == 2) return true;\n}\nreturn prev;" in _dk_fn(_dk_cs, 'bool nextChargedThisPlugIn(bool prev, {double? deviceState, double? gun}) {')
+        and -1 < _dk2_trk.find('_chargedThisPlugIn = _running &&\nnextChargedThisPlugIn(_chargedThisPlugIn,\ndeviceState: i.ds, gun: i.gun);') < _dk2_trk.find('final stage = halChargeStage;')
+        and '_gunConnectLastVal = null;\n_chargedThisPlugIn = false;' in _dk_hts and _dk_hts.count('_chargedThisPlugIn = false;') == 4,
+        "final fds = _fhFresh('fh_charging_device_state');\nfinal fgun = _fhFresh('fh_charging_gun_connect_state');" in _dk2_in and "ds: fds ?? halValue('charging_device_state')," in _dk2_in and "gun: fgun != null ? fgun + 1 : halValue('charging_gun_connect_state')," in _dk2_in and 'double? _fhFresh(String name) => halFresh(name) ? halValue(name) : null;' in _dk_hts,
+        'if (!_running) return null;\nfinal i = _chargeInputs;\nreturn chargeStageOf(\ndeviceState: i.ds,\ngun: i.gun,\nchargedThisPlugIn: _chargedThisPlugIn,\n);' in _dk2_get and 'if (!_running) return false;\nfinal stage = halChargeStage;\nif (stage != null) return stage == ChargeStage.charging;' in _dk_fn(_dk_hts, 'bool get halChargingActive {'),
+        'final stage = halChargeStage;\nif (stage != null) return stage != ChargeStage.none;\nfinal gun = halValue(\'charging_gun_connect_state\');' in _dk2_con,
+        "String? get halChargerTypeLabel => chargeTypeOf(\ngun: _chargeInputs.gun,\nfhType: _fhFresh('fh_charging_type'),\n);" in _dk_hts,
+        'final guard = _fhConsumed[name];\nif (guard == null) return;\nif (_firehoseCheck.state == FirehoseCheck.mismatch) return;\nif (d < guard.$1 || d > guard.$2) return;' in _dk2_use and '_latest[name] = (value: d, at: DateTime.now());' in _dk2_use and 'if (_fhChargeNames.contains(name)) _trackChargeStage();' in _dk2_use and _dk_hts.count('_consumeFirehose(') == 2,
+        "static const Map<String, (double, double)> _fhConsumed = {\n'fh_charging_device_state': (0, 15),\n'fh_charging_gun_connect_state': (0, 7),\n'fh_charging_type': (0, 15),\n'fh_temp_out_c': (-50, 60),\n'gb_cycle_regen_kwh': (0, 6553.5),\n};" in _dk_hts and all(("'" + n + "': Duration(seconds: 10),") in _dk_hts for n in ('fh_charging_device_state', 'fh_charging_gun_connect_state', 'fh_charging_type', 'fh_temp_out_c')) and "'gb_cycle_regen_kwh': Duration(seconds: 90)," in _dk_hts,
+        'if (st == FirehoseCheck.mismatch) _dropFirehoseConsumed();' in _dk_hts and 'void _dropFirehoseConsumed() {\nfor (final n in _fhConsumed.keys) {\n_latest.remove(n);\n}\n_trackChargeStage();\n}' in _dk_hts,
+        "debugPrint('Charge: stage ${stage?.name ?? 'unknown'}'" in _dk2_trk and '_chargeStageLogged = stage;\n_scheduleNotify();' in _dk2_trk and "name != 'charging_device_state') {\nreturn;\n}\n_trackChargeStage();" in _dk2_prs,
+        "'charging_device_state': (0, 15)," in _dk_hts and "static const _kChargeEventNames = {\n'charging_gun_connect_state',\n'charger_connect_state',\n'charging_device_state',\n'charging_working_status',\n};" in _dk_hts and '_logHalDiag(e, d,\nevery: _kChargeEventNames.contains(e.name)\n? Duration.zero\n: _halDiagThrottle);' in _dk_on,
+        'final stage = hal.halChargeStage;\nfinal stageWord = switch (stage) {\nChargeStage.plugged => S.of(\'chg.stage_idle\'),\nChargeStage.handshake => S.of(\'chg.stage_wait\'),\nChargeStage.finished => S.of(\'chg.stage_done\'),\n_ => null,\n};' in _dk_ban and 'chargeStageOf' not in _dk_ban and 'chargeStageOf' not in _dk_view and "ChargeStage.plugged => S.of('chg.stage_idle'),\nChargeStage.handshake => S.of('chg.stage_wait'),\nChargeStage.finished => S.of('chg.stage_done')," in _dk_view,
+        all(_dk_l10n.count("'" + k + "':") == 2 for k in ('chg.stage_idle', 'chg.stage_wait', 'chg.stage_done')),
+        'static const Duration _kFirehoseStateEvery = Duration(seconds: 60);' in _dk_hts and "static const _fhStateNames = {\n'fh_charging_device_state',\n'fh_charging_gun_connect_state',\n'fh_charging_type',\n'fh_obc_working_status',\n'fh_temp_out_c',\n};" in _dk_hts,
+    ]
+    if all(_dk2): ok('DK2 charge stage decided in one place: rule in charge_state.dart (gun out closes, state 15 with the gun in is plugged or finished by the plug-in memory, unknown state -> fallback), firehose first then the HAL event, halChargingActive and halChargerConnected read the stage first, consumed firehose fields reach _latest only while the firehose is trusted and are dropped on divergence, stage change logs and repaints, banner and screen only label the stage')
+    else: fail(f'DK2 charge stage drifted: {_dk2}')
+
+    # DK3: «ЗАЛИТО» ПО СЧЁТЧИКУ 0x2D0. Сумма приростов за сессию, падение —
+    # новая база без добавки; сессия открывается и закрывается тем же
+    # условием, что баннер; остановка потока забывает базу; ∫V·I — контроль
+    # в app_log; экран спрашивает начало суммы у того же источника.
+    _dk3_feed = _dk_fn(_dk_cs, 'void feed(double v) {')
+    _dk3_kwh = _dk_fn(_dk_hts, 'double? get halChargedThisSessionKwh {')
+    _dk3_rng = _dk_on.find('final guard = _range[e.name];')
+    _dk3_m = None
+    try:
+        _dk3_m = subprocess.run([sys.executable, str(_dk_mir)], capture_output=True, text=True, timeout=60)
+    except Exception as _e:
+        _dk3_m = None
+    _dk3 = [
+        'final last = _last;\n_last = v;\nif (!_open) return;\nif (!_hasBase) {\n_hasBase = true;\nreturn;\n}\nif (last == null) return;\nif (v >= last) {\n_sum += v - last;\n} else {\nresets++;\n}' in _dk3_feed,
+        '_hasBase = _last != null;\nfromStart = _hasBase || beforeCharging;' in _dk_cs and 'void forget() {\n_open = false;\n_hasBase = false;\n_last = null;\n}' in _dk_cs and 'double? get kwh => _open && _hasBase ? _sum : null;' in _dk_cs,
+        'final c = _chargedCounter.kwh;\nif (c != null) return c >= 0.05 ? c : null;\nfinal d = halChargeSessionSocDeltaPct;' in _dk3_kwh,
+        "if (name == 'gb_cycle_regen_kwh') _chargedCounter.feed(d);" in _dk2_use,
+        'bool get _chargeSessionOpen =>\n(halChargerConnected ?? false) || halChargingActive;' in _dk_hts and 'final open = _chargeSessionOpen;\nif (open && !_chargedCounter.isOpen) {\n_chargedCounter.open(beforeCharging: !halChargingActive);' in _dk2_trk and "} else if (!open && _chargedCounter.isOpen) {\n_logChargedSessionEnd('session closed');\n_chargedCounter.close();\n}" in _dk2_trk,
+        "if (_chargedCounter.isOpen) _logChargedSessionEnd('stream stopped');\n_chargedCounter.forget();" in _dk_hts,
+        -1 < _dk3_rng < _dk_on.find('_updateHalCharge();\n_feedChargeIntegral();') and '_chargedCounter.addIntegral(halPowerKw, (nowMs - last) / 1000.0);' in _dk_hts and 'final nowMs = _halDiagClock.elapsedMilliseconds;\nfinal last = _chargeIntegralLastMs;' in _dk_hts,
+        "debugPrint('Charge: counter session end ($why) '" in _dk_hts and "debugPrint('Charge: counter and V*I integral DIVERGE '" in _dk_hts and "debugPrint('Charge: counter session open '" in _dk_hts,
+        'bool get halChargedFromStart => _chargedCounter.kwh != null\n? _chargedCounter.fromStart\n: _halChargeSessionFromStart;' in _dk_hts and 'final bool chargedFromStart =\nsvcOwnsSession ? fromStart : hal.halChargedFromStart;' in _dk_view and "? '${chargedKwh.toStringAsFixed(1)} kWh'" in _dk_view and all("Text('${chargedSession!.toStringAsFixed(1)} kWh'," in _dj_rd(f) for f in ('lib/screens/dashboard.dart', 'lib/screens/wide/dashboard_wide.dart')),
+        _dk3_m is not None and _dk3_m.returncode == 0 and 'mirror +236:' in _dk3_m.stdout,
+        "expect(step(15, 3), ChargeStage.plugged); // 135 с согласования" in _dk_t1 and "expect(step(15, 3), ChargeStage.finished); // кабель в порту" in _dk_t1 and "test('DC 20.11: 1.3 до вставки, 14.0 в конце — +12.7', () {" in _dk_t1 and 'expect(c.kwh, closeTo(12.7, 1e-9));' in _dk_t1 and 'expect(c.resets, 1);' in _dk_t1,
+    ]
+    if all(_dk3): ok('DK3 charged energy from counter 0x2D0: increments summed per session, a drop re-bases without adding, the session opens and closes by the banner condition, a stopped stream forgets the base, V*I integral kept as an app_log control, the screen asks the same source where the sum starts; mirror and Dart test hold the same')
+    else: fail(f'DK3 charged counter drifted: {_dk3}')
+
+    # DK4: СВЕРКА НАРУЖНОЙ ТЕМПЕРАТУРЫ. Событие HAL кормит сверку ДО ветки
+    # ac_ (порядок); firehose обязан показать то же за 10 с; расхождение
+    # снимает значение из _latest до новой поездки; признак выведен в
+    # интерфейс, которым пользуется атлас.
+    _dk4_p_hal = _dk_on.find("if (e.name == 'ac_temp_out') {\nfinal v = e.value;\nif (v != null) {\n_outsideTempCheck.feedHal(")
+    _dk4_p_ac = _dk_on.find("if (e.name.startsWith('ac_')) {")
+    _dk4_ff = _dk_fn(_dk_cs, 'bool feedFirehose(double c, int nowMs) {')
+    _dk4 = [
+        -1 < _dk4_p_hal < _dk4_p_ac and '_outsideTempCheck.feedHal(\nv.toDouble(), _halDiagClock.elapsedMilliseconds);' in _dk_on,
+        'static const int holdMs = 10000;' in _dk_cs and 'if ((c - e).abs() < 0.5) {\n_expect = null;\n_sinceMs = null;\nreturn false;\n}\nif (untrusted || nowMs - since < holdMs) return false;\nuntrusted = true;' in _dk4_ff,
+        "if (name == 'fh_temp_out_c') {\nif (_outsideTempCheck.feedFirehose(\nd, _halDiagClock.elapsedMilliseconds)) {" in _dk2_use and 'if (_outsideTempCheck.untrusted) {\n_latest.remove(name);\nreturn;\n}' in _dk2_use,
+        '_firehoseCheck.resetForTrip();\n_outsideTempCheck.resetForTrip();' in _dk_hts and '_chargedCounter.forget();\n_chargedThisPlugIn = false;\n_outsideTempCheck.resetForTrip();' in _dk_hts,
+        'bool get halOutsideTempUntrusted;\n}' in _dk_hts and 'bool get halOutsideTempUntrusted =>\n_outsideTempCheck.untrusted ||\n_firehoseCheck.state == FirehoseCheck.mismatch;' in _dk_hts,
+        "debugPrint('Atlas: outside temperature DIVERGES from HAL '" in _dk_hts,
+        "test('расхождение держится 10 с — недостоверно до новой поездки', () {" in _dk_t1,
+    ]
+    if all(_dk4): ok('DK4 outside temperature check: the HAL event feeds it before the ac_ branch (order checked), the firehose must show the same value within 10 s, a divergence removes the value until the next trip, the flag is part of the interface the atlas reads')
+    else: fail(f'DK4 outside temperature check drifted: {_dk4}')
+
+    # DK5: АТЛАС ПО НАРУЖНОЙ ТЕМПЕРАТУРЕ. Окно такта — по fh_temp_out_c,
+    # средняя температура клетки — по-прежнему батарея; первые 600 с
+    # движения сессии — предварительная доля без записи снимка; перенос на
+    # десятой минуте и на конце сессии; смена оси сбрасывает клетки
+    # прежней оси один раз; подписи про батарею в атласе заменены.
+    _dk5_tick = _dk_fn(_dk_sps, 'void _atlasTick(double vDash, int nowMs, double dtS) {')
+    _dk5_set = _dk_fn(_dk_sps, 'void _settleProvisional(_AtlasLedger l, double? tempC, int nowMs,\n{required bool live}) {')
+    _dk5_cls = _dk_fn(_dk_sps, 'void _closeAtlasSession({required int frozenAtMs}) {')
+    _dk5_mig = _dk_fn(_dk_sps, 'void _migrateAtlasAxis() {')
+    _dk5_win = _dk_fn(_dk_sps, 'int? _tickWindow(int nowMs) {')
+    _dk5 = [
+        'const double kAtlasOutsideSettleS = 600.0;' in _dk_sps and "const String kAtlasAxisOutside = 'out';" in _dk_sps,
+        "double? _atlasTempC() {\nif (_hal.halOutsideTempUntrusted) return null;\nif (_hal.halFresh('fh_temp_out_c')) {\nreturn _hal.halValue('fh_temp_out_c');\n}\nreturn null;\n}" in _dk_sps,
+        'final t = _atlasTempC();\nif (t != null) {\nl.lastFreshTempC = t;\nl.lastFreshTempMs = nowMs;\nif (vDash >= 2.0) l.lastMoveTempC = t;\n_maybeSwitchWindow(t, nowMs);\n}' in _dk5_tick and 'final ct = _packTempC();' in _dk5_tick and _dk5_tick.count('_packTempC()') == 1,
+        'l.moveS += dtS;' in _dk5_tick and 'if (!l.settled && l.moveS >= kAtlasOutsideSettleS) {\nfinal lm = l.lastFreshTempMs;\nif (t != null ||\nlm == null ||\nnowMs - lm > kAtlasTempMaxAgeS * 1000.0) {\n_settleProvisional(l, t, nowMs, live: true);\n}\n}' in _dk5_tick,
+        'final provisional = !l.settled;\nif (provisional) {\ncell.pStartMs ??= nowMs;\ncell.pEnergyKwh += p * dtS / 3600.0;\ncell.pDistKm += vDash * kSpeedRealFactor * dtS / 3600.0;\ncell.pTimeS += dtS;' in _dk5_tick,
+        'final retry = cell.timeS >= kBandMinSeconds &&\n!cell.hasProvisional &&\n_freezeRetry.remove(key);' in _dk5_tick and 'if ((crossed && !cell.hasProvisional) || retry) {' in _dk5_tick,
+        'final int? win = tempC == null ? null : atlasWindowOfTemp(tempC);' in _dk5_set and 'if (band == null || srcWin == win) {\nsrc.clearProvisional();\ncontinue;\n}' in _dk5_set and 'dest.timeS += src.pTimeS;' in _dk5_set and 'src.timeS -= src.pTimeS;' in _dk5_set and 'dest.energyKwh += src.pEnergyKwh;' in _dk5_set and 'src.energyKwh -= src.pEnergyKwh;' in _dk5_set and 'dest.distKm += src.pDistKm;' in _dk5_set and 'src.distKm -= src.pDistKm;' in _dk5_set,
+        'if (!live) return;\nl.settled = true;\nif (win != null) l.activeWindow = win;' in _dk5_set and '_freezeRetry.remove(key);\n_freezeChunk(key, cell, band, ws == \'u\' ? null : int.tryParse(ws),\nnowMs);' in _dk5_set,
+        'if (!l.settled) {\n_settleProvisional(l, l.lastMoveTempC, frozenAtMs, live: false);\n}\n_freezeMatured(frozenAtMs: frozenAtMs);' in _dk5_cls and 'l.moveS = 0;\nl.settled = false;\nl.lastMoveTempC = null;' in _dk5_cls,
+        'if (_hal.halOutsideTempUntrusted) return null;' in _dk5_win,
+        'if (l == null || l.axis == kAtlasAxisOutside) return;' in _dk5_mig and 'l.cells.clear();' in _dk5_mig and 'l.axis = kAtlasAxisOutside;' in _dk5_mig and -1 < _dk_sps.find('_migrateAtlasAxis();\nfinal l = _ledger;') < _dk_sps.find("debugPrint('Atlas: recovery — stale session '") and 'axis: kAtlasAxisOutside);' in _dk_sps,
+        "'mv': moveS,\n'st': settled,\n'mt': lastMoveTempC,\n'ax': axis," in _dk_sps and "if (pTimeS > 1e-9) 'pt': pTimeS," in _dk_sps and "pTimeS: (j['pt'] as num?)?.toDouble() ?? 0," in _dk_sps,
+        'currentPackTempC' not in _dk_sps and 'currentPackTempC' not in _dk_ban and 'double? get currentAtlasTempC => _atlasTempC();' in _dk_sps,
+        not re.search(r"'(atlas\.window_rare|atlas\.window_hot|atlas\.cell_title|measure\.card_trip|measure\.intent_ctx)':\s*'[^']*(батаре|battery)", _dk_l10n) and "'atlas.cell_title': '{v} км/ч, снаружи {w}'," in _dk_l10n,
+        "bool get halOutsideTempUntrusted => outsideUntrusted;" in _dk_t2 and "expect(rows.single.tempWindowC, 0);" in _dk_t2 and "expect(rows.single.tempWindowC, 10);" in _dk_t2 and "expect(rows.single.tempWindowC, isNull);" in _dk_t2,
+    ]
+    if all(_dk5): ok('DK5 atlas by outside temperature: tick window from fh_temp_out_c while the cell mean stays battery temperature, the first 600 s of movement of a session accumulate as a provisional share with no snapshot written, the share moves at minute 10 and at session end, a ledger of the battery axis is dropped once, atlas labels say outside')
+    else: fail(f'DK5 atlas outside-temperature axis drifted: {_dk5}')
+else:
+    ok(f"Part DK skipped (build +{pv}, charge stage and outside-temperature atlas land in +236)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)

@@ -1442,7 +1442,9 @@ class _ChargingBanner extends StatelessWidget {
                   const SizedBox(width: 8),
                   Text(S.of('dash.this_session_inline'),
                       style: const TextStyle(fontSize: 13, color: Colors.grey)),
-                  Text('${chargedSession!.toStringAsFixed(2)} kWh',
+                  // v0.2.37+236: один знак, как на экране зарядки (счётчик
+                  // 0x2D0 идёт шагом 0.1 кВт·ч).
+                  Text('${chargedSession!.toStringAsFixed(1)} kWh',
                       style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500)),
                 ],
               ),
@@ -1503,7 +1505,7 @@ class _TripCard extends StatelessWidget {
 
 /// Bump when changing the diagnostic format — helps cross-reference
 /// screenshots to specific app versions while iterating.
-const String _kDiagVersion = 'v0.2.36+235';
+const String _kDiagVersion = 'v0.2.37+236';
 
 /// v0.1.29+94: public alias of the build version string for display outside
 /// dashboard (e.g. the About screen's APP card). Single literal source — the

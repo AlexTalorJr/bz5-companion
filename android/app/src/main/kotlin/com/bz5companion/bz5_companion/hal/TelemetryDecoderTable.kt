@@ -1,7 +1,7 @@
 // === SHARED FROM bz5_recon — DO NOT EDIT (re-sync from recon) ===
 // Source: bz5-recon/android/app/src/main/kotlin/com/bz5/recon/live/TelemetryDecoderTable.kt
-// Synced: 2026-11-12 (recon v0.10.158, commit p158, 2b280a2)
-// SHA256: f1266c282092474e31e6ccbf09f8e65945bacccfbbe262fad680742918ee32b2
+// Synced: 2026-11-21 (recon v0.10.159, commit p159, bfaec3c)
+// SHA256: 5eab12fd107bc0c3c88eb01fb1cf7101db279e4d0e6fb99f41858bbcb4bfb47a
 package com.bz5companion.bz5_companion.hal
 
 // === SHARED CANDIDATE (bz5_recon ↔ bz5_companion) ===
@@ -129,9 +129,30 @@ object TelemetryDecoderTable {
         // Absolute check: 0.82 kWh / 2.85 kW ≈ 17 min = how long Alex had been
         // charging. dE/dt 1.74 kW < wall 2.6-3.1 kW = OBC losses + cabin/12V
         // load while sitting. Active only while AC-charging.
+        // p159: rewritten from three AC charges (13–14.11) and one DC (20.11).
+        // Per plug-in counter of the on-board charger: starts at 0 when the AC
+        // gun goes in, resets to 0 on unplug, no events at all on DC. Its rate
+        // is not a stable fraction of the energy into the pack (0.75 at the
+        // start of the 13.11 session, 0.52 over the whole night), so it is not
+        // "energy charged". Use firehose gb_cycle_regen_kwh / ∫V·I for that.
         put("BYDAutoChargingDevice|0x2C100818",
             Decoder("charge_energy_kwh", "kWh", ValueSource.DOUBLE,
-                notes = "cumulative charge energy; monotonic accumulator (persists across sessions); active only while AC-charging; dE/dt≈1.74kW vs wall 2.6-3.1 (OBC+aux losses); scale 1.0"))
+                notes = "CHARGING_CAPACITY; OBC (AC-only) per plug-in counter, 0 at plug-in, reset on unplug, silent on DC; rate 0.52–0.75 of energy into pack, NOT energy charged; display only as raw"))
+        // p159: charging state machine, calibrated on AC 13–14.11 and DC 20.11.
+        // HAL sends these on change only; firehose 0x2EB / 0x2C3 carry the
+        // current value (see FirehoseFieldTable).
+        put("BYDAutoChargingDevice|0x2EB00018",
+            Decoder("charging_device_state", "", ValueSource.INT,
+                notes = "CHARGING_BATTERRY_DEVICE_STATE; 15 rest, 0 starting, 1 charging, 2 stopping; same on AC and DC"))
+        put("BYDAutoChargingDevice|0x2C30080A",
+            Decoder("charging_working_status", "", ValueSource.INT,
+                notes = "CHARGING_SYSTEM_WORKING_STATUS; on-board charger (AC only): 0 rest, 1 starting, 2 charging, 3 stopping; no events on DC"))
+        put("BYDAutoChargingDevice|0x2EB00832",
+            Decoder("charging_gun_connect_state", "", ValueSource.INT,
+                notes = "CHARGING_GUN_CONNECT_STATE; 1 no gun, 2 AC gun, 3 DC gun (13–20.11)"))
+        put("BYDAutoChargingDevice|0x0A50000D",
+            Decoder("charger_connect_state", "", ValueSource.INT,
+                notes = "CHARGING_CHARGER_CONNECT_STATE; 1 charger connected, 0 not; AC and DC"))
         // p156: confirmed pack_voltage_fine. DC-charge run 06.08 verified this
         // as the high-resolution pack terminal voltage; it is the voltage the
         // companion power/energy split runs on. Name/unit/type frozen to match
@@ -310,7 +331,7 @@ object TelemetryDecoderTable {
         put("BYDAutoAcDevice|0x2FC00012",
             Decoder("ac_ctrl_mode", "", ValueSource.INT, notes = "AC_CTRL_MODE; 0 = AUTO, 1 = manual (07.11)"))
         put("BYDAutoAcDevice|0x2FC00038",
-            Decoder("ac_temp_out", "°C", ValueSource.INT, notes = "AC_TEMP_OUT (outside temp); INT °C; 5→4 on 09.11 evening matched street and Companion; push on change only, may be silent in short sessions"))
+            Decoder("ac_temp_out", "°C", ValueSource.INT, notes = "AC_TEMP_OUT (outside air); INT °C; push on change only, no initial value; same value as firehose fh_temp_out_c (0x2FC bit 48, raw − 128), 4/4 transitions matched 09–14.11"))
 
         // ─── AC — remaining catalog-named fids (patch 155) ────────────────
         // Names are exact from the firmware BYDAutoFeatureIds catalog (recon

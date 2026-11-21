@@ -578,7 +578,8 @@ class _ChargingPanel extends StatelessWidget {
                       Text(S.of('dash.this_session'),
                           style: const TextStyle(
                               fontSize: 11, color: Colors.lightBlueAccent)),
-                      Text('${chargedSession!.toStringAsFixed(2)} kWh',
+                      // v0.2.37+236: один знак, как на экране зарядки.
+                      Text('${chargedSession!.toStringAsFixed(1)} kWh',
                           style: const TextStyle(
                               fontSize: 18, fontWeight: FontWeight.w400)),
                     ],

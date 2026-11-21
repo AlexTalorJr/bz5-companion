@@ -50,6 +50,12 @@ class _FakeHal extends ChangeNotifier implements HalTelemetrySource {
   final Map<String, double> _values = {};
   final Set<String> _fresh = {};
 
+  /// +236: сверка наружной температуры разошлась.
+  bool outsideUntrusted = false;
+
+  @override
+  bool get halOutsideTempUntrusted => outsideUntrusted;
+
   @override
   Stream<HalEvent> get rawEvents => _ctrl.stream;
 
@@ -133,6 +139,13 @@ Future<bool> _waitFor(Future<bool> Function() cond,
   return false;
 }
 
+/// +236: леджер сессии, у которой окно наружной температуры уже
+/// установлено (десятая минута движения позади). Тесты A1 проверяют запись
+/// чанка на переходе порога; в свежей сессии первые kAtlasOutsideSettleS
+/// секунд движения копятся предварительно и чанк на переходе не пишется.
+const String _settledLedger = '{"uid":"test-uid","ss":1700000000000,'
+    '"lm":1700000000000,"sd":0,"ax":"out","st":true,"mv":600,"cells":{}}';
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -205,7 +218,7 @@ void main() {
     // Ледждер, какой мог остаться от ≤+165: живая клетка 160 рядом с
     // законной 60.
     const legacy = '{"uid":"test-uid","ss":1700000000000,'
-        '"lm":1700000000000,"aw":20,"sd":0,'
+        '"lm":1700000000000,"aw":20,"sd":0,"ax":"out",'
         '"cells":{'
         '"60:20":{"e":0.5,"d":2.0,"t":60.0,"sa":1700000000000},'
         '"160:20":{"e":1.0,"d":4.0,"t":90.0,"sa":1700000000000}}}';
@@ -216,7 +229,7 @@ void main() {
 
   test('A1: аккумулятор сбрасывается — второй чанк вообще возможен',
       () async {
-    await boot();
+    await boot(prefs: {'atlas_ledger': _settledLedger});
     await _drive(hal, clock, 60.0, _pastThreshold);
     expect(await _waitFor(() async => (await db.countAtlasSnapshots()) >= 1),
         isTrue,
@@ -242,7 +255,7 @@ void main() {
 
   test('A1: отказ вставки не теряет замер — повтор дописывает его',
       () async {
-    await boot();
+    await boot(prefs: {'atlas_ledger': _settledLedger});
     // Триггер, отбивающий любую вставку. В отличие от закрытия базы,
     // его можно снять — а без восстановления тест не смог бы показать
     // главное: что замер уцелел, а не просто «что-то осталось».
@@ -279,5 +292,74 @@ void main() {
     expect(await _waitFor(() async => svc.atlasFreezeRetryPending == 0),
         isTrue,
         reason: 'очередь повтора не опустела после успешной записи');
+  });
+
+  // ── v0.2.37+236: ось атласа — наружная температура ──
+
+  test('+236: первые 10 минут движения копятся предварительно, на десятой '
+      'минуте уходят в окно по текущему показанию', () async {
+    await boot();
+    // Выезд из тёплого гаража: датчик показывает 14 °C (окно 10).
+    hal.put('fh_temp_out_c', 14.0);
+    await _drive(hal, clock, 60.0, _pastThreshold);
+    // Клетка дозрела, но снимка нет: окно ещё не установлено.
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    expect(await db.countAtlasSnapshots(), 0);
+    expect(svc.atlasLiveBands().map((b) => b.band), contains(60));
+
+    // Датчик сошёлся к уличным 4 °C (окно 0). Доезжаем до десятой минуты.
+    hal.put('fh_temp_out_c', 4.0);
+    final rest = kAtlasOutsideSettleS.toInt() - _pastThreshold + 5;
+    await _drive(hal, clock, 60.0, rest);
+    expect(await _waitFor(() async => (await db.countAtlasSnapshots()) >= 1),
+        isTrue,
+        reason: 'на десятой минуте снимок не записан');
+    final rows = await db.select(db.atlasSnapshots).get();
+    expect(rows, hasLength(1));
+    // Всё набранное за 10 минут — в окне 0, а не 10.
+    expect(rows.single.tempWindowC, 0);
+    expect(rows.single.steadySeconds, greaterThan(kBandMinSeconds * 2));
+  });
+
+  test('+236: сессия короче 10 минут — окно по последнему показанию в '
+      'движении', () async {
+    await boot();
+    hal.put('fh_temp_out_c', 14.0);
+    await _drive(hal, clock, 60.0, _pastThreshold);
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    expect(await db.countAtlasSnapshots(), 0);
+
+    // Стоянка дольше получаса: сессия закрывается на стоянке. Первый тик
+    // после разрыва не интегрируется (защита dt), второй закрывает.
+    clock.advance((kAtlasSessionGapMin + 1) * 60000);
+    await _drive(hal, clock, 0.0, 3);
+    expect(await _waitFor(() async => (await db.countAtlasSnapshots()) >= 1),
+        isTrue,
+        reason: 'закрытие сессии не записало дозревшую клетку');
+    final rows = await db.select(db.atlasSnapshots).get();
+    expect(rows, hasLength(1));
+    expect(rows.single.tempWindowC, 10);
+  });
+
+  test('+236: наружная температура недостоверна — такты в «t° неизвестна»',
+      () async {
+    await boot(prefs: {'atlas_ledger': _settledLedger});
+    hal.put('fh_temp_out_c', 4.0);
+    hal.outsideUntrusted = true;
+    await _drive(hal, clock, 60.0, _pastThreshold);
+    expect(await _waitFor(() async => (await db.countAtlasSnapshots()) >= 1),
+        isTrue);
+    final rows = await db.select(db.atlasSnapshots).get();
+    expect(rows.single.tempWindowC, isNull);
+  });
+
+  test('+236: леджер прежней оси (батарея) сбрасывает недозревшие клетки',
+      () async {
+    const battery = '{"uid":"test-uid","ss":1700000000000,'
+        '"lm":1700000000000,"aw":20,"sd":0,'
+        '"cells":{'
+        '"60:20":{"e":0.5,"d":2.0,"t":60.0,"sa":1700000000000}}}';
+    await boot(prefs: {'atlas_ledger': battery});
+    expect(svc.atlasLiveBands(), isEmpty);
   });
 }

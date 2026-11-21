@@ -102,7 +102,8 @@ const double kBandMinSeconds = 180.0;
 
 // ── +158 «Атлас» — temperature-window ledger (spec v2 + UI contract) ──
 
-/// Pack-temperature window grid: 5 °C windows, lower bounds −20…35
+/// Temperature window grid (до +236 — температура батареи, с +236 —
+/// наружная, см. [kAtlasOutsideSettleS]): 5 °C windows, lower bounds −20…35
 /// (12 windows). Clamps: t < −20 → window −20 («≤ −20»), t ≥ 40 →
 /// window 35. A tick with no usable temperature goes to the reserve
 /// «t° неизвестна» column (window == null).
@@ -115,6 +116,8 @@ const int kAtlasWindowMaxC = 35;
 /// 19.7↔20.3 around a border must not shred snapshots.
 const double kAtlasHysteresisC = 1.0;
 
+/// +236: срок рассчитан на редкий кадр температуры батареи; наружная
+/// температура идёт около 1 Гц, срок для неё — запас на разрыв потока.
 /// Temp stickiness for tick assignment (review R1): a tick belongs to
 /// the window of the last fresh reading if it is at most this old — an
 /// LFP pack cannot jump 5 °C in 5 minutes of driving, but the BigData
@@ -123,6 +126,25 @@ const double kAtlasHysteresisC = 1.0;
 /// Older than this → the honest «t° неизвестна» reserve. Window
 /// SWITCHES happen only on fresh readings, never on staleness.
 const double kAtlasTempMaxAgeS = 300.0;
+
+/// v0.2.37+236 — ОСЬ АТЛАСА: НАРУЖНАЯ ТЕМПЕРАТУРА (решение владельца
+/// 17.11). Сетка окон прежняя; с этой версии окно такта берётся по
+/// `fh_temp_out_c` (firehose 0x2FC), а не по температуре батареи. Снимки
+/// прежних версий остаются как есть, сервер различает ось по
+/// `app_version`. `pack_temp_avg_c` в снимке по-прежнему температура
+/// батареи.
+///
+/// Датчик после стоянки врёт: тёплый гараж 13.11 дал 14 °C при 4 °C на
+/// улице, значение сошлось за шесть минут езды. Поэтому первые
+/// [kAtlasOutsideSettleS] секунд ДВИЖЕНИЯ сессии такты копятся
+/// предварительно: в клетке окна по текущему показанию, с отдельным
+/// учётом этой доли, без записи снимка. На десятой минуте доля
+/// переносится в окно по показанию этого момента. Сессия закончилась
+/// раньше — в окно по последнему показанию в движении.
+const double kAtlasOutsideSettleS = 600.0;
+
+/// Метка оси в леджере. Леджер без неё набран по температуре батареи.
+const String kAtlasAxisOutside = 'out';
 
 /// Atlas-session idle gap: movement resuming after this long a pause
 /// closes the previous session (matured cells freeze retroactively at
@@ -451,6 +473,31 @@ class _AtlasCell {
   double frozenDistKm;
   double frozenTimeS;
 
+  // ── +236: предварительная доля (первые 10 минут движения сессии) ──
+  //
+  // Входит в energyKwh/distKm/timeS/tempSum/tempTimeS и говорит, какая
+  // их часть набрана до того, как окно наружной температуры установилось.
+  // Пока доля не ноль, снимок клетки не пишется. Перенос и обнуление —
+  // SpeedProfileService._settleProvisional. Сохраняется в prefs: поездка
+  // короче 10 минут заканчивается смертью процесса.
+  double pEnergyKwh;
+  double pDistKm;
+  double pTimeS;
+  double pTempSum;
+  double pTempTimeS;
+  int? pStartMs;
+
+  bool get hasProvisional => pTimeS > 1e-9;
+
+  void clearProvisional() {
+    pEnergyKwh = 0;
+    pDistKm = 0;
+    pTimeS = 0;
+    pTempSum = 0;
+    pTempTimeS = 0;
+    pStartMs = null;
+  }
+
   _AtlasCell({
     this.energyKwh = 0,
     this.distKm = 0,
@@ -462,6 +509,12 @@ class _AtlasCell {
     this.frozenEnergyKwh = 0,
     this.frozenDistKm = 0,
     this.frozenTimeS = 0,
+    this.pEnergyKwh = 0,
+    this.pDistKm = 0,
+    this.pTimeS = 0,
+    this.pTempSum = 0,
+    this.pTempTimeS = 0,
+    this.pStartMs,
   });
 
   /// Steady seconds earned by the current atlas session (micro-loot).
@@ -490,6 +543,13 @@ class _AtlasCell {
         if (frozenTimeS > 1e-9) 'fe': frozenEnergyKwh,
         if (frozenTimeS > 1e-9) 'fd': frozenDistKm,
         if (frozenTimeS > 1e-9) 'ft': frozenTimeS,
+        // +236: предварительная доля — только пока она есть.
+        if (pTimeS > 1e-9) 'pe': pEnergyKwh,
+        if (pTimeS > 1e-9) 'pd': pDistKm,
+        if (pTimeS > 1e-9) 'pt': pTimeS,
+        if (pTimeS > 1e-9) 'ps': pTempSum,
+        if (pTimeS > 1e-9) 'pq': pTempTimeS,
+        if (pTimeS > 1e-9 && pStartMs != null) 'pa': pStartMs,
       };
 
   static _AtlasCell fromJson(Map<String, dynamic> j) => _AtlasCell(
@@ -504,6 +564,12 @@ class _AtlasCell {
         frozenEnergyKwh: (j['fe'] as num?)?.toDouble() ?? 0,
         frozenDistKm: (j['fd'] as num?)?.toDouble() ?? 0,
         frozenTimeS: (j['ft'] as num?)?.toDouble() ?? 0,
+        pEnergyKwh: (j['pe'] as num?)?.toDouble() ?? 0,
+        pDistKm: (j['pd'] as num?)?.toDouble() ?? 0,
+        pTimeS: (j['pt'] as num?)?.toDouble() ?? 0,
+        pTempSum: (j['ps'] as num?)?.toDouble() ?? 0,
+        pTempTimeS: (j['pq'] as num?)?.toDouble() ?? 0,
+        pStartMs: (j['pa'] as num?)?.toInt(),
       );
 }
 
@@ -568,6 +634,19 @@ class _AtlasLedger {
   /// cell (which removes it) cannot lose the flag.
   int? lastGainMs;
 
+  /// +236: секунды движения текущей сессии; до [kAtlasOutsideSettleS]
+  /// такты копятся предварительно. [settled] — окно сессии установлено.
+  double moveS;
+  bool settled;
+
+  /// +236: последнее достоверное наружное показание в движении — окно для
+  /// сессии, которая закончилась раньше десятой минуты.
+  double? lastMoveTempC;
+
+  /// +236: ось, по которой набраны клетки ([kAtlasAxisOutside]); null —
+  /// леджер прежних версий, набран по температуре батареи.
+  String? axis;
+
   _AtlasLedger({
     required this.sessionUid,
     required this.sessionStartedAtMs,
@@ -579,12 +658,19 @@ class _AtlasLedger {
     this.sessionDistKm = 0,
     this.lastOkMs,
     this.lastGainMs,
+    this.moveS = 0,
+    this.settled = false,
+    this.lastMoveTempC,
+    this.axis,
   }) : cells = cells ?? {};
 
   static _AtlasLedger fresh() {
     final now = DateTime.now().millisecondsSinceEpoch;
     return _AtlasLedger(
-        sessionUid: uuidV7(), sessionStartedAtMs: now, lastMoveMs: now);
+        sessionUid: uuidV7(),
+        sessionStartedAtMs: now,
+        lastMoveMs: now,
+        axis: kAtlasAxisOutside);
   }
 
   static String cellKey(int band, int? window) =>
@@ -600,6 +686,10 @@ class _AtlasLedger {
         'sd': sessionDistKm,
         'lok': lastOkMs,
         'lg': lastGainMs,
+        'mv': moveS,
+        'st': settled,
+        'mt': lastMoveTempC,
+        'ax': axis,
         'cells': cells.map((k, v) => MapEntry(k, v.toJson())),
       };
 
@@ -634,6 +724,10 @@ class _AtlasLedger {
       sessionDistKm: (j['sd'] as num?)?.toDouble() ?? 0,
       lastOkMs: (j['lok'] as num?)?.toInt(),
       lastGainMs: (j['lg'] as num?)?.toInt(),
+      moveS: (j['mv'] as num?)?.toDouble() ?? 0,
+      settled: j['st'] == true,
+      lastMoveTempC: (j['mt'] as num?)?.toDouble(),
+      axis: j['ax'] as String?,
     );
   }
 }
@@ -999,6 +1093,7 @@ class SpeedProfileService extends ChangeNotifier {
       } catch (_) {
         _ledger = null;
       }
+      _migrateAtlasAxis();
       final l = _ledger;
       // +163: the SAME predicate as the tick-side rotation — gap AND a
       // non-empty session. An empty session (nothing driven since the
@@ -1295,6 +1390,46 @@ class SpeedProfileService extends ChangeNotifier {
     return null;
   }
 
+  /// +236: температура оси атласа — наружная, firehose `fh_temp_out_c`
+  /// (около 1 Гц). Недостоверное значение сервис HAL сюда не отдаёт.
+  double? _atlasTempC() {
+    if (_hal.halOutsideTempUntrusted) return null;
+    if (_hal.halFresh('fh_temp_out_c')) {
+      return _hal.halValue('fh_temp_out_c');
+    }
+    return null;
+  }
+
+  /// +236 — СМЕНА ОСИ. Леджер прежних версий набран по температуре
+  /// батареи: его недозревшие клетки нельзя ни продолжать в окнах наружной
+  /// температуры, ни записать снимком (версия приложения в снимке уже
+  /// новая, сервер прочёл бы ось как наружную). Они сбрасываются один раз;
+  /// это не больше трёх минут ровной езды на клетку. Намерение названо
+  /// окном прежней оси и снимается вместе с ними. Записанные снимки не
+  /// трогаются.
+  void _migrateAtlasAxis() {
+    final l = _ledger;
+    if (l == null || l.axis == kAtlasAxisOutside) return;
+    final dropped = l.cells.length;
+    l.cells.clear();
+    l.activeWindow = null;
+    l.lastFreshTempC = null;
+    l.lastFreshTempMs = null;
+    l.lastMoveTempC = null;
+    l.moveS = 0;
+    l.settled = false;
+    l.axis = kAtlasAxisOutside;
+    if (_intentBand != null) {
+      _intentBand = null;
+      _intentWindow = null;
+      _intentTakenMs = null;
+      unawaited(_persistIntent());
+    }
+    _dirtySincePersist = true;
+    debugPrint('Atlas: axis switched to outside temperature — '
+        '$dropped partial cell(s) of the battery axis dropped');
+  }
+
   void _onEvent(HalEvent e) {
     // +158: two consumers share the pipeline — the manual session
     // (overlay, exactly the old behaviour) and the always-on atlas
@@ -1535,15 +1670,31 @@ class SpeedProfileService extends ChangeNotifier {
       // tick, before qualification (the card says how far this session
       // drove, not how much of it qualified).
       l.sessionDistKm += vDash * kSpeedRealFactor * dtS / 3600.0;
+      l.moveS += dtS; // +236: часы предварительного периода
     }
 
     // Window bookkeeping — fresh readings update the stickiness anchor
     // and may switch the active window (hysteresis, review R1).
-    final t = _packTempC();
+    // +236: показание — наружная температура.
+    final t = _atlasTempC();
     if (t != null) {
       l.lastFreshTempC = t;
       l.lastFreshTempMs = nowMs;
+      if (vDash >= 2.0) l.lastMoveTempC = t;
       _maybeSwitchWindow(t, nowMs);
+    }
+
+    // +236: десятая минута движения — окно сессии устанавливается. Есть
+    // показание — по нему; показаний нет дольше срока свежести — честное
+    // «t° неизвестна» (машина без поля firehose не должна копить
+    // предварительно всю поездку).
+    if (!l.settled && l.moveS >= kAtlasOutsideSettleS) {
+      final lm = l.lastFreshTempMs;
+      if (t != null ||
+          lm == null ||
+          nowMs - lm > kAtlasTempMaxAgeS * 1000.0) {
+        _settleProvisional(l, t, nowMs, live: true);
+      }
     }
 
     // Qualification — the same gate chain as _accumBand.
@@ -1585,10 +1736,25 @@ class SpeedProfileService extends ChangeNotifier {
     cell.energyKwh += p * dtS / 3600.0;
     cell.distKm += vDash * kSpeedRealFactor * dtS / 3600.0;
     cell.timeS += dtS;
+    // Средняя температура клетки (pack_temp_avg_c снимка) — по-прежнему
+    // батарея, под своим именем.
     final ct = _packTempC();
     if (ct != null) {
       cell.tempSum += ct * dtS;
       cell.tempTimeS += dtS;
+    }
+    // +236: до установления окна такт учитывается ещё и как
+    // предварительная доля клетки.
+    final provisional = !l.settled;
+    if (provisional) {
+      cell.pStartMs ??= nowMs;
+      cell.pEnergyKwh += p * dtS / 3600.0;
+      cell.pDistKm += vDash * kSpeedRealFactor * dtS / 3600.0;
+      cell.pTimeS += dtS;
+      if (ct != null) {
+        cell.pTempSum += ct * dtS;
+        cell.pTempTimeS += dtS;
+      }
     }
     l.lastGainMs = nowMs; // +160: «Σ gained с момента lastOkMs» anchor
     final crossed =
@@ -1601,8 +1767,11 @@ class SpeedProfileService extends ChangeNotifier {
     // Порядок важен: remove — побочный эффект. Сначала порог, иначе
     // ключ снимался бы с очереди повтора и в ситуации, когда повтор
     // не запускается.
-    final retry =
-        cell.timeS >= kBandMinSeconds && _freezeRetry.remove(key);
+    // +236: клетка с предварительной долей снимок не пишет — ни
+    // переходом, ни повтором; ключ повтора при этом остаётся в очереди.
+    final retry = cell.timeS >= kBandMinSeconds &&
+        !cell.hasProvisional &&
+        _freezeRetry.remove(key);
     if (crossed) {
       // kwh in the payload is the value AT THE CROSSING — realtime
       // correction continues afterwards; the card renders from the
@@ -1613,9 +1782,13 @@ class SpeedProfileService extends ChangeNotifier {
       _maybeGenerateReveal(
           band, win, cell.energyKwh / cell.distKm * 100.0);
     }
-    if (crossed || retry) {
+    if ((crossed && !cell.hasProvisional) || retry) {
       // +164 (A, BC7): the crossing is the WRITE point. The measurement
       // stops living in prefs the instant it is complete.
+      // +236: клетка с предварительной долей ждёт установления окна —
+      // запись делает _settleProvisional (десятая минута) либо
+      // _freezeMatured (конец сессии). Событие итогов выше уже создано:
+      // оно про поездку и ждать не должно.
       _freezeChunk(key, cell, band, win, nowMs);
     }
     _dirtySincePersist = true;
@@ -1773,9 +1946,87 @@ class SpeedProfileService extends ChangeNotifier {
   /// «t° неизвестна» reserve (null).
   int? _tickWindow(int nowMs) {
     final l = _ledger!;
+    // +236: сверка наружной температуры с HAL разошлась — до конца
+    // поездки такты идут в «t° неизвестна» сразу, без срока свежести.
+    if (_hal.halOutsideTempUntrusted) return null;
     final lm = l.lastFreshTempMs;
     if (lm == null || nowMs - lm > kAtlasTempMaxAgeS * 1000.0) return null;
     return l.activeWindow;
+  }
+
+  /// +236 — ОКНО СЕССИИ УСТАНОВЛЕНО. Предварительная доля каждой клетки
+  /// переносится в клетку той же полосы в окне [tempC] (null — «t°
+  /// неизвестна»); доля, уже лежащая в этом окне, остаётся на месте.
+  ///
+  /// [live] — десятая минута движения: окно [tempC] становится активным
+  /// без гистерезиса (прежние показания были недостоверны), дозревшие
+  /// клетки пишутся сразу. false — конец сессии раньше десятой минуты:
+  /// запись делает вызывающий (_freezeMatured).
+  ///
+  /// Событие итогов создаётся здесь только для клетки, которая дозрела
+  /// самим переносом; дозревшая до него уже получила событие на переходе.
+  void _settleProvisional(_AtlasLedger l, double? tempC, int nowMs,
+      {required bool live}) {
+    final int? win = tempC == null ? null : atlasWindowOfTemp(tempC);
+    var moved = 0;
+    for (final key in l.cells.keys.toList()) {
+      final src = l.cells[key]!;
+      if (!src.hasProvisional) continue;
+      final sep = key.indexOf(':');
+      final band = int.tryParse(key.substring(0, sep));
+      final ws = key.substring(sep + 1);
+      final int? srcWin = ws == 'u' ? null : int.tryParse(ws);
+      if (band == null || srcWin == win) {
+        src.clearProvisional();
+        continue;
+      }
+      final srcMatured = src.timeS >= kBandMinSeconds;
+      final dest = l.cells.putIfAbsent(_AtlasLedger.cellKey(band, win),
+          () => _AtlasCell(startedAtMs: src.pStartMs ?? nowMs));
+      final destBefore = dest.timeS;
+      dest.energyKwh += src.pEnergyKwh;
+      dest.distKm += src.pDistKm;
+      dest.timeS += src.pTimeS;
+      dest.tempSum += src.pTempSum;
+      dest.tempTimeS += src.pTempTimeS;
+      src.energyKwh -= src.pEnergyKwh;
+      src.distKm -= src.pDistKm;
+      src.timeS -= src.pTimeS;
+      src.tempSum -= src.pTempSum;
+      src.tempTimeS -= src.pTempTimeS;
+      src.clearProvisional();
+      // Клетка состояла из одной предварительной доли — её больше нет.
+      if (src.timeS <= 1e-6 && !src.hasFrozenChunk) l.cells.remove(key);
+      moved++;
+      if (live &&
+          !srcMatured &&
+          destBefore < kBandMinSeconds &&
+          dest.timeS >= kBandMinSeconds &&
+          dest.distKm > 1e-6) {
+        _maybeGenerateReveal(
+            band, win, dest.energyKwh / dest.distKm * 100.0);
+      }
+    }
+    _dirtySincePersist = true;
+    debugPrint('Atlas: outside window settled → ${win ?? 'u'} '
+        '(t=${tempC?.toStringAsFixed(0) ?? '-'}°, moved=$moved, '
+        '${live ? 'minute 10' : 'session end'})');
+    if (!live) return;
+    l.settled = true;
+    if (win != null) l.activeWindow = win;
+    for (final key in l.cells.keys.toList()) {
+      final cell = l.cells[key]!;
+      if (cell.timeS < kBandMinSeconds) continue;
+      final sep = key.indexOf(':');
+      final band = int.tryParse(key.substring(0, sep));
+      final ws = key.substring(sep + 1);
+      if (band == null) continue;
+      // Клетка могла ждать повтора после отказа вставки — эта запись и
+      // есть повтор, ключ из очереди снимается.
+      _freezeRetry.remove(key);
+      _freezeChunk(key, cell, band, ws == 'u' ? null : int.tryParse(ws),
+          nowMs);
+    }
   }
 
   /// Active-window switch on a FRESH reading only (staleness never
@@ -1833,6 +2084,12 @@ class SpeedProfileService extends ChangeNotifier {
   void _closeAtlasSession({required int frozenAtMs}) {
     final l = _ledger;
     if (l == null) return;
+    // +236: сессия закончилась раньше десятой минуты движения —
+    // предварительные доли уходят в окно по последнему показанию в
+    // движении, затем обычная запись дозревших.
+    if (!l.settled) {
+      _settleProvisional(l, l.lastMoveTempC, frozenAtMs, live: false);
+    }
     _freezeMatured(frozenAtMs: frozenAtMs);
     final old = l.sessionUid;
     l.sessionUid = uuidV7();
@@ -1855,6 +2112,10 @@ class SpeedProfileService extends ChangeNotifier {
       c.t0 = c.timeS;
     }
     l.sessionDistKm = 0;
+    // +236: новая сессия — новый предварительный период.
+    l.moveS = 0;
+    l.settled = false;
+    l.lastMoveTempC = null;
     // Refresh the idle anchor too: without this an init-recovery close
     // would be followed by a second (empty) rotation on the first
     // movement tick — harmless but sloppy (a wasted session_uid).
@@ -2128,9 +2389,9 @@ class SpeedProfileService extends ChangeNotifier {
   /// Real km of the current atlas session — the card's trip line.
   double get atlasSessionDistKm => _ledger?.sessionDistKm ?? 0;
 
-  /// Current pack temperature for the trip line («пак 19°») — the same
-  /// combined freshness priority the recorder itself integrates with.
-  double? get currentPackTempC => _packTempC();
+  /// +236: температура оси атласа для строк карточек («снаружи 4°») —
+  /// наружная, та же, по которой рекордер выбирает окно.
+  double? get currentAtlasTempC => _atlasTempC();
 
   /// «Σ gained по ячейкам с момента lastOkMs > 0» (§2.1): any
   /// qualified tick after the last «Ок» keeps the micro-loot card

@@ -31,6 +31,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../l10n/strings.dart';
+import '../services/charge_state.dart';
 import '../services/connection.dart';
 import '../services/hal_telemetry_service.dart';
 import '../services/soc_resolver.dart';
@@ -49,6 +50,10 @@ import '../screens/wide/charging_view_wide.dart';
 /// поле 17.08: баннер «запуск…» появляется, автопоказа нет (предохранитель
 /// сгорал о ложную перепроверку), тап открывал «Зарядка завершена».
 /// Семантика сессии: кабель воткнут ∨ ток идёт ∨ OBD-путь телефона.
+/// v0.2.37+236: когда известен этап зарядки (DEVICE_STATE), оба слагаемых
+/// HAL отвечают по нему внутри сервиса — сессия есть, пока вставлен
+/// пистолет («подключено», «согласование», «идёт», «закончена»).
+/// Выражение здесь не менялось.
 /// Бейдж дашборда (+116) сознательно НЕ на этом помощнике — его
 /// семантика «ток идёт сейчас», без хвоста «воткнут, но закончил».
 bool _chargingSessionNow(ConnectionService svc, HalTelemetryService hal) =>
@@ -227,6 +232,21 @@ class _ChargingBanner extends StatelessWidget {
       final m = (etaSec / 60).round();
       parts.add(m >= 60 ? '~${m ~/ 60}h ${m % 60}m' : '~${m}m');
     }
+    // v0.2.37+236: этап без тока называется словами — «запуск…» при
+    // законченной зарядке было бы неправдой. Этап решает сервис; без
+    // потока HAL (телефон с донглом) он null, и строка прежняя.
+    final stage = hal.halChargeStage;
+    final stageWord = switch (stage) {
+      ChargeStage.plugged => S.of('chg.stage_idle'),
+      ChargeStage.handshake => S.of('chg.stage_wait'),
+      ChargeStage.finished => S.of('chg.stage_done'),
+      _ => null,
+    };
+    if (stageWord != null) {
+      parts
+        ..removeWhere((p) => p.startsWith('~'))
+        ..insert(0, stageWord);
+    }
     final detail = parts.isEmpty ? S.of('chg.starting') : parts.join(' • ');
 
     return Material(
@@ -291,7 +311,7 @@ class AtlasSummaryPlate extends StatelessWidget {
     if (!isParked || unrevealed <= 0) return const SizedBox.shrink();
 
     final sp = context.read<SpeedProfileService>();
-    final t = sp.currentPackTempC;
+    final t = sp.currentAtlasTempC;
     final km = sp.atlasSessionDistKm.toStringAsFixed(1);
     final sub = t == null
         ? S.of('measure.card_trip_nt').replaceFirst('{km}', km)

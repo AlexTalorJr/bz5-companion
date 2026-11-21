@@ -683,7 +683,7 @@ class S {
         'time builds up',
     'measure.empty_z100': 'The run starts by itself when you pull away. '
         'Accelerate without stopping and the time records itself',
-    'measure.empty_atlas': 'Bands from a drive land here: speed × battery '
+    'measure.empty_atlas': 'Bands from a drive land here: speed × outside '
         'temperature. The first cell appears after your first drive.',
     // +164 [6d/6f/6g]: the band chart.
     'measure.chart_sub': 'kWh per 100 km, all drives',
@@ -699,7 +699,7 @@ class S {
     'measure.intent_hold': 'Hold {v} km/h for {t} more',
     'measure.intent_new': 'opens a new atlas cell',
     'measure.intent_refine': 'refines the measurement already collected',
-    'measure.intent_ctx': 'battery is {t}° right now, exactly the right '
+    'measure.intent_ctx': 'it is {t}° outside right now, exactly the right '
         'window',
     'measure.t_half': 'half a minute',
     'measure.t_one': 'a minute',
@@ -713,7 +713,7 @@ class S {
     'settings.adv.dump_empty':
         'Nothing to dump yet — no session and no ledger',
     // +160: parking summary card (§132 of the UI contract).
-    'measure.card_trip': '{km} km, battery {t}°',
+    'measure.card_trip': '{km} km, outside {t}°',
     'measure.card_trip_nt': '{km} km',
     'measure.card_matured': 'Band {v} matured: {x} kWh/100, about {km} km '
         'of range',
@@ -745,7 +745,7 @@ class S {
     'atlas.pending_note': 'A dashed cell with a number has already earned '
         'its two minutes. It becomes a full cell when the drive ends',
     'measure.intent_title': 'On the next drive',
-    'measure.intent_at': 'at battery',
+    'measure.intent_at': 'at outside temperature',
     'measure.intent_note': 'Steady time in this cell continues from the '
         'last drive. No seconds and no percentages here: the goal is '
         'named by speed and temperature',
@@ -770,7 +770,7 @@ class S {
     'atlas.session_many': 'drives',
     'atlas.counts_view': '{n} {cells}, {m} {bands}',
     'atlas.season_ctx':
-        '{month}, battery from {lo} to {hi}°. Cold columns open '
+        '{month}, outside from {lo} to {hi}°. Cold columns open '
         'in winter',
     'atlas.season_ctx_nr': '{month}. Temperature columns open as you drive',
     'atlas.year_title': 'YEAR',
@@ -783,8 +783,8 @@ class S {
     'atlas.legend_marks': 'the more drives, the more exact the number',
     'atlas.grid_note': 'Dashed cells are neighbours you can open next. '
         'Blank space means you have not driven there yet',
-    'atlas.window_rare': 'rare weather, battery {w}°',
-    'atlas.window_hot': 'hot weather, battery {w}°',
+    'atlas.window_rare': 'rare weather, outside {w}°',
+    'atlas.window_hot': 'hot weather, outside {w}°',
     'atlas.window_unknown': 'no temperature',
     'atlas.view_only': 'view only, details on the phone',
     'atlas.tap_for_detail': 'tap a cell for details',
@@ -804,7 +804,7 @@ class S {
     'atlas.empty': 'Empty so far. The first cell appears after 2 minutes of '
         'steady driving at one speed.',
     'atlas.load_failed': 'Could not read the atlas:',
-    'atlas.cell_title': '{v} km/h, battery {w}',
+    'atlas.cell_title': '{v} km/h, outside {w}',
     'atlas.cell_sub': 'minimum, average, maximum in kWh per 100 km',
     'atlas.cell_sub_single': 'kWh per 100 km, a single reading',
     'atlas.cell_sessions': '{n} {sessions}',
@@ -830,7 +830,7 @@ class S {
     'export.legend_best': 'the most time',
     'export.legend_rare': 'rare weather',
     'export.legend_ahead': 'not driven yet',
-    'export.footer': 'Speeds 40–140 km/h · battery temperature −20 to +40° · '
+    'export.footer': 'Speeds 40–140 km/h · outside temperature −20 to +40° · '
         'the whole map.',
     'hist.empty_title': 'No trips yet',
     'hist.empty_hint': 'Connect the adapter and drive — '
@@ -1323,6 +1323,9 @@ class S {
     'chg.dur_hm': '{h}h {m}m',
     'chg.banner': 'Charging • {detail}',
     'chg.starting': 'starting…',
+    'chg.stage_idle': 'Connected, not charging',
+    'chg.stage_wait': 'Negotiating',
+    'chg.stage_done': 'Finished',
     'chg.session_title': 'Charging session',
     'chg.session_ended': 'Charging session ended',
     // ── v0.1.29+100: Status screen (car_status provider) ──
@@ -1997,7 +2000,7 @@ class S {
     'measure.empty_z100': 'Замер стартует сам, когда тронетесь. Разгонитесь '
         'без остановок, и время запишется',
     'measure.empty_atlas': 'Полосы за поездку ложатся сюда: скорость × '
-        'температура батареи. Первая клетка появится после первой поездки.',
+        'температура снаружи. Первая клетка появится после первой поездки.',
     // +164 [6d/6f/6g]: график по полосам.
     'measure.chart_sub': 'кВт·ч на 100 км, все поездки',
     'measure.chart_note': 'Серый столбец значит, что время в этой полосе '
@@ -2011,7 +2014,7 @@ class S {
     'measure.intent_hold': 'Подержи {v} км/ч ещё {t}',
     'measure.intent_new': 'откроет новую клетку в атласе',
     'measure.intent_refine': 'уточнит уже собранный замер',
-    'measure.intent_ctx': 'сейчас батарея {t}°, как раз то окно',
+    'measure.intent_ctx': 'сейчас снаружи {t}°, как раз то окно',
     'measure.t_half': 'полминуты',
     'measure.t_one': 'минуту',
     'measure.t_onehalf': 'полторы минуты',
@@ -2024,7 +2027,7 @@ class S {
     'settings.adv.dump_empty':
         'Писать нечего — ни сессии, ни леджера',
     // +160: карточка итогов на стоянке (строки §132 контракта).
-    'measure.card_trip': '{km} км, батарея {t}°',
+    'measure.card_trip': '{km} км, снаружи {t}°',
     'measure.card_trip_nt': '{km} км',
     'measure.card_matured': 'Полоса {v} дозрела: {x} кВт·ч/100, это около '
         '{km} км запаса',
@@ -2056,7 +2059,7 @@ class S {
     'atlas.pending_note': 'Клетка с пунктиром и числом уже набрала свои '
         'две минуты. Полноценной она станет, когда поездка закончится',
     'measure.intent_title': 'В следующей поездке',
-    'measure.intent_at': 'при батарее',
+    'measure.intent_at': 'при температуре снаружи',
     'measure.intent_note': 'Ровное время в этой клетке продолжится с '
         'прошлой поездки. Секунд и процентов здесь нет: цель названа '
         'скоростью и температурой',
@@ -2083,7 +2086,7 @@ class S {
     'atlas.session_many': 'поездок',
     'atlas.counts_view': '{n} {cells}, {m} {bands}',
     'atlas.season_ctx':
-        '{month}, батарея от {lo} до {hi}°. Холодные столбцы '
+        '{month}, снаружи от {lo} до {hi}°. Холодные столбцы '
         'откроются зимой',
     'atlas.season_ctx_nr':
         '{month}. Столбцы по температуре откроются '
@@ -2098,8 +2101,8 @@ class S {
     'atlas.legend_marks': 'чем больше поездок, тем точнее число',
     'atlas.grid_note': 'Пунктиром показаны соседние клетки: их можно '
         'открыть следующими. Пустое место значит, что туда ещё не ездили',
-    'atlas.window_rare': 'редкая погода, батарея {w}°',
-    'atlas.window_hot': 'жаркая погода, батарея {w}°',
+    'atlas.window_rare': 'редкая погода, снаружи {w}°',
+    'atlas.window_hot': 'жаркая погода, снаружи {w}°',
     'atlas.window_unknown': 'без температуры',
     'atlas.view_only': 'просмотр, подробности на телефоне',
     'atlas.tap_for_detail': 'нажмите на клетку для подробностей',
@@ -2118,7 +2121,7 @@ class S {
     'atlas.empty': 'Пока пусто. Первая клетка появится после 2 минут ровной '
         'езды на одной скорости.',
     'atlas.load_failed': 'Не удалось прочитать атлас:',
-    'atlas.cell_title': '{v} км/ч, батарея {w}',
+    'atlas.cell_title': '{v} км/ч, снаружи {w}',
     'atlas.cell_sub': 'минимум, среднее, максимум в кВт·ч на 100 км',
     'atlas.cell_sub_single': 'кВт·ч на 100 км, один замер',
     'atlas.cell_sessions': '{n} {sessions}',
@@ -2144,7 +2147,7 @@ class S {
     'export.legend_best': 'больше всего времени',
     'export.legend_rare': 'редкая погода',
     'export.legend_ahead': 'ещё не ездили',
-    'export.footer': 'Скорости 40–140 км/ч · температура батареи от −20 '
+    'export.footer': 'Скорости 40–140 км/ч · температура снаружи от −20 '
         'до +40° · вся карта целиком.',
     'hist.empty_title': 'Поездок пока нет',
     'hist.empty_hint': 'Подключитесь к адаптеру и поезжайте — '
@@ -2632,6 +2635,10 @@ class S {
     'chg.dur_hm': '{h}ч {m}м',
     'chg.banner': 'Зарядка • {detail}',
     'chg.starting': 'запуск…',
+    // v0.2.37+236: этапы без тока (таблица Друга 3, 21.11).
+    'chg.stage_idle': 'Подключено, зарядка не идёт',
+    'chg.stage_wait': 'Согласование',
+    'chg.stage_done': 'Закончена',
     'chg.session_title': 'Сессия зарядки',
     'chg.session_ended': 'Зарядка завершена',
     // ── v0.1.29+100: экран Статус (провайдер car_status) ──

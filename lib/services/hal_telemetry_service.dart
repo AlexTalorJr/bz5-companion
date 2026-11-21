@@ -36,6 +36,7 @@ import '../data/database.dart';
 import 'bg_trip_builder.dart';
 import 'cell_pair.dart';
 import 'energy_split_service.dart';
+import 'charge_state.dart';
 import 'firehose_check.dart';
 import 'hal_bg_journal.dart';
 import 'hal_telemetry_channel.dart';
@@ -110,6 +111,11 @@ abstract class HalTelemetrySource implements Listenable {
   bool get platformProbed;
   bool halFresh(String name);
   double? halValue(String name);
+
+  /// v0.2.37+236: наружная температура (`fh_temp_out_c`) недостоверна до
+  /// конца поездки — сверка с HAL разошлась. Атлас при этом пишет такты в
+  /// «t° неизвестна» сразу, не дожидаясь срока свежести.
+  bool get halOutsideTempUntrusted;
 }
 
 /// v0.1.89+188 — фоновый хвост, найденный для подхвата.
@@ -283,6 +289,14 @@ class HalTelemetryService extends ChangeNotifier
     'motor_torque': Duration(milliseconds: 1500),
     // v0.2.35+234: recon p158 — motor_power стал battery_power_kw.
     'battery_power_kw': Duration(milliseconds: 1500),
+    // v0.2.37+236: поля firehose, у которых появились потребители (экран
+    // зарядки, атлас). Кадры 0x2EB и 0x2FC идут около 1 Гц — 10 с покрывают
+    // несколько пропусков подряд; 0x2D0 идёт раз в 30 с.
+    'fh_charging_device_state': Duration(seconds: 10),
+    'fh_charging_gun_connect_state': Duration(seconds: 10),
+    'fh_charging_type': Duration(seconds: 10),
+    'fh_temp_out_c': Duration(seconds: 10),
+    'gb_cycle_regen_kwh': Duration(seconds: 90),
     // v0.1.29+82: brake_pedal is EDGE-triggered (frame on change only) and
     // now STICKY — halBrakePedalPressed reads the held _lastGood value, not
     // halFresh, so this window is no longer the gate. Kept (used by isStale/
@@ -456,7 +470,15 @@ class HalTelemetryService extends ChangeNotifier
     'avg_consumption_50km': (0, 100),         // 12…15.4
     'epb_state': (0, 15),                     // enum 0…2
     'cell_temp_lowest': (-40, 150),
-    'charging_gun_state': (0, 15),            // enum 1/2/3, поле 14–16.08
+    // v0.2.37+236: имя recon p159 (было charging_gun_state).
+    'charging_gun_connect_state': (0, 15),    // enum 1/2/3, поле 14–16.08
+    // v0.2.37+236: состояние зарядки по HAL (recon p159) — 15 покой,
+    // 0 старт, 1 зарядка, 2 остановка; событие на изменение. Запасной
+    // источник этапа за firehose и строка в hal_samples.
+    'charging_device_state': (0, 15),
+    // Бортовое зарядное, только AC (0/1/2/3). Потребителя нет — только
+    // hal_samples, для сверки порядка событий с recon.
+    'charging_working_status': (0, 15),
     // v0.2.36+235: флаг кабеля 0/1 (0x0A50000D). С +207 был в липких и в
     // геттере, но не здесь — фильтр выбрасывал его, в hal_samples за всю
     // историю ни строки. Друг 3 13.11: на AC приходит 1 через 0.2 с после
@@ -522,7 +544,9 @@ class HalTelemetryService extends ChangeNotifier
     'charger_connect_state',
     // v0.2.9+208: тип пистолета — тоже событийный (2/3 при втыкании,
     // 1 при выдёргивании), та же липкость по той же причине.
-    'charging_gun_state',
+    'charging_gun_connect_state',
+    // v0.2.37+236: состояние зарядки по HAL — тоже событийное.
+    'charging_device_state',
     // ── v0.2.16+215: ТОЧНОЕ НАПРЯЖЕНИЕ НАКОНЕЦ ДОХОДИТ ДО МОЩНОСТИ ──
     //
     // +214 объявил «точный канал ведёт», но `halPowerKw` спрашивает
@@ -758,7 +782,7 @@ class HalTelemetryService extends ChangeNotifier
   double _halChargeEnergyRiseRateKw = 0; // dE/dt across the last increase
   DateTime? _halChargeEnergyRiseLogAt; // 60-s diag-line throttle
   double? _halSohStartChargeEnergy;    // counter latched at the session anchor
-  // v0.1.44+143 Part B.3: last seen charging_gun_state value — only for the
+  // v0.1.44+143 Part B.3: last seen charging_gun_connect_state value — only for the
   // change line in app_log (v0.2.36+235: the value itself now reaches
   // _latest through the common path). See the branch in _onEvent.
   double? _gunConnectLastVal;
@@ -1282,7 +1306,12 @@ class HalTelemetryService extends ChangeNotifier
     // v0.2.36+235: «DC-только» — ошибка вывода: флаг не проходил фильтр
     // `_range` и до приложения не доходил вовсе (как и пистолет). Друг 3
     // 13.11 видит его в HAL и на AC. Оба теперь в `_range`.
-    final gun = halValue('charging_gun_state');
+    // v0.2.37+236: когда этап известен (DEVICE_STATE), сессию определяет
+    // он: она есть на всех этапах, кроме «пистолета нет». Пистолет и флаг
+    // ниже — запасной путь, пока DEVICE_STATE не приходил.
+    final stage = halChargeStage;
+    if (stage != null) return stage != ChargeStage.none;
+    final gun = halValue('charging_gun_connect_state');
     if (gun != null) return gun >= 1.5;
     final v = halValue('charger_connect_state');
     return v == null ? null : v >= 0.5;
@@ -1291,13 +1320,13 @@ class HalTelemetryService extends ChangeNotifier
   /// v0.2.9+208: тип подключённого пистолета по enum 0x2EB00832
   /// (1=отключён, 2=AC, 3=DC — подтверждено полем 14–16.08).
   /// null — событие ещё не приходило либо пистолет отключён.
-  String? get halChargerTypeLabel {
-    final v = halValue('charging_gun_state');
-    if (v == null) return null;
-    if (v >= 2.5) return 'DC';
-    if (v >= 1.5) return 'AC';
-    return null;
-  }
+  /// v0.2.37+236: пистолет — firehose (текущее значение) либо событие
+  /// HAL; нет пистолета — тип зарядки firehose 9/11. Правило в
+  /// [chargeTypeOf].
+  String? get halChargerTypeLabel => chargeTypeOf(
+        gun: _chargeInputs.gun,
+        fhType: _fhFresh('fh_charging_type'),
+      );
 
   bool get useHalForGear => _useHal('gear_enum');
 
@@ -1460,8 +1489,14 @@ class HalTelemetryService extends ChangeNotifier
   /// on. Display-only; trips/SOH have their own machines.
   /// v0.2.36+235: OR the current criterion [_halChargeByCurrent] (P, speed
   /// 0, last post-start pack current below −1 A) — no 20 s debounce.
+  /// v0.2.37+236: when the charge stage is known (DEVICE_STATE from the
+  /// firehose or HAL) it decides alone: active = stage `charging`. The
+  /// current criterion and the SOH machine below are the fallback while
+  /// DEVICE_STATE has not arrived.
   bool get halChargingActive {
     if (!_running) return false;
+    final stage = halChargeStage;
+    if (stage != null) return stage == ChargeStage.charging;
     // v0.2.36+235: признак Друга 3 — открывает экран без 20 с машины SOH.
     if (_halChargeByCurrent) return true;
     if (!_halSohCharging) return false;
@@ -1501,14 +1536,26 @@ class HalTelemetryService extends ChangeNotifier
   // [halChargingActive] — то же условие, что открывает экран и баннер
   // (charging_banner.dart, одно место).
   //
-  // Флаги кабеля (`charging_gun_state`, `charger_connect_state`) и ток
+  // Флаги кабеля (`charging_gun_connect_state`, `charger_connect_state`;
+  // с +236 и событие `charging_device_state`) и ток
   // забываются при старте потока, флаги — ещё и на каждом событии
   // передачи вне P (R/N/D; 0 — «нет данных», не считается): заряжаться
   // можно только в P, значит, «вставлен» от прошлой стоянки устарел.
   // Передача, а не скорость: переход «стоим → едем» по застрявшей
   // скорости 2 км/ч не случился бы никогда.
   static const double _kHalChargeOnsetA = -1.0;
-  static const _kChargePresenceNames = ['charging_gun_state', 'charger_connect_state'];
+  // v0.2.37+236: события зарядки, которые пишутся в hal_samples все.
+  static const _kChargeEventNames = {
+    'charging_gun_connect_state',
+    'charger_connect_state',
+    'charging_device_state',
+    'charging_working_status',
+  };
+  static const _kChargePresenceNames = [
+    'charging_gun_connect_state',
+    'charger_connect_state',
+    'charging_device_state',
+  ];
   bool _halChargeByCurrentLogged = false;
 
   bool get _halChargeByCurrent {
@@ -1521,10 +1568,195 @@ class HalTelemetryService extends ChangeNotifier
     }
     // Пистолет, пришедший после старта потока, сказал «отключён» (1) —
     // зарядки нет, даже если последний ток (AC: раз в 30–40 с) ещё прежний.
-    final gun = halValue('charging_gun_state');
+    final gun = halValue('charging_gun_connect_state');
     if (gun != null && gun < 1.5) return false;
     final pi = halValue('pack_current');
     return pi != null && pi < _kHalChargeOnsetA;
+  }
+
+  // ── v0.2.37+236 — ЭТАП ЗАРЯДКИ ПО DEVICE_STATE ──
+  //
+  // Одно место решения для экрана, баннера и бейджа: [halChargeStage].
+  // Пистолета нет — сессии нет; вставлен и 15 — «подключено, зарядка не
+  // идёт»; 0 — согласование; 1 — идёт; 2 либо 15 после зарядки в этом же
+  // подключении — закончена (таблица Друга 3 от 21.11, правило в
+  // charge_state.dart). Признак «зарядка в этом подключении уже шла»
+  // ([_chargedThisPlugIn]) ведёт [_trackChargeStage]; поток, стартовавший
+  // после конца зарядки, единицы не видел и честно говорит «подключено,
+  // зарядка не идёт». Источник — firehose, кадр 0x2EB около
+  // 1 Гц с первой секунды потока: это текущее состояние, а не событие,
+  // и «вставлен» от прошлой стоянки в нём застрять не может. Событие HAL
+  // (0x2EB00018, на изменение) — запасной источник, пока кадра firehose
+  // нет или firehose недостоверен; оно забывается вместе с флагами кабеля
+  // ([_forgetChargePresence]). Этап не известен вовсе — работают признак
+  // по току и флаги кабеля, как в +235.
+  //
+  // [halChargingActive] и [halChargerConnected] читают этап первыми;
+  // условие баннера (charging_banner.dart) составлено из них и не
+  // менялось.
+
+  /// Поле firehose, если оно свежее. Недостоверный firehose до `_latest`
+  /// не доходит вовсе ([_consumeFirehose]).
+  double? _fhFresh(String name) => halFresh(name) ? halValue(name) : null;
+
+  /// DEVICE_STATE и пистолет (шкала HAL 1/2/3) для [chargeStageOf].
+  ({double? ds, double? gun, bool fromFirehose}) get _chargeInputs {
+    final fds = _fhFresh('fh_charging_device_state');
+    final fgun = _fhFresh('fh_charging_gun_connect_state');
+    return (
+      ds: fds ?? halValue('charging_device_state'),
+      // Firehose: 0 нет, 1 AC, 2 DC; HAL = это + 1.
+      gun: fgun != null ? fgun + 1 : halValue('charging_gun_connect_state'),
+      fromFirehose: fds != null,
+    );
+  }
+
+  /// Этап сессии зарядки; null — DEVICE_STATE не известен (или поток
+  /// стоит), решает запасной путь.
+  ChargeStage? get halChargeStage {
+    if (!_running) return null;
+    final i = _chargeInputs;
+    return chargeStageOf(
+      deviceState: i.ds,
+      gun: i.gun,
+      chargedThisPlugIn: _chargedThisPlugIn,
+    );
+  }
+
+  // «Залито» по счётчику 0x2D0 и контроль ∫V·I — см. charge_state.dart.
+  final ChargedEnergyCounter _chargedCounter = ChargedEnergyCounter();
+  ChargeStage? _chargeStageLogged;
+  bool _chargeStageEverLogged = false;
+
+  /// В этом подключении пистолета зарядка уже шла — отличает «закончена»
+  /// от «ещё не начиналась» при DEVICE_STATE 15.
+  bool _chargedThisPlugIn = false;
+  bool _chargedDivergeLogged = false;
+  int? _chargeIntegralLastMs;
+
+  /// Сессия для счётчика «залито»: то же условие, что у баннера.
+  bool get _chargeSessionOpen =>
+      (halChargerConnected ?? false) || halChargingActive;
+
+  /// Смена этапа — строка app_log и перерисовка; открытие и закрытие
+  /// сессии счётчика. Зовётся на каждом значении зарядных полей firehose
+  /// и на событиях HAL, от которых зависит этап или запасной путь.
+  void _trackChargeStage() {
+    final i = _chargeInputs;
+    // Память подключения — до расчёта этапа: он её читает.
+    _chargedThisPlugIn = _running &&
+        nextChargedThisPlugIn(_chargedThisPlugIn,
+            deviceState: i.ds, gun: i.gun);
+    final stage = halChargeStage;
+    if (!_chargeStageEverLogged || stage != _chargeStageLogged) {
+      debugPrint('Charge: stage ${stage?.name ?? 'unknown'}'
+          '${_chargeStageEverLogged ? ' (was ${_chargeStageLogged?.name ?? 'unknown'})' : ''}'
+          ' src=${i.fromFirehose ? 'firehose' : (i.ds != null ? 'hal' : 'none')}'
+          ' ds=${i.ds?.toStringAsFixed(0) ?? '-'}'
+          ' gun=${i.gun?.toStringAsFixed(0) ?? '-'}'
+          ' charged=$_chargedThisPlugIn');
+      _chargeStageEverLogged = true;
+      _chargeStageLogged = stage;
+      _scheduleNotify();
+    }
+    final open = _chargeSessionOpen;
+    if (open && !_chargedCounter.isOpen) {
+      _chargedCounter.open(beforeCharging: !halChargingActive);
+      _chargedDivergeLogged = false;
+      _chargeIntegralLastMs = null;
+      debugPrint('Charge: counter session open '
+          '(fromStart=${_chargedCounter.fromStart})');
+    } else if (!open && _chargedCounter.isOpen) {
+      _logChargedSessionEnd('session closed');
+      _chargedCounter.close();
+    }
+  }
+
+  void _logChargedSessionEnd(String why) {
+    debugPrint('Charge: counter session end ($why) '
+        'counter=${_chargedCounter.kwh?.toStringAsFixed(1) ?? '-'} kWh '
+        'integral=${_chargedCounter.integralKwh.toStringAsFixed(2)} kWh '
+        'resets=${_chargedCounter.resets} '
+        'fromStart=${_chargedCounter.fromStart}');
+  }
+
+  /// Контроль ∫V·I: удержанная мощность батареи на интервал между
+  /// событиями HAL, по монотонным часам.
+  void _feedChargeIntegral() {
+    if (!_chargedCounter.isOpen) return;
+    final nowMs = _halDiagClock.elapsedMilliseconds;
+    final last = _chargeIntegralLastMs;
+    _chargeIntegralLastMs = nowMs;
+    if (last == null) return;
+    _chargedCounter.addIntegral(halPowerKw, (nowMs - last) / 1000.0);
+    if (!_chargedDivergeLogged && _chargedCounter.diverged) {
+      _chargedDivergeLogged = true;
+      debugPrint('Charge: counter and V*I integral DIVERGE '
+          '(counter=${_chargedCounter.kwh?.toStringAsFixed(1)} kWh, '
+          'integral=${_chargedCounter.integralKwh.toStringAsFixed(2)} kWh)');
+    }
+  }
+
+  // ── v0.2.37+236 — НАРУЖНАЯ ТЕМПЕРАТУРА ДЛЯ АТЛАСА ──
+  //
+  // `fh_temp_out_c` (firehose 0x2FC, около 1 Гц) лежит в `_latest`, атлас
+  // читает его обычными halFresh/halValue. Событие HAL `ac_temp_out` —
+  // контроль ([OutsideTempCheck]); расхождение снимает значение из
+  // `_latest` и держит [halOutsideTempUntrusted] до начала следующей
+  // поездки. Расхождение общей сверки firehose делает то же.
+  final OutsideTempCheck _outsideTempCheck = OutsideTempCheck();
+
+  @override
+  bool get halOutsideTempUntrusted =>
+      _outsideTempCheck.untrusted ||
+      _firehoseCheck.state == FirehoseCheck.mismatch;
+
+  /// Поля firehose с потребителями: имя → допустимый диапазон. Остальные
+  /// подтверждённые поля в `_latest` по-прежнему не идут.
+  static const Map<String, (double, double)> _fhConsumed = {
+    'fh_charging_device_state': (0, 15),
+    'fh_charging_gun_connect_state': (0, 7),
+    'fh_charging_type': (0, 15),
+    'fh_temp_out_c': (-50, 60),
+    'gb_cycle_regen_kwh': (0, 6553.5),
+  };
+  static const _fhChargeNames = {
+    'fh_charging_device_state',
+    'fh_charging_gun_connect_state',
+    'fh_charging_type',
+  };
+
+  /// Подтверждённое поле firehose с потребителем → `_latest`. Firehose
+  /// недостоверен (сверка контрольных полей разошлась) — значение не
+  /// пишется, прежние убраны ([_dropFirehoseConsumed]).
+  void _consumeFirehose(String name, double d) {
+    final guard = _fhConsumed[name];
+    if (guard == null) return;
+    if (_firehoseCheck.state == FirehoseCheck.mismatch) return;
+    if (d < guard.$1 || d > guard.$2) return;
+    if (name == 'fh_temp_out_c') {
+      if (_outsideTempCheck.feedFirehose(
+          d, _halDiagClock.elapsedMilliseconds)) {
+        debugPrint('Atlas: outside temperature DIVERGES from HAL '
+            '(${_outsideTempCheck.lastDetail}) — untrusted until the '
+            'next trip');
+      }
+      if (_outsideTempCheck.untrusted) {
+        _latest.remove(name);
+        return;
+      }
+    }
+    _latest[name] = (value: d, at: DateTime.now());
+    if (name == 'gb_cycle_regen_kwh') _chargedCounter.feed(d);
+    if (_fhChargeNames.contains(name)) _trackChargeStage();
+  }
+
+  /// Firehose стал недостоверным: поля с потребителями — из `_latest`.
+  void _dropFirehoseConsumed() {
+    for (final n in _fhConsumed.keys) {
+      _latest.remove(n);
+    }
+    _trackChargeStage();
   }
 
   /// Флаги кабеля (и ток при [packCurrent]) — из `_latest` и `_lastGood`.
@@ -1538,6 +1770,10 @@ class HalTelemetryService extends ChangeNotifier
       if (_lastGood.remove(n) != null) had = true;
     }
     _gunConnectLastVal = null;
+    // v0.2.37+236: память подключения — вместе с флагами: без firehose
+    // пистолет после сброса не известен, и «закончена» прошлой стоянки
+    // досталась бы следующей вставке.
+    _chargedThisPlugIn = false;
     if (had) debugPrint('Charge: cable flags reset ($why)');
   }
 
@@ -1553,9 +1789,13 @@ class HalTelemetryService extends ChangeNotifier
     if (name != 'pack_current' &&
         name != 'gear_enum' &&
         name != 'speed' &&
-        name != 'charging_gun_state') {
+        name != 'charging_gun_connect_state' &&
+        name != 'charger_connect_state' &&
+        name != 'charging_device_state') {
       return;
     }
+    // v0.2.37+236: этап и сессия счётчика — на тех же событиях.
+    _trackChargeStage();
     final on = _halChargeByCurrent;
     if (on == _halChargeByCurrentLogged) return;
     _halChargeByCurrentLogged = on;
@@ -1595,11 +1835,25 @@ class HalTelemetryService extends ChangeNotifier
   /// formula as UDS ConnectionService.chargedThisSessionKwh
   /// ((SOC − startSoc) × capacity / 100), so the two sources agree by
   /// construction. The Ah integral stays in diag for cross-checking.
+  /// v0.2.37+236: первым — счётчик 0x2D0 `gb_cycle_regen_kwh` за сессию
+  /// ([ChargedEnergyCounter]): энергия в батарею по BMS, шаг 0.1 кВт·ч.
+  /// Формула по SOC остаётся для случая, когда счётчика нет (BZ3, firehose
+  /// недостоверен, кадр ещё не пришёл). На DC 20.11 счётчик дал +12.7,
+  /// SOC — 11.7 кВт·ч. Пока счётчик открыт, но не вырос, — null, без
+  /// перехода на SOC: два источника в одной сессии дали бы скачок.
   double? get halChargedThisSessionKwh {
+    final c = _chargedCounter.kwh;
+    if (c != null) return c >= 0.05 ? c : null;
     final d = halChargeSessionSocDeltaPct;
     if (d == null || d <= 0) return null;
     return d * _halPackCapacityKwh / 100.0;
   }
+
+  /// v0.2.37+236: сумма «залито» идёт с начала зарядки? Отвечает тот же
+  /// источник, что дал число выше.
+  bool get halChargedFromStart => _chargedCounter.kwh != null
+      ? _chargedCounter.fromStart
+      : _halChargeSessionFromStart;
 
   /// v0.1.29+116: charge power for the badge/panel while halChargingActive —
   /// |pack V × I| in kW, same signals as halPowerKw, unsigned because the
@@ -2330,6 +2584,8 @@ class HalTelemetryService extends ChangeNotifier
       ..start();
     // v0.2.35+234: сверка firehose — заново на каждую поездку.
     _firehoseCheck.resetForTrip();
+    // v0.2.37+236: сверка наружной температуры — тоже на поездку.
+    _outsideTempCheck.resetForTrip();
     _eventEnergy!.firehoseStatus = _firehoseCheck.state;
     _halTripStartSoc = null;      // latched later, on first valid SOC frame
     _halTripStartSocPrecise = false;
@@ -2830,15 +3086,28 @@ class HalTelemetryService extends ChangeNotifier
   /// hal_samples не чаще [_kFirehoseSampleEvery], в сверку и счётчики
   /// поездки. Кандидат: в hal_samples каждое пришедшее — Kotlin уже отдаёт
   /// его не чаще раза в 5 с на имя; в сверку, счётчики и `_latest` не идёт
-  /// (сырое значение, не физика). `_latest` не получает и подтверждённые:
-  /// виджетов, читающих их, нет.
+  /// (сырое значение, не физика).
+  /// v0.2.37+236: подтверждённые поля с потребителями (экран зарядки,
+  /// атлас, «залито») идут в `_latest` через [_consumeFirehose]; остальные
+  /// подтверждённые — по-прежнему нет. Поля-состояния ([_fhStateNames])
+  /// пишутся в hal_samples на смену значения и раз в минуту, а не раз в
+  /// секунду: значение меняется редко, а пять новых полей по строке в
+  /// секунду удвоили бы поток строк firehose.
   void _onFirehoseField(HalEvent e) {
     final v = e.value;
     if (v == null) return;
     final d = v.toDouble();
     if (e.firehose == HalEvent.firehoseConfirmed) {
-      _logHalDiag(e, d, every: _kFirehoseSampleEvery);
+      if (_fhStateNames.contains(e.name)) {
+        final changed = _fhStateLast[e.name] != d;
+        _fhStateLast[e.name] = d;
+        _logHalDiag(e, d,
+            every: changed ? Duration.zero : _kFirehoseStateEvery);
+      } else {
+        _logHalDiag(e, d, every: _kFirehoseSampleEvery);
+      }
       _feedFirehose(e, d);
+      _consumeFirehose(e.name, d);
     } else {
       _logHalDiag(e, d, every: Duration.zero);
     }
@@ -2858,6 +3127,8 @@ class HalTelemetryService extends ChangeNotifier
               'until the next trip'
           : 'Firehose: control fields match HAL — firehose values trusted');
       _eventEnergy?.firehoseStatus = st;
+      // v0.2.37+236: недостоверный firehose не кормит экран и атлас.
+      if (st == FirehoseCheck.mismatch) _dropFirehoseConsumed();
     }
     _eventEnergy?.addFirehose(e.name, v);
   }
@@ -4105,6 +4376,10 @@ class HalTelemetryService extends ChangeNotifier
     // признак зарядки берёт только ток, пришедший после него.
     _forgetChargePresence(packCurrent: true, why: 'stream start');
     _halChargeByCurrentLogged = false;
+    // v0.2.37+236: этап зарядки нового потока пишется в app_log заново.
+    _chargeStageEverLogged = false;
+    _chargeStageLogged = null;
+    _chargedThisPlugIn = false;
     // Listen FIRST (platform rejects start with HAL_NO_SINK otherwise).
     _sub = _hal.events.listen(_onEvent, onError: (Object _) {});
     final status = await _hal.start();
@@ -4146,6 +4421,14 @@ class HalTelemetryService extends ChangeNotifier
     // restart with the car in a different state.
     _latest.clear();
     _lastGood.clear();
+    // v0.2.37+236: счётчик «залито» — значение остановленного потока базой
+    // быть не может; сверка наружной температуры ждала ответа firehose,
+    // которого уже не будет.
+    if (_chargedCounter.isOpen) _logChargedSessionEnd('stream stopped');
+    _chargedCounter.forget();
+    _chargedThisPlugIn = false;
+    _outsideTempCheck.resetForTrip();
+    _fhStateLast.clear();
     // v0.1.44+143: the energy-rise detect state must not survive a stop —
     // a stale rise timestamp would keep the AC detect "on" for up to the
     // window after a stream restart; the counter anchor is re-seeded from
@@ -4185,8 +4468,9 @@ class HalTelemetryService extends ChangeNotifier
     // поля шли общим путём и выбрасывались фильтром `_range` (их имён в
     // нём нет и быть не должно): ни строк hal_samples из живого потока, ни
     // сверки, ни счётчиков поездки — у поездки 1242 `fh.st=unchecked`.
-    // Признак — ключ события, а не список имён: кандидат `ac_temp_out_raw`
-    // иначе ушёл бы в журнал климата веткой `ac_`.
+    // Признак — ключ события, а не список имён: поле с именем на `ac_`
+    // (до recon p159 — кандидат `ac_temp_out_raw`) иначе ушло бы в журнал
+    // климата веткой `ac_`.
     if (e.firehose != null) {
       _onFirehoseField(e);
       return;
@@ -4199,6 +4483,15 @@ class HalTelemetryService extends ChangeNotifier
       final v = e.value;
       if (v != null) _feedFirehose(e, v.toDouble());
     }
+    // v0.2.37+236: HAL-сторона сверки наружной температуры — здесь же, до
+    // ветки `ac_`, которая забирает событие в журнал климата.
+    if (e.name == 'ac_temp_out') {
+      final v = e.value;
+      if (v != null) {
+        _outsideTempCheck.feedHal(
+            v.toDouble(), _halDiagClock.elapsedMilliseconds);
+      }
+    }
     // v0.1.44+143 Part B.3 ввёл эту ветку для кандидата пистолета (только
     // журнал, мимо `_range`); +208 подтвердил enum (1/2/3).
     // v0.2.36+235 — ПИСТОЛЕТ ДОХОДИТ ДО _latest. +208 переименовал эту
@@ -4209,7 +4502,7 @@ class HalTelemetryService extends ChangeNotifier
     // машине SOH: на AC 13.11 — через 28 с после вставки. Здесь теперь
     // только строка app_log на смену значения; запись в hal_samples и
     // `_latest` — общим путём ниже.
-    if (e.name == 'charging_gun_state') {
+    if (e.name == 'charging_gun_connect_state') {
       final v = e.value?.toDouble();
       if (v != null && v != _gunConnectLastVal) {
         final prev = _gunConnectLastVal;
@@ -4268,7 +4561,13 @@ class HalTelemetryService extends ChangeNotifier
     // to hal_samples with its real target/subtype (parsed from e.key) so an
     // export shows the real HAL stream and matches recon's schema. Throttled
     // per-name so the ~15 Hz stream doesn't bloat the DB. No-op without DB.
-    _logHalDiag(e, d);
+    // v0.2.37+236: события зарядки (пистолет, флаг кабеля, DEVICE_STATE,
+    // статус бортового зарядного) приходят на изменение и пачкой за
+    // секунды (15 → 0 → 1) — порог 3 с на имя съел бы переходы.
+    _logHalDiag(e, d,
+        every: _kChargeEventNames.contains(e.name)
+            ? Duration.zero
+            : _halDiagThrottle);
     // v0.2.34+233: событийный счёт энергии — до машины поездки, чтобы
     // закрытие на этом же событии получило его в суммах.
     _feedEventEnergy(e, d);
@@ -4304,6 +4603,8 @@ class HalTelemetryService extends ChangeNotifier
     // same frames, ALONGSIDE the trip machine (not inside it) — a charge runs
     // after the trip has closed, so this must tick regardless of trip state.
     _updateHalCharge();
+    // v0.2.37+236: контроль ∫V·I для «залито» — на тех же событиях.
+    _feedChargeIntegral();
     _scheduleNotify();
   }
 
@@ -4388,6 +4689,18 @@ class HalTelemetryService extends ChangeNotifier
   /// раза в секунду (выбор владельца 13.11): кадры 0x2FC и 0x208 идут
   /// около 1 Гц, 0x2D0 и 0x2EE — раз в 30 с и проходят все.
   static const Duration _kFirehoseSampleEvery = Duration(seconds: 1);
+
+  /// v0.2.37+236: поля-состояния firehose — в hal_samples на смену
+  /// значения и не реже раза в минуту.
+  static const Duration _kFirehoseStateEvery = Duration(seconds: 60);
+  static const _fhStateNames = {
+    'fh_charging_device_state',
+    'fh_charging_gun_connect_state',
+    'fh_charging_type',
+    'fh_obc_working_status',
+    'fh_temp_out_c',
+  };
+  final Map<String, double> _fhStateLast = {};
 
   // ── DB write failures are logged, one line per operation per 30 s (+218) ──
   //

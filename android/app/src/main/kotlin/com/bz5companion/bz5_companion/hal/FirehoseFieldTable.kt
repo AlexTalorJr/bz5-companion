@@ -1,7 +1,7 @@
 // === SHARED FROM bz5_recon — DO NOT EDIT (re-sync from recon) ===
 // Source: bz5-recon/android/app/src/main/kotlin/com/bz5/recon/live/FirehoseFieldTable.kt
-// Synced: 2026-11-12 (recon v0.10.158, commit p158, 2b280a2)
-// SHA256: b1a0986d938c188f5a2f6b045ce7ec96bdc89559b461aae6e4356668612a25c8
+// Synced: 2026-11-21 (recon v0.10.159, commit p159, bfaec3c)
+// SHA256: 47c1edfe0e8d97a52503ced4d6a4563618fee05767c1fc5129fe28d17d68e960
 package com.bz5companion.bz5_companion.hal
 
 // === SHARED CANDIDATE (bz5_recon ↔ bz5_companion) ===
@@ -66,10 +66,13 @@ object FirehoseFieldTable {
             notes = "remaining pack energy; 48.8 → 45.0 over 09.11 drive (∫V·I 3.63 + parking); morning 51.7; ~1 frame / 30 s"),
         FirehoseField("gb_cycle_discharge_kwh", 0x02D0, 0, 16, 16, 0.1, unit = "kWh",
             confirmed = true, catalogName = "GB_ACTUAL_DISCHARGE_ENERGY_TOTAL",
-            notes = "energy out of the pack since power-on; +5.0 vs ∫V·I(+) 5.07 on 09.11; resets per power cycle"),
+            notes = "energy out of the pack; +5.0 vs ∫V·I(+) 5.07 on 09.11; reset rule unknown (reset on 12.11, " +
+                "kept counting through sleep and charging 13–14.11): use end − start, treat a drop as a reset"),
         FirehoseField("gb_cycle_regen_kwh", 0x02D0, 0, 32, 16, 0.1, unit = "kWh",
             confirmed = true, catalogName = "GB_ACTUAL_RENEWABLE_ENERGY_TOTAL",
-            notes = "energy into the pack since power-on; +1.6 vs ∫V·I(−) 1.57 on 09.11; resets per power cycle"),
+            notes = "ALL energy into the pack: regen AND charging. Regen +1.6 vs ∫V·I(−) 1.57 (09.11); " +
+                "AC night charge +44.3 vs remaining-energy +45.1 (13–14.11); DC +2.3 vs ∫V·I 2.27 (20.11). " +
+                "Reset rule unknown: use end − start, treat a drop as a reset"),
         FirehoseField("fh_ac_temp_main_c", 0x02FC, 0, 32, 8, 0.5, unit = "°C",
             confirmed = true, catalogName = "AC_TEMP_MAIN",
             notes = "rule check: equals HAL 0x2FC00028 on all 35 events 07.11"),
@@ -79,13 +82,36 @@ object FirehoseFieldTable {
         FirehoseField("fh_energy_state", 0x0208, 0, 16, 4,
             confirmed = true, catalogName = "ENERGY_STATE",
             notes = "rule check: same values 0/2/5 as HAL 0x20800018"),
+        // p159: outside air. Replaces candidate ac_temp_out_raw (same bits).
+        FirehoseField("fh_temp_out_c", 0x02FC, 0, 48, 8, 1.0, -128.0, unit = "°C",
+            confirmed = true, catalogName = "AC_TEMP_OUT",
+            notes = "outside air, step 1 °C, ~0.9 Hz from stream start; every HAL AC_TEMP_OUT event matched " +
+                "(raw 133/132/128/132 ↔ 5/4/0/4 °C, 09–14.11)"),
+
+        // p159: charging state, calibrated on AC 13–14.11 and DC 20.11.
+        // Frame 0x2EB comes at ~1 Hz whatever happens, so these give the
+        // current state right after the stream starts. Whole frame: rest
+        // 06 42 1F 00 00 20 88 F0; AC charging 05 42 11 00 00 24 89 FA;
+        // DC charging 05 42 D1 00 00 28 CB F4.
+        FirehoseField("fh_charging_device_state", 0x02EB, 0, 16, 4,
+            confirmed = true, catalogName = "CHARGING_BATTERRY_DEVICE_STATE",
+            notes = "15 rest, 0 starting, 1 charging, 2 stopping; AC and DC; within 1 s of HAL"),
+        FirehoseField("fh_charging_gun_connect_state", 0x02EB, 0, 42, 3,
+            confirmed = true, catalogName = "CHARGING_GUN_CONNECT_STATE",
+            notes = "0 no gun, 1 AC gun, 2 DC gun; HAL 0x2EB00832 = this + 1"),
+        FirehoseField("fh_charging_type", 0x02EB, 0, 48, 4,
+            confirmed = true, catalogName = "CHARGING_TYPE",
+            notes = "8 not charging, 9 AC charging, 11 DC charging; upper nibble of the byte differs " +
+                "(8 rest/AC, 0 DC gun, C DC charging) and is left out"),
+        FirehoseField("fh_obc_working_status", 0x02C3, 0, 2, 4,
+            confirmed = true, catalogName = "CHARGING_SYSTEM_WORKING_STATUS",
+            notes = "on-board charger, AC only: 0 rest, 2 charging, 3 stopping (1 starting seen only in HAL); " +
+                "frame idle during DC; ~1 frame / 30 s"),
 
         // ─── Candidates (raw) ────────────────────────────────────────────
         FirehoseField("dcdc_byte6_raw", 0x02C7, 0, 48, 8,
             notes = "CANDIDATE 12 V load current (A?) on the DC-DC frame; base ~41, fan 7 → 60–68, " +
                 "rear defrost → 78, seat heaters → 60 (09.11); byte 7 = 234 − byte 6; scale needs ATRV"),
-        FirehoseField("ac_temp_out_raw", 0x02FC, 0, 48, 8, catalogName = "AC_TEMP_OUT",
-            notes = "CANDIDATE: raw 134→132 while HAL TEMP_OUT 5→4 °C (09.11); fits raw×0.5−62, two points only"),
         FirehoseField("bodywork_battery_voltage_level", 0x02FC, 0, 58, 2,
             catalogName = "BODYWORK_BATTERY_VOLTAGE_LEVEL",
             notes = "CANDIDATE 12 V level enum; always 1 so far"),
@@ -100,7 +126,20 @@ object FirehoseFieldTable {
         FirehoseField("smart_charging_state_2nd", 0x01CD, 0, 20, 3,
             catalogName = "CHARGING_SMART_CHARGING_STATE_2nd",
             notes = "CANDIDATE: 12 V top-up from the pack while parked?; always 0 so far"),
+        FirehoseField("fh_charging_ctrl_byte0", 0x02EB, 0, 0, 8,
+            notes = "CANDIDATE, no catalog field: 6 rest, 2 DC handshake, 5 charging (AC and DC), 4 stopping"),
+        FirehoseField("fh_obc_gun_identification", 0x02C3, 0, 46, 2,
+            catalogName = "CHARGING_GUN_IDENTIFICATION",
+            notes = "CANDIDATE: 1 while the on-board charger runs (AC), 0 otherwise; frame idle on DC"),
+        FirehoseField("fh_vtov_discharge_quantity", 0x02EB, 0, 24, 16,
+            catalogName = "CHARGING_VTOV_DISCHARGE_QUANTITY",
+            notes = "CANDIDATE V2L energy; 0 on all drives and charges so far"),
     )
+
+    /** p159: name of the field RawCaptureSink uses as charging evidence. */
+    const val CHARGING_STATE_FIELD = "fh_charging_device_state"
+    /** p159: fh_charging_device_state value meaning "charging". */
+    const val CHARGING_STATE_ACTIVE = 1L
 
     private val byFrame: Map<Long, List<FirehoseField>> =
         fields.groupBy { (it.canId.toLong() shl 8) or it.page.toLong() }

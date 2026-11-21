@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../l10n/strings.dart';
+import '../../services/charge_state.dart';
 import '../../services/connection.dart';
 import '../../services/hal_telemetry_service.dart';
 import '../../services/soc_resolver.dart';
@@ -391,11 +392,20 @@ class _TopHeroRow extends StatelessWidget {
     final isCalibrating = kw == 0 && (svc.isCharging || hal.halChargingActive);
 
     final phase = resolveChargingPhase(hal, svc);
-    final phaseLabel = switch (phase) {
-      ChargingPhase.unknown => S.of('chg.analyzing'),
-      ChargingPhase.cc => S.of('chg.cc_phase'),
-      ChargingPhase.cv => S.of('chg.cv_phase'),
-      ChargingPhase.almostDone => S.of('chg.almost_done'),
+    // v0.2.37+236: этапы без тока (подключено, согласование, закончена) плитка называет
+    // прямо; этап решает сервис, здесь только подпись. Без потока HAL
+    // (телефон с донглом) этап null, и подпись прежняя.
+    final stage = hal.halChargeStage;
+    final phaseLabel = switch (stage) {
+      ChargeStage.plugged => S.of('chg.stage_idle'),
+      ChargeStage.handshake => S.of('chg.stage_wait'),
+      ChargeStage.finished => S.of('chg.stage_done'),
+      _ => switch (phase) {
+          ChargingPhase.unknown => S.of('chg.analyzing'),
+          ChargingPhase.cc => S.of('chg.cc_phase'),
+          ChargingPhase.cv => S.of('chg.cv_phase'),
+          ChargingPhase.almostDone => S.of('chg.almost_done'),
+        },
     };
     // v0.2.17+216: цвет фазы нейтральный. Зелёный CC / оранжевый CV читались
     // как «хорошо / внимание», а CV — норма, не предупреждение (И3: никакой
@@ -970,6 +980,10 @@ class _BottomSummaryStrip extends StatelessWidget {
             ? hal.halChargeSessionFromStart
             : true);
     final String sinceLaunchHint = S.of('chg.since_app_launch');
+    // v0.2.37+236: у «залито» на голове свой источник (счётчик 0x2D0) и
+    // своё начало — подпись спрашивает его же.
+    final bool chargedFromStart =
+        svcOwnsSession ? fromStart : hal.halChargedFromStart;
     final counterRaw = svc.readNumeric('790', '0B00')?.toInt();
     final maxCurrent = svc.readNumeric('782', '000C');
 
@@ -978,10 +992,11 @@ class _BottomSummaryStrip extends StatelessWidget {
     final metrics = <Widget>[
       _Metric(
         label: S.of('chg.charged'),
+        // v0.2.37+236: один знак — счётчик 0x2D0 идёт шагом 0.1 кВт·ч.
         value: chargedKwh != null
-            ? '${chargedKwh.toStringAsFixed(2)} kWh'
+            ? '${chargedKwh.toStringAsFixed(1)} kWh'
             : '—',
-        hint: fromStart ? '' : sinceLaunchHint,
+        hint: chargedFromStart ? '' : sinceLaunchHint,
       ),
       _Metric(
         label: S.of('chg.soc_gain'),

@@ -47,51 +47,18 @@ object CompanionDecoderOverrides {
         // get(), который недоверенному приложению закрыт. Дело не в DC-
         // зарядке: номер чужой (Друг 3, 06.11).
 
-        // PROMOTED (v0.1.44+143) — accumulated charge energy, kWh.
-        // Verified by recon on a live AC session (p084): monotonic
-        // counter, active on AC, dE/dt 1.74 kW vs 2.6–3.1 kW at the
-        // socket = OBC losses. Promoted WITHOUT a candidate stage per
-        // that verification (Alex, 15.07). The subscription has existed
-        // in the vendored TargetRegistry all along (both branches) —
-        // only the decoder was missing, so DecodedStreamSink dropped
-        // every frame. ⚠️ The counter is a LIFETIME total and NEVER
-        // resets between sessions: consumers must work strictly by
-        // derivative (rise = charging) and per-session DELTA from an
-        // anchored value — never by level.
-        "BYDAutoChargingDevice|0x2C100818" to Decoder(
-            "charge_energy_kwh", "kWh", ValueSource.DOUBLE,
-            notes = "recon p084 verified on AC; monotonic lifetime total — consume by derivative/delta only"),
-
-        // CANDIDATE (v0.1.44+143) — CHARGING_GUN_CONNECT_STATE. Same
-        // story: subscribed since the vendored registry, never decoded,
-        // frames dropped → the plug/unplug enum was never collected.
-        // Rule p068/p083: HAL Test + the diag journal ONLY, never a UI
-        // consumer — HalTelemetryService logs value CHANGES with
-        // timestamps to hal_samples so the next AC/DC plug/unplug run
-        // collects the enum for free. Phase B (sticky getter + session
-        // anchoring on gun-connect, OR with the current detector) is a
-        // separate patch once the enum is confirmed.
-        // v0.2.8+207 — ФЛАГ КАБЕЛЯ. CHARGING_CHARGER_CONNECT_STATE по
-        // каталогу; recon 14.08 (v0.10.110, session 165329): событие
-        // int=1 в 16:53:59 — за 36 с до первого зарядного тока, int=0
-        // в 17:21 — выдёргивание кабеля. Ровно два события за сессию —
-        // событийный флаг, на dart-стороне обязана быть липкость.
-        // Подписка уже была (TargetRegistry, оба списка) — события
-        // приходили и резались здесь, отсутствием записи.
-        "BYDAutoChargingDevice|0x0A50000D" to Decoder(
-            "charger_connect_state", "", ValueSource.INT,
-            notes = "CHARGING_CHARGER_CONNECT_STATE; 1=plugged 0=unplugged; recon 20260814_165329"),
-
-        // v0.2.9+208 — КАНДИДАТ ДОЗРЕЛ, enum подтверждён полем:
-        // 3 в 16:53:55 14.08 (секунда в секунду с флагом DC-подключения),
-        // 1 в 17:20:35 (отключение), 2 на старте ночной AC-сессии 15.08.
-        // Итого: 1=отключён, 2=AC, 3=DC. Пять старых строк остаются под
-        // прежним именем charging_gun_connect_candidate — историю читать
-        // по subtype, как с переименованием ячеек в +203.
-        "BYDAutoChargingDevice|0x2EB00832" to Decoder(
-            "charging_gun_state", "", ValueSource.INT,
-            notes = "1=disconnected 2=AC 3=DC; field-confirmed 14-16.08 (was charging_gun_connect_candidate)"),
-
+        // v0.2.37+236: три перекрытия зарядки сняты — recon p159 несёт все
+        // три в вендорной таблице.
+        //  - 0x2C100818 charge_energy_kwh: то же имя, единица и поле (kWh,
+        //    DOUBLE). Заметки recon уточнены: счётчик бортового зарядного за
+        //    одно подключение, только AC, 0.52–0.75 от энергии в батарею —
+        //    не «залито». Потребитель в Dart берёт его только по росту.
+        //  - 0x0A50000D charger_connect_state: то же имя и поле (INT).
+        //  - 0x2EB00832: имя recon — charging_gun_connect_state (здесь было
+        //    charging_gun_state, до +208 — charging_gun_connect_candidate).
+        //    Значения те же: 1 нет, 2 AC, 3 DC. Dart читает новое имя;
+        //    прежние строки hal_samples искать по subtype 2EB00832.
+        //
         // v0.2.31+230: перекрытие 0x2FF00030 pack_voltage_fine снято — recon
         // p156 активировал запись под тем же именем, единицей и полем (V,
         // DOUBLE). История hal_samples продолжается без разрыва.

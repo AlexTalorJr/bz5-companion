@@ -955,7 +955,7 @@ class _IntentCard extends StatelessWidget {
         grid?.byKey[atlasCellKey(cand.band, cand.window)] == null;
     final remain =
         kBandMinSeconds - sp.atlasCellTimeS(cand.band, cand.window);
-    final t = sp.currentPackTempC;
+    final t = sp.currentAtlasTempC;
 
     return Padding(
       padding: EdgeInsets.only(top: 12 * k),
@@ -1345,7 +1345,7 @@ class _RevealCard extends StatelessWidget {
     final bz3 = LayoutBreakpoints.useTallHeadUnit(context);
     final loot = svc.atlasLootCell();
     final soonBand = svc.atlasAnticipationBand();
-    final t = svc.currentPackTempC;
+    final t = svc.currentAtlasTempC;
     final km = svc.atlasSessionDistKm.toStringAsFixed(1);
     final tripLine = t == null
         ? S.of('measure.card_trip_nt').replaceFirst('{km}', km)
