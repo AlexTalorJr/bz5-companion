@@ -566,7 +566,8 @@ class _LiveEnergySplitRow extends StatelessWidget {
                   (sh.motion, EnergySplitBar.motionColor),
                   (sh.climate, EnergySplitBar.climateColor),
                   // v0.2.31+230: у v2 «прочего» нет; v0.2.34+233: и у v2s.
-                  if (!EnergySplitModel.twoParts(v.model))
+                  // v0.2.38+237: есть, когда в раскладке бортовая сеть 12 В.
+                  if (EnergySplitModel.showsOther(v.model, sh.other))
                     (sh.other, EnergySplitBar.otherColor),
                 ])
                   Padding(
@@ -608,6 +609,7 @@ class ParkedClimateRow extends StatelessWidget {
     final now = m.nowKw;
     if (!m.active || now == null) return const SizedBox.shrink();
     final mean = m.meanKw ?? now;
+    final board = m.nowBoardKw;
     final fs = compact ? 11.0 : 13.0;
     final row = Padding(
       padding: standalone
@@ -630,7 +632,11 @@ class ParkedClimateRow extends StatelessWidget {
           Text(
               '${S.of('drv.parked_climate_mean')} '
               '${mean.toStringAsFixed(1)} kW · '
-              '${m.energyKwh.toStringAsFixed(2)} kWh',
+              '${m.energyKwh.toStringAsFixed(2)} kWh'
+              // v0.2.38+237: бортовая сеть 12 В — «Прочее», оценка.
+              '${board == null ? '' : ' · ${S.of('trip.split_other')} '
+                  '${board.toStringAsFixed(1)} kW '
+                  '(${S.of('trip.split_estimate')})'}',
               style: TextStyle(
                   fontSize: fs,
                   color: Colors.grey,

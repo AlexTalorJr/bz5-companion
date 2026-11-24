@@ -67,6 +67,18 @@ class Acc:
         self.m_min = None
         self.m_neg3 = self.run_len = self.run_max = 0  # +235
         self.run_last_idx = -2
+        # +237: 12 V board net (dcdc_load_current_a, firehose, no HAL stamp)
+        self.b12_a = None
+        self.b12_at = None
+        self.b12 = 0.0
+        self.b12_cov_ms = 0
+        self.b12_seen = False
+
+    def add_board12(self, current_a):
+        self.b12_a, self.b12_at, self.b12_seen = current_a, self.t_prev, True
+
+    def clear_board12(self):
+        self.b12_a = self.b12_at = None
 
     def _close_minute(self, e, cov):
         if cov < MINUTE_MIN_MS:
@@ -115,6 +127,9 @@ class Acc:
             self.pack += pb * h
             if pb < 0:
                 self.regen_bat += -pb * h
+            if self.b12_a is not None and self.b12_at is not None and tp - self.b12_at <= B12_FRESH_MS:
+                self.b12 += board12_kw(self.b12_a) * h
+                self.b12_cov_ms += dt
             if pi > 0:
                 self.trac += pi * h
             else:
@@ -153,7 +168,8 @@ class Acc:
         return dict(pack=self.pack, trac=self.trac, regen=self.regen, sh_trac=self.sh_trac,
                     sh_regen=self.sh_regen, regen_bat=self.regen_bat, cov_s=self.cov_ms / 1000.0, neg=self.neg,
                     gaps=self.gaps, counts=list(self.counts), minutes=minutes, m_low=low,
-                    m_neg=neg, m_min=mn, m_neg3=neg3, run_max=run_max)
+                    m_neg=neg, m_min=mn, m_neg3=neg3, run_max=run_max,
+                    b12=self.b12 if self.b12_seen else None, b12_s=self.b12_cov_ms / 1000.0)
 
 
 def check(s):
@@ -185,8 +201,74 @@ def split_events(s, start_ms, end_ms):
     climate = s['pack'] - motion
     if climate < 0:
         climate, motion = 0.0, s['pack']
-    out.update(motion=motion, climate=climate, other=0.0)
+    other = board12_share(s, climate)
+    out.update(motion=motion, climate=climate - other, other=other)
     return out
+
+
+# +237 (recon v0.10.160): 12 V load current at the DC-DC output -> battery side.
+B12_RAIL_V = 13.3
+DCDC_EFF = 0.9
+B12_FRESH_MS = 10000
+
+
+def board12_kw(current_a):
+    return current_a * B12_RAIL_V / DCDC_EFF / 1000.0
+
+
+def board12_share(s, climate):
+    """Part of 'climate and board net' that is the 12 V board net ('other')."""
+    b = s.get('b12')
+    if b is None or b <= 0 or climate <= 0 or s['cov_s'] <= 0:
+        return 0.0
+    if s.get('b12_s', 0.0) / s['cov_s'] < MIN_COVERAGE:
+        return 0.0
+    return min(b, climate)
+
+
+def _selftest_board12():
+    """True on failure. 400 V, battery 10 A, inverter 8 A, 12 V load 30 A, 600 s."""
+    def run(board_until_ms):
+        a = Acc(0)
+        a.add('pack_voltage_fine', 400.0, 0)
+        a.add('inverter_current', 8.0, 0)
+        a.add('pack_current', 10.0, 0)
+        for t in range(1000, 600001, 1000):
+            if t <= board_until_ms:
+                a.add_board12(30.0)
+            a.add('pack_current', 10.0, t)
+        return a.sums()
+    bad = False
+    s = run(600000)
+    r = split_events(s, 0, 600000)
+    exp_b = board12_kw(30.0) * 600 / 3600.0
+    checks = [
+        ('b12 energy', abs(s['b12'] - exp_b) < 1e-6),
+        ('b12 coverage', abs(s['b12_s'] - 600.0) < 1e-6),
+        ('other = 12 V', abs(r['other'] - exp_b) < 1e-6),
+        ('climate = residual - other', abs(r['climate'] - (0.8 * 600 / 3600.0 - exp_b)) < 1e-6),
+        ('sum = pack', abs(r['motion'] + r['climate'] + r['other'] - s['pack']) < 1e-9),
+    ]
+    s2 = run(100000)
+    r2 = split_events(s2, 0, 600000)
+    checks += [
+        ('stale 12 V current is not held', abs(s2['b12_s'] - 110.0) < 1e-6),
+        ('low 12 V coverage -> other 0', r2['other'] == 0.0),
+        ('low 12 V coverage -> climate whole', abs(r2['climate'] - 0.8 * 600 / 3600.0) < 1e-6),
+    ]
+    s3 = dict(s, b12=5.0)
+    r3 = split_events(s3, 0, 600000)
+    checks += [('other never above the residual', abs(r3['other'] - 0.8 * 600 / 3600.0) < 1e-6 and r3['climate'] == 0.0)]
+    s4 = dict(s)
+    s4.pop('b12'); s4.pop('b12_s')
+    checks += [('sums before +237 -> other 0', split_events(s4, 0, 600000)['other'] == 0.0)]
+    for what, ok in checks:
+        if not ok:
+            print('FAIL board12:', what)
+            bad = True
+    if not bad:
+        print(f'board12: {len(checks)} checks OK')
+    return bad
 
 
 def load_fixture():
@@ -339,4 +421,6 @@ def _selftest():
 
 
 if __name__ == '__main__':
-    sys.exit(1 if _selftest() else 0)
+    _bad = _selftest()
+    _bad = _selftest_board12() or _bad
+    sys.exit(1 if _bad else 0)

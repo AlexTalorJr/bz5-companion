@@ -12,7 +12,12 @@ Rules (recon v0.10.159, Friend 3; AC 13-14.11 and DC 20.11):
     stayed 15 for 135 s after plug-in, and after a charge 2 lasts seconds, then 15.
   - "charged in this plug-in" is set by state 1 or 2 and cleared only by gun 1.
   - charged energy: sum of increments of gb_cycle_regen_kwh (0x2D0, step 0.1 kWh, one
-    frame per 30 s) since the session opened; a drop is a reset: new base, nothing added.
+    frame per 30 s) since the session opened.
+  - +237 (recon v0.10.160): the counter resets at every power-on and a single 0 right
+    after wake can be false, so neither the first frame of a stream nor a dropped value
+    becomes the base at once: it is a candidate, confirmed by the next frame when that
+    frame is not below it and not more than 2.0 kWh above it. A next frame back at or
+    above the previous confirmed value means the candidate was a false frame.
   - control: integral of battery power into the pack between HAL events, gaps over
     120 s skipped; "diverged" = more than 0.5 kWh and more than 15 % apart.
   - outside temperature check: after a HAL ac_temp_out event the firehose value must
@@ -72,8 +77,11 @@ def type_of(gun=None, fh_type=None):
 
 
 class Counter:
+    MAX_STEP = 2.0
+
     def __init__(self):
         self.last = None
+        self.pend = None
         self.is_open = False
         self.has_base = False
         self.sum = 0.0
@@ -86,18 +94,31 @@ class Counter:
         return self.sum if self.is_open and self.has_base else None
 
     def feed(self, v):
-        last, self.last = self.last, v
-        if not self.is_open:
+        last, pend = self.last, self.pend
+        if pend is not None:
+            if v >= pend and v - pend <= self.MAX_STEP:
+                self.pend = None
+                if last is not None:
+                    self.resets += 1
+                self.last = v
+                if self.is_open:
+                    self.has_base = True
+                    self.sum += v - pend
+                return
+            if last is not None and v >= last:
+                self.pend = None
+                self.last = v
+                if self.is_open and self.has_base:
+                    self.sum += v - last
+                return
+            self.pend = v
             return
-        if not self.has_base:
-            self.has_base = True
+        if last is None or v < last:
+            self.pend = v
             return
-        if last is None:
-            return
-        if v >= last:
+        self.last = v
+        if self.is_open and self.has_base:
             self.sum += v - last
-        else:
-            self.resets += 1
 
     def open(self, before_charging):
         if self.is_open:
@@ -111,7 +132,7 @@ class Counter:
         self.is_open = False
 
     def forget(self):
-        self.is_open, self.has_base, self.last = False, False, None
+        self.is_open, self.has_base, self.last, self.pend = False, False, None, None
 
     def add_integral(self, kw, dt_s):
         if not self.is_open or kw is None:
@@ -230,6 +251,7 @@ def _tests():
     # counter: DC 20.11 (export 21.11)
     c = Counter()
     c.feed(1.3)
+    c.feed(1.3)
     c.open(True)
     eq(c.kwh, 0.0, 'base before plug-in')
     for v in (1.3, 1.7, 2.1, 6.5, 12.9, 14.0, 14.0):
@@ -240,20 +262,42 @@ def _tests():
     eq(c.kwh, None, 'closed')
     c = Counter()
     c.feed(5.0)
+    c.feed(5.0)
     c.open(True)
     for v in (6.0, 0.4, 1.0):
         c.feed(v)
     eq(c.resets, 1, 'one reset')
-    eq(c.kwh, 1.6, 'reset: new base, nothing added')
+    eq(c.kwh, 1.6, 'reset confirmed by the second frame: counts from the candidate')
+    # +237: false single zero (13.11 17:44: 0, then the previous 5.9)
+    c = Counter()
+    c.feed(5.9)
+    c.feed(5.9)
+    c.open(True)
+    c.feed(0.0)
+    c.feed(5.9)
+    eq(c.resets, 0, 'false zero is not a reset')
+    eq(c.kwh, 0.0, 'false zero adds nothing')
+    c.feed(6.1)
+    eq(c.kwh, 0.2, 'counting continues from the previous value')
+    # +237: wake during a charge, first frame is a false zero
+    c = Counter()
+    c.open(False)
+    c.feed(0.0)
+    eq(c.kwh, None, 'a single frame is not a base')
+    c.feed(5.9)
+    eq(c.kwh, None, 'a jump of 5.9 does not confirm the zero')
+    c.feed(6.0)
+    eq(c.kwh, 0.1, 'base confirmed at 5.9, +0.1')
     c = Counter()
     c.open(False)
     eq(c.kwh, None, 'no base yet')
     eq(c.from_start, False, 'picked up mid-charge')
     c.feed(8.0)
-    eq(c.kwh, 0.0, 'first frame is the base')
+    eq(c.kwh, None, 'first frame is a candidate')
     c.feed(8.4)
-    eq(c.kwh, 0.4, 'then it counts')
+    eq(c.kwh, 0.4, 'second frame confirms it and counts')
     c = Counter()
+    c.feed(3.0)
     c.feed(3.0)
     c.forget()
     c.open(False)
@@ -267,6 +311,7 @@ def _tests():
     c.add_integral(None, 10)
     eq(c.integral, 0.8, 'integral: into the pack only, gaps skipped')
     c = Counter()
+    c.feed(0.0)
     c.feed(0.0)
     c.open(True)
     c.feed(10.0)

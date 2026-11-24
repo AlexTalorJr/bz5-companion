@@ -6075,6 +6075,10 @@ class ConnectionService extends ChangeNotifier {
               }
             }
 
+            // v0.2.38+237: запрос оборван сторожем или отменой — ни ответа,
+            // ни кода ошибки. Раньше такая строка ложилась в базу пустой
+            // (сессия 23.11, 744/0011).
+            if (rawHex == null && errorCode == null) errorCode = 'KILLED';
             _liveLogLastRaw['$txEcu/$did'] = rawHex ?? errorCode;
 
             // v0.1.21: sanity-check raw value before recording. Two layers:

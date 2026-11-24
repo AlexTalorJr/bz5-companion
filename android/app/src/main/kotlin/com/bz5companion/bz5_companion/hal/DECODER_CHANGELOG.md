@@ -685,6 +685,37 @@ Values are raw enums; companion shows them as raw badges at most.
 
 ---
 
+## v0.10.160 (patch 160) — 2026-11-24 — 12 V load current, 0x2D0 reset rule, remaining-energy notes
+
+### Decoder table: no change
+
+### ~ FirehoseFieldTable
+          + CONFIRMED **dcdc_load_current_a** (0x2C7, bit 48, 8 bits, ×0.5 A):
+            12 V load current at the DC-DC output. Replaces candidate
+            dcdc_byte6_raw (same bits): rename in your raw log. Scale from clean
+            12 V load steps 24.11 (climate off, inverter 0) against battery
+            power: rear defrost +34.7 units / +0.285 kW, seat heaters +17.6 /
+            +0.13 kW → 7.4–8.2 W per unit HV side → ~0.5 A per unit at ~13.3 V
+            with DC-DC ~90 %. ±15 %. Base ~15 A (~200 W).
+          ~ gb_cycle_discharge_kwh / gb_cycle_regen_kwh notes: reset at every
+            power-on from off; a charge in the same on-cycle continues the
+            count; a single 0 right after wake can be transient (Companion
+            export 13–21.11). regen on DC ~7 % above stored energy (I·R loss).
+          ~ gb_remaining_energy_kwh notes: full pack = 65.2 (nominal, no
+            ageing); ~0.69 kWh per % SOC between 49 and 99 %.
+
+### For companion (Друг 1)
+          - 12 V rail power ≈ dcdc_load_current_a × 13.3 V. With the climate off
+            it is the whole onboard load; parked aux minus this ≈ HV climate.
+          - ATRV in READY stays 12.7–12.9 V whatever the load: the DC-DC holds
+            the rail, so voltage is not a load signal. Only the locked-car
+            reading says something about the 12 V battery.
+
+### New SHA256 (v0.10.160)
+(recompute after apply: FirehoseFieldTable.kt.)
+
+---
+
 <!--
 TEMPLATE for the next entry — copy below this line, fill in, delete the comment:
                  Decoder("param_name", "unit", ValueSource.SOURCE))

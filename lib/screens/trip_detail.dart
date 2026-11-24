@@ -1418,17 +1418,27 @@ class EnergySplitCard extends StatelessWidget {
     final total = packKwh ?? used ?? sum;
     final packLoss = packKwh != null && used != null ? used - packKwh : null;
     // v0.2.31+230: у модели v2 две части — «Движение» и «Климат и
-    // бортовая сеть»; «прочего» в ней нет (оно равно 0), строки нет.
+    // бортовая сеть»; «прочее» в ней было равно 0, строки не было.
     // v0.2.34+233: у v2s те же две части; подпись «оценка» — раскладка
     // по отсчётам 3–4 с, не по событиям.
-    final v2 = EnergySplitModel.twoParts(trip.energySplitModel);
-    final estimate = trip.energySplitModel == EnergySplitModel.versionV2s;
+    // v0.2.38+237: у v2 с током 12 В третья строка есть — «Прочее»
+    // (бортовая сеть 12 В, оценка), а климат подписан «Климат». Что
+    // показывать и как подписывать, решает EnergySplitModel.
+    final model = trip.energySplitModel;
+    final estimate = model == EnergySplitModel.versionV2s;
     final parts = <(String, double, Color)>[
       (S.of('trip.split_motion'), sh.motion, EnergySplitBar.motionColor),
-      (S.of(v2 ? 'trip.split_climate_board' : 'trip.split_climate'),
+      (S.of(EnergySplitModel.climateLabelKey(model, sh.other)),
           sh.climate, EnergySplitBar.climateColor),
-      if (!v2)
-        (S.of('trip.split_other'), sh.other, EnergySplitBar.otherColor),
+      if (EnergySplitModel.showsOther(model, sh.other))
+        (
+          EnergySplitModel.otherIsEstimate(model, sh.other)
+              ? '${S.of('trip.split_other')} '
+                  '(${S.of('trip.split_estimate')})'
+              : S.of('trip.split_other'),
+          sh.other,
+          EnergySplitBar.otherColor
+        ),
     ];
     return Card(
       child: Padding(

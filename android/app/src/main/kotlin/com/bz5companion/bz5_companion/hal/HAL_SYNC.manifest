@@ -55,6 +55,10 @@ TelemetryDecoderTable.kt   5eab12fd107bc0c3c88eb01fb1cf7101db279e4d0e6fb99f41858
 # list + 0x2EB00018, 0x2C30080A. FirehoseFieldTable: fh_temp_out_c and four
 # charging fields confirmed, ac_temp_out_raw gone, three new candidates.
 # 7th file — firehose field table, first vendored from recon v0.10.158:
-FirehoseFieldTable.kt      47c1edfe0e8d97a52503ced4d6a4563618fee05767c1fc5129fe28d17d68e960  recon v0.10.159
+# v0.2.38+237: recon v0.10.160 — dcdc_load_current_a confirmed (12 V load
+# current, replaces candidate dcdc_byte6_raw), reset rule of the 0x2D0
+# counters and remaining-energy notes. Decoder table and registry unchanged
+# (same SHA), their headers kept.
+FirehoseFieldTable.kt      fc35d4a8572e7373024ab0bbacc671c701b861f8ae1537aeee7ada0abe12aae4  recon v0.10.160
 # 6th file — BZ3 GETTERS engine, different recon version (per-line override):
 Bz3TelemetrySubscriber.kt  dca150f550d55fd63a6a87e1f86534b814700c70426ff5fce8255ef974a29a16  recon v0.10.79

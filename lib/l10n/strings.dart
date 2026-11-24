@@ -921,6 +921,7 @@ class S {
     'trip.split_climate': 'Climate & heating',
     'trip.split_other': 'Other',
     'trip.split_climate_board': 'Climate & on-board',
+    'trip.split_climate_hv': 'Climate',
     // v0.2.34+233: раскладка по отсчётам hal_samples (v2s).
     'trip.split_estimate': 'estimate',
     'settings.adapter_12v': '12 V (adapter): {v} V',
@@ -2237,6 +2238,8 @@ class S {
     'trip.split_climate': 'Климат и подогрев',
     'trip.split_other': 'Прочее',
     'trip.split_climate_board': 'Климат и бортовая сеть',
+    // v0.2.38+237: v2 с током 12 В — подогревы ушли в «Прочее».
+    'trip.split_climate_hv': 'Климат',
     'trip.split_estimate': 'оценка',
     'settings.adapter_12v': '12 В (адаптер): {v} В',
     'cloud.headunit_yes': 'в машине есть голова',

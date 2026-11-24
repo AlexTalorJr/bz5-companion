@@ -297,6 +297,8 @@ class HalTelemetryService extends ChangeNotifier
     'fh_charging_type': Duration(seconds: 10),
     'fh_temp_out_c': Duration(seconds: 10),
     'gb_cycle_regen_kwh': Duration(seconds: 90),
+    // v0.2.38+237: ток нагрузки 12 В, кадр 0x2C7 около 1 Гц.
+    'dcdc_load_current_a': Duration(seconds: 10),
     // v0.1.29+82: brake_pedal is EDGE-triggered (frame on change only) and
     // now STICKY — halBrakePedalPressed reads the held _lastGood value, not
     // halFresh, so this window is no longer the gate. Kept (used by isStale/
@@ -796,6 +798,8 @@ class HalTelemetryService extends ChangeNotifier
   /// событие `ac_power_state` (до первого события — неизвестно, карточки
   /// нет), мощность — [halPowerKw]. Зовётся из [_onEvent] на каждом
   /// принятом сигнале и из [_logAcChange] на смене состояния климата.
+  /// v0.2.38+237: бортовая сеть 12 В — по току `dcdc_load_current_a`
+  /// ([halBoard12Kw]); пока тока нет, счётчик вычитает прежнюю базу.
   void _feedParkedClimate({bool streamStopped = false}) {
     final ac = _acLastVal['ac_power_state'];
     final done = parkedClimate.feed(
@@ -803,13 +807,23 @@ class HalTelemetryService extends ChangeNotifier
       parked: !streamStopped && halGear == 1,
       acOn: ac == null ? null : ac == 1,
       packKw: halPowerKw,
+      boardKw: halBoard12Kw,
     );
     if (done != null) {
       debugPrint('ParkedClimate: ${done.dur.inSeconds} s, '
           'mean ${done.meanKw.toStringAsFixed(2)} kW, '
-          '${done.kwh.toStringAsFixed(3)} kWh '
-          '(base ${ParkedClimateMeter.baseKw} kW)');
+          '${done.kwh.toStringAsFixed(3)} kWh, '
+          'board12 ${done.boardKwh?.toStringAsFixed(3) ?? '-'} kWh '
+          '(base ${ParkedClimateMeter.baseKw} kW when no 12 V current)');
     }
+  }
+
+  /// v0.2.38+237: мощность бортовой сети 12 В на стороне батареи, кВт —
+  /// по свежему току нагрузки DC-DC; null — тока нет (BZ3, firehose
+  /// недостоверен). Правило пересчёта — [EnergySplitModel.board12Kw].
+  double? get halBoard12Kw {
+    final a = _fhFresh('dcdc_load_current_a');
+    return a == null ? null : EnergySplitModel.board12Kw(a);
   }
 
   /// v0.2.20+219: last logged value per `ac_*` name — see [_logAcChange].
@@ -1719,6 +1733,8 @@ class HalTelemetryService extends ChangeNotifier
     'fh_charging_type': (0, 15),
     'fh_temp_out_c': (-50, 60),
     'gb_cycle_regen_kwh': (0, 6553.5),
+    // v0.2.38+237: ток нагрузки 12 В (8 бит × 0.5 А).
+    'dcdc_load_current_a': (0, 127.5),
   };
   static const _fhChargeNames = {
     'fh_charging_device_state',
@@ -1748,6 +1764,8 @@ class HalTelemetryService extends ChangeNotifier
     }
     _latest[name] = (value: d, at: DateTime.now());
     if (name == 'gb_cycle_regen_kwh') _chargedCounter.feed(d);
+    // v0.2.38+237: бортовая сеть 12 В — в суммы поездки («Прочее»).
+    if (name == 'dcdc_load_current_a') _eventEnergy?.addBoard12(d);
     if (_fhChargeNames.contains(name)) _trackChargeStage();
   }
 
@@ -1756,6 +1774,7 @@ class HalTelemetryService extends ChangeNotifier
     for (final n in _fhConsumed.keys) {
       _latest.remove(n);
     }
+    _eventEnergy?.clearBoard12();
     _trackChargeStage();
   }
 
@@ -1796,7 +1815,11 @@ class HalTelemetryService extends ChangeNotifier
     }
     // v0.2.37+236: этап и сессия счётчика — на тех же событиях.
     _trackChargeStage();
-    final on = _halChargeByCurrent;
+    // v0.2.38+237: строки признака по току — только пока он решает, то
+    // есть этап не известен. При известном этапе рекуперация на почти
+    // нулевой скорости давала пару «началась / закончилась» за 10 мс
+    // (поле 22.11, дважды за поездку).
+    final on = halChargeStage == null && _halChargeByCurrent;
     if (on == _halChargeByCurrentLogged) return;
     _halChargeByCurrentLogged = on;
     final pi = halValue('pack_current');

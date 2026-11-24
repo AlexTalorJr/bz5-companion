@@ -287,4 +287,67 @@ void main() {
     expect(r.hasSplit, isFalse);
     expect(r.packKwh, raw.packKwh);
   });
+
+  // ── v0.2.38+237: бортовая сеть 12 В — «Прочее» ──
+  //
+  // 400 В, батарея 10 А, инвертор 8 А, нагрузка 12 В 30 А, 600 с — тот же
+  // случай, что в tools/mirror_plus233_events.py (_selftest_board12).
+  EventEnergySums board12Sums(int boardUntilMs) {
+    final acc = EventEnergyAccumulator(0);
+    acc.add('pack_voltage_fine', 400, 0);
+    acc.add('inverter_current', 8, 0);
+    acc.add('pack_current', 10, 0);
+    for (var t = 1000; t <= 600000; t += 1000) {
+      if (t <= boardUntilMs) acc.addBoard12(30);
+      acc.add('pack_current', 10, t);
+    }
+    return acc.snapshot();
+  }
+
+  final t0 = DateTime.fromMillisecondsSinceEpoch(0);
+  final t600 = DateTime.fromMillisecondsSinceEpoch(600000);
+
+  test('+237: 12 V board net becomes "other", the sum stays the pack', () {
+    final s = board12Sums(600000);
+    final expB = EnergySplitModel.board12Kw(30) * 600 / 3600.0;
+    expect(s.board12Kwh, closeTo(expB, 1e-6));
+    expect(s.board12CoveredSeconds, closeTo(600, 1e-6));
+    final r = computeEnergySplitEvents(s, t0, t600)!;
+    expect(r.otherKwh, closeTo(expB, 1e-6));
+    expect(r.climateKwh, closeTo(0.8 * 600 / 3600.0 - expB, 1e-6));
+    expect(r.motionKwh! + r.climateKwh! + r.otherKwh!,
+        closeTo(s.packKwh, 1e-9));
+    expect(r.model, EnergySplitModel.versionV2);
+  });
+
+  test('+237: a stale 12 V current is not held; low coverage gives no '
+      '"other"', () {
+    final s = board12Sums(100000);
+    expect(s.board12CoveredSeconds, closeTo(110, 1e-6));
+    final r = computeEnergySplitEvents(s, t0, t600)!;
+    expect(r.otherKwh, 0);
+    expect(r.climateKwh, closeTo(0.8 * 600 / 3600.0, 1e-6));
+  });
+
+  test('+237: sums survive trips.extra with the 12 V keys', () {
+    final s = board12Sums(600000);
+    final back = EventEnergySums.fromExtra(s.toExtraPatch())!;
+    expect(back.board12Kwh, closeTo(s.board12Kwh!, 1e-4));
+    expect(back.board12CoveredSeconds, closeTo(600, 1e-3));
+    // Суммы до +237: ключей нет — тока 12 В не было.
+    expect(_corpusSums().board12Kwh, isNull);
+  });
+
+  test('+237: which rows and labels the card shows', () {
+    expect(EnergySplitModel.showsOther('v1', 0), isTrue);
+    expect(EnergySplitModel.showsOther('v2', 0), isFalse);
+    expect(EnergySplitModel.showsOther('v2', 0.1), isTrue);
+    expect(EnergySplitModel.climateLabelKey('v1', 0.2), 'trip.split_climate');
+    expect(EnergySplitModel.climateLabelKey('v2', 0),
+        'trip.split_climate_board');
+    expect(EnergySplitModel.climateLabelKey('v2', 0.1),
+        'trip.split_climate_hv');
+    expect(EnergySplitModel.otherIsEstimate('v2', 0.1), isTrue);
+    expect(EnergySplitModel.otherIsEstimate('v1', 0.1), isFalse);
+  });
 }

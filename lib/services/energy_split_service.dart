@@ -66,6 +66,43 @@ class EnergySplitModel {
   /// сеть»), «прочего» нет. Одно место для карточки и живой строки.
   static bool twoParts(String? model) =>
       model == versionV2 || model == versionV2s;
+
+  /// v0.2.38+237 — «ПРОЧЕЕ» = БОРТОВАЯ СЕТЬ 12 В (recon v0.10.160, Друг 3;
+  /// название строки — решение владельца 24.11). Ток нагрузки 12 В на
+  /// выходе DC-DC (`dcdc_load_current_a`, firehose 0x2C7, около 1 Гц)
+  /// пересчитывается на сторону батареи: I × [board12RailV] /
+  /// [dcdcEfficiency]. Точность ±15 % (оба числа — допущения Друга 3),
+  /// поэтому строка идёт с пометкой «оценка». У событийной v2 «прочее»
+  /// вычитается из «климата и бортовой сети»; в «климате» остаётся
+  /// высоковольтная часть (компрессор, PTC). Сумма частей по-прежнему
+  /// равна энергии батареи. Метка модели не меняется: поездки с «прочим»
+  /// отличает само значение (> 0) и версия приложения.
+  static const double board12RailV = 13.3;
+  static const double dcdcEfficiency = 0.9;
+
+  /// Мощность бортовой сети 12 В на стороне батареи, кВт.
+  static double board12Kw(double currentA) =>
+      currentA * board12RailV / dcdcEfficiency / 1000.0;
+
+  /// Показывать ли строку «Прочее»: у v1 — всегда, у v2/v2s — когда в
+  /// раскладке есть бортовая сеть 12 В. Одно место для карточки поездки и
+  /// живой строки.
+  static bool showsOther(String? model, double other) =>
+      !twoParts(model) || other > 0;
+
+  /// Ключ подписи климата: v1 — «Климат и подогрев»; v2 с «прочим» —
+  /// «Климат» (подогревы сидений и руля ушли в «прочее»); v2 без него —
+  /// «Климат и бортовая сеть».
+  static String climateLabelKey(String? model, double other) =>
+      !twoParts(model)
+          ? 'trip.split_climate'
+          : other > 0
+              ? 'trip.split_climate_hv'
+              : 'trip.split_climate_board';
+
+  /// «Прочее» у v2 — оценка по току 12 В (пометка в подписи строки).
+  static bool otherIsEstimate(String? model, double other) =>
+      twoParts(model) && other > 0;
   static const double kTraction = 1.030;
   static const double kRegen = 0.835;
   static const double baseKw = 0.65;
@@ -384,7 +421,16 @@ class EventEnergySums {
     this.batteryRegenKwh,
     this.firehose = const {},
     this.firehoseStatus,
+    this.board12Kwh,
+    this.board12CoveredSeconds = 0,
   });
+
+  /// v0.2.38+237: энергия бортовой сети 12 В на стороне батареи за те же
+  /// интервалы, что и остальные суммы, и время, на котором ток 12 В был
+  /// свежим. null — тока 12 В в поездке не было (суммы до +237, BZ3,
+  /// firehose недостоверен).
+  final double? board12Kwh;
+  final double board12CoveredSeconds;
 
   /// v0.2.35+234: рекуперация В БАТАРЕЮ — ∫V·I_бат при токе батареи < 0
   /// по тем же интервалам. Меньше рекуперации инвертора на бортовую сеть
@@ -434,6 +480,9 @@ class EventEnergySums {
           if (minuteMinKw != null) 'minKw': _r(minuteMinKw!),
         },
         if (batteryRegenKwh != null) 'regenBat': _r(batteryRegenKwh!),
+        // +237: бортовая сеть 12 В и её покрытие, с.
+        if (board12Kwh != null) 'b12': _r(board12Kwh!),
+        if (board12Kwh != null) 'b12s': _r(board12CoveredSeconds),
         if (firehoseStatus != null || firehose.isNotEmpty)
           'fh': {
             if (firehoseStatus != null) 'st': firehoseStatus,
@@ -482,6 +531,9 @@ class EventEnergySums {
         negRunMax: mn is Map && mn['run'] is num ? i(mn['run']) : null,
         batteryRegenKwh:
             m['regenBat'] is num ? (m['regenBat'] as num).toDouble() : null,
+        board12Kwh: m['b12'] is num ? (m['b12'] as num).toDouble() : null,
+        board12CoveredSeconds:
+            m['b12s'] is num ? (m['b12s'] as num).toDouble() : 0,
         firehose: {
           if (m['fh'] is Map)
             for (final e in (m['fh'] as Map).entries)
@@ -558,6 +610,32 @@ class EventEnergyAccumulator {
     _fhFirst.putIfAbsent(name, () => value);
     _fhLast[name] = value;
   }
+
+  // ── v0.2.38+237: бортовая сеть 12 В ──
+  //
+  // Ток 12 В приходит из firehose без метки HAL, поэтому его время — часы
+  // самого счёта: метка последнего события HAL на момент прихода. Значение
+  // держится между кадрами (около 1 Гц) и считается свежим [board12FreshMs];
+  // старше — интервал в «прочее» не идёт и в покрытие 12 В не попадает.
+  static const int board12FreshMs = 10000;
+  double? _b12A;
+  int? _b12AtMs;
+  double _b12 = 0;
+  int _b12CovMs = 0;
+  bool _b12Seen = false;
+
+  /// Кадр тока нагрузки 12 В, А.
+  void addBoard12(double currentA) {
+    _b12A = currentA;
+    _b12AtMs = _tPrev;
+    _b12Seen = true;
+  }
+
+  /// Firehose стал недостоверным: ток 12 В больше не держится.
+  void clearBoard12() {
+    _b12A = null;
+    _b12AtMs = null;
+  }
   double _shTrac = 0;
   double _shRegen = 0;
   int _covMs = 0;
@@ -607,6 +685,13 @@ class EventEnergyAccumulator {
       final pi = v * ii / 1000.0;
       _pack += pb * h;
       if (pb < 0) _regenBat -= pb * h;
+      // +237: бортовая сеть 12 В — на тех же покрытых интервалах.
+      final ba = _b12A;
+      final bt = _b12AtMs;
+      if (ba != null && bt != null && tp - bt <= board12FreshMs) {
+        _b12 += EnergySplitModel.board12Kw(ba) * h;
+        _b12CovMs += dt;
+      }
       if (pi > 0) {
         _trac += pi * h;
       } else {
@@ -695,6 +780,8 @@ class EventEnergyAccumulator {
       minuteMinKw: mn,
       minutesBelowRun: neg3,
       negRunMax: runMax,
+      board12Kwh: _b12Seen ? _b12 : null,
+      board12CoveredSeconds: _b12CovMs / 1000.0,
     );
   }
 }
@@ -745,7 +832,11 @@ bool eventSumsCoverTrip(EventEnergySums s, DateTime start, DateTime end) {
 /// (живой поток подхватил поездку на ходу, поток прерывался): тогда берётся
 /// оценка по hal_samples ([computeTripEnergySplit]). Движение = тяга −
 /// рекуперация инвертора, климат = пак − движение (< 0 → 0, движение =
-/// пак), прочее 0, без масштаба. Проверки Друга 3: рекуперация инвертора
+/// пак), без масштаба. v0.2.38+237: «прочее» = бортовая сеть 12 В
+/// ([EventEnergySums.board12Kwh]), если ток 12 В покрывает не меньше
+/// [EnergySplitModel.minCoverage] покрытого времени; оно вычитается из
+/// климата и не может быть больше него. Тока 12 В нет — прочее 0, как
+/// раньше. Проверки Друга 3: рекуперация инвертора
 /// не больше вала × [EnergySplitModel.regenShaftK] +
 /// [EnergySplitModel.regenShaftAbsKwh]; минут бортовой сети ниже
 /// [EnergySplitModel.boardLowKw] не больше [EnergySplitModel.boardLowShare],
@@ -776,11 +867,26 @@ EnergySplitResult? computeEnergySplitEvents(
     climate = 0;
     motion = s.packKwh;
   }
-  return EnergySplitResult(s.packKwh, cov, covered, motion, climate, 0.0,
+  final other = board12Share(s, climate);
+  climate -= other;
+  return EnergySplitResult(s.packKwh, cov, covered, motion, climate, other,
       model: EnergySplitModel.versionV2,
       tractionKwh: s.tractionKwh,
       regenKwh: s.regenKwh,
       events: s);
+}
+
+/// v0.2.38+237: сколько из [climate] («климат и бортовая сеть», кВт·ч)
+/// приходится на бортовую сеть 12 В. 0 — тока 12 В нет или он покрывает
+/// меньше [EnergySplitModel.minCoverage] покрытого времени сумм.
+double board12Share(EventEnergySums s, double climate) {
+  final b = s.board12Kwh;
+  if (b == null || b <= 0 || climate <= 0 || s.coveredSeconds <= 0) return 0;
+  if (s.board12CoveredSeconds / s.coveredSeconds <
+      EnergySplitModel.minCoverage) {
+    return 0;
+  }
+  return math.min(b, climate);
 }
 
 /// v0.2.34+233 — ВЫБОР ИСТОЧНИКА, ОДНО место для расчёта после закрытия и

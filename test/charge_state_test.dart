@@ -90,6 +90,7 @@ void main() {
     test('DC 20.11: 1.3 до вставки, 14.0 в конце — +12.7', () {
       final c = ChargedEnergyCounter();
       c.feed(1.3);
+      c.feed(1.3);
       c.open(beforeCharging: true);
       expect(c.kwh, 0);
       expect(c.fromStart, isTrue);
@@ -111,9 +112,9 @@ void main() {
       expect(c.kwh, closeTo(0.5, 1e-9));
     });
 
-    test('падение значения — сброс: база заново, прирост кадра не '
-        'добавляется', () {
+    test('сброс подтверждается вторым кадром, счёт идёт от кандидата', () {
       final c = ChargedEnergyCounter();
+      c.feed(5.0);
       c.feed(5.0);
       c.open(beforeCharging: true);
       c.feed(6.0);
@@ -123,14 +124,39 @@ void main() {
       expect(c.kwh, closeTo(1.6, 1e-9));
     });
 
-    test('сессия подхвачена на ходу: база — первый кадр, fromStart=false',
-        () {
+    test('+237: ложный одиночный ноль (13.11 17:44) — не сброс и не '
+        'прирост', () {
+      final c = ChargedEnergyCounter();
+      c.feed(5.9);
+      c.feed(5.9);
+      c.open(beforeCharging: true);
+      c.feed(0.0);
+      c.feed(5.9);
+      expect(c.resets, 0);
+      expect(c.kwh, closeTo(0.0, 1e-9));
+      c.feed(6.1);
+      expect(c.kwh, closeTo(0.2, 1e-9));
+    });
+
+    test('+237: пробуждение посреди зарядки, первый кадр — ложный ноль', () {
+      final c = ChargedEnergyCounter();
+      c.open(beforeCharging: false);
+      c.feed(0.0);
+      expect(c.kwh, isNull);
+      c.feed(5.9);
+      expect(c.kwh, isNull);
+      c.feed(6.0);
+      expect(c.kwh, closeTo(0.1, 1e-9));
+    });
+
+    test('сессия подхвачена на ходу: база — подтверждённый кадр, '
+        'fromStart=false', () {
       final c = ChargedEnergyCounter();
       c.open(beforeCharging: false);
       expect(c.kwh, isNull);
       expect(c.fromStart, isFalse);
       c.feed(8.0);
-      expect(c.kwh, 0);
+      expect(c.kwh, isNull);
       c.feed(8.4);
       expect(c.kwh, closeTo(0.4, 1e-9));
     });
@@ -143,6 +169,7 @@ void main() {
 
     test('forget: значение остановленного потока базой не служит', () {
       final c = ChargedEnergyCounter();
+      c.feed(3.0);
       c.feed(3.0);
       c.forget();
       c.open(beforeCharging: false);
@@ -163,6 +190,7 @@ void main() {
 
     test('расхождение счётчика и интеграла: больше 0.5 кВт·ч и 15 %', () {
       final c = ChargedEnergyCounter();
+      c.feed(0.0);
       c.feed(0.0);
       c.open(beforeCharging: true);
       c.feed(10.0);

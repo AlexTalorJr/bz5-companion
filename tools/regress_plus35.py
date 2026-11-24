@@ -13933,8 +13933,8 @@ if int(pv) >= 230:
         # v0.2.34+233: оба вызова идут через computeTripEnergySplit (DH1).
         _de_es.count('computeEnergySplitAuto(') == (3 if int(pv) < 233 else 2) and 'model: r.model,\n);' in _de_es,
         "static const String versionV2 = 'v2';" in _de_es,
-        ("final v2 = trip.energySplitModel == EnergySplitModel.versionV2;" if int(pv) < 233 else "final v2 = EnergySplitModel.twoParts(trip.energySplitModel);") in _de_td and 'if (!v2)\n(S.of(\'trip.split_other\')' in _de_td,
-        ('if (v.model != EnergySplitModel.versionV2)\n(sh.other, EnergySplitBar.otherColor),' if int(pv) < 233 else 'if (!EnergySplitModel.twoParts(v.model))\n(sh.other, EnergySplitBar.otherColor),') in _de_dp,
+        ("final v2 = trip.energySplitModel == EnergySplitModel.versionV2;" if int(pv) < 233 else "final v2 = EnergySplitModel.twoParts(trip.energySplitModel);" if int(pv) < 237 else "final model = trip.energySplitModel;") in _de_td and ('if (!v2)\n(S.of(\'trip.split_other\')' if int(pv) < 237 else 'if (EnergySplitModel.showsOther(model, sh.other))\n(') in _de_td,
+        ('if (v.model != EnergySplitModel.versionV2)\n(sh.other, EnergySplitBar.otherColor),' if int(pv) < 233 else 'if (!EnergySplitModel.twoParts(v.model))\n(sh.other, EnergySplitBar.otherColor),' if int(pv) < 237 else 'if (EnergySplitModel.showsOther(v.model, sh.other))\n(sh.other, EnergySplitBar.otherColor),') in _de_dp,
         all(_de_l10n.count(f"'{k}':") == 2 for k in ('trip.split_climate_board', 'drv.parked_climate', 'drv.parked_climate_mean', 'settings.adapter_12v', 'cloud.headunit_yes', 'cloud.headunit_no')),
     ]
     if all(_de3): ok('DE3 model v2: battery and inverter energies integrated separately and subtracted at the end, clamps keep parts summing to the pack, one model choice for close and live, the model is stored, v2 shows two parts')
@@ -13945,7 +13945,7 @@ if int(pv) >= 230:
     # смены ac_power_state; строка в панели; итог стоянки в app_log.
     _de4 = [
         'static const double baseKw = 0.45;' in _de_pc and 'static const Duration window = Duration(seconds: 30);' in _de_pc,
-        'if (!parked || acOn != true) return _end();' in _de_pc and 'final kw = math.max(0.0, packKw - baseKw);' in _de_pc,
+        'if (!parked || acOn != true) return _end();' in _de_pc and ('final kw = math.max(0.0, packKw - baseKw);' if int(pv) < 237 else 'final kw = math.max(0.0, packKw - (boardKw ?? baseKw));') in _de_pc,
         'final Stopwatch _parkedClimateClock = Stopwatch()..start();' in _de_hts and 't: _parkedClimateClock.elapsed,' in _de_hts,
         'parked: !streamStopped && halGear == 1,' in _de_hts and '_feedParkedClimate(streamStopped: true);' in _de_hts and 'acOn: ac == null ? null : ac == 1,' in _de_hts and 'packKw: halPowerKw,' in _de_hts,
         ('_logHalDiag(e, d);\n_feedParkedClimate();' if int(pv) < 233 else '_logHalDiag(e, d);\n_feedEventEnergy(e, d);\n_feedParkedClimate();' if int(pv) < 234 else '_logHalDiag(e, d);\n_feedEventEnergy(e, d);\n_feedFirehose(e, d);\n_feedParkedClimate();' if int(pv) < 235 else '_logHalDiag(e, d);\n_feedEventEnergy(e, d);\n_trackChargePresence(e.name, d);\n_feedParkedClimate();' if int(pv) < 236 else '_logHalDiag(e, d,\nevery: _kChargeEventNames.contains(e.name)\n? Duration.zero\n: _halDiagThrottle);\n_feedEventEnergy(e, d);\n_trackChargePresence(e.name, d);\n_feedParkedClimate();') in _de_hts,
@@ -14232,7 +14232,7 @@ if int(pv) >= 233:
         'unawaited(_relabelSampleV2());' in _dh_es,
         "static const String relabelKey = 'energy_split_v2s_233';" in _dh_es and "static const String splitRelabelKey = 'energy_split_v2s_233';" in _dh_imp and 'await prefs.remove(splitRelabelKey);' in _dh_imp,
         't.endedAt.isNotNull() & t.energySplitModel.equals(model)' in _dh_db and 'energySplitModel: Value(null),\n));' in _dh_db,
-        'final estimate = trip.energySplitModel == EnergySplitModel.versionV2s;' in _dh_td and "S.of('trip.split_estimate')" in _dh_td,
+        ('final estimate = trip.energySplitModel == EnergySplitModel.versionV2s;' if int(pv) < 237 else 'final estimate = model == EnergySplitModel.versionV2s;') in _dh_td and "S.of('trip.split_estimate')" in _dh_td,
         _dh_l10n.count("'trip.split_estimate':") == 2,
     ]
     if all(_dh3): ok('DH3 sample-based v2 is the estimate v2s; every v2 without event sums is recomputed (data here) or relabelled locally (no data); the flag travels with the database; the card says estimate')
@@ -14305,8 +14305,8 @@ if int(pv) >= 234:
     _di1 = [
         # v0.2.37+236: обе таблицы — recon v0.10.159 (DK1).
         ('TelemetryDecoderTable.kt   f1266c282092474e31e6ccbf09f8e65945bacccfbbe262fad680742918ee32b2  recon v0.10.158' if int(pv) < 236 else 'TelemetryDecoderTable.kt   5eab12fd107bc0c3c88eb01fb1cf7101db279e4d0e6fb99f41858bbcb4bfb47a  recon v0.10.159') in _di_man,
-        ('FirehoseFieldTable.kt      b1a0986d938c188f5a2f6b045ce7ec96bdc89559b461aae6e4356668612a25c8  recon v0.10.158' if int(pv) < 236 else 'FirehoseFieldTable.kt      47c1edfe0e8d97a52503ced4d6a4563618fee05767c1fc5129fe28d17d68e960  recon v0.10.159') in _di_man,
-        (('// SHA256: f1266c282092474e31e6ccbf09f8e65945bacccfbbe262fad680742918ee32b2' in _di_tab and '// SHA256: b1a0986d938c188f5a2f6b045ce7ec96bdc89559b461aae6e4356668612a25c8' in _di_fht) if int(pv) < 236 else ('// SHA256: 5eab12fd107bc0c3c88eb01fb1cf7101db279e4d0e6fb99f41858bbcb4bfb47a' in _di_tab and '// SHA256: 47c1edfe0e8d97a52503ced4d6a4563618fee05767c1fc5129fe28d17d68e960' in _di_fht)),
+        ('FirehoseFieldTable.kt      b1a0986d938c188f5a2f6b045ce7ec96bdc89559b461aae6e4356668612a25c8  recon v0.10.158' if int(pv) < 236 else 'FirehoseFieldTable.kt      47c1edfe0e8d97a52503ced4d6a4563618fee05767c1fc5129fe28d17d68e960  recon v0.10.159' if int(pv) < 237 else 'FirehoseFieldTable.kt      fc35d4a8572e7373024ab0bbacc671c701b861f8ae1537aeee7ada0abe12aae4  recon v0.10.160') in _di_man,
+        (('// SHA256: f1266c282092474e31e6ccbf09f8e65945bacccfbbe262fad680742918ee32b2' in _di_tab and '// SHA256: b1a0986d938c188f5a2f6b045ce7ec96bdc89559b461aae6e4356668612a25c8' in _di_fht) if int(pv) < 236 else ('// SHA256: 5eab12fd107bc0c3c88eb01fb1cf7101db279e4d0e6fb99f41858bbcb4bfb47a' in _di_tab and ('// SHA256: 47c1edfe0e8d97a52503ced4d6a4563618fee05767c1fc5129fe28d17d68e960' if int(pv) < 237 else '// SHA256: fc35d4a8572e7373024ab0bbacc671c701b861f8ae1537aeee7ada0abe12aae4') in _di_fht)),
         'Decoder("battery_power_kw", "kW", ValueSource.INT,' in _di_tab and '"BYDAutoEngineDevice|0x40800008"' not in _di_ovr,
         "'battery_power_kw': Duration(milliseconds: 1500)," in _di_hts and "'battery_power_kw': (-250, 250)," in _di_hts and "'motor_rpm', 'motor_torque', 'battery_power_kw'," in _di_hts,
         "double? get halBatteryPowerKw => _heldValue('battery_power_kw', _coreHold);" in _di_hts and "v('battery_power_kw', hal.halBatteryPowerKw," in _di_dp,
@@ -14551,8 +14551,8 @@ if int(pv) >= 236:
         all(x in _dk_man for x in (
             'TargetRegistry.kt          0c7682b2f8a64ef348c9bef008a369da0bda0c207e298c98fe1c685b681bab5c  recon v0.10.159',
             'TelemetryDecoderTable.kt   5eab12fd107bc0c3c88eb01fb1cf7101db279e4d0e6fb99f41858bbcb4bfb47a  recon v0.10.159',
-            'FirehoseFieldTable.kt      47c1edfe0e8d97a52503ced4d6a4563618fee05767c1fc5129fe28d17d68e960  recon v0.10.159')),
-        '// SHA256: 0c7682b2f8a64ef348c9bef008a369da0bda0c207e298c98fe1c685b681bab5c' in _dk_reg and '// SHA256: 47c1edfe0e8d97a52503ced4d6a4563618fee05767c1fc5129fe28d17d68e960' in _dk_fht,
+            ('FirehoseFieldTable.kt      47c1edfe0e8d97a52503ced4d6a4563618fee05767c1fc5129fe28d17d68e960  recon v0.10.159' if int(pv) < 237 else 'FirehoseFieldTable.kt      fc35d4a8572e7373024ab0bbacc671c701b861f8ae1537aeee7ada0abe12aae4  recon v0.10.160'))),
+        '// SHA256: 0c7682b2f8a64ef348c9bef008a369da0bda0c207e298c98fe1c685b681bab5c' in _dk_reg and ('// SHA256: 47c1edfe0e8d97a52503ced4d6a4563618fee05767c1fc5129fe28d17d68e960' if int(pv) < 237 else '// SHA256: fc35d4a8572e7373024ab0bbacc671c701b861f8ae1537aeee7ada0abe12aae4') in _dk_fht,
         all(x in _dk_tab for x in (
             'put("BYDAutoChargingDevice|0x2EB00018",\n            Decoder("charging_device_state", "", ValueSource.INT,',
             'put("BYDAutoChargingDevice|0x2C30080A",\n            Decoder("charging_working_status", "", ValueSource.INT,',
@@ -14594,8 +14594,8 @@ if int(pv) >= 236:
         'final stage = halChargeStage;\nif (stage != null) return stage != ChargeStage.none;\nfinal gun = halValue(\'charging_gun_connect_state\');' in _dk2_con,
         "String? get halChargerTypeLabel => chargeTypeOf(\ngun: _chargeInputs.gun,\nfhType: _fhFresh('fh_charging_type'),\n);" in _dk_hts,
         'final guard = _fhConsumed[name];\nif (guard == null) return;\nif (_firehoseCheck.state == FirehoseCheck.mismatch) return;\nif (d < guard.$1 || d > guard.$2) return;' in _dk2_use and '_latest[name] = (value: d, at: DateTime.now());' in _dk2_use and 'if (_fhChargeNames.contains(name)) _trackChargeStage();' in _dk2_use and _dk_hts.count('_consumeFirehose(') == 2,
-        "static const Map<String, (double, double)> _fhConsumed = {\n'fh_charging_device_state': (0, 15),\n'fh_charging_gun_connect_state': (0, 7),\n'fh_charging_type': (0, 15),\n'fh_temp_out_c': (-50, 60),\n'gb_cycle_regen_kwh': (0, 6553.5),\n};" in _dk_hts and all(("'" + n + "': Duration(seconds: 10),") in _dk_hts for n in ('fh_charging_device_state', 'fh_charging_gun_connect_state', 'fh_charging_type', 'fh_temp_out_c')) and "'gb_cycle_regen_kwh': Duration(seconds: 90)," in _dk_hts,
-        'if (st == FirehoseCheck.mismatch) _dropFirehoseConsumed();' in _dk_hts and 'void _dropFirehoseConsumed() {\nfor (final n in _fhConsumed.keys) {\n_latest.remove(n);\n}\n_trackChargeStage();\n}' in _dk_hts,
+        ("static const Map<String, (double, double)> _fhConsumed = {\n'fh_charging_device_state': (0, 15),\n'fh_charging_gun_connect_state': (0, 7),\n'fh_charging_type': (0, 15),\n'fh_temp_out_c': (-50, 60),\n'gb_cycle_regen_kwh': (0, 6553.5),\n" + ("};" if int(pv) < 237 else "'dcdc_load_current_a': (0, 127.5),\n};")) in _dk_hts and all(("'" + n + "': Duration(seconds: 10),") in _dk_hts for n in ('fh_charging_device_state', 'fh_charging_gun_connect_state', 'fh_charging_type', 'fh_temp_out_c')) and "'gb_cycle_regen_kwh': Duration(seconds: 90)," in _dk_hts,
+        'if (st == FirehoseCheck.mismatch) _dropFirehoseConsumed();' in _dk_hts and ('void _dropFirehoseConsumed() {\nfor (final n in _fhConsumed.keys) {\n_latest.remove(n);\n}\n_trackChargeStage();\n}' if int(pv) < 237 else 'void _dropFirehoseConsumed() {\nfor (final n in _fhConsumed.keys) {\n_latest.remove(n);\n}\n_eventEnergy?.clearBoard12();\n_trackChargeStage();\n}') in _dk_hts,
         "debugPrint('Charge: stage ${stage?.name ?? 'unknown'}'" in _dk2_trk and '_chargeStageLogged = stage;\n_scheduleNotify();' in _dk2_trk and "name != 'charging_device_state') {\nreturn;\n}\n_trackChargeStage();" in _dk2_prs,
         "'charging_device_state': (0, 15)," in _dk_hts and "static const _kChargeEventNames = {\n'charging_gun_connect_state',\n'charger_connect_state',\n'charging_device_state',\n'charging_working_status',\n};" in _dk_hts and '_logHalDiag(e, d,\nevery: _kChargeEventNames.contains(e.name)\n? Duration.zero\n: _halDiagThrottle);' in _dk_on,
         'final stage = hal.halChargeStage;\nfinal stageWord = switch (stage) {\nChargeStage.plugged => S.of(\'chg.stage_idle\'),\nChargeStage.handshake => S.of(\'chg.stage_wait\'),\nChargeStage.finished => S.of(\'chg.stage_done\'),\n_ => null,\n};' in _dk_ban and 'chargeStageOf' not in _dk_ban and 'chargeStageOf' not in _dk_view and "ChargeStage.plugged => S.of('chg.stage_idle'),\nChargeStage.handshake => S.of('chg.stage_wait'),\nChargeStage.finished => S.of('chg.stage_done')," in _dk_view,
@@ -14618,8 +14618,9 @@ if int(pv) >= 236:
     except Exception as _e:
         _dk3_m = None
     _dk3 = [
-        'final last = _last;\n_last = v;\nif (!_open) return;\nif (!_hasBase) {\n_hasBase = true;\nreturn;\n}\nif (last == null) return;\nif (v >= last) {\n_sum += v - last;\n} else {\nresets++;\n}' in _dk3_feed,
-        '_hasBase = _last != null;\nfromStart = _hasBase || beforeCharging;' in _dk_cs and 'void forget() {\n_open = false;\n_hasBase = false;\n_last = null;\n}' in _dk_cs and 'double? get kwh => _open && _hasBase ? _sum : null;' in _dk_cs,
+        # v0.2.38+237: база и сброс подтверждаются вторым кадром (DL2).
+        ('final last = _last;\n_last = v;\nif (!_open) return;\nif (!_hasBase) {\n_hasBase = true;\nreturn;\n}\nif (last == null) return;\nif (v >= last) {\n_sum += v - last;\n} else {\nresets++;\n}' if int(pv) < 237 else 'if (last == null || v < last) {\n_pend = v;\nreturn;\n}\n_last = v;\nif (_open && _hasBase) _sum += v - last;') in _dk3_feed,
+        '_hasBase = _last != null;\nfromStart = _hasBase || beforeCharging;' in _dk_cs and ('void forget() {\n_open = false;\n_hasBase = false;\n_last = null;\n}' if int(pv) < 237 else 'void forget() {\n_open = false;\n_hasBase = false;\n_last = null;\n_pend = null;\n}') in _dk_cs and 'double? get kwh => _open && _hasBase ? _sum : null;' in _dk_cs,
         'final c = _chargedCounter.kwh;\nif (c != null) return c >= 0.05 ? c : null;\nfinal d = halChargeSessionSocDeltaPct;' in _dk3_kwh,
         "if (name == 'gb_cycle_regen_kwh') _chargedCounter.feed(d);" in _dk2_use,
         'bool get _chargeSessionOpen =>\n(halChargerConnected ?? false) || halChargingActive;' in _dk_hts and 'final open = _chargeSessionOpen;\nif (open && !_chargedCounter.isOpen) {\n_chargedCounter.open(beforeCharging: !halChargingActive);' in _dk2_trk and "} else if (!open && _chargedCounter.isOpen) {\n_logChargedSessionEnd('session closed');\n_chargedCounter.close();\n}" in _dk2_trk,
@@ -14683,6 +14684,94 @@ if int(pv) >= 236:
     else: fail(f'DK5 atlas outside-temperature axis drifted: {_dk5}')
 else:
     ok(f"Part DK skipped (build +{pv}, charge stage and outside-temperature atlas land in +236)")
+
+# ─────────────── Part DL — +237: бортовая сеть 12 В («Прочее»), подтверждение счётчика, recon v0.10.160 ───────────────
+if int(pv) >= 237:
+    _dl_hts = _dj_rd('lib/services/hal_telemetry_service.dart')
+    _dl_cs = _dj_rd('lib/services/charge_state.dart')
+    _dl_es = _dj_rd('lib/services/energy_split_service.dart')
+    _dl_pc = _dj_rd('lib/services/parked_climate.dart')
+    _dl_dp = _dj_rd('lib/widgets/driver_panels.dart')
+    _dl_td = _dj_rd('lib/screens/trip_detail.dart')
+    _dl_conn = _dj_rd('lib/services/connection.dart')
+    _dl_l10n = (root / 'lib/l10n/strings.dart').read_text()
+    _dl_man = (root / (_dj_hal + 'HAL_SYNC.manifest')).read_text()
+    _dl_fht = (root / (_dj_hal + 'FirehoseFieldTable.kt')).read_text()
+    _dl_t1 = (root / 'test/charge_state_test.dart').read_text()
+    _dl_t2 = (root / 'test/event_energy_test.dart').read_text()
+
+    # DL1: RECON v0.10.160. Таблица firehose по манифесту и заголовку; ток
+    # нагрузки 12 В подтверждён, кандидата dcdc_byte6_raw нет; таблица
+    # декодеров и реестр не менялись.
+    _dl1 = [
+        'FirehoseFieldTable.kt      fc35d4a8572e7373024ab0bbacc671c701b861f8ae1537aeee7ada0abe12aae4  recon v0.10.160' in _dl_man,
+        '// SHA256: fc35d4a8572e7373024ab0bbacc671c701b861f8ae1537aeee7ada0abe12aae4' in _dl_fht and '(recon v0.10.160,' in _dl_fht,
+        'FirehoseField("dcdc_load_current_a", 0x02C7, 0, 48, 8, 0.5, unit = "A",\n            confirmed = true,' in _dl_fht and '"dcdc_byte6_raw"' not in _dl_fht,
+        'TelemetryDecoderTable.kt   5eab12fd107bc0c3c88eb01fb1cf7101db279e4d0e6fb99f41858bbcb4bfb47a  recon v0.10.159' in _dl_man and 'TargetRegistry.kt          0c7682b2f8a64ef348c9bef008a369da0bda0c207e298c98fe1c685b681bab5c  recon v0.10.159' in _dl_man,
+        'v0.10.160 (patch 160)' in (root / (_dj_hal + 'DECODER_CHANGELOG.md')).read_text(),
+    ]
+    if all(_dl1): ok('DL1 recon v0.10.160 vendored: firehose table by manifest and header, 12 V load current confirmed and its candidate gone, decoder table and registry unchanged')
+    else: fail(f'DL1 recon v0.10.160 sync drifted: {_dl1}')
+
+    # DL2: СЧЁТЧИК «ЗАЛИТО» — ПОДТВЕРЖДЕНИЕ ВТОРЫМ КАДРОМ. Первый кадр потока
+    # и упавшее значение — кандидаты; базой их делает следующий кадр в
+    # пределах шага; возврат к прежнему значению — ложный кадр, не сброс.
+    _dl2_feed = _dk_fn(_dl_cs, 'void feed(double v) {')
+    _dl2 = [
+        'static const double maxStepKwh = 2.0;' in _dl_cs and 'double? _pend;' in _dl_cs,
+        'if (v >= pend && v - pend <= maxStepKwh) {\n_pend = null;\nif (last != null) resets++;\n_last = v;\nif (_open) {\n_hasBase = true;\n_sum += v - pend;\n}\nreturn;\n}' in _dl2_feed,
+        'if (last != null && v >= last) {\n_pend = null;\n_last = v;\nif (_open && _hasBase) _sum += v - last;\nreturn;\n}\n_pend = v;\nreturn;' in _dl2_feed,
+        'if (last == null || v < last) {\n_pend = v;\nreturn;\n}\n_last = v;\nif (_open && _hasBase) _sum += v - last;' in _dl2_feed,
+        '_last = null;\n_pend = null;' in _dl_cs,
+        "test('+237: ложный одиночный ноль (13.11 17:44) — не сброс и не '" in _dl_t1 and 'expect(c.resets, 0);' in _dl_t1 and "test('+237: пробуждение посреди зарядки, первый кадр — ложный ноль', () {" in _dl_t1 and 'expect(c.kwh, closeTo(0.1, 1e-9));' in _dl_t1,
+        "eq(c.kwh, 0.0, 'false zero adds nothing')" in (root / 'tools/mirror_plus236_charge.py').read_text(),
+    ]
+    if all(_dl2): ok('DL2 charged counter confirms by the second frame: the first frame of a stream and a dropped value are candidates, a frame within the step makes the base, a return to the previous value is a false frame and not a reset; mirror and Dart test hold the 13.11 case')
+    else: fail(f'DL2 counter confirmation drifted: {_dl2}')
+
+    # DL3: «ПРОЧЕЕ» = БОРТОВАЯ СЕТЬ 12 В. Пересчёт тока в одном месте; ток
+    # копится на тех же интервалах, что суммы, и не держится дольше срока
+    # свежести; «прочее» вычитается из климата, не больше него, и только
+    # при покрытии; сумма частей — энергия батареи; что показывать и как
+    # подписывать, решает EnergySplitModel; стоянка вычитает ток вместо
+    # базы; недостоверный firehose ток не кормит.
+    _dl3_share = _dk_fn(_dl_es, 'double board12Share(EventEnergySums s, double climate) {')
+    _dl3_feed = _dk_fn(_dl_pc, 'required double? packKw,\ndouble? boardKw,\n}) {')
+    _dl3_m = None
+    try:
+        _dl3_m = subprocess.run([sys.executable, str(root / 'tools/mirror_plus233_events.py')], capture_output=True, text=True, timeout=120)
+    except Exception as _e:
+        _dl3_m = None
+    _dl3 = [
+        'static const double board12RailV = 13.3;\nstatic const double dcdcEfficiency = 0.9;' in _dl_es and 'static double board12Kw(double currentA) =>\ncurrentA * board12RailV / dcdcEfficiency / 1000.0;' in _dl_es,
+        'void addBoard12(double currentA) {\n_b12A = currentA;\n_b12AtMs = _tPrev;\n_b12Seen = true;\n}' in _dl_es and 'void clearBoard12() {\n_b12A = null;\n_b12AtMs = null;\n}' in _dl_es and 'static const int board12FreshMs = 10000;' in _dl_es,
+        'if (ba != null && bt != null && tp - bt <= board12FreshMs) {\n_b12 += EnergySplitModel.board12Kw(ba) * h;\n_b12CovMs += dt;\n}' in _dl_es,
+        'board12Kwh: _b12Seen ? _b12 : null,\nboard12CoveredSeconds: _b12CovMs / 1000.0,' in _dl_es and "if (board12Kwh != null) 'b12': _r(board12Kwh!),\nif (board12Kwh != null) 'b12s': _r(board12CoveredSeconds)," in _dl_es and "board12Kwh: m['b12'] is num ? (m['b12'] as num).toDouble() : null," in _dl_es,
+        'if (b == null || b <= 0 || climate <= 0 || s.coveredSeconds <= 0) return 0;\nif (s.board12CoveredSeconds / s.coveredSeconds <\nEnergySplitModel.minCoverage) {\nreturn 0;\n}\nreturn math.min(b, climate);' in _dl3_share,
+        'final other = board12Share(s, climate);\nclimate -= other;\nreturn EnergySplitResult(s.packKwh, cov, covered, motion, climate, other,\nmodel: EnergySplitModel.versionV2,' in _dl_es,
+        'static bool showsOther(String? model, double other) =>\n!twoParts(model) || other > 0;' in _dl_es and "? 'trip.split_climate'\n: other > 0\n? 'trip.split_climate_hv'\n: 'trip.split_climate_board';" in _dl_es and 'static bool otherIsEstimate(String? model, double other) =>\ntwoParts(model) && other > 0;' in _dl_es,
+        'S.of(EnergySplitModel.climateLabelKey(model, sh.other))' in _dl_td and 'if (EnergySplitModel.showsOther(model, sh.other))' in _dl_td and 'EnergySplitModel.otherIsEstimate(model, sh.other)' in _dl_td and 'twoParts(' not in _dl_td and 'if (EnergySplitModel.showsOther(v.model, sh.other))' in _dl_dp and 'twoParts(' not in _dl_dp,
+        _dl_l10n.count("'trip.split_climate_hv':") == 2,
+        "if (name == 'dcdc_load_current_a') _eventEnergy?.addBoard12(d);" in _dl_hts and "'dcdc_load_current_a': (0, 127.5)," in _dl_hts and "'dcdc_load_current_a': Duration(seconds: 10)," in _dl_hts and '_eventEnergy?.clearBoard12();\n_trackChargeStage();' in _dl_hts,
+        "double? get halBoard12Kw {\nfinal a = _fhFresh('dcdc_load_current_a');\nreturn a == null ? null : EnergySplitModel.board12Kw(a);\n}" in _dl_hts and 'packKw: halPowerKw,\nboardKw: halBoard12Kw,' in _dl_hts,
+        'final kw = math.max(0.0, packKw - (boardKw ?? baseKw));' in _dl3_feed and 'final lb = _lastBoardKw;\nif (lb != null) _boardEnergyKwh += lb * dt / 3600.0;' in _dl3_feed and 'double? get nowBoardKw => active ? _lastBoardKw : null;' in _dl_pc and 'final board = m.nowBoardKw;' in _dl_dp,
+        _dl3_m is not None and _dl3_m.returncode == 0 and 'board12: 10 checks OK' in _dl3_m.stdout,
+        "test('+237: 12 V board net becomes \"other\", the sum stays the pack', () {" in _dl_t2 and 'expect(r.motionKwh! + r.climateKwh! + r.otherKwh!,' in _dl_t2 and 'expect(s.board12CoveredSeconds, closeTo(110, 1e-6));' in _dl_t2,
+    ]
+    if all(_dl3): ok('DL3 "other" is the 12 V board net: one conversion rule, current integrated on the same intervals and not held past its freshness, taken out of climate but never above it and only with coverage, parts still sum to the pack, EnergySplitModel decides rows and labels, the parked meter subtracts the current instead of the base, an untrusted firehose does not feed it; mirror and Dart test hold the same case')
+    else: fail(f'DL3 12 V board net drifted: {_dl3}')
+
+    # DL4: МЕЛОЧИ ПО ПОЛЮ. Строки признака по току пишутся, только пока этап
+    # не известен; оборванный запрос Live Log получает код, а не пустую
+    # строку.
+    _dl4 = [
+        'final on = halChargeStage == null && _halChargeByCurrent;' in _dl_hts,
+        "if (rawHex == null && errorCode == null) errorCode = 'KILLED';\n_liveLogLastRaw['$txEcu/$did'] = rawHex ?? errorCode;" in _dl_conn,
+    ]
+    if all(_dl4): ok('DL4 field leftovers: current-criterion lines are logged only while the stage is unknown; a Live Log request cut by the watchdog is stored with a code, not as an empty row')
+    else: fail(f'DL4 field leftovers drifted: {_dl4}')
+else:
+    ok(f"Part DL skipped (build +{pv}, 12 V board net and counter confirmation land in +237)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
