@@ -155,6 +155,54 @@ class EnergySplitModel {
   ];
 }
 
+/// v0.2.40+239 — УДЕРЖАНИЕ ТОКА 12 В ПО ПЕРИОДУ КАДРОВ. Одно правило для
+/// сумм поездки ([EventEnergyAccumulator]) и для стоянки
+/// (`HalTelemetryService.halBoard12Kw`).
+///
+/// Ток нагрузки DC-DC идёт в группе полей `gb_*`. На BZ5 кадр около 1 Гц,
+/// на BZ3 раз в 30 с (экспорт BZ3 25.11: поездки 872, 874, 875 —
+/// покрытие 12 В ровно 0.33 при прежнем удержании 10 с, «Прочее» не
+/// показывалось). Значение держится полтора периода между кадрами, не
+/// меньше [minMs] и не больше [maxMs]. Период — меньший из двух последних:
+/// один долгий пропуск на BZ5 не растягивает удержание, а короткая серия
+/// кадров по 1 Гц на BZ3 сужает его только на один период.
+class Board12Hold {
+  static const int minMs = 10000;
+  static const int maxMs = 45000;
+
+  int? _lastMs;
+  int? _periodMs;
+  int _holdMs = minMs;
+
+  /// Текущее удержание, мс.
+  int get holdMs => _holdMs;
+
+  /// Кадр тока 12 В в момент [atMs] (часы вызывающего, монотонные).
+  void frame(int atMs) {
+    final last = _lastMs;
+    if (last != null && atMs > last) {
+      final p = atMs - last;
+      final prev = _periodMs;
+      _periodMs = p;
+      final base = prev == null ? p : math.min(p, prev);
+      _holdMs = (base * 3 ~/ 2).clamp(minMs, maxMs);
+    }
+    _lastMs = atMs;
+  }
+
+  /// Последний кадр ещё действует в момент [nowMs].
+  bool fresh(int nowMs) {
+    final last = _lastMs;
+    return last != null && nowMs - last <= _holdMs;
+  }
+
+  void reset() {
+    _lastMs = null;
+    _periodMs = null;
+    _holdMs = minMs;
+  }
+}
+
 class EnergySplitResult {
   final double packKwh;
   final double coverage;
@@ -679,11 +727,11 @@ class EventEnergyAccumulator {
   //
   // Ток 12 В приходит из firehose без метки HAL, поэтому его время — часы
   // самого счёта: метка последнего события HAL на момент прихода. Значение
-  // держится между кадрами (около 1 Гц) и считается свежим [board12FreshMs];
-  // старше — интервал в «прочее» не идёт и в покрытие 12 В не попадает.
-  static const int board12FreshMs = 10000;
+  // держится между кадрами по правилу [Board12Hold] (+239: по периоду
+  // кадров, BZ3 — раз в 30 с); старше — интервал в «прочее» не идёт и в
+  // покрытие 12 В не попадает.
+  final Board12Hold _b12Hold = Board12Hold();
   double? _b12A;
-  int? _b12AtMs;
   double _b12 = 0;
   int _b12CovMs = 0;
   bool _b12Seen = false;
@@ -691,14 +739,15 @@ class EventEnergyAccumulator {
   /// Кадр тока нагрузки 12 В, А.
   void addBoard12(double currentA) {
     _b12A = currentA;
-    _b12AtMs = _tPrev;
+    final t = _tPrev;
+    if (t != null) _b12Hold.frame(t);
     _b12Seen = true;
   }
 
   /// Firehose стал недостоверным: ток 12 В больше не держится.
   void clearBoard12() {
     _b12A = null;
-    _b12AtMs = null;
+    _b12Hold.reset();
   }
   double _shTrac = 0;
   double _shRegen = 0;
@@ -776,8 +825,7 @@ class EventEnergyAccumulator {
       if (pb < 0) _regenBat -= pb * h;
       // +237: бортовая сеть 12 В — на тех же покрытых интервалах.
       final ba = _b12A;
-      final bt = _b12AtMs;
-      if (ba != null && bt != null && tp - bt <= board12FreshMs) {
+      if (ba != null && _b12Hold.fresh(tp)) {
         _b12 += EnergySplitModel.board12Kw(ba) * h;
         _b12CovMs += dt;
       }

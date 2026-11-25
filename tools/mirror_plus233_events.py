@@ -77,16 +77,19 @@ class Acc:
         self.pm = []
         # +237: 12 V board net (dcdc_load_current_a, firehose, no HAL stamp)
         self.b12_a = None
-        self.b12_at = None
+        self.b12_hold = Board12Hold()  # +239: hold by the frame period
         self.b12 = 0.0
         self.b12_cov_ms = 0
         self.b12_seen = False
 
     def add_board12(self, current_a):
-        self.b12_a, self.b12_at, self.b12_seen = current_a, self.t_prev, True
+        self.b12_a, self.b12_seen = current_a, True
+        if self.t_prev is not None:
+            self.b12_hold.frame(self.t_prev)
 
     def clear_board12(self):
-        self.b12_a = self.b12_at = None
+        self.b12_a = None
+        self.b12_hold.reset()
 
     def _close_minute(self, e, cov):
         if cov < MINUTE_MIN_MS:
@@ -140,7 +143,7 @@ class Acc:
             self.pack += pb * h
             if pb < 0:
                 self.regen_bat += -pb * h
-            if self.b12_a is not None and self.b12_at is not None and tp - self.b12_at <= B12_FRESH_MS:
+            if self.b12_a is not None and self.b12_hold.fresh(tp):
                 self.b12 += board12_kw(self.b12_a) * h
                 self.b12_cov_ms += dt
             if pi > 0:
@@ -245,7 +248,30 @@ def split_events(s, start_ms, end_ms):
 # +237 (recon v0.10.160): 12 V load current at the DC-DC output -> battery side.
 B12_RAIL_V = 13.3
 DCDC_EFF = 0.9
-B12_FRESH_MS = 10000
+
+
+class Board12Hold:
+    """Mirror of Board12Hold (+239): 1.5 x the smaller of the last two frame periods,
+    within [10 s, 45 s]. BZ5 sends the 12 V current at about 1 Hz, BZ3 every 30 s."""
+    MIN_MS, MAX_MS = 10000, 45000
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.last = self.period = None
+        self.hold = self.MIN_MS
+
+    def frame(self, at):
+        if self.last is not None and at > self.last:
+            p = at - self.last
+            base = p if self.period is None else min(p, self.period)
+            self.period = p
+            self.hold = max(self.MIN_MS, min(self.MAX_MS, base * 3 // 2))
+        self.last = at
+
+    def fresh(self, now):
+        return self.last is not None and now - self.last <= self.hold
 
 
 def board12_kw(current_a):
@@ -291,6 +317,27 @@ def _selftest_board12():
         ('stale 12 V current is not held', abs(s2['b12_s'] - 110.0) < 1e-6),
         ('low 12 V coverage -> other 0', r2['other'] == 0.0),
         ('low 12 V coverage -> climate whole', abs(r2['climate'] - 0.8 * 600 / 3600.0) < 1e-6),
+    ]
+    def run_period(period_ms):
+        a = Acc(0)
+        a.add('pack_voltage_fine', 400.0, 0)
+        a.add('inverter_current', 8.0, 0)
+        a.add('pack_current', 10.0, 0)
+        for t in range(1000, 600001, 1000):
+            if t % period_ms == 0:
+                a.add_board12(30.0)
+            a.add('pack_current', 10.0, t)
+        return a.sums()
+    s5 = run_period(30000)
+    r5 = split_events(s5, 0, 600000)
+    h = Board12Hold(); h.frame(0); h.frame(1000); h.frame(41000)
+    h2 = Board12Hold(); h2.frame(0); h2.frame(30000); h2.frame(60000)
+    checks += [
+        ('+239 BZ3 every 30 s: coverage %.0f s of 600 above the minimum' % s5['b12_s'],
+         s5['b12_s'] / s5['cov_s'] >= MIN_COVERAGE and abs(s5['b12_s'] - 552.0) < 1e-6),
+        ('+239 BZ3 every 30 s: other shown', r5['other'] > 0),
+        ('+239 a 40 s gap on BZ5 keeps the 10 s hold', h.hold == 10000),
+        ('+239 BZ3 period 30 s -> hold 45 s', h2.hold == 45000 and h2.fresh(105000) and not h2.fresh(105001)),
     ]
     s3 = dict(s, b12=5.0)
     r3 = split_events(s3, 0, 600000)
@@ -421,11 +468,15 @@ def _selftest():
     s2 = minutes_acc([1.0, -0.6])
     ok('+235: open last minute counted in the run and below -0.5', s2['m_neg'] == 1 and s2['run_max'] == 1)
     # +238: two-minute windows decide; a single noise minute does not reject.
+    # +239: the case runs whole, from minutes to the verdict (the +238 Dart test
+    # had 4 minutes, where the low-minute share already rejects; CI caught it).
     s2 = minutes_acc([1.0, -1.29, 1.0, 1.0])
+    ok('+239: 4 minutes with one at -1.29 kW: the low share rejects, not the windows',
+       s2['w2'] == 0 and s2['m_low'] == 1 and check(s2) == 'board_minutes')
+    s2 = minutes_acc([1.0] * 5 + [-1.29] + [1.0] * 5)
     ok('+238: one minute -1.29 kW between 1.0 kW minutes: window above -0.3, noise listed',
-       s2['w2'] == 0 and s2['noise'] == [1] and s2['m_neg'] == 1 and abs(s2['w2_min'] - (-0.145)) < 1e-9)
-    ok('+238: that trip passes the check',
-       check(dict(base, m_neg=s2['m_neg'], m_neg3=s2['m_neg3'], run_max=s2['run_max'], w2=s2['w2'])) is None)
+       s2['w2'] == 0 and s2['noise'] == [5] and s2['m_neg'] == 1 and abs(s2['w2_min'] - (-0.145)) < 1e-9)
+    ok('+238: that trip passes the check (11 minutes, one low)', s2['minutes'] == 11 and check(s2) is None)
     s2 = minutes_acc([1.0, -0.2, -0.5, 1.0])
     ok('+238: two neighbours averaging -0.35 kW: one window below -0.3', s2['w2'] == 1 and abs(s2['w2_min'] - (-0.35)) < 1e-9)
     ok('+238: window below -0.3 rejected', check(dict(base, w2=1)) == 'board_minutes')

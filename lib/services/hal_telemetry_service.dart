@@ -298,7 +298,9 @@ class HalTelemetryService extends ChangeNotifier
     'fh_charging_type': Duration(seconds: 10),
     'fh_temp_out_c': Duration(seconds: 10),
     'gb_cycle_regen_kwh': Duration(seconds: 90),
-    // v0.2.38+237: ток нагрузки 12 В, кадр 0x2C7 около 1 Гц.
+    // v0.2.38+237: ток нагрузки 12 В, кадр около 1 Гц на BZ5. Окно — для
+    // общего halFresh; потребитель [halBoard12Kw] держит значение по
+    // [Board12Hold] (+239: на BZ3 кадр раз в 30 с).
     'dcdc_load_current_a': Duration(seconds: 10),
     // v0.1.29+82: brake_pedal is EDGE-triggered (frame on change only) and
     // now STICKY — halBrakePedalPressed reads the held _lastGood value, not
@@ -820,12 +822,22 @@ class HalTelemetryService extends ChangeNotifier
   }
 
   /// v0.2.38+237: мощность бортовой сети 12 В на стороне батареи, кВт —
-  /// по свежему току нагрузки DC-DC; null — тока нет (BZ3, firehose
-  /// недостоверен). Правило пересчёта — [EnergySplitModel.board12Kw].
+  /// по току нагрузки DC-DC; null — тока нет или последний кадр старше
+  /// удержания [Board12Hold] (+239), firehose недостоверен. Правило
+  /// пересчёта — [EnergySplitModel.board12Kw].
   double? get halBoard12Kw {
-    final a = _fhFresh('dcdc_load_current_a');
-    return a == null ? null : EnergySplitModel.board12Kw(a);
+    final a = _latest['dcdc_load_current_a']?.value;
+    if (a == null ||
+        !_board12Hold.fresh(_board12Clock.elapsedMilliseconds)) {
+      return null;
+    }
+    return EnergySplitModel.board12Kw(a);
   }
+
+  /// v0.2.40+239: удержание тока 12 В на стоянке — то же правило, что у
+  /// сумм поездки; время — монотонные часы процесса.
+  final Board12Hold _board12Hold = Board12Hold();
+  final Stopwatch _board12Clock = Stopwatch()..start();
 
   /// v0.2.20+219: last logged value per `ac_*` name — see [_logAcChange].
   final Map<String, double> _acLastVal = {};
@@ -1767,6 +1779,10 @@ class HalTelemetryService extends ChangeNotifier
     if (name == 'gb_cycle_regen_kwh') _chargedCounter.feed(d);
     // v0.2.38+237: бортовая сеть 12 В — в суммы поездки («Прочее»).
     if (name == 'dcdc_load_current_a') _eventEnergy?.addBoard12(d);
+    // v0.2.40+239: и в удержание стоянки — по периоду кадров.
+    if (name == 'dcdc_load_current_a') {
+      _board12Hold.frame(_board12Clock.elapsedMilliseconds);
+    }
     // v0.2.39+238: и в буфер сырых событий — с меткой последнего события HAL.
     if (name == 'dcdc_load_current_a') {
       final t = _eventEnergy?.lastTsMs;
@@ -1780,6 +1796,8 @@ class HalTelemetryService extends ChangeNotifier
     for (final n in _fhConsumed.keys) {
       _latest.remove(n);
     }
+    // v0.2.40+239: период кадров 12 В — заново после восстановления.
+    _board12Hold.reset();
     _eventEnergy?.clearBoard12();
     _trackChargeStage();
   }

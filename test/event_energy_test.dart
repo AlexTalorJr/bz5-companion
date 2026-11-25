@@ -242,10 +242,15 @@ void main() {
     }
 
     // Как поездка 521: одна минута −1.29 кВт между минутами по 1 кВт.
-    final noisy = minutes([1.0, -1.29, 1.0, 1.0]);
+    // +239: 11 минут — доля минут ниже 0.2 кВт (1 из 11) в пределе 10 %,
+    // решают окна. На 4 минутах (+238) бракувала доля, и тест падал в CI.
+    final noisy = minutes(
+        [1.0, 1.0, 1.0, 1.0, 1.0, -1.29, 1.0, 1.0, 1.0, 1.0, 1.0]);
+    expect(noisy.minutes, 11);
+    expect(noisy.minutesLow, 1);
     expect(noisy.windowsBelowRun, 0);
     expect(noisy.windowMinKw, closeTo(-0.145, 1e-9));
-    expect(noisy.noiseMinutes, [1]);
+    expect(noisy.noiseMinutes, [5]);
     expect(noisy.minutesNegative, 1);
     expect(energySplitCheck(noisy), isNull);
     final pair = minutes([1.0, -0.2, -0.5, 1.0]);
@@ -260,10 +265,10 @@ void main() {
     // Значения по минутам, окна и шум переживают extra.
     final back = EventEnergySums.fromExtra(noisy.toExtraPatch())!;
     expect(back.windowsBelowRun, 0);
-    expect(back.noiseMinutes, [1]);
-    expect(back.perMinute.length, 4);
-    expect(back.perMinute[1].$2, closeTo(-1.29, 1e-9));
-    expect(back.perMinute[1].$3, 60);
+    expect(back.noiseMinutes, [5]);
+    expect(back.perMinute.length, 11);
+    expect(back.perMinute[5].$2, closeTo(-1.29, 1e-9));
+    expect(back.perMinute[5].$3, 60);
     // Суммы +235…+237 (ключа w2 нет): правило серий, шум бракует.
     final mid = EventEnergySums.fromExtra(
         '{"v":1,"evE":{"f":1,"pack":1,"trac":1,"regen":0,"shTrac":1,'
@@ -285,6 +290,48 @@ void main() {
         isTrue);
     ring.clear();
     expect(ring.length, 0);
+  });
+
+  test('+239: 12 V held by the frame period — BZ3 every 30 s, BZ5 1 Hz',
+      () {
+    EventEnergySums run(int periodMs, int stopAtMs) {
+      final acc = EventEnergyAccumulator(0);
+      acc.add('pack_voltage_fine', 400, 0);
+      acc.add('inverter_current', 8, 0);
+      acc.add('pack_current', 10, 0);
+      for (var t = 1000; t <= 600000; t += 1000) {
+        if (t <= stopAtMs && t % periodMs == 0) acc.addBoard12(30);
+        acc.add('pack_current', 10, t);
+      }
+      return acc.snapshot();
+    }
+
+    // BZ3: кадр раз в 30 с. Первый период держится 10 с, дальше 45 с.
+    final bz3 = run(30000, 600000);
+    // Кадр приходит с меткой прошлого события HAL (на 1 с раньше): до
+    // первого кадра 29 с без тока, после него 10 с, затем 19 с пропуска.
+    expect(bz3.board12CoveredSeconds, closeTo(552, 1e-6));
+    expect(bz3.board12CoveredSeconds / bz3.coveredSeconds,
+        greaterThan(EnergySplitModel.minCoverage));
+    // BZ5: 1 Гц, кадры кончились на 100 с — держится 10 с, как в +237.
+    final bz5 = run(1000, 100000);
+    expect(bz5.board12CoveredSeconds, closeTo(110, 1e-6));
+    // Пропуск 40 с на BZ5 не растягивает удержание: период — меньший из
+    // двух последних.
+    final h = Board12Hold()
+      ..frame(0)
+      ..frame(1000)
+      ..frame(41000);
+    expect(h.holdMs, Board12Hold.minMs);
+    final slow = Board12Hold()
+      ..frame(0)
+      ..frame(30000)
+      ..frame(60000);
+    expect(slow.holdMs, 45000);
+    expect(slow.fresh(105000), isTrue);
+    expect(slow.fresh(105001), isFalse);
+    slow.reset();
+    expect(slow.fresh(60000), isFalse);
   });
 
   test('firehose counters: first and last per trip, status kept', () {

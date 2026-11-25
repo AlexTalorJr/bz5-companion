@@ -14596,7 +14596,7 @@ if int(pv) >= 236:
         "String? get halChargerTypeLabel => chargeTypeOf(\ngun: _chargeInputs.gun,\nfhType: _fhFresh('fh_charging_type'),\n);" in _dk_hts,
         'final guard = _fhConsumed[name];\nif (guard == null) return;\nif (_firehoseCheck.state == FirehoseCheck.mismatch) return;\nif (d < guard.$1 || d > guard.$2) return;' in _dk2_use and '_latest[name] = (value: d, at: DateTime.now());' in _dk2_use and 'if (_fhChargeNames.contains(name)) _trackChargeStage();' in _dk2_use and _dk_hts.count('_consumeFirehose(') == 2,
         ("static const Map<String, (double, double)> _fhConsumed = {\n'fh_charging_device_state': (0, 15),\n'fh_charging_gun_connect_state': (0, 7),\n'fh_charging_type': (0, 15),\n'fh_temp_out_c': (-50, 60),\n'gb_cycle_regen_kwh': (0, 6553.5),\n" + ("};" if int(pv) < 237 else "'dcdc_load_current_a': (0, 127.5),\n};")) in _dk_hts and all(("'" + n + "': Duration(seconds: 10),") in _dk_hts for n in ('fh_charging_device_state', 'fh_charging_gun_connect_state', 'fh_charging_type', 'fh_temp_out_c')) and "'gb_cycle_regen_kwh': Duration(seconds: 90)," in _dk_hts,
-        'if (st == FirehoseCheck.mismatch) _dropFirehoseConsumed();' in _dk_hts and ('void _dropFirehoseConsumed() {\nfor (final n in _fhConsumed.keys) {\n_latest.remove(n);\n}\n_trackChargeStage();\n}' if int(pv) < 237 else 'void _dropFirehoseConsumed() {\nfor (final n in _fhConsumed.keys) {\n_latest.remove(n);\n}\n_eventEnergy?.clearBoard12();\n_trackChargeStage();\n}') in _dk_hts,
+        'if (st == FirehoseCheck.mismatch) _dropFirehoseConsumed();' in _dk_hts and ('void _dropFirehoseConsumed() {\nfor (final n in _fhConsumed.keys) {\n_latest.remove(n);\n}\n_trackChargeStage();\n}' if int(pv) < 237 else ('void _dropFirehoseConsumed() {\nfor (final n in _fhConsumed.keys) {\n_latest.remove(n);\n}\n_eventEnergy?.clearBoard12();\n_trackChargeStage();\n}' if int(pv) < 239 else 'void _dropFirehoseConsumed() {\nfor (final n in _fhConsumed.keys) {\n_latest.remove(n);\n}\n_board12Hold.reset();\n_eventEnergy?.clearBoard12();\n_trackChargeStage();\n}')) in _dk_hts,
         "debugPrint('Charge: stage ${stage?.name ?? 'unknown'}'" in _dk2_trk and '_chargeStageLogged = stage;\n_scheduleNotify();' in _dk2_trk and "name != 'charging_device_state') {\nreturn;\n}\n_trackChargeStage();" in _dk2_prs,
         "'charging_device_state': (0, 15)," in _dk_hts and "static const _kChargeEventNames = {\n'charging_gun_connect_state',\n'charger_connect_state',\n'charging_device_state',\n'charging_working_status',\n};" in _dk_hts and '_logHalDiag(e, d,\nevery: _kChargeEventNames.contains(e.name)\n? Duration.zero\n: _halDiagThrottle);' in _dk_on,
         'final stage = hal.halChargeStage;\nfinal stageWord = switch (stage) {\nChargeStage.plugged => S.of(\'chg.stage_idle\'),\nChargeStage.handshake => S.of(\'chg.stage_wait\'),\nChargeStage.finished => S.of(\'chg.stage_done\'),\n_ => null,\n};' in _dk_ban and 'chargeStageOf' not in _dk_ban and 'chargeStageOf' not in _dk_view and "ChargeStage.plugged => S.of('chg.stage_idle'),\nChargeStage.handshake => S.of('chg.stage_wait'),\nChargeStage.finished => S.of('chg.stage_done')," in _dk_view,
@@ -14745,8 +14745,9 @@ if int(pv) >= 237:
         _dl3_m = None
     _dl3 = [
         'static const double board12RailV = 13.3;\nstatic const double dcdcEfficiency = 0.9;' in _dl_es and 'static double board12Kw(double currentA) =>\ncurrentA * board12RailV / dcdcEfficiency / 1000.0;' in _dl_es,
-        'void addBoard12(double currentA) {\n_b12A = currentA;\n_b12AtMs = _tPrev;\n_b12Seen = true;\n}' in _dl_es and 'void clearBoard12() {\n_b12A = null;\n_b12AtMs = null;\n}' in _dl_es and 'static const int board12FreshMs = 10000;' in _dl_es,
-        'if (ba != null && bt != null && tp - bt <= board12FreshMs) {\n_b12 += EnergySplitModel.board12Kw(ba) * h;\n_b12CovMs += dt;\n}' in _dl_es,
+        ('void addBoard12(double currentA) {\n_b12A = currentA;\n_b12AtMs = _tPrev;\n_b12Seen = true;\n}' in _dl_es and 'void clearBoard12() {\n_b12A = null;\n_b12AtMs = null;\n}' in _dl_es and 'static const int board12FreshMs = 10000;' in _dl_es) if int(pv) < 239 else
+        ('void addBoard12(double currentA) {\n_b12A = currentA;\nfinal t = _tPrev;\nif (t != null) _b12Hold.frame(t);\n_b12Seen = true;\n}' in _dl_es and 'void clearBoard12() {\n_b12A = null;\n_b12Hold.reset();\n}' in _dl_es and 'final Board12Hold _b12Hold = Board12Hold();' in _dl_es),
+        ('if (ba != null && bt != null && tp - bt <= board12FreshMs) {\n_b12 += EnergySplitModel.board12Kw(ba) * h;\n_b12CovMs += dt;\n}' if int(pv) < 239 else 'if (ba != null && _b12Hold.fresh(tp)) {\n_b12 += EnergySplitModel.board12Kw(ba) * h;\n_b12CovMs += dt;\n}') in _dl_es,
         'board12Kwh: _b12Seen ? _b12 : null,\nboard12CoveredSeconds: _b12CovMs / 1000.0,' in _dl_es and "if (board12Kwh != null) 'b12': _r(board12Kwh!),\nif (board12Kwh != null) 'b12s': _r(board12CoveredSeconds)," in _dl_es and "board12Kwh: m['b12'] is num ? (m['b12'] as num).toDouble() : null," in _dl_es,
         'if (b == null || b <= 0 || climate <= 0 || s.coveredSeconds <= 0) return 0;\nif (s.board12CoveredSeconds / s.coveredSeconds <\nEnergySplitModel.minCoverage) {\nreturn 0;\n}\nreturn math.min(b, climate);' in _dl3_share,
         'final other = board12Share(s, climate);\nclimate -= other;\nreturn EnergySplitResult(s.packKwh, cov, covered, motion, climate, other,\nmodel: EnergySplitModel.versionV2,' in _dl_es,
@@ -14754,9 +14755,9 @@ if int(pv) >= 237:
         'S.of(EnergySplitModel.climateLabelKey(model, sh.other))' in _dl_td and 'if (EnergySplitModel.showsOther(model, sh.other))' in _dl_td and 'EnergySplitModel.otherIsEstimate(model, sh.other)' in _dl_td and 'twoParts(' not in _dl_td and 'if (EnergySplitModel.showsOther(v.model, sh.other))' in _dl_dp and 'twoParts(' not in _dl_dp,
         _dl_l10n.count("'trip.split_climate_hv':") == 2,
         "if (name == 'dcdc_load_current_a') _eventEnergy?.addBoard12(d);" in _dl_hts and "'dcdc_load_current_a': (0, 127.5)," in _dl_hts and "'dcdc_load_current_a': Duration(seconds: 10)," in _dl_hts and '_eventEnergy?.clearBoard12();\n_trackChargeStage();' in _dl_hts,
-        "double? get halBoard12Kw {\nfinal a = _fhFresh('dcdc_load_current_a');\nreturn a == null ? null : EnergySplitModel.board12Kw(a);\n}" in _dl_hts and 'packKw: halPowerKw,\nboardKw: halBoard12Kw,' in _dl_hts,
+        ("double? get halBoard12Kw {\nfinal a = _fhFresh('dcdc_load_current_a');\nreturn a == null ? null : EnergySplitModel.board12Kw(a);\n}" if int(pv) < 239 else "double? get halBoard12Kw {\nfinal a = _latest['dcdc_load_current_a']?.value;\nif (a == null ||\n!_board12Hold.fresh(_board12Clock.elapsedMilliseconds)) {\nreturn null;\n}\nreturn EnergySplitModel.board12Kw(a);\n}") in _dl_hts and 'packKw: halPowerKw,\nboardKw: halBoard12Kw,' in _dl_hts,
         'final kw = math.max(0.0, packKw - (boardKw ?? baseKw));' in _dl3_feed and 'final lb = _lastBoardKw;\nif (lb != null) _boardEnergyKwh += lb * dt / 3600.0;' in _dl3_feed and 'double? get nowBoardKw => active ? _lastBoardKw : null;' in _dl_pc and 'final board = m.nowBoardKw;' in _dl_dp,
-        _dl3_m is not None and _dl3_m.returncode == 0 and 'board12: 10 checks OK' in _dl3_m.stdout,
+        _dl3_m is not None and _dl3_m.returncode == 0 and ('board12: 10 checks OK' if int(pv) < 239 else 'board12: 14 checks OK') in _dl3_m.stdout,
         "test('+237: 12 V board net becomes \"other\", the sum stays the pack', () {" in _dl_t2 and 'expect(r.motionKwh! + r.climateKwh! + r.otherKwh!,' in _dl_t2 and 'expect(s.board12CoveredSeconds, closeTo(110, 1e-6));' in _dl_t2,
     ]
     if all(_dl3): ok('DL3 "other" is the 12 V board net: one conversion rule, current integrated on the same intervals and not held past its freshness, taken out of climate but never above it and only with coverage, parts still sum to the pack, EnergySplitModel decides rows and labels, the parked meter subtracts the current instead of the base, an untrusted firehose does not feed it; mirror and Dart test hold the same case')
@@ -14886,6 +14887,48 @@ if int(pv) >= 238:
     else: fail(f'DM5 fit to width drifted: {_dm5}')
 else:
     ok(f"Part DM skipped (build +{pv}, stored energy and the two-minute rule land in +238)")
+
+# ─────────────── Part DN — +239: удержание тока 12 В по периоду кадров (BZ3), тест окна на 11 минутах ───────────────
+if int(pv) >= 239:
+    _dn_es = _dj_rd('lib/services/energy_split_service.dart')
+    _dn_hts = _dj_rd('lib/services/hal_telemetry_service.dart')
+    _dn_t2 = (root / 'test/event_energy_test.dart').read_text()
+    _dn_mir = (root / 'tools/mirror_plus233_events.py').read_text()
+    _dn_m = None
+    try:
+        _dn_m = subprocess.run([sys.executable, str(root / 'tools/mirror_plus233_events.py')], capture_output=True, text=True, timeout=120)
+    except Exception:
+        _dn_m = None
+
+    # DN1: УДЕРЖАНИЕ 12 В. Полтора меньшего из двух последних периодов, в
+    # пределах 10–45 с; одно правило у сумм поездки (метки HAL) и у стоянки
+    # (монотонные часы); сброс при недостоверном firehose. Экспорт BZ3 25.11:
+    # покрытие 0.33 при 10 с; зеркало держит 552 с из 600 при кадре раз в 30 с.
+    _dn1_frame = _dk_fn(_dn_es, 'void frame(int atMs) {')
+    _dn1 = [
+        'static const int minMs = 10000;\nstatic const int maxMs = 45000;' in _dn_es,
+        'final base = prev == null ? p : math.min(p, prev);\n_holdMs = (base * 3 ~/ 2).clamp(minMs, maxMs);' in _dn1_frame and 'if (last != null && atMs > last) {' in _dn1_frame and _dn1_frame.rstrip('}').rstrip().endswith('_lastMs = atMs;'),
+        'return last != null && nowMs - last <= _holdMs;' in _dn_es,
+        'if (ba != null && _b12Hold.fresh(tp)) {' in _dn_es and 'final t = _tPrev;\nif (t != null) _b12Hold.frame(t);' in _dn_es and 'board12FreshMs' not in _dn_es,
+        "if (name == 'dcdc_load_current_a') {\n_board12Hold.frame(_board12Clock.elapsedMilliseconds);\n}" in _dn_hts and '!_board12Hold.fresh(_board12Clock.elapsedMilliseconds)) {' in _dn_hts and 'final Stopwatch _board12Clock = Stopwatch()..start();' in _dn_hts,
+        '_board12Hold.reset();\n_eventEnergy?.clearBoard12();' in _dn_hts and 'void clearBoard12() {\n_b12A = null;\n_b12Hold.reset();\n}' in _dn_es,
+        _dn_m is not None and _dn_m.returncode == 0 and 'board12: 14 checks OK' in _dn_m.stdout and "abs(s5['b12_s'] - 552.0) < 1e-6" in _dn_mir and 'base = p if self.period is None else min(p, self.period)' in _dn_mir,
+        "test('+239: 12 V held by the frame period — BZ3 every 30 s, BZ5 1 Hz'," in _dn_t2 and 'expect(bz3.board12CoveredSeconds, closeTo(552, 1e-6));' in _dn_t2 and 'expect(bz5.board12CoveredSeconds, closeTo(110, 1e-6));' in _dn_t2 and 'expect(h.holdMs, Board12Hold.minMs);' in _dn_t2,
+    ]
+    if all(_dn1): ok('DN1 12 V hold by the frame period: 1.5 x the smaller of the last two periods within 10-45 s, one rule for trip sums (HAL stamps) and parked (monotonic), reset when firehose turns untrusted; BZ3 every 30 s covered 552 of 600 s, BZ5 1 Hz still drops after 10 s')
+    else: fail(f'DN1 12 V hold drifted: {_dn1}')
+
+    # DN2: ТЕСТ ОКНА НА 11 МИНУТАХ. В +238 тест брал 4 минуты, где бракует
+    # доля низких минут; CI упал. Зеркало прогоняет случай целиком.
+    _dn2 = [
+        'final noisy = minutes(\n[1.0, 1.0, 1.0, 1.0, 1.0, -1.29, 1.0, 1.0, 1.0, 1.0, 1.0]);\nexpect(noisy.minutes, 11);\nexpect(noisy.minutesLow, 1);' in _dj_f(_strip_comments_safe(_dn_t2)) and 'expect(noisy.noiseMinutes, [5]);' in _dn_t2 and 'expect(energySplitCheck(noisy), isNull);' in _dn_t2,
+        "ok('+238: that trip passes the check (11 minutes, one low)', s2['minutes'] == 11 and check(s2) is None)" in _dn_mir and "s2['w2'] == 0 and s2['m_low'] == 1 and check(s2) == 'board_minutes')" in _dn_mir,
+        _dn_m is not None and '+239: 4 minutes with one at -1.29 kW: the low share rejects, not the windows' in _dn_m.stdout and 'mirror +233: PASS' in _dn_m.stdout,
+    ]
+    if all(_dn2): ok('DN2 window test on 11 minutes: the low-minute share no longer decides it, the mirror runs the case from minutes to the verdict and shows the 4-minute trap')
+    else: fail(f'DN2 window test drifted: {_dn2}')
+else:
+    ok(f"Part DN skipped (build +{pv}, 12 V hold by frame period lands in +239)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)
