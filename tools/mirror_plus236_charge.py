@@ -209,6 +209,105 @@ def settle(cells, temp_c):
     return moved
 
 
+class Stored:
+    """Mirror of StoredEnergyTracker (+238): remaining energy 0x2EE across sleep.
+
+    A jump over MIN_RISE either way is a candidate, confirmed by the next frame within
+    CONFIRM of it. A confirmed rise counts only after a break (first frame of a
+    process, or a stream pause of at least BREAK_S). Variant A (owner, 25.11): a charge
+    with the head unit awake is the counter's job, not this one.
+    """
+    MIN_RISE, CONFIRM, BREAK_S, MAX_KWH = 0.2, 0.2, 120, 80
+
+    def __init__(self):
+        self.last = self.pend = None
+        self.pend_break = False
+        self.stored, self.has, self.loaded = 0.0, False, False
+
+    def load(self, last=None, stored=None):
+        self.last, self.pend = last, None
+        self.stored, self.has, self.loaded = (stored or 0.0), stored is not None, True
+
+    def feed(self, v, after_break):
+        if not self.loaded or v <= 0 or v > self.MAX_KWH:
+            return None
+        if self.last is None:
+            self.last = v
+            return None
+        if abs(v - self.last) <= self.MIN_RISE + 1e-9:
+            self.pend, self.last = None, v
+            return None
+        if self.pend is None or abs(v - self.pend) > self.CONFIRM + 1e-9:
+            self.pend, self.pend_break = v, after_break
+            return None
+        last, self.pend, self.last = self.last, None, v
+        rise = v - last
+        if rise <= 0 or not self.pend_break:
+            return None
+        self.stored += rise
+        self.has = True
+        return rise
+
+    def kwh(self):
+        return self.stored if self.has else None
+
+    def clear(self):
+        self.stored, self.has = 0.0, False
+
+
+def _stored_tests(eq):
+    # Export 25.11: last frame 24.11 19:40:57 = 24.4, the process restarts at
+    # 25.11 11:12, frames 65.2 -> stored 40.8 (SOC 41 -> 98.9 %).
+    t = Stored()
+    eq(t.feed(65.2, True), None, 'not loaded: frame ignored')
+    t.load(last=24.4)
+    eq(t.feed(65.2, True), None, 'wake: first frame is a candidate')
+    r = t.feed(65.2, False)
+    eq(round(r, 1), 40.8, 'night 24-25.11 stored 40.8')
+    eq(round(t.kwh(), 1), 40.8, 'shown')
+    # Night 20-21.11 adds to an empty store: 25.1 -> 65.2.
+    t = Stored(); t.load(last=25.1)
+    t.feed(65.2, True); t.feed(65.2, False)
+    eq(round(t.kwh(), 1), 40.1, 'night 20-21.11 stored 40.1')
+    t.clear()
+    eq(t.kwh(), None, 'trip start clears')
+    # DC 20.11 with the head unit awake: 23.7 -> 30.8 in 0.1 steps at 1 Hz.
+    t = Stored(); t.load(last=23.7)
+    v = 23.7
+    while v < 30.8:
+        v = round(v + 0.1, 1)
+        t.feed(v, False)
+    eq(t.kwh(), None, 'awake DC charge is not stored (variant A)')
+    eq(t.last, 30.8, 'last follows the awake charge')
+    # A 10 s hole in frames while awake: a 0.4 jump is confirmed but not stored.
+    t.feed(31.2, False); t.feed(31.2, False)
+    eq(t.kwh(), None, 'awake gap jump not stored')
+    eq(t.last, 31.2, 'awake gap jump becomes the last value')
+    # False frames at wake: a zero is ignored, a lone spike reverts.
+    t = Stored(); t.load(last=40.8)
+    t.feed(0.0, True); t.feed(40.8, False)
+    eq(t.kwh(), None, 'false zero after wake: nothing stored')
+    t.feed(52.0, True); t.feed(40.8, False)
+    eq(t.kwh(), None, 'lone spike reverts: nothing stored')
+    eq(t.last, 40.8, 'last kept through the spike')
+    # 25 parkings 13-21.11 without a charge: no change across sleep (37 h: 40.8 -> 40.8).
+    t = Stored(); t.load(last=40.8)
+    t.feed(40.8, True)
+    eq(t.kwh(), None, 'no charge, no change')
+    # Two wakes in one parking add up; restored from settings keeps the sum.
+    t = Stored(); t.load(last=30.0)
+    t.feed(40.0, True); t.feed(40.0, False)
+    t.feed(45.0, True); t.feed(45.0, False)
+    eq(round(t.kwh(), 1), 15.0, 'two wakes add up')
+    t2 = Stored(); t2.load(last=t.last, stored=t.kwh())
+    eq(round(t2.kwh(), 1), 15.0, 'sum restored from settings')
+    # Fresh install: the first frame is the base.
+    t = Stored(); t.load()
+    t.feed(50.0, True)
+    eq(t.kwh(), None, 'fresh install: first frame is the base')
+    eq(t.last, 50.0, 'base set')
+
+
 def _tests():
     n = [0]
 
@@ -355,6 +454,7 @@ def _tests():
     eq(window_of(-7.3), -10, 'window of -7.3')
     eq(window_of(4.0), 0, 'window of 4')
     eq(window_of(14.0), 10, 'window of 14')
+    _stored_tests(eq)
     print(f'mirror +236: {n[0]} checks OK')
 
 

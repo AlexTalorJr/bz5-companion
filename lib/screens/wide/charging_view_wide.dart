@@ -257,6 +257,22 @@ typedef _HeroSlot = ({int flex, Widget child});
 /// герой-ряда, а не половину. Дополнительно: выравнивание сверху вместо
 /// центрирования, каждая строка в одну строку с многоточием, шрифты не
 /// ниже 13 dp (ниже с водительского места не читается).
+/// v0.2.39+238: строка плитки уменьшается под ширину, а не обрезается
+/// многоточием. Поле 25.11: «Подключено, зарядка не идёт» шрифтом 30 не
+/// помещалось в плитку фазы. Короткая строка остаётся своего размера.
+class _FitLine extends StatelessWidget {
+  final String text;
+  final TextStyle style;
+  const _FitLine(this.text, {required this.style});
+
+  @override
+  Widget build(BuildContext context) => FittedBox(
+        fit: BoxFit.scaleDown,
+        alignment: Alignment.centerLeft,
+        child: Text(text, maxLines: 1, softWrap: false, style: style),
+      );
+}
+
 class _HeroTile extends StatelessWidget {
   final String caption;
   final Color captionColor;
@@ -288,9 +304,7 @@ class _HeroTile extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(caption,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
+            _FitLine(caption,
                 style: TextStyle(
                     fontSize: 14,
                     letterSpacing: 2,
@@ -302,9 +316,7 @@ class _HeroTile extends StatelessWidget {
               textBaseline: TextBaseline.alphabetic,
               children: [
                 Flexible(
-                  child: Text(value,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
+                  child: _FitLine(value,
                       style: TextStyle(
                         fontSize: valueSize,
                         height: 1,
@@ -330,9 +342,7 @@ class _HeroTile extends StatelessWidget {
             ],
             const Spacer(),
             for (final n in notes)
-              Text(n,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+              _FitLine(n,
                   style: TextStyle(fontSize: 13, color: Colors.grey.shade400)),
           ],
         ),
@@ -984,6 +994,7 @@ class _BottomSummaryStrip extends StatelessWidget {
     // своё начало — подпись спрашивает его же.
     final bool chargedFromStart =
         svcOwnsSession ? fromStart : hal.halChargedFromStart;
+    final stored = hal.halStoredEnergyKwh;
     final counterRaw = svc.readNumeric('790', '0B00')?.toInt();
     final maxCurrent = svc.readNumeric('782', '000C');
 
@@ -1010,6 +1021,15 @@ class _BottomSummaryStrip extends StatelessWidget {
         value: durationStr,
         hint: fromStart ? S.of('chg.session_sub') : sinceLaunchHint,
       ),
+      // v0.2.39+238: зарядка на стоянке по остатку BMS (голова спала, и
+      // счётчик «залито» её не видел). Только на голове и только пока
+      // она была; после начала поездки сервис сбрасывает число.
+      if (stored != null)
+        _Metric(
+          label: S.of('chg.stored'),
+          value: '+${stored.toStringAsFixed(1)} kWh',
+          hint: S.of('chg.stored_hint'),
+        ),
       // +210: счётчик 0B00 и лимит тока — величины UDS-опроса через донгл;
       // на ГУ они всегда «—», плиток без донгла нет вовсе.
       // v0.2.13+212 (2.6): к живому донглу добавлена память сессии. На слабом
@@ -1082,23 +1102,17 @@ class _Metric extends StatelessWidget {
         // подписи «с запуска приложения» из +212, а не по короткой
         // «с момента подключения»: она длиннее и вылезает при рестарте
         // посреди зарядки, то есть реже и оттого незаметнее.
-        Text(label,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
+        _FitLine(label,
             style: const TextStyle(
                 fontSize: 13, letterSpacing: 1.5, color: Colors.grey)),
         const SizedBox(height: 4),
-        Text(value,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
+        _FitLine(value,
             style: const TextStyle(
                 fontSize: 22,
                 fontWeight: FontWeight.w400,
                 fontFeatures: [FontFeature.tabularFigures()])),
         const SizedBox(height: 2),
-        Text(hint,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
+        _FitLine(hint,
             style: TextStyle(fontSize: 13, color: Colors.grey.shade600)),
       ],
     );

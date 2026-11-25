@@ -26,6 +26,7 @@
 // при первом запуске.
 
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:math' as math;
 
@@ -129,6 +130,16 @@ class EnergySplitModel {
   static const double boardNegKw = -0.5;
   static const double boardRunKw = -0.3;
   static const int boardRunMinutes = 2;
+
+  /// v0.2.39+238 (Друг 3, 25.11): части бракуются, если хоть одно
+  /// двухминутное скользящее окно бортовой сети ниже [boardWindowKw].
+  /// Окно — две соседние учтённые минуты поездки, мощность по их общей
+  /// энергии и общему покрытию. Одиночная минута ниже [boardNegKw] больше
+  /// не бракует: она пишется в extra как шумовая (`min.noise`). Суммы,
+  /// записанные до +238 (ключа `min.w2` нет), проверяются прежним
+  /// правилом. Поездка 521 (одна минута −1.29 кВт) остаётся без раскладки:
+  /// её суммы записаны до +238, значений по минутам нет.
+  static const double boardWindowKw = -0.3;
 
   /// Сигналы модели. `pack_voltage_fine` предпочтительнее, `pack_voltage`
   /// — запасной. `motor_power` не годится: целые кВт, на стоянке 1–2 кВт;
@@ -402,6 +413,22 @@ class EventEnergySums {
   final int minutesBelowRun;
   final int? negRunMax;
 
+  /// v0.2.39+238: двухминутных окон ниже [EnergySplitModel.boardWindowKw]
+  /// и самое низкое окно. [windowsBelowRun] null — суммы записаны до
+  /// +238, решает прежнее правило.
+  final int? windowsBelowRun;
+  final double? windowMinKw;
+
+  /// v0.2.39+238: шумовые минуты (ниже [EnergySplitModel.boardNegKw]) —
+  /// номера минут от начала поездки, не больше
+  /// [EventEnergyAccumulator.noiseCap].
+  final List<int> noiseMinutes;
+
+  /// v0.2.39+238: бортовая сеть по минутам — (номер минуты, кВт, покрытие
+  /// с), чтобы проверку можно было пересчитать по данным поездки. Не
+  /// больше [EventEnergyAccumulator.perMinuteCap] минут.
+  final List<(int, double, double)> perMinute;
+
   const EventEnergySums({
     required this.packKwh,
     required this.tractionKwh,
@@ -418,6 +445,10 @@ class EventEnergySums {
     required this.minuteMinKw,
     this.minutesBelowRun = 0,
     this.negRunMax = 0,
+    this.windowsBelowRun,
+    this.windowMinKw,
+    this.noiseMinutes = const [],
+    this.perMinute = const [],
     this.batteryRegenKwh,
     this.firehose = const {},
     this.firehoseStatus,
@@ -478,6 +509,15 @@ class EventEnergySums {
           'neg3': minutesBelowRun,
           if (negRunMax != null) 'run': negRunMax,
           if (minuteMinKw != null) 'minKw': _r(minuteMinKw!),
+          // +238: двухминутные окна, шумовые минуты, значения по минутам.
+          if (windowsBelowRun != null) 'w2': windowsBelowRun,
+          if (windowMinKw != null) 'w2min': _r(windowMinKw!),
+          if (noiseMinutes.isNotEmpty) 'noise': noiseMinutes,
+          if (perMinute.isNotEmpty)
+            'pm': [
+              for (final m in perMinute)
+                [m.$1, (m.$2 * 1000).roundToDouble() / 1000, m.$3.round()],
+            ],
         },
         if (batteryRegenKwh != null) 'regenBat': _r(batteryRegenKwh!),
         // +237: бортовая сеть 12 В и её покрытие, с.
@@ -529,6 +569,30 @@ class EventEnergySums {
             ? i(mn['run'] is num ? mn['neg3'] : mn['neg'])
             : 0,
         negRunMax: mn is Map && mn['run'] is num ? i(mn['run']) : null,
+        // До +238 ключа `w2` нет: решает прежнее правило.
+        windowsBelowRun: mn is Map && mn['w2'] is num ? i(mn['w2']) : null,
+        windowMinKw: mn is Map && mn['w2min'] is num
+            ? (mn['w2min'] as num).toDouble()
+            : null,
+        noiseMinutes: [
+          if (mn is Map && mn['noise'] is List)
+            for (final x in mn['noise'] as List)
+              if (x is num) x.toInt(),
+        ],
+        perMinute: [
+          if (mn is Map && mn['pm'] is List)
+            for (final x in mn['pm'] as List)
+              if (x is List &&
+                  x.length == 3 &&
+                  x[0] is num &&
+                  x[1] is num &&
+                  x[2] is num)
+                (
+                  (x[0] as num).toInt(),
+                  (x[1] as num).toDouble(),
+                  (x[2] as num).toDouble()
+                ),
+        ],
         batteryRegenKwh:
             m['regenBat'] is num ? (m['regenBat'] as num).toDouble() : null,
         board12Kwh: m['b12'] is num ? (m['b12'] as num).toDouble() : null,
@@ -655,6 +719,31 @@ class EventEnergyAccumulator {
   int _runLastIdx = -2;
   int _runMax = 0;
 
+  // v0.2.39+238: двухминутные окна, шумовые минуты, значения по минутам.
+  static const int perMinuteCap = 720;
+  static const int noiseCap = 60;
+  final List<(int, double, double)> _perMinute = [];
+  final List<int> _noise = [];
+  int _wPrevIdx = -2;
+  double _wPrevE = 0;
+  int _wPrevCov = 0;
+  int _w2 = 0;
+  double? _w2Min;
+
+  /// Закрытых шумовых минут; сервис по росту сбрасывает буфер сырых
+  /// событий ([EnergyEventRing]).
+  int get closedNoiseMinutes => _mNeg;
+  int? lastNoiseMinute;
+  double? lastNoiseKw;
+
+  /// Метка HAL последнего события счёта, мс.
+  int? get lastTsMs => _tPrev;
+
+  /// Окно из минуты [idx] и предыдущей учтённой, если она соседняя.
+  static double? _windowKw(
+          int prevIdx, double prevE, int prevCov, int idx, double e, int cov) =>
+      prevIdx == idx - 1 ? (prevE + e) / ((prevCov + cov) / 3600000.0) : null;
+
   void add(String name, double value, int tsMs) {
     final ci = EventEnergySums.signals.indexOf(name);
     if (ci < 0) return;
@@ -712,6 +801,23 @@ class EventEnergyAccumulator {
               _runLastIdx = _mIdx;
               _runMax = math.max(_runMax, _runLen);
             }
+            // +238: окно с предыдущей учтённой минутой, шум, значение.
+            final w = _windowKw(_wPrevIdx, _wPrevE, _wPrevCov, _mIdx, _mE, _mCov);
+            if (w != null) {
+              if (w < EnergySplitModel.boardWindowKw) _w2++;
+              _w2Min = _w2Min == null ? w : math.min(_w2Min!, w);
+            }
+            _wPrevIdx = _mIdx;
+            _wPrevE = _mE;
+            _wPrevCov = _mCov;
+            if (kw < EnergySplitModel.boardNegKw) {
+              if (_noise.length < noiseCap) _noise.add(_mIdx);
+              lastNoiseMinute = _mIdx;
+              lastNoiseKw = kw;
+            }
+            if (_perMinute.length < perMinuteCap) {
+              _perMinute.add((_mIdx, kw, _mCov / 1000.0));
+            }
           }
         }
         _mIdx = idx;
@@ -745,6 +851,10 @@ class EventEnergyAccumulator {
     var mn = _mMin;
     var neg3 = _mNeg3;
     var runMax = _runMax;
+    var w2 = _w2;
+    var w2Min = _w2Min;
+    final noise = List<int>.of(_noise);
+    final perMinute = List<(int, double, double)>.of(_perMinute);
     if (_mIdx >= 0) {
       final kw = _minuteKw(_mE, _mCov);
       if (kw != null) {
@@ -756,6 +866,17 @@ class EventEnergyAccumulator {
           neg3++;
           final run = _runLastIdx == _mIdx - 1 ? _runLen + 1 : 1;
           runMax = math.max(runMax, run);
+        }
+        final w = _windowKw(_wPrevIdx, _wPrevE, _wPrevCov, _mIdx, _mE, _mCov);
+        if (w != null) {
+          if (w < EnergySplitModel.boardWindowKw) w2++;
+          w2Min = w2Min == null ? w : math.min(w2Min, w);
+        }
+        if (kw < EnergySplitModel.boardNegKw && noise.length < noiseCap) {
+          noise.add(_mIdx);
+        }
+        if (perMinute.length < perMinuteCap) {
+          perMinute.add((_mIdx, kw, _mCov / 1000.0));
         }
       }
     }
@@ -780,9 +901,58 @@ class EventEnergyAccumulator {
       minuteMinKw: mn,
       minutesBelowRun: neg3,
       negRunMax: runMax,
+      windowsBelowRun: w2,
+      windowMinKw: w2Min,
+      noiseMinutes: List<int>.unmodifiable(noise),
+      perMinute: List<(int, double, double)>.unmodifiable(perMinute),
       board12Kwh: _b12Seen ? _b12 : null,
       board12CoveredSeconds: _b12CovMs / 1000.0,
     );
+  }
+}
+
+/// v0.2.39+238 — БУФЕР СЫРЫХ СОБЫТИЙ ТОКОВ И НАПРЯЖЕНИЯ (просьба Друга 3,
+/// 25.11). Последние [spanMs] по меткам HAL; когда минута бортовой сети
+/// уходит ниже [EnergySplitModel.boardNegKw], сервис один раз за поездку
+/// сбрасывает буфер в файл экспорта (energy_dumps/), чтобы шумовую минуту
+/// можно было разобрать по событиям. Ток 12 В идёт с меткой последнего
+/// события HAL — своей у него нет. [maxEntries] ограничивает память при
+/// любом темпе потока.
+class EnergyEventRing {
+  static const int spanMs = 90000;
+  static const int maxEntries = 20000;
+  static const Set<String> names = {
+    'pack_voltage_fine',
+    'pack_voltage',
+    'pack_current',
+    'inverter_current',
+    'dcdc_load_current_a',
+  };
+
+  final ListQueue<(int, String, double)> _q = ListQueue();
+
+  int get length => _q.length;
+
+  void add(int tsMs, String name, double v) {
+    if (!names.contains(name)) return;
+    _q.addLast((tsMs, name, v));
+    while (_q.length > maxEntries ||
+        (_q.isNotEmpty && _q.first.$1 < tsMs - spanMs)) {
+      _q.removeFirst();
+    }
+  }
+
+  void clear() => _q.clear();
+
+  /// CSV: строка заголовка с `#`, затем `ts_ms,name,value`.
+  String toCsv(String header) {
+    final b = StringBuffer()
+      ..writeln(header)
+      ..writeln('ts_ms,name,value');
+    for (final e in _q) {
+      b.writeln('${e.$1},${e.$2},${e.$3}');
+    }
+    return b.toString();
   }
 }
 
@@ -804,12 +974,15 @@ String? energySplitCheck(EventEnergySums s) {
     return 'regen_above_shaft';
   }
   final run = s.negRunMax;
+  final w2 = s.windowsBelowRun;
+  // +238: есть окна — решают они; шумовая минута не бракует.
+  final bad = w2 != null
+      ? w2 > 0
+      : run == null
+          ? s.minutesBelowRun > 0
+          : s.minutesNegative > 0 || run >= EnergySplitModel.boardRunMinutes;
   if (s.minutes > 0 &&
-      (s.minutesLow > EnergySplitModel.boardLowShare * s.minutes ||
-          (run == null
-              ? s.minutesBelowRun > 0
-              : s.minutesNegative > 0 ||
-                  run >= EnergySplitModel.boardRunMinutes))) {
+      (s.minutesLow > EnergySplitModel.boardLowShare * s.minutes || bad)) {
     return 'board_minutes';
   }
   return null;
@@ -1238,6 +1411,10 @@ class EnergySplitService {
         'minutes=${e.minutes} low=${e.minutesLow} below_neg=${e.minutesNegative} '
         'below_run=${e.minutesBelowRun} run=${e.negRunMax ?? '-'} '
         'min_kw=${e.minuteMinKw == null ? '-' : e.minuteMinKw!.toStringAsFixed(2)} '
+        // +238: окна ниже −0.3 кВт, самое низкое окно, шумовые минуты.
+        'w2=${e.windowsBelowRun ?? '-'} '
+        'w2_min=${e.windowMinKw == null ? '-' : e.windowMinKw!.toStringAsFixed(2)} '
+        'noise=${e.noiseMinutes.isEmpty ? '-' : e.noiseMinutes.join('/')} '
         'n=$counts '
         '${e.batteryRegenKwh == null ? '' : 'regen_bat=${e.batteryRegenKwh!.toStringAsFixed(3)} '}'
         '${_firehoseLog(e)}';

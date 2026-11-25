@@ -12,6 +12,7 @@ import 'package:share_plus/share_plus.dart';
 
 import '../data/database.dart';
 import 'app_diag_log.dart';
+import 'energy_dump_store.dart';
 import 'import_service.dart';
 
 /// v0.1.11: bundles all app data into one timestamped zip and hands it off
@@ -318,6 +319,23 @@ class ExportService {
       counts['app_log'] = appLogLines;
     } catch (e) {
       debugPrint('Export: app log skipped — $e');
+    }
+
+    // v0.2.39+238: сырые события шумовых минут (последние 5 поездок) —
+    // папкой energy_dumps/. Папки может не быть: это не ошибка экспорта.
+    try {
+      var dumps = 0;
+      for (final f in await EnergyDumpStore.list()) {
+        final bytes = await f.readAsBytes();
+        archive.addFile(ArchiveFile(
+            '${EnergyDumpStore.dirName}/${p.basename(f.path)}',
+            bytes.length,
+            bytes));
+        dumps++;
+      }
+      if (dumps > 0) counts['energy_dumps'] = dumps;
+    } catch (e) {
+      debugPrint('Export: energy dumps skipped — $e');
     }
 
     onProgress?.call('metadata');

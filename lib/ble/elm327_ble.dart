@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:typed_data';
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
 /// Транспорт к ELM327 BLE-адаптеру.
@@ -90,6 +91,47 @@ class Elm327Ble {
   Future<void> _inflight = Future<void>.value();
   bool _wedged = false;
 
+  // ────── v0.2.39+238: журнал соединения (просьба Друга 3, 25.11) ──────
+  //
+  // Только строки app_log, поведение транспорта не меняется. Причина
+  // разрыва — из flutter_blue_plus ([lastDisconnectReason], её же читает
+  // ConnectionService для своей строки). Адаптер перестал отвечать при
+  // живой связи — [kSilentTimeouts] запросов подряд без приглашения `>` при
+  // неразорванной связи; первый ответ после этого — строка с длительностью
+  // молчания (монотонные часы).
+  static const int kSilentTimeouts = 3;
+  String? lastDisconnectReason;
+  int _timeoutsInRow = 0;
+  final Stopwatch _silentClock = Stopwatch();
+  bool _silentLogged = false;
+
+  void _noteAnswer() {
+    _timeoutsInRow = 0;
+    if (!_silentLogged) return;
+    _silentLogged = false;
+    debugPrint('BLE: adapter answers again after '
+        '${(_silentClock.elapsedMilliseconds / 1000).toStringAsFixed(1)} s '
+        'of silence');
+    _silentClock
+      ..stop()
+      ..reset();
+  }
+
+  void _noteFailure(Object e, String payload) {
+    if (e is! TimeoutException || _disconnected) return;
+    _timeoutsInRow++;
+    if (_timeoutsInRow == 1) {
+      _silentClock
+        ..reset()
+        ..start();
+    }
+    if (_timeoutsInRow == kSilentTimeouts && !_silentLogged) {
+      _silentLogged = true;
+      debugPrint('BLE: adapter not answering with the link alive '
+          '($kSilentTimeouts timeouts in a row, last ${payload.trim()})');
+    }
+  }
+
   /// True after a platform BLE write overran [kWriteTimeout]. Cleared by
   /// [connect]. Callers end their loops with exit=ble_wedged on this.
   bool get isWedged => _wedged;
@@ -147,6 +189,14 @@ class Elm327Ble {
       if (state == BluetoothConnectionState.disconnected) {
         final wasConnected = !_disconnected;
         _disconnected = true;
+        // v0.2.39+238: причина разрыва — для строки ConnectionService.
+        final r = device.disconnectReason;
+        lastDisconnectReason =
+            r == null ? 'unknown' : 'code=${r.code} ${r.description ?? ''}'.trim();
+        if (!wasConnected) {
+          debugPrint('BLE: link closed after a local disconnect '
+              '($lastDisconnectReason)');
+        }
         // v0.1.16: notify listeners (e.g. ConnectionService) so UI status
         // can be updated. Guarded by wasConnected so manual disconnect()
         // doesn't double-fire (it sets _disconnected=true first).
@@ -273,6 +323,10 @@ class Elm327Ble {
     // here (it reported to its own caller); only its completion matters.
     final run = _inflight.catchError((_) {}).then((_) => _sendRawNow(payload, timeout));
     _inflight = run.then((_) {}, onError: (_) {});
+    // v0.2.39+238: только журнал молчания адаптера; ошибка по-прежнему
+    // уходит вызывающему через [run].
+    run.then((_) => _noteAnswer(),
+        onError: (Object e) => _noteFailure(e, payload));
     return run;
   }
 

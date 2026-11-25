@@ -263,6 +263,8 @@ class _LeftColumn extends StatelessWidget {
                 ? hal.halValue('pack_voltage')
                 : null,
             batteryTempC: hal.halBatteryTempC,
+            // v0.2.39+238: «запасено за стоянку» — строкой до первой поездки.
+            storedKwh: hal.halStoredEnergyKwh,
           ),
         ),
       ],
@@ -482,7 +484,10 @@ class _ChargingPanel extends StatelessWidget {
   // v0.2.17+216: часы до 80 % и 100 % из resolveEtaSeconds, null = нет.
   final double? etaH80;
   final double? etaH100;
+  // v0.2.39+238: запасено за стоянку по остатку BMS; null — строки нет.
+  final double? storedKwh;
   const _ChargingPanel({
+    this.storedKwh,
     required this.isCharging,
     required this.powerKw,
     this.chargedSession,
@@ -507,11 +512,29 @@ class _ChargingPanel extends StatelessWidget {
               const Icon(Icons.bolt_outlined, color: Colors.grey, size: 28),
               const SizedBox(width: 10),
               Expanded(
-                child: Text(S.of('dash.not_charging'),
-                    style: const TextStyle(
-                        color: Colors.grey,
-                        letterSpacing: 1.0,
-                        fontSize: 13)),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(S.of('dash.not_charging'),
+                        style: const TextStyle(
+                            color: Colors.grey,
+                            letterSpacing: 1.0,
+                            fontSize: 13)),
+                    if (storedKwh != null)
+                      FittedBox(
+                        fit: BoxFit.scaleDown,
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                            S.of('dash.stored').replaceFirst(
+                                '{n}', storedKwh!.toStringAsFixed(1)),
+                            maxLines: 1,
+                            style: const TextStyle(
+                                color: Colors.lightBlueAccent,
+                                fontSize: 15)),
+                      ),
+                  ],
+                ),
               ),
             ],
           ),
@@ -528,6 +551,8 @@ class _ChargingPanel extends StatelessWidget {
     }
 
     final parts = <String>[
+      if (storedKwh != null)
+        S.of('dash.stored').replaceFirst('{n}', storedKwh!.toStringAsFixed(1)),
       if (socPct != null)
         '${socPct!.toStringAsFixed(1)}%'
             '${socDeltaPct != null ? ' (+${socDeltaPct!.toStringAsFixed(1)})' : ''}',

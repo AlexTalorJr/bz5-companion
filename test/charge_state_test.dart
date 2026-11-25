@@ -243,4 +243,59 @@ void main() {
       expect(k.untrusted, isFalse);
     });
   });
+
+  group('StoredEnergyTracker (+238)', () {
+    test('ночь 24–25.11: 24.4 → 65.2 после пробуждения — запасено 40.8', () {
+      final t = StoredEnergyTracker();
+      expect(t.feed(65.2, afterBreak: true), isNull); // до load не принимает
+      t.load(lastKwh: 24.4);
+      expect(t.feed(65.2, afterBreak: true), isNull);
+      expect(t.feed(65.2, afterBreak: false), closeTo(40.8, 1e-9));
+      expect(t.storedKwh, closeTo(40.8, 1e-9));
+      t.clear();
+      expect(t.storedKwh, isNull);
+    });
+
+    test('DC 20.11 при работающей голове не запас (вариант А)', () {
+      final t = StoredEnergyTracker()..load(lastKwh: 23.7);
+      var v = 23.7;
+      while (v < 30.75) {
+        v = ((v + 0.1) * 10).roundToDouble() / 10;
+        t.feed(v, afterBreak: false);
+      }
+      expect(t.storedKwh, isNull);
+      expect(t.lastKwh, 30.8);
+      t.feed(31.2, afterBreak: false);
+      t.feed(31.2, afterBreak: false);
+      expect(t.storedKwh, isNull);
+      expect(t.lastKwh, 31.2);
+    });
+
+    test('ложный ноль и одиночный выброс после пробуждения', () {
+      final t = StoredEnergyTracker()..load(lastKwh: 40.8);
+      t.feed(0, afterBreak: true);
+      t.feed(40.8, afterBreak: false);
+      t.feed(52, afterBreak: true);
+      t.feed(40.8, afterBreak: false);
+      expect(t.storedKwh, isNull);
+      expect(t.lastKwh, 40.8);
+    });
+
+    test('два пробуждения на одной стоянке складываются; сумма из настроек',
+        () {
+      final t = StoredEnergyTracker()..load(lastKwh: 30);
+      t.feed(40, afterBreak: true);
+      t.feed(40, afterBreak: false);
+      t.feed(45, afterBreak: true);
+      t.feed(45, afterBreak: false);
+      expect(t.storedKwh, closeTo(15, 1e-9));
+      final r = StoredEnergyTracker()
+        ..load(lastKwh: t.lastKwh, storedKwh: t.storedKwh);
+      expect(r.storedKwh, closeTo(15, 1e-9));
+      final fresh = StoredEnergyTracker()..load();
+      fresh.feed(50, afterBreak: true);
+      expect(fresh.storedKwh, isNull);
+      expect(fresh.lastKwh, 50);
+    });
+  });
 }

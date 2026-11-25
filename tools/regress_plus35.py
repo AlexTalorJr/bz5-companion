@@ -14186,7 +14186,8 @@ if int(pv) >= 233:
          ('final why = energySplitCheck(s);\nif (why != null) return partless(why);' in _dh1_sp and
           "if (s.regenKwh >\ns.shaftRegenKwh * EnergySplitModel.regenShaftK +\nEnergySplitModel.regenShaftAbsKwh) {\nreturn 'regen_above_shaft';\n}" in _dh_es and
           ("s.minutesNegative > 0)) {\nreturn 'board_minutes';\n}\nreturn null;\n}" if int(pv) < 235 else
-           "? s.minutesBelowRun > 0\n: s.minutesNegative > 0 ||\nrun >= EnergySplitModel.boardRunMinutes))) {\nreturn 'board_minutes';\n}\nreturn null;\n}") in _dh_es)),
+           ("? s.minutesBelowRun > 0\n: s.minutesNegative > 0 ||\nrun >= EnergySplitModel.boardRunMinutes))) {\nreturn 'board_minutes';\n}\nreturn null;\n}" if int(pv) < 238 else
+            "final bad = w2 != null\n? w2 > 0\n: run == null\n? s.minutesBelowRun > 0\n: s.minutesNegative > 0 || run >= EnergySplitModel.boardRunMinutes;\nif (s.minutes > 0 &&\n(s.minutesLow > EnergySplitModel.boardLowShare * s.minutes || bad)) {\nreturn 'board_minutes';\n}\nreturn null;\n}")) in _dh_es)),
         'var motion = s.tractionKwh - s.regenKwh;\nvar climate = s.packKwh - motion;\nif (climate < 0) {\nclimate = 0;\nmotion = s.packKwh;\n}' in _dh1_sp,
         '(events == null ? null : computeEnergySplitEvents(events, start, end)) ??\ncomputeEnergySplitAuto(points, start, end);' in _dh_es,
         'final r = computeTripEnergySplit(ev, pts, t.startedAt, end);' in _dh_es and _dh_es.count('computeTripEnergySplit(') == 3,
@@ -14452,7 +14453,7 @@ if int(pv) >= 235:
         # поля с потребителями идут в _latest только через _consumeFirehose
         # (DK2); кандидат по-прежнему мимо.
         (('if (e.firehose == HalEvent.firehoseConfirmed) {\n_logHalDiag(e, d, every: _kFirehoseSampleEvery);\n_feedFirehose(e, d);\n} else {\n_logHalDiag(e, d, every: Duration.zero);\n}' in _dj1_fn) if int(pv) < 236 else
-         ('if (e.firehose == HalEvent.firehoseConfirmed) {\nif (_fhStateNames.contains(e.name)) {\nfinal changed = _fhStateLast[e.name] != d;\n_fhStateLast[e.name] = d;\n_logHalDiag(e, d,\nevery: changed ? Duration.zero : _kFirehoseStateEvery);\n} else {\n_logHalDiag(e, d, every: _kFirehoseSampleEvery);\n}\n_feedFirehose(e, d);\n_consumeFirehose(e.name, d);\n} else {\n_logHalDiag(e, d, every: Duration.zero);\n}' in _dj1_fn))
+         ('if (e.firehose == HalEvent.firehoseConfirmed) {\nif (_fhStateNames.contains(e.name)) {\nfinal changed = _fhStateLast[e.name] != d;\n_fhStateLast[e.name] = d;\n_logHalDiag(e, d,\nevery: changed ? Duration.zero : _kFirehoseStateEvery);\n} else {\n_logHalDiag(e, d, every: _kFirehoseSampleEvery);\n}\n_feedFirehose(e, d);\n_consumeFirehose(e.name, d);\n' + ("" if int(pv) < 238 else "if (e.name == 'gb_remaining_energy_kwh') _feedStoredEnergy(d);\n") + '} else {\n_logHalDiag(e, d, every: Duration.zero);\n}' in _dj1_fn))
         and '_latest' not in _dj1_fn,
         'static const Duration _kFirehoseSampleEvery = Duration(seconds: 1);' in _dj_hts,
         'final nowMs = _halDiagClock.elapsedMilliseconds;' in _dj1_log and 'DateTime.now()' not in _dj1_log and 'if (last != null && nowMs - last < every.inMilliseconds) return;' in _dj1_log and 'final Stopwatch _halDiagClock = Stopwatch()..start();' in _dj_hts,
@@ -14499,7 +14500,7 @@ if int(pv) >= 235:
         'static const double boardNegKw = -0.5;\nstatic const double boardRunKw = -0.3;\nstatic const int boardRunMinutes = 2;' in _dj_es,
         _dj_es.count('_runLen = _runLastIdx == _mIdx - 1 ? _runLen + 1 : 1;') == 1 and 'final run = _runLastIdx == _mIdx - 1 ? _runLen + 1 : 1;' in _dj_es and _dj_es.count('if (kw < EnergySplitModel.boardRunKw) {') == 2,
         "'neg3': minutesBelowRun,\nif (negRunMax != null) 'run': negRunMax," in _dj_es and "negRunMax: mn is Map && mn['run'] is num ? i(mn['run']) : null," in _dj_es and "? i(mn['run'] is num ? mn['neg3'] : mn['neg'])" in _dj_es,
-        '(run == null\n? s.minutesBelowRun > 0\n: s.minutesNegative > 0 ||\nrun >= EnergySplitModel.boardRunMinutes))) {' in _dj_es,
+        ('(run == null\n? s.minutesBelowRun > 0\n: s.minutesNegative > 0 ||\nrun >= EnergySplitModel.boardRunMinutes))) {' if int(pv) < 238 else ': run == null\n? s.minutesBelowRun > 0\n: s.minutesNegative > 0 || run >= EnergySplitModel.boardRunMinutes;') in _dj_es,
         "'below_run=${e.minutesBelowRun} run=${e.negRunMax ?? '-'} '" in _dj_es,
         "bad_neg = s['m_neg3'] > 0 if run is None else (s['m_neg'] > 0 or run >= RUN_MINUTES)" in _dj_mir and "self.run_len = self.run_len + 1 if self.run_last_idx == self.m_idx - 1 else 1" in _dj_mir,
         "test('board minutes +235: runs below -0.3 kW counted on neighbouring minutes'," in _dj_test and "expect(energySplitCheck(old), 'board_minutes');" in _dj_test and 'expect(together.negRunMax, 2);' in _dj_test,
@@ -14772,6 +14773,119 @@ if int(pv) >= 237:
     else: fail(f'DL4 field leftovers drifted: {_dl4}')
 else:
     ok(f"Part DL skipped (build +{pv}, 12 V board net and counter confirmation land in +237)")
+
+# ─────────────── Part DM — +238: запасено за стоянку, правило двух минут, буфер сырых событий, журнал соединения ───────────────
+if int(pv) >= 238:
+    _dm_hts = _dj_rd('lib/services/hal_telemetry_service.dart')
+    _dm_cs = _dj_rd('lib/services/charge_state.dart')
+    _dm_es = _dj_rd('lib/services/energy_split_service.dart')
+    _dm_ds = _dj_rd('lib/services/energy_dump_store.dart')
+    _dm_ex = _dj_rd('lib/services/export_service.dart')
+    _dm_cv = _dj_rd('lib/screens/wide/charging_view_wide.dart')
+    _dm_dw = _dj_rd('lib/screens/wide/dashboard_wide.dart')
+    _dm_bn = _dj_rd('lib/widgets/charging_banner.dart')
+    _dm_ble = _dj_rd('lib/ble/elm327_ble.dart')
+    _dm_conn = _dj_rd('lib/services/connection.dart')
+    _dm_l10n = (root / 'lib/l10n/strings.dart').read_text()
+    _dm_t1 = (root / 'test/charge_state_test.dart').read_text()
+    _dm_t2 = (root / 'test/event_energy_test.dart').read_text()
+    _dm_mir236 = None
+    try:
+        _dm_mir236 = subprocess.run([sys.executable, str(root / 'tools/mirror_plus236_charge.py')], capture_output=True, text=True, timeout=120)
+    except Exception:
+        _dm_mir236 = None
+    _dm_mir233 = None
+    try:
+        _dm_mir233 = subprocess.run([sys.executable, str(root / 'tools/mirror_plus233_events.py')], capture_output=True, text=True, timeout=120)
+    except Exception:
+        _dm_mir233 = None
+
+    # DM1: «ЗАПАСЕНО ЗА СТОЯНКУ» ПО ОСТАТКУ 0x2EE. Рост засчитывается только
+    # после перерыва (вариант А: зарядка при работающей голове — дело
+    # счётчика), скачок подтверждается вторым кадром, до загрузки настроек
+    # кадры не принимаются; значение и сумма переживают процесс; сброс в
+    # начале поездки; показ на экране зарядки и строкой на дашборде.
+    _dm1_feed = _dk_fn(_dm_cs, 'double? feed(double v, {required bool afterBreak}) {')
+    _dm1_fs = _dk_fn(_dm_hts, 'void _feedStoredEnergy(double d) {')
+    _dm1 = [
+        'static const double minRiseKwh = 0.2;\nstatic const double confirmKwh = 0.2;\nstatic const int breakSeconds = 120;' in _dm_cs,
+        'if (!_loaded || v <= 0 || v > maxKwh) return null;' in _dm1_feed and 'if ((v - last).abs() <= minRiseKwh) {\n_pend = null;\n_last = v;\nreturn null;\n}' in _dm1_feed,
+        'if (pend == null || (v - pend).abs() > confirmKwh) {\n_pend = v;\n_pendAfterBreak = afterBreak;\nreturn null;\n}' in _dm1_feed and 'if (rise <= 0 || !_pendAfterBreak) return null;\n_stored += rise;\n_has = true;\nreturn rise;' in _dm1_feed,
+        "if (e.name == 'gb_remaining_energy_kwh') _feedStoredEnergy(d);" in _dm_hts and 'if (_firehoseCheck.state == FirehoseCheck.mismatch) return;' in _dm1_fs,
+        'final afterBreak = prev == null ||\n(now - prev).abs() >= StoredEnergyTracker.breakSeconds * 1000;' in _dm1_fs and 'final now = DateTime.now().millisecondsSinceEpoch;' in _dm1_fs,
+        'Future<void> init() async {\nfinal prefs = await SharedPreferences.getInstance();\nawait _loadStoredEnergy(prefs);' in _dm_hts,
+        "lastKwh: prefs.getDouble(_kStoredLastKey),\nstoredKwh: prefs.getDouble(_kStoredSumKey)," in _dm_hts and "if (last != null) await prefs.setDouble(_kStoredLastKey, last);" in _dm_hts and "} else if (last != before) {\n_persistStoredEnergy(sum: false);\n}" in _dm1_fs,
+        '_resetHalTripAggregates();\n_halTripActive = true;\n_clearStoredEnergy();' in _dm_hts,
+        "if (stored != null)\n_Metric(\nlabel: S.of('chg.stored')," in _dm_cv and 'final stored = hal.halStoredEnergyKwh;' in _dm_cv and 'storedKwh: hal.halStoredEnergyKwh,' in _dm_dw and "if (storedKwh != null)\nFittedBox(" in _dm_dw and _dm_l10n.count("'dash.stored':") == 2 and _dm_l10n.count("'chg.stored':") == 2,
+        _dm_mir236 is not None and _dm_mir236.returncode == 0 and "eq(round(r, 1), 40.8, 'night 24-25.11 stored 40.8')" in (root / 'tools/mirror_plus236_charge.py').read_text() and "eq(t.kwh(), None, 'awake DC charge is not stored (variant A)')" in (root / 'tools/mirror_plus236_charge.py').read_text(),
+        "test('ночь 24–25.11: 24.4 → 65.2 после пробуждения — запасено 40.8', () {" in _dm_t1 and "test('DC 20.11 при работающей голове не запас (вариант А)', () {" in _dm_t1 and 'expect(t.storedKwh, isNull);\n      expect(t.lastKwh, 30.8);' in _dm_t1,
+        'stored_energy' not in (root / 'lib/services/import_service.dart').read_text(),
+    ]
+    if all(_dm1): ok('DM1 stored while parked: remaining 0x2EE across a break only (variant A), a jump confirmed by the next frame, no frames before settings load, value and sum survive the process, cleared at trip start, shown on the charging screen and the dashboard; mirror and Dart test hold the nights 20-21.11 and 24-25.11 and the awake DC 20.11')
+    else: fail(f'DM1 stored energy drifted: {_dm1}')
+
+    # DM2: ПРАВИЛО ДВУХ МИНУТ. Окно — две соседние учтённые минуты по общей
+    # энергии и покрытию; есть окна — решают они, шум не бракует; суммы до
+    # +238 — прежнее правило; окна, шум и значения по минутам в extra.
+    _dm2 = [
+        'static const double boardWindowKw = -0.3;' in _dm_es,
+        'prevIdx == idx - 1 ? (prevE + e) / ((prevCov + cov) / 3600000.0) : null;' in _dm_es and _dm_es.count('if (w < EnergySplitModel.boardWindowKw)') == 2,
+        '_wPrevIdx = _mIdx;\n_wPrevE = _mE;\n_wPrevCov = _mCov;' in _dm_es,
+        "final bad = w2 != null\n? w2 > 0\n: run == null" in _dm_es,
+        "if (windowsBelowRun != null) 'w2': windowsBelowRun," in _dm_es and "windowsBelowRun: mn is Map && mn['w2'] is num ? i(mn['w2']) : null," in _dm_es and "if (noiseMinutes.isNotEmpty) 'noise': noiseMinutes," in _dm_es,
+        "if (perMinute.isNotEmpty)\n'pm': [" in _dm_es and "if (mn is Map && mn['pm'] is List)" in _dm_es and _dm_es.count('if (_perMinute.length < perMinuteCap) {') == 1 and 'if (perMinute.length < perMinuteCap) {' in _dm_es,
+        'windowsBelowRun: w2,\nwindowMinKw: w2Min,' in _dm_es and "'w2=${e.windowsBelowRun ?? '-'} '" in _dm_es,
+        _dm_mir233 is not None and _dm_mir233.returncode == 0 and '+238: corpus has no window below -0.3 and one value per minute' in _dm_mir233.stdout and "bad_neg = w2 > 0" in (root / 'tools/mirror_plus233_events.py').read_text(),
+        "test('+238: two-minute windows decide, a noise minute does not reject', () {" in _dm_t2 and 'expect(energySplitCheck(noisy), isNull);' in _dm_t2 and "expect(energySplitCheck(mid), 'board_minutes');" in _dm_t2,
+    ]
+    if all(_dm2): ok('DM2 two-minute rule: a window is two neighbouring counted minutes by their joint energy and coverage, windows decide when present and a noise minute no longer rejects, sums before +238 keep the run rule, windows, noise and per-minute values ride in extra; mirror and Dart test hold the 521-like case')
+    else: fail(f'DM2 two-minute rule drifted: {_dm2}')
+
+    # DM3: БУФЕР СЫРЫХ СОБЫТИЙ. 90 с по меткам HAL, предел записей, только
+    # токи и напряжение; сброс один раз за поездку на первой шумовой минуте;
+    # файлов не больше пяти; они уходят в экспорт.
+    _dm3_dump = _dk_fn(_dm_hts, 'void _maybeDumpEnergyRing(EventEnergyAccumulator acc) {')
+    _dm3 = [
+        'static const int spanMs = 90000;\nstatic const int maxEntries = 20000;' in _dm_es and 'while (_q.length > maxEntries ||\n(_q.isNotEmpty && _q.first.$1 < tsMs - spanMs)) {\n_q.removeFirst();\n}' in _dm_es and 'if (!names.contains(name)) return;' in _dm_es,
+        'acc.add(e.name, v, e.ts);\n_energyRing.add(e.ts, e.name, v);\n_maybeDumpEnergyRing(acc);' in _dm_hts,
+        'if (_energyDumpDone || acc.closedNoiseMinutes == 0) return;\n_energyDumpDone = true;' in _dm3_dump and 'EnergyDumpStore.write(fileName, text)' in _dm3_dump,
+        '_energyRing.clear();\n_energyDumpDone = false;' in _dm_hts,
+        "final t = _eventEnergy?.lastTsMs;\nif (t != null) _energyRing.add(t, name, d);" in _dm_hts,
+        'static const int keep = 5;' in _dm_ds and 'for (var i = 0; i < all.length - keep; i++) {\nawait all[i].delete();\n}' in _dm_ds,
+        "for (final f in await EnergyDumpStore.list()) {" in _dm_ex and "'${EnergyDumpStore.dirName}/${p.basename(f.path)}'," in _dm_ex and _dm_ex.find('EnergyDumpStore.list()') < _dm_ex.find("onProgress?.call('metadata');"),
+        "test('+238: raw event ring keeps 90 s of currents and voltage', () {" in _dm_t2 and 'expect(ring.length, 91);' in _dm_t2,
+    ]
+    if all(_dm3): ok('DM3 raw event ring: 90 s by HAL stamps, bounded, currents and voltage only, dumped once per trip at the first noise minute, at most five files, all of them in the export; Dart test holds the window')
+    else: fail(f'DM3 raw event ring drifted: {_dm3}')
+
+    # DM4: ЖУРНАЛ СОЕДИНЕНИЯ. Только строки app_log: разрыв с причиной,
+    # попытки и итог подключения, первый ответ адаптера, автопереподключение,
+    # молчание адаптера при живой связи и его конец.
+    _dm4 = [
+        'final r = device.disconnectReason;' in _dm_ble and "debugPrint('BLE: link lost (${_ble?.lastDisconnectReason ?? 'unknown'}), '" in _dm_conn,
+        "debugPrint('BLE: connect ${device.remoteId.str} attempt $attempt/3');" in _dm_conn and "debugPrint('BLE: connect failed after 3 attempts — $lastError');" in _dm_conn,
+        'final info = await _client!.initialize();' in _dm_conn and """'ATZ="${one(info.version)}" ATRV="${one(info.voltage)}"');""" in _dm_conn,
+        "debugPrint('BLE: auto-reconnect start ($savedId)');" in _dm_conn and "debugPrint('BLE: auto-reconnect failed — $e');" in _dm_conn,
+        "run.then((_) => _noteAnswer(),\nonError: (Object e) => _noteFailure(e, payload));" in _dm_ble and 'if (e is! TimeoutException || _disconnected) return;' in _dm_ble and 'if (_timeoutsInRow == kSilentTimeouts && !_silentLogged) {' in _dm_ble,
+        '_timeoutsInRow = 0;\nif (!_silentLogged) return;' in _dm_ble and 'final Stopwatch _silentClock = Stopwatch();' in _dm_ble,
+    ]
+    if all(_dm4): ok('DM4 connection journal: BLE loss with its reason, each connect attempt and the final failure, the adapter first answer after connect, auto-reconnect start and result, adapter silence with the link alive and its end on monotonic time; log lines only')
+    else: fail(f'DM4 connection journal drifted: {_dm4}')
+
+    # DM5: ПОДГОНКА ШРИФТА. Строки плиток экрана зарядки и баннер
+    # уменьшаются под ширину, многоточия нет.
+    _dm5_tile = _dk_fn(_dm_cv, 'class _HeroTile extends StatelessWidget {')
+    _dm5_metric = _dk_fn(_dm_cv, 'class _Metric extends StatelessWidget {')
+    _dm5 = [
+        'Widget build(BuildContext context) => FittedBox(\nfit: BoxFit.scaleDown,\nalignment: Alignment.centerLeft,\nchild: Text(text, maxLines: 1, softWrap: false, style: style),\n);' in _dm_cv,
+        _dm5_tile.count('_FitLine(') == 3 and 'ellipsis' not in _dm5_tile,
+        _dm5_metric.count('_FitLine(') == 3 and 'ellipsis' not in _dm5_metric,
+        "child: FittedBox(\nfit: BoxFit.scaleDown,\nalignment: Alignment.centerLeft,\nchild: Text(\nS.of('chg.banner').replaceFirst('{detail}', detail)," in _dm_bn,
+    ]
+    if all(_dm5): ok('DM5 fit to width: hero tiles, bottom metrics and the banner scale long lines down instead of cutting them')
+    else: fail(f'DM5 fit to width drifted: {_dm5}')
+else:
+    ok(f"Part DM skipped (build +{pv}, stored energy and the two-minute rule land in +238)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)

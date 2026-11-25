@@ -261,14 +261,21 @@ class _ChargingBanner extends StatelessWidget {
               children: [
                 const Icon(Icons.bolt, color: Colors.amber, size: 20),
                 const SizedBox(width: 8),
+                // v0.2.39+238: длинная строка этапа уменьшается под ширину,
+                // а не обрезается многоточием (поле 25.11).
                 Expanded(
-                  child: Text(
-                    S.of('chg.banner').replaceFirst('{detail}', detail),
-                    style: const TextStyle(
-                      fontWeight: FontWeight.w500,
-                      color: Colors.amber,
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      S.of('chg.banner').replaceFirst('{detail}', detail),
+                      maxLines: 1,
+                      softWrap: false,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w500,
+                        color: Colors.amber,
+                      ),
                     ),
-                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
                 const Icon(Icons.chevron_right, color: Colors.amber, size: 20),

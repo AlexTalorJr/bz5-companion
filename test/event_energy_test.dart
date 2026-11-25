@@ -225,6 +225,68 @@ void main() {
     expect(energySplitCheck(old), 'board_minutes');
   });
 
+  test('+238: two-minute windows decide, a noise minute does not reject', () {
+    EventEnergySums minutes(List<double> kws) {
+      final acc = EventEnergyAccumulator(0);
+      var t = 0;
+      for (final kw in kws) {
+        for (var k = 0; k < 60000; k += 1000) {
+          acc.add('pack_voltage', 400, t + k);
+          acc.add('inverter_current', 0, t + k);
+          acc.add('pack_current', kw * 1000 / 400, t + k);
+        }
+        t += 60000;
+      }
+      acc.add('pack_current', 0, t);
+      return acc.snapshot();
+    }
+
+    // Как поездка 521: одна минута −1.29 кВт между минутами по 1 кВт.
+    final noisy = minutes([1.0, -1.29, 1.0, 1.0]);
+    expect(noisy.windowsBelowRun, 0);
+    expect(noisy.windowMinKw, closeTo(-0.145, 1e-9));
+    expect(noisy.noiseMinutes, [1]);
+    expect(noisy.minutesNegative, 1);
+    expect(energySplitCheck(noisy), isNull);
+    final pair = minutes([1.0, -0.2, -0.5, 1.0]);
+    expect(pair.windowsBelowRun, 1);
+    expect(pair.windowMinKw, closeTo(-0.35, 1e-9));
+    expect(energySplitCheck(pair), 'board_minutes');
+    final apart = minutes([1.0, -0.4, 1.0, -0.4]);
+    expect(apart.windowsBelowRun, 0);
+    expect(apart.perMinute.length, 4);
+    expect(apart.perMinute[1].$1, 1);
+    expect(apart.perMinute[1].$2, closeTo(-0.4, 1e-9));
+    // Значения по минутам, окна и шум переживают extra.
+    final back = EventEnergySums.fromExtra(noisy.toExtraPatch())!;
+    expect(back.windowsBelowRun, 0);
+    expect(back.noiseMinutes, [1]);
+    expect(back.perMinute.length, 4);
+    expect(back.perMinute[1].$2, closeTo(-1.29, 1e-9));
+    expect(back.perMinute[1].$3, 60);
+    // Суммы +235…+237 (ключа w2 нет): правило серий, шум бракует.
+    final mid = EventEnergySums.fromExtra(
+        '{"v":1,"evE":{"f":1,"pack":1,"trac":1,"regen":0,"shTrac":1,'
+        '"shRegen":0,"covS":600,"neg":0,"gaps":0,"n":{},'
+        '"min":{"n":10,"low":0,"neg":1,"neg3":1,"run":1}}}')!;
+    expect(mid.windowsBelowRun, isNull);
+    expect(energySplitCheck(mid), 'board_minutes');
+  });
+
+  test('+238: raw event ring keeps 90 s of currents and voltage', () {
+    final ring = EnergyEventRing();
+    for (var t = 0; t <= 200000; t += 1000) {
+      ring.add(t, 'pack_current', 1);
+      ring.add(t, 'motor_rpm', 1);
+    }
+    expect(ring.length, 91);
+    final csv = ring.toCsv('# head');
+    expect(csv.startsWith('# head\nts_ms,name,value\n110000,pack_current,1.0'),
+        isTrue);
+    ring.clear();
+    expect(ring.length, 0);
+  });
+
   test('firehose counters: first and last per trip, status kept', () {
     final acc = EventEnergyAccumulator(0);
     acc.firehoseStatus = FirehoseCheck.ok;

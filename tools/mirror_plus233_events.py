@@ -46,6 +46,8 @@ MIN_TRIP_S, MIN_COVERAGE = 180, 0.8
 REGEN_K, REGEN_ABS = 1.05, 0.05
 LOW_KW, LOW_SHARE, NEG_KW = 0.2, 0.10, -0.5
 RUN_KW, RUN_MINUTES = -0.3, 2  # +235 (Friend 3, 13.11)
+WINDOW_KW = -0.3  # +238 (Friend 3, 25.11): two-minute sliding window
+PER_MINUTE_CAP, NOISE_CAP = 720, 60
 FIXTURE = pathlib.Path(__file__).resolve().parent / 'data' / 'recon_corpus_20261109_energy6.csv.gz'
 REF_START_MS, REF_END_MS = 1794237000000, 1794240000000  # 09.11.2026 18:10-19:00 +03:00
 
@@ -67,6 +69,12 @@ class Acc:
         self.m_min = None
         self.m_neg3 = self.run_len = self.run_max = 0  # +235
         self.run_last_idx = -2
+        # +238: two-minute windows, noise minutes, per-minute values
+        self.w_prev = (-2, 0.0, 0)
+        self.w2 = 0
+        self.w2_min = None
+        self.noise = []
+        self.pm = []
         # +237: 12 V board net (dcdc_load_current_a, firehose, no HAL stamp)
         self.b12_a = None
         self.b12_at = None
@@ -85,6 +93,11 @@ class Acc:
             return None
         kw = e / (cov / 3600000.0)
         return kw
+
+    @staticmethod
+    def _window_kw(prev, idx, e, cov):
+        pidx, pe, pcov = prev
+        return (pe + e) / ((pcov + cov) / 3600000.0) if pidx == idx - 1 else None
 
     def _fold(self, kw):
         self.minutes += 1
@@ -140,6 +153,15 @@ class Acc:
                     kw = self._close_minute(self.m_e, self.m_cov)
                     if kw is not None:
                         self._fold(kw)
+                        w = self._window_kw(self.w_prev, self.m_idx, self.m_e, self.m_cov)
+                        if w is not None:
+                            self.w2 += w < WINDOW_KW
+                            self.w2_min = w if self.w2_min is None else min(self.w2_min, w)
+                        self.w_prev = (self.m_idx, self.m_e, self.m_cov)
+                        if kw < NEG_KW and len(self.noise) < NOISE_CAP:
+                            self.noise.append(self.m_idx)
+                        if len(self.pm) < PER_MINUTE_CAP:
+                            self.pm.append((self.m_idx, kw, self.m_cov / 1000.0))
                 self.m_idx, self.m_e, self.m_cov = idx, 0.0, 0
             self.m_e += (pb - pi) * h
             self.m_cov += dt
@@ -154,6 +176,7 @@ class Acc:
     def sums(self):
         minutes, low, neg, mn = self.minutes, self.m_low, self.m_neg, self.m_min
         neg3, run_max = self.m_neg3, self.run_max
+        w2, w2_min, noise, pm = self.w2, self.w2_min, list(self.noise), list(self.pm)
         if self.m_idx >= 0:
             kw = self._close_minute(self.m_e, self.m_cov)
             if kw is not None:
@@ -165,10 +188,19 @@ class Acc:
                     neg3 += 1
                     run = self.run_len + 1 if self.run_last_idx == self.m_idx - 1 else 1
                     run_max = max(run_max, run)
+                w = self._window_kw(self.w_prev, self.m_idx, self.m_e, self.m_cov)
+                if w is not None:
+                    w2 += w < WINDOW_KW
+                    w2_min = w if w2_min is None else min(w2_min, w)
+                if kw < NEG_KW and len(noise) < NOISE_CAP:
+                    noise.append(self.m_idx)
+                if len(pm) < PER_MINUTE_CAP:
+                    pm.append((self.m_idx, kw, self.m_cov / 1000.0))
         return dict(pack=self.pack, trac=self.trac, regen=self.regen, sh_trac=self.sh_trac,
                     sh_regen=self.sh_regen, regen_bat=self.regen_bat, cov_s=self.cov_ms / 1000.0, neg=self.neg,
                     gaps=self.gaps, counts=list(self.counts), minutes=minutes, m_low=low,
                     m_neg=neg, m_min=mn, m_neg3=neg3, run_max=run_max,
+                    w2=w2, w2_min=w2_min, noise=noise, pm=pm,
                     b12=self.b12 if self.b12_seen else None, b12_s=self.b12_cov_ms / 1000.0)
 
 
@@ -177,7 +209,11 @@ def check(s):
     if s['regen'] > s['sh_regen'] * REGEN_K + REGEN_ABS:
         return 'regen_above_shaft'
     run = s.get('run_max')  # None: sums written before +235, old rule
-    bad_neg = s['m_neg3'] > 0 if run is None else (s['m_neg'] > 0 or run >= RUN_MINUTES)
+    w2 = s.get('w2')  # None: sums written before +238, rule by run
+    if w2 is not None:
+        bad_neg = w2 > 0
+    else:
+        bad_neg = s['m_neg3'] > 0 if run is None else (s['m_neg'] > 0 or run >= RUN_MINUTES)
     if s['minutes'] > 0 and (s['m_low'] > LOW_SHARE * s['minutes'] or bad_neg):
         return 'board_minutes'
     return None
@@ -384,6 +420,18 @@ def _selftest():
     ok('+235: neighbouring minutes below -0.3 kW: run 2', s2['m_neg3'] == 2 and s2['run_max'] == 2)
     s2 = minutes_acc([1.0, -0.6])
     ok('+235: open last minute counted in the run and below -0.5', s2['m_neg'] == 1 and s2['run_max'] == 1)
+    # +238: two-minute windows decide; a single noise minute does not reject.
+    s2 = minutes_acc([1.0, -1.29, 1.0, 1.0])
+    ok('+238: one minute -1.29 kW between 1.0 kW minutes: window above -0.3, noise listed',
+       s2['w2'] == 0 and s2['noise'] == [1] and s2['m_neg'] == 1 and abs(s2['w2_min'] - (-0.145)) < 1e-9)
+    ok('+238: that trip passes the check',
+       check(dict(base, m_neg=s2['m_neg'], m_neg3=s2['m_neg3'], run_max=s2['run_max'], w2=s2['w2'])) is None)
+    s2 = minutes_acc([1.0, -0.2, -0.5, 1.0])
+    ok('+238: two neighbours averaging -0.35 kW: one window below -0.3', s2['w2'] == 1 and abs(s2['w2_min'] - (-0.35)) < 1e-9)
+    ok('+238: window below -0.3 rejected', check(dict(base, w2=1)) == 'board_minutes')
+    s2 = minutes_acc([1.0, -0.4, 1.0, -0.4])
+    ok('+238: separate minutes do not form a window', s2['w2'] == 0 and len(s2['pm']) == 4 and s2['pm'][1][0] == 1)
+    ok('+238: sums before +238 keep the run rule', check(dict(base, m_neg=1, m_neg3=1, run_max=1)) == 'board_minutes')
     r = split_events(dict(base, trac=4.0, regen=0.5, sh_regen=1.0), 0, 1000000)
     ok('climate below 0 -> 0, motion = pack', r['climate'] == 0.0 and r['motion'] == 3.0)
     ok('low coverage -> sample estimate', split_events(base, 0, 1300000) is None)
@@ -407,6 +455,8 @@ def _selftest():
        abs(s['cov_s'] - 2966) < 1 and s['neg'] == 0 and s['gaps'] == 0)
     ok('corpus minutes: min >= 0.15 kW, at most one below 0.2, none below -0.3',
        s['m_min'] >= 0.149 and s['m_low'] <= 1 and s['m_neg'] == 0 and s['m_neg3'] == 0 and s['run_max'] == 0)
+    ok('+238: corpus has no window below -0.3 and one value per minute',
+       s['w2'] == 0 and s['noise'] == [] and len(s['pm']) == s['minutes'])
     r = split_events(s, REF_START_MS, REF_END_MS)
     ok('corpus split 2.72 / 0.87, checks pass',
        r['rejected'] is None and abs(r['motion'] - 2.72) < 0.01 and abs(r['climate'] - 0.87) < 0.01)

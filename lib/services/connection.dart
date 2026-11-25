@@ -1475,6 +1475,8 @@ class ConnectionService extends ChangeNotifier {
     Object? lastError;
 
     for (int attempt = 1; attempt <= 3; attempt++) {
+      // v0.2.39+238: журнал соединения — начало попытки.
+      debugPrint('BLE: connect ${device.remoteId.str} attempt $attempt/3');
       try {
         _ble = Elm327Ble(device);
         // v0.1.16: hook BLE disconnect → status update.
@@ -1483,7 +1485,12 @@ class ConnectionService extends ChangeNotifier {
         _ble!.onDisconnected = _handleBleDisconnect;
         await _ble!.connect();
         _client = Elm327Client(_ble!);
-        await _client!.initialize();
+        final info = await _client!.initialize();
+        // v0.2.39+238: первый ответ адаптера после (пере)подключения —
+        // строка идентификации на ATZ и напряжение ATRV.
+        String one(String v) => v.replaceAll('\n', ' ').trim();
+        debugPrint('BLE: connected on attempt $attempt, adapter '
+            'ATZ="${one(info.version)}" ATRV="${one(info.voltage)}"');
         _adapterVoltage = null;
         _client!.onAdapterVoltage = _onAdapterVoltage;
         try {
@@ -1516,12 +1523,14 @@ class ConnectionService extends ChangeNotifier {
       }
     }
 
+    debugPrint('BLE: connect failed after 3 attempts — $lastError');
     _setStatus(ConnectionStatus.error,
         msg: 'Не удалось подключиться (3 попытки): $lastError');
     return false;
   }
 
   Future<void> disconnect() async {
+    debugPrint('BLE: disconnect requested by the app');
     await stopPolling();
     try { await _ble?.disconnect(); } catch (_) {}
     _client = null;
@@ -1538,6 +1547,9 @@ class ConnectionService extends ChangeNotifier {
   /// Elm327Ble.onDisconnected is guarded by wasConnected to avoid
   /// double-firing.
   void _handleBleDisconnect() {
+    // v0.2.39+238: журнал соединения — разрыв с причиной и состоянием.
+    debugPrint('BLE: link lost (${_ble?.lastDisconnectReason ?? 'unknown'}), '
+        'polling=$_polling trip=${_currentTripId ?? '-'}');
     // stopPolling internally — but DON'T await, this fires from a stream
     // listener. Cancel polling flag, let loop exit naturally.
     _polling = false;
@@ -1731,6 +1743,7 @@ class ConnectionService extends ChangeNotifier {
     }
     _lastAutoConnectAttempt = now;
 
+    debugPrint('BLE: auto-reconnect start ($savedId)');
     _setStatus(ConnectionStatus.scanning,
         msg: 'Авто-подключение к $savedId...');
     try {
@@ -1743,12 +1756,15 @@ class ConnectionService extends ChangeNotifier {
         }
       }
       if (match == null) {
+        debugPrint('BLE: auto-reconnect — saved adapter not in scan '
+            '(${results.length} found)');
         _setStatus(ConnectionStatus.disconnected,
             msg: 'Сохранённый адаптер не найден (вне зоны?)');
         return false;
       }
       return await connect(match);
     } catch (e) {
+      debugPrint('BLE: auto-reconnect failed — $e');
       _setStatus(ConnectionStatus.error, msg: 'Авто-подключение: $e');
       return false;
     }

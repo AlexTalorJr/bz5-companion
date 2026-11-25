@@ -36,6 +36,7 @@ import '../data/database.dart';
 import 'bg_trip_builder.dart';
 import 'cell_pair.dart';
 import 'energy_split_service.dart';
+import 'energy_dump_store.dart';
 import 'charge_state.dart';
 import 'firehose_check.dart';
 import 'hal_bg_journal.dart';
@@ -1766,6 +1767,11 @@ class HalTelemetryService extends ChangeNotifier
     if (name == 'gb_cycle_regen_kwh') _chargedCounter.feed(d);
     // v0.2.38+237: бортовая сеть 12 В — в суммы поездки («Прочее»).
     if (name == 'dcdc_load_current_a') _eventEnergy?.addBoard12(d);
+    // v0.2.39+238: и в буфер сырых событий — с меткой последнего события HAL.
+    if (name == 'dcdc_load_current_a') {
+      final t = _eventEnergy?.lastTsMs;
+      if (t != null) _energyRing.add(t, name, d);
+    }
     if (_fhChargeNames.contains(name)) _trackChargeStage();
   }
 
@@ -1870,6 +1876,91 @@ class HalTelemetryService extends ChangeNotifier
     final d = halChargeSessionSocDeltaPct;
     if (d == null || d <= 0) return null;
     return d * _halPackCapacityKwh / 100.0;
+  }
+
+  // ── v0.2.39+238 — «ЗАПАСЕНО ЗА СТОЯНКУ» ──
+  //
+  // Правило — [StoredEnergyTracker] (charge_state.dart). Здесь: последнее
+  // значение остатка и сумма запаса переживают смерть процесса (голова
+  // выключается вместе с машиной), признак перерыва и сброс в начале
+  // поездки. Настройки пишутся только на смену значения (шаг 0.1 кВт·ч),
+  // в архив экспорта они не входят: после переустановки первый кадр
+  // становится базой, и старое значение из архива запаса не даст.
+  static const String _kStoredLastKey = 'stored_energy_last_kwh';
+  static const String _kStoredLastAtKey = 'stored_energy_last_at_ms';
+  static const String _kStoredSumKey = 'stored_energy_kwh';
+  final StoredEnergyTracker _storedEnergy = StoredEnergyTracker();
+
+  /// Время последнего кадра остатка, мс настенных часов. Монотонные часы
+  /// не годятся: сон головы они не считают.
+  int? _storedLastFrameMs;
+
+  /// Запасено за стоянку, кВт·ч (оценка BMS); null — зарядки на стоянке
+  /// не было или уже началась поездка. Показывается на экране зарядки и
+  /// строкой на дашборде.
+  double? get halStoredEnergyKwh => _storedEnergy.storedKwh;
+
+  Future<void> _loadStoredEnergy(SharedPreferences prefs) async {
+    _storedEnergy.load(
+      lastKwh: prefs.getDouble(_kStoredLastKey),
+      storedKwh: prefs.getDouble(_kStoredSumKey),
+    );
+    _storedLastFrameMs = prefs.getInt(_kStoredLastAtKey);
+    if (_storedEnergy.storedKwh != null) {
+      debugPrint('Charge: stored while parked (restored) '
+          '${_storedEnergy.storedKwh!.toStringAsFixed(1)} kWh');
+    }
+  }
+
+  void _feedStoredEnergy(double d) {
+    if (_firehoseCheck.state == FirehoseCheck.mismatch) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final prev = _storedLastFrameMs;
+    // Назад часы идут при приходе времени GPS после загрузки — это тоже
+    // перерыв.
+    final afterBreak = prev == null ||
+        (now - prev).abs() >= StoredEnergyTracker.breakSeconds * 1000;
+    _storedLastFrameMs = now;
+    final before = _storedEnergy.lastKwh;
+    final rise = _storedEnergy.feed(d, afterBreak: afterBreak);
+    final last = _storedEnergy.lastKwh;
+    if (rise != null) {
+      debugPrint('Charge: stored while parked +${rise.toStringAsFixed(1)} kWh '
+          '(remaining ${(last! - rise).toStringAsFixed(1)} → '
+          '${last.toStringAsFixed(1)}, total '
+          '${_storedEnergy.storedKwh!.toStringAsFixed(1)} kWh)');
+      _persistStoredEnergy(sum: true);
+      _scheduleNotify();
+    } else if (last != before) {
+      _persistStoredEnergy(sum: false);
+    }
+  }
+
+  void _persistStoredEnergy({required bool sum}) {
+    final last = _storedEnergy.lastKwh;
+    final at = _storedLastFrameMs;
+    final stored = _storedEnergy.storedKwh;
+    SharedPreferences.getInstance().then((prefs) async {
+      if (last != null) await prefs.setDouble(_kStoredLastKey, last);
+      if (at != null) await prefs.setInt(_kStoredLastAtKey, at);
+      if (sum) {
+        if (stored != null) {
+          await prefs.setDouble(_kStoredSumKey, stored);
+        } else {
+          await prefs.remove(_kStoredSumKey);
+        }
+      }
+    }).catchError((Object e) {
+      debugPrint('Charge: stored energy not persisted — $e');
+    });
+  }
+
+  /// Началась поездка: запас стоянки больше не показывается.
+  void _clearStoredEnergy() {
+    if (_storedEnergy.storedKwh == null) return;
+    _storedEnergy.clear();
+    _persistStoredEnergy(sum: true);
+    _scheduleNotify();
   }
 
   /// v0.2.37+236: сумма «залито» идёт с начала зарядки? Отвечает тот же
@@ -2598,6 +2689,11 @@ class HalTelemetryService extends ChangeNotifier
   void _startHalTrip() {
     _resetHalTripAggregates();
     _halTripActive = true;
+    // v0.2.39+238: «запасено за стоянку» — до начала первой поездки.
+    _clearStoredEnergy();
+    // v0.2.39+238: буфер сырых событий — с начала поездки.
+    _energyRing.clear();
+    _energyDumpDone = false;
     _halTripStartedAt = DateTime.now();
     // v0.2.34+233: событийный счёт — с начала поездки, минуты от него же.
     _eventEnergy =
@@ -3131,6 +3227,8 @@ class HalTelemetryService extends ChangeNotifier
       }
       _feedFirehose(e, d);
       _consumeFirehose(e.name, d);
+      // v0.2.39+238: остаток 0x2EE — «запасено за стоянку».
+      if (e.name == 'gb_remaining_energy_kwh') _feedStoredEnergy(d);
     } else {
       _logHalDiag(e, d, every: Duration.zero);
     }
@@ -3176,6 +3274,9 @@ class HalTelemetryService extends ChangeNotifier
     final acc = _eventEnergy;
     if (acc == null) return;
     acc.add(e.name, v, e.ts);
+    // v0.2.39+238: буфер сырых событий и его сброс на шумовой минуте.
+    _energyRing.add(e.ts, e.name, v);
+    _maybeDumpEnergyRing(acc);
     final db = _diagDb;
     final id = _halTripDbId;
     if (db == null ||
@@ -3187,6 +3288,40 @@ class HalTelemetryService extends ChangeNotifier
       ..reset()
       ..start();
     unawaited(_queueEventEnergyWrite(db, id, acc.snapshot()));
+  }
+
+  /// v0.2.39+238: последние 90 с токов и напряжения поездки.
+  final EnergyEventRing _energyRing = EnergyEventRing();
+
+  /// Сброс буфера уже был в этой поездке.
+  bool _energyDumpDone = false;
+
+  /// Первая закрытая шумовая минута поездки (ниже −0.5 кВт) — буфер в
+  /// файл экспорта, один раз за поездку.
+  void _maybeDumpEnergyRing(EventEnergyAccumulator acc) {
+    if (_energyDumpDone || acc.closedNoiseMinutes == 0) return;
+    _energyDumpDone = true;
+    final start = _halTripStartedAt;
+    final minute = acc.lastNoiseMinute;
+    final kw = acc.lastNoiseKw;
+    String two(int n) => n.toString().padLeft(2, '0');
+    final stamp = start == null
+        ? '${acc.startMs}'
+        : '${start.year}${two(start.month)}${two(start.day)}-'
+            '${two(start.hour)}${two(start.minute)}${two(start.second)}';
+    final fileName = 'dump_${stamp}_m${minute ?? '-'}.csv';
+    final rows = _energyRing.length;
+    final text = _energyRing.toCsv('# trip=${_halTripDbId ?? '-'} '
+        'started=${start?.toIso8601String() ?? '-'} minute=${minute ?? '-'} '
+        'kw=${kw?.toStringAsFixed(3) ?? '-'} start_ms=${acc.startMs} '
+        'span_ms=${EnergyEventRing.spanMs}');
+    EnergyDumpStore.write(fileName, text).then((_) {
+      debugPrint('EnergySplit: noise minute ${minute ?? '-'} '
+          '(${kw?.toStringAsFixed(2) ?? '-'} kW) — $rows raw events dumped '
+          'to ${EnergyDumpStore.dirName}/$fileName');
+    }).catchError((Object e) {
+      debugPrint('EnergySplit: raw events dump failed — $e');
+    });
   }
 
   /// v0.2.9+208: зеркало одноимённого метода в ConnectionService —
@@ -4134,6 +4269,9 @@ class HalTelemetryService extends ChangeNotifier
 
   Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
+    // v0.2.39+238: до старта потока — первый кадр остатка сравнивается
+    // с последним значением прежнего процесса.
+    await _loadStoredEnergy(prefs);
     _mode = _modeFromString(prefs.getString('hal_source_mode'));
     // v0.1.32+131: UI SOC source. Missing pref → display (cluster match).
     _socSource = _socSourceFromString(prefs.getString('soc_source'));

@@ -541,6 +541,8 @@ class S {
     'dash.packv_live': 'PACK VOLTAGE (LIVE)',
     'dash.nominal': 'NOMINAL',
     'dash.not_charging': 'Not charging',
+    // v0.2.39+238: зарядка на стоянке по остатку BMS, до первой поездки.
+    'dash.stored': 'Stored while parked: +{n} kWh',
     'dash.charging': 'CHARGING',
     'dash.connected': 'Connected',
     'dash.this_session': 'THIS SESSION',
@@ -1292,6 +1294,8 @@ class S {
     'chg.c_vs_min_now': '°C vs min · now {t} °C',
     'chg.c_vs_min': '°C vs min',
     'chg.charged': 'CHARGED',
+    'chg.stored': 'STORED',
+    'chg.stored_hint': 'while parked · BMS estimate',
     'chg.soc_gain': 'SOC GAIN',
     'chg.since_plugin': 'since plug-in',
     // v0.2.14+213: charging-screen redesign strings.
@@ -1858,6 +1862,8 @@ class S {
     'dash.packv_live': 'НАПРЯЖЕНИЕ ПАКА · СЕЙЧАС',
     'dash.nominal': 'НОМИНАЛ',
     'dash.not_charging': 'Не заряжается',
+    // v0.2.39+238: зарядка на стоянке по остатку BMS, до первой поездки.
+    'dash.stored': 'Запасено за стоянку: +{n} kWh',
     'dash.charging': 'ЗАРЯДКА',
     'dash.connected': 'Подключено',
     'dash.this_session': 'ЭТА СЕССИЯ',
@@ -2605,6 +2611,8 @@ class S {
     'chg.c_vs_min_now': '°C по мин · сейчас {t} °C',
     'chg.c_vs_min': '°C по мин',
     'chg.charged': 'ЗАРЯЖЕНО',
+    'chg.stored': 'ЗАПАСЕНО',
+    'chg.stored_hint': 'за стоянку · оценка BMS',
     'chg.soc_gain': 'ПРИРОСТ SOC',
     'chg.since_plugin': 'с момента подключения',
     // v0.2.14+213: строки редизайна экрана зарядки.

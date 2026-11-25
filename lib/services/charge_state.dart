@@ -275,3 +275,94 @@ class OutsideTempCheck {
     _sinceMs = null;
   }
 }
+
+/// v0.2.39+238 — «ЗАПАСЕНО ЗА СТОЯНКУ» ПО ОСТАТКУ 0x2EE.
+///
+/// `gb_remaining_energy_kwh` — оценка BMS запасённой энергии, шаг 0.1
+/// кВт·ч, кадр около 1 Гц. Пока голова спит, кадров нет; зарядка на
+/// стоянке видна как разница между последним значением перед сном и
+/// первым после пробуждения (схема Друга 3, 25.11; на 25 стоянках 13–21.11
+/// без зарядки остаток не менялся, экспорт 25.11 — 23 перехода из 23).
+/// К моменту вставки пистолета счёт не привязан.
+///
+/// Зарядка при работающей голове сюда не идёт (решение владельца 25.11,
+/// вариант А): её показывает «залито» по счётчику 0x2D0. Поэтому рост
+/// засчитывается только после перерыва ([afterBreak] у [feed]): первый
+/// кадр процесса (последнее значение взято из настроек) либо кадр после
+/// паузы потока не короче [breakSeconds]. Короткий пропуск кадров на
+/// DC-зарядке (150 кВт — 0.04 кВт·ч в секунду) запасом не становится.
+///
+/// Скачок больше [minRiseKwh] в любую сторону — кандидат; подтверждает
+/// его следующий кадр в пределах [confirmKwh] от кандидата. Ложный
+/// одиночный кадр (ноль, мусор) не сдвигает последнее значение и не даёт
+/// запаса при возврате к нему.
+///
+/// Сумма копится до [clear] — начала поездки: несколько пробуждений на
+/// одной стоянке складываются.
+class StoredEnergyTracker {
+  static const double minRiseKwh = 0.2;
+  static const double confirmKwh = 0.2;
+  static const int breakSeconds = 120;
+
+  /// Значение за пределами — не кадр остатка (батарея 65.28 кВт·ч).
+  static const double maxKwh = 80;
+
+  double? _last;
+  double? _pend;
+  bool _pendAfterBreak = false;
+  double _stored = 0;
+  bool _has = false;
+  bool _loaded = false;
+
+  /// Последнее принятое значение — его сервис хранит в настройках.
+  double? get lastKwh => _last;
+
+  /// Запасено с начала стоянки; null — зарядки на стоянке не было.
+  double? get storedKwh => _has ? _stored : null;
+
+  /// Сохранённое прежним процессом. До вызова кадры не принимаются:
+  /// первый кадр без прежнего значения стал бы базой, и ночная зарядка
+  /// потерялась бы.
+  void load({double? lastKwh, double? storedKwh}) {
+    _last = lastKwh;
+    _pend = null;
+    _stored = storedKwh ?? 0;
+    _has = storedKwh != null;
+    _loaded = true;
+  }
+
+  /// Кадр остатка. Возвращает подтверждённый рост, засчитанный в запас,
+  /// иначе null.
+  double? feed(double v, {required bool afterBreak}) {
+    if (!_loaded || v <= 0 || v > maxKwh) return null;
+    final last = _last;
+    if (last == null) {
+      _last = v;
+      return null;
+    }
+    if ((v - last).abs() <= minRiseKwh) {
+      _pend = null;
+      _last = v;
+      return null;
+    }
+    final pend = _pend;
+    if (pend == null || (v - pend).abs() > confirmKwh) {
+      _pend = v;
+      _pendAfterBreak = afterBreak;
+      return null;
+    }
+    _pend = null;
+    _last = v;
+    final rise = v - last;
+    if (rise <= 0 || !_pendAfterBreak) return null;
+    _stored += rise;
+    _has = true;
+    return rise;
+  }
+
+  /// Началась поездка: запас стоянки больше не показывается.
+  void clear() {
+    _stored = 0;
+    _has = false;
+  }
+}
