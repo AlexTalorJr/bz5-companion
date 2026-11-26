@@ -25,6 +25,7 @@ library;
 // не висеть до таймаута job'а без единой подсказки.
 
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:drift/native.dart';
 import 'package:flutter/foundation.dart';
@@ -306,6 +307,8 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 50));
     expect(await db.countAtlasSnapshots(), 0);
     expect(svc.atlasLiveBands().map((b) => b.band), contains(60));
+    // +240: события итогов тоже нет — оно ждёт установленного окна.
+    expect(await db.countAtlasReveals(), 0);
 
     // Датчик сошёлся к уличным 4 °C (окно 0). Доезжаем до десятой минуты.
     hal.put('fh_temp_out_c', 4.0);
@@ -319,6 +322,16 @@ void main() {
     // Всё набранное за 10 минут — в окне 0, а не 10.
     expect(rows.single.tempWindowC, 0);
     expect(rows.single.steadySeconds, greaterThan(kBandMinSeconds * 2));
+    // +240: событие итогов — по тому же окну 0, что и снимок (25.11:
+    // событие уходило по предварительному окну 10).
+    expect(await _waitFor(() async => (await db.countAtlasReveals()) >= 1),
+        isTrue,
+        reason: 'событие итогов не создано при установлении окна');
+    final reveals = await db.getAtlasRevealsByType('band_matured');
+    expect(reveals, hasLength(1));
+    final p = jsonDecode(reveals.single.payloadJson) as Map<String, dynamic>;
+    expect(p['band'], 60);
+    expect(p['window'], 0);
   });
 
   test('+236: сессия короче 10 минут — окно по последнему показанию в '
@@ -339,6 +352,15 @@ void main() {
     final rows = await db.select(db.atlasSnapshots).get();
     expect(rows, hasLength(1));
     expect(rows.single.tempWindowC, 10);
+    // +240: событие отложенного перехода — при закрытии сессии, по окну
+    // последнего показания в движении.
+    expect(await _waitFor(() async => (await db.countAtlasReveals()) >= 1),
+        isTrue,
+        reason: 'закрытие сессии не создало отложенное событие');
+    final reveals = await db.getAtlasRevealsByType('band_matured');
+    expect(reveals, hasLength(1));
+    final p = jsonDecode(reveals.single.payloadJson) as Map<String, dynamic>;
+    expect(p['window'], 10);
   });
 
   test('+236: наружная температура недостоверна — такты в «t° неизвестна»',

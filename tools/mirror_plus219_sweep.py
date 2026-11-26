@@ -27,6 +27,10 @@ REG = (ROOT / 'lib/data/ecu_registry.dart').read_text()
 
 SILENT = int(re.search(r'kSweepSilentEcuProbes = (\d+);', CONN).group(1))
 LL_MAX = int(re.search(r'kLiveLogMaxDids = (\d+);', CONN).group(1))
+# v0.2.41+240: порции пресетов имён — своя константа экрана (лимит Live Log
+# вырос до 22, порции остались по 10).
+LL = (ROOT / 'lib/screens/live_log.dart').read_text()
+ID_CHUNK = int(re.search(r'_kIdentityChunk = (\d+);', LL).group(1))
 
 fails = []
 
@@ -146,7 +150,7 @@ entries = re.findall(
     r"EcuRegistryEntry\(txId: '([0-9A-F]{3})', rxId: '([0-9A-F]{3})', "
     r"label: '[^']*'(?:, partNumber: '[^']*')?(, detailed: \w+)?\)", REG)
 unnamed = [(tx, rx) for tx, rx, d in entries if not d]
-chunks = [unnamed[i:i + LL_MAX] for i in range(0, len(unnamed), LL_MAX)]
+chunks = [unnamed[i:i + ID_CHUNK] for i in range(0, len(unnamed), ID_CHUNK)]
 check('4a registry has 30 ECUs, 24 unnamed',
       len(entries) == 30 and len(unnamed) == 24)
 check('4b chunks 10 + 10 + 4', [len(c) for c in chunks] == [10, 10, 4])

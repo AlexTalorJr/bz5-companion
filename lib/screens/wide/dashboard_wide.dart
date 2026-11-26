@@ -1281,12 +1281,11 @@ class _RightColumn extends StatelessWidget {
     // UDS-only). The +102 _HalCumulativeView in cells.dart is kept as-is in
     // case a per-module HAL source is ever found.
     final halCumulative = hal.useHalForCellSpread;
-    final exMinV = halCumulative
-        ? (hal.halCellVLowest != null ? hal.halCellVLowest! * 1000 : null)
-        : minV;
-    final exMaxV = halCumulative
-        ? (hal.halCellVHighest != null ? hal.halCellVHighest! * 1000 : null)
-        : maxV;
+    // v0.2.41+240: минимум и максимум — из той же пары, что и разброс на
+    // «Вождении» и «Батарее» ([HalTelemetryService.halCellTripleForDisplay]).
+    final cellPair = halCumulative ? hal.halCellTripleForDisplay : null;
+    final exMinV = halCumulative ? cellPair?.minMv : minV;
+    final exMaxV = halCumulative ? cellPair?.maxMv : maxV;
     final exMinIdx = halCumulative ? hal.halCellIdxLowest?.toInt() : minIdx;
     final exMaxIdx = halCumulative ? hal.halCellIdxHighest?.toInt() : maxIdx;
 

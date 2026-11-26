@@ -97,9 +97,12 @@ class _HalCumulativeView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final svc = context.watch<ConnectionService>();
-    final loV = hal.halCellVLowest; // volts
-    final hiV = hal.halCellVHighest; // volts
-    final spreadMv = hal.halCellSpreadMv; // mV
+    // v0.2.41+240: минимум, максимум и разброс — одна пара на всех
+    // экранах ([HalTelemetryService.halCellTripleForDisplay]).
+    final cellPair = hal.halCellTripleForDisplay;
+    final loV = cellPair == null ? null : cellPair.minMv / 1000.0; // volts
+    final hiV = cellPair == null ? null : cellPair.maxMv / 1000.0; // volts
+    final spreadMv = cellPair?.spreadMv; // mV
     final idxLo = hal.halCellIdxLowest;
     final idxHi = hal.halCellIdxHighest;
     final packTemp = hal.halBatteryTempC;

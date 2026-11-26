@@ -298,6 +298,10 @@ class HalTelemetryService extends ChangeNotifier
     'fh_charging_type': Duration(seconds: 10),
     'fh_temp_out_c': Duration(seconds: 10),
     'gb_cycle_regen_kwh': Duration(seconds: 90),
+    // v0.2.41+240: остаток пака 0x2EE — та же группа gb_*, что и 0x2D0
+    // (на BZ3 раз в 30 с), то же окно. Потребители — запас хода и
+    // «потрачено» поездки ([halRemainingKwh]).
+    'gb_remaining_energy_kwh': Duration(seconds: 90),
     // v0.2.38+237: ток нагрузки 12 В, кадр около 1 Гц на BZ5. Окно — для
     // общего halFresh; потребитель [halBoard12Kw] держит значение по
     // [Board12Hold] (+239: на BZ3 кадр раз в 30 с).
@@ -627,7 +631,9 @@ class HalTelemetryService extends ChangeNotifier
   //
   //   distance     ← Δ HAL trip_a (cluster trip meter A)
   //   energy       ← (startSoc − nowSoc) × capacity, the SAME ΔSOC×kWh
-  //                  method ConnectionService uses (batteryCapacityKwh)
+  //                  method ConnectionService uses (batteryCapacityKwh);
+  //                  v0.2.41+240: remaining 0x2EE first, see
+  //                  halTripEnergyUsedKwh
   //   consumption  ← energy / distance × 100
   //   duration     ← wall clock since start
   //   peak / avg   ← accumulated from HAL speed via the ~1 s tick below
@@ -845,6 +851,13 @@ class HalTelemetryService extends ChangeNotifier
   bool _halTripActive = false;
   DateTime? _halTripStartedAt;
   double? _halTripStartSoc;     // latched start SOC (whole %, smoothed via EMA)
+  /// v0.2.41+240: остаток пака на старте поездки; не null — «потрачено»
+  /// этой поездки считается по остатку 0x2EE целиком ([halTripEnergyUsedKwh]).
+  double? _halTripStartRemKwh;
+  /// v0.2.41+240: поездка переведена на SOC до конца (подхват хвоста с
+  /// прошлым стартом либо firehose стал недостоверным) — остаток в ней
+  /// больше не защёлкивается.
+  bool _halTripRemOff = false;
   /// v0.2.30+229: старт защёлкнут по точному SOC. false — по целому с
   /// приборки (точного ещё не было); тогда первый точный в пределах
   /// [_kStartSocUpgradeWindow] от начала поездки его заменит.
@@ -1401,10 +1414,20 @@ class HalTelemetryService extends ChangeNotifier
   //    here as a const (same as _halPackCapacityKwh above).
   static const double _halNominalConsumptionWhKm = 144.0;
 
+  /// v0.2.41+240 — ОСТАТОК ПАКА ПО BMS (0x2EE `gb_remaining_energy_kwh`),
+  /// кВт·ч; null — кадра нет дольше окна свежести (90 с) или firehose
+  /// недостоверен (тогда поле до `_latest` не доходит). Первый источник
+  /// для запаса хода и «потрачено» поездки; SOC × 65.28 — запасной
+  /// (телефон, BZ без кадра, недостоверный firehose). Остаток не равен
+  /// SOC × ёмкость: экспорты 19–25.11 — около 0.69 кВт·ч на 1 % между 49
+  /// и 99 %, 65.2 кВт·ч при 98.9 %.
+  double? get halRemainingKwh => _fhFresh('gb_remaining_energy_kwh');
+
   double? get halRangeKm {
     final soc = halSocPct;
     if (soc == null) return null;
-    final remainingKwh = _halPackCapacityKwh * soc / 100.0;
+    // v0.2.41+240: остаток BMS первым, SOC × ёмкость — запасной.
+    final remainingKwh = halRemainingKwh ?? _halPackCapacityKwh * soc / 100.0;
 
     // Live HAL-trip consumption: only trust it once the trip is old enough
     // for the ΔSOC/distance ratio to settle (≥5 min, same gate as the OBD2
@@ -1668,12 +1691,14 @@ class HalTelemetryService extends ChangeNotifier
   /// Смена этапа — строка app_log и перерисовка; открытие и закрытие
   /// сессии счётчика. Зовётся на каждом значении зарядных полей firehose
   /// и на событиях HAL, от которых зависит этап или запасной путь.
-  void _trackChargeStage() {
+  /// v0.2.41+240: [storedRise] — подтверждён рост остатка после сна
+  /// ([_feedStoredEnergy]): зарядка в этом подключении шла.
+  void _trackChargeStage({bool storedRise = false}) {
     final i = _chargeInputs;
     // Память подключения — до расчёта этапа: он её читает.
     _chargedThisPlugIn = _running &&
         nextChargedThisPlugIn(_chargedThisPlugIn,
-            deviceState: i.ds, gun: i.gun);
+            deviceState: i.ds, gun: i.gun, storedRise: storedRise);
     final stage = halChargeStage;
     if (!_chargeStageEverLogged || stage != _chargeStageLogged) {
       debugPrint('Charge: stage ${stage?.name ?? 'unknown'}'
@@ -1746,6 +1771,8 @@ class HalTelemetryService extends ChangeNotifier
     'fh_charging_type': (0, 15),
     'fh_temp_out_c': (-50, 60),
     'gb_cycle_regen_kwh': (0, 6553.5),
+    // v0.2.41+240: остаток пака, шаг 0.1 кВт·ч (батарея 65.28).
+    'gb_remaining_energy_kwh': (0, StoredEnergyTracker.maxKwh),
     // v0.2.38+237: ток нагрузки 12 В (8 бит × 0.5 А).
     'dcdc_load_current_a': (0, 127.5),
   };
@@ -1948,6 +1975,8 @@ class HalTelemetryService extends ChangeNotifier
           '${last.toStringAsFixed(1)}, total '
           '${_storedEnergy.storedKwh!.toStringAsFixed(1)} kWh)');
       _persistStoredEnergy(sum: true);
+      // v0.2.41+240: пистолет вставлен после ночной зарядки — «закончена».
+      _trackChargeStage(storedRise: true);
       _scheduleNotify();
     } else if (last != before) {
       _persistStoredEnergy(sum: false);
@@ -2241,19 +2270,34 @@ class HalTelemetryService extends ChangeNotifier
         windowMs: kCellPairWindowLiveMs,
       );
 
-  /// Разброс для ПОКАЗА. Здесь политика владельца (04.08): прочерк на
-  /// живом приборе заставляет нижнюю строку прыгать, поэтому при
-  /// непригодной паре показывается ноль, а не пустота. В базу этот ноль не
-  /// уезжает — запись идёт через [halCellTripleForRecord], который в том же
-  /// случае молчит.
-  ///
-  /// Различение сохранено: данных нет вовсе → `null`, и карточка прячется,
-  /// как и раньше (нет HAL — нет карточки, а не прочерк). Ноль означает
-  /// «поток жив, но одномоментной пары в этот момент нет».
-  double? get halCellSpreadMv {
-    if (halCellVLowest == null || halCellVHighest == null) return null;
-    return halCellTripleForRecord?.spreadMv ?? 0;
+  /// v0.2.41+240 — ТРОЙКА ДЛЯ ПОКАЗА, ОДНА НА ВСЕ ЭКРАНЫ. «Вождение»,
+  /// «Батарея» и «Автомобиль» берут минимум, максимум и разброс отсюда;
+  /// до +240 «Автомобиль» вычитал удержанные min и max без пары.
+  /// Политика владельца 26.11 (заменяет 04.08, где был ноль): годной
+  /// пары нет — держится последняя годная не дольше
+  /// [_kCellDisplayHoldMs], затем null (прочерк). Время — монотонные часы.
+  /// В базу идёт только настоящая пара ([halCellTripleForRecord]).
+  CellTriple? get halCellTripleForDisplay {
+    final t = halCellTripleForRecord;
+    final now = _cellDisplayClock.elapsedMilliseconds;
+    if (t != null) {
+      _cellDisplayPair = t;
+      _cellDisplayPairMs = now;
+      return t;
+    }
+    final at = _cellDisplayPairMs;
+    if (at != null && now - at <= _kCellDisplayHoldMs) return _cellDisplayPair;
+    return null;
   }
+
+  static const int _kCellDisplayHoldMs = 10000;
+  CellTriple? _cellDisplayPair;
+  int? _cellDisplayPairMs;
+  final Stopwatch _cellDisplayClock = Stopwatch()..start();
+
+  /// Разброс для показа, мВ — из [halCellTripleForDisplay]; null — пары
+  /// нет дольше удержания (прочерк) либо данных нет вовсе.
+  double? get halCellSpreadMv => halCellTripleForDisplay?.spreadMv;
 
   bool get useHalForCellSpread =>
       _useHal('cell_v_lowest') && _useHal('cell_v_highest');
@@ -2556,6 +2600,8 @@ class HalTelemetryService extends ChangeNotifier
       _halTripStartSoc = soc;
       _halTripStartSocPrecise =
           _heldValue('soc_precise', _socPreciseHold) != null;
+      // v0.2.41+240: остаток — в тот же момент, что и SOC.
+      if (!_halTripRemOff) _halTripStartRemKwh = halRemainingKwh;
       // v0.1.29+91: back-fill the DB row's start_soc once we have it (the row
       // was opened with a null anchor). Same pattern as the OBD2 tracker's
       // updateTripStartAnchors. Best-effort; null odo leaves that column be.
@@ -2586,6 +2632,26 @@ class HalTelemetryService extends ChangeNotifier
         _halTripMinSoc = p;
         _halTripMaxSoc = p;
         _backfillHalTripStart();
+      }
+    }
+    // v0.2.41+240 — ОСТАТОК ПРИШЁЛ ПОЗЖЕ SOC. На BZ3 группа gb_* идёт
+    // раз в 30 с, и SOC защёлкивается раньше первого кадра остатка. Окно —
+    // то же, что у замены целого SOC точным (две минуты): позже остаток
+    // уже ушёл от старта. Поездка с этого кадра считается по остатку,
+    // сглаживание — заново; энергия первых секунд в неё не входит, как и
+    // при замене SOC.
+    if (_halTripStartSoc != null &&
+        _halTripStartRemKwh == null &&
+        !_halTripRemOff) {
+      final r = halRemainingKwh;
+      final started = _halTripStartedAt;
+      if (r != null &&
+          started != null &&
+          DateTime.now().difference(started) <= _kStartSocUpgradeWindow) {
+        _halTripStartRemKwh = r;
+        _halEnergyEma = null;
+        debugPrint('HAL trip: energy by remaining 0x2EE, start '
+            '${r.toStringAsFixed(1)} kWh (late frame)');
       }
     }
     // trip_a may also have been null at start — latch it once it arrives so
@@ -2726,6 +2792,8 @@ class HalTelemetryService extends ChangeNotifier
     _eventEnergy!.firehoseStatus = _firehoseCheck.state;
     _halTripStartSoc = null;      // latched later, on first valid SOC frame
     _halTripStartSocPrecise = false;
+    _halTripStartRemKwh = null;   // v0.2.41+240: вместе со стартом SOC
+    _halTripRemOff = false;
     _halSpeedStartConfirmStart = null; // v0.1.29+104: clear speed-start clock
     _halStartOdoWatch = null;     // v0.1.89+188: опорный одометр живёт только между поездками
     _halLastAliveFlush = null;    // v0.1.29+106: flush promptly for the new trip
@@ -2918,6 +2986,10 @@ class HalTelemetryService extends ChangeNotifier
   /// число, которое врёт вниз и выглядит правдоподобно.
   void _adoptJoinedTail(_HalJoinTail j) {
     _halTripStartedAt = j.start;
+    // v0.2.41+240: старт SOC берётся из кластера в прошлом, остатка на тот
+    // момент нет — поездка считается по SOC целиком.
+    _halTripStartRemKwh = null;
+    _halTripRemOff = true;
     // v0.1.93+192 — ЯКОРЯ БЕРУТСЯ ИЗ КЛАСТЕРА, А НЕ ДОСТРАИВАЮТСЯ.
     //
     // Здесь стояло `??=` с обоснованием «живой старт мог успеть
@@ -3052,6 +3124,8 @@ class HalTelemetryService extends ChangeNotifier
     _halTripStartedAt = null;
     _halTripStartSoc = null;
     _halTripStartSocPrecise = false;
+    _halTripStartRemKwh = null; // v0.2.41+240
+    _halTripRemOff = false;
     _halTripStartTripA = null;
     // v0.1.29+103: clear distance accumulator / last-seen on trip close.
     _halTripDistAccumKm = 0;
@@ -3156,8 +3230,21 @@ class HalTelemetryService extends ChangeNotifier
     // по hal_samples. Закрытие по началу зарядки (asOf) — суммы последнего
     // движения; если их нет, суммы не пишутся (минутные остаются).
     final ev = _eventEnergyAt(asOf);
+    // v0.2.41+240: источник «потрачено» и та же величина по SOC — для
+    // сверки по экспорту; ключи короткие, extra заменяется на сервере целиком.
+    final s0 = _halTripStartSoc;
+    final s1 = asOf?.soc ?? halSocForTrip;
+    final eSrc = jsonEncode({
+      'v': 1,
+      'esrc': _halTripStartRemKwh != null ? 'rem' : 'soc',
+      if (_halTripStartRemKwh != null) 'rem0': _halTripStartRemKwh,
+      if (s0 != null && s1 != null && s0 > s1)
+        'e_soc': ((s0 - s1) * _halPackCapacityKwh / 100.0 * 1000).round() /
+            1000,
+    });
     // Fire-and-forget; a DB error must never disturb the stream/lifecycle.
     (ev == null ? Future<void>.value() : _queueEventEnergyWrite(db, id, ev))
+        .then((_) => db.mergeTripExtra(id, eSrc))
         .then((_) => db.endTrip(
           id,
           endSoc: a.endSoc,
@@ -3267,7 +3354,17 @@ class HalTelemetryService extends ChangeNotifier
           : 'Firehose: control fields match HAL — firehose values trusted');
       _eventEnergy?.firehoseStatus = st;
       // v0.2.37+236: недостоверный firehose не кормит экран и атлас.
-      if (st == FirehoseCheck.mismatch) _dropFirehoseConsumed();
+      if (st == FirehoseCheck.mismatch) {
+        _dropFirehoseConsumed();
+        // v0.2.41+240: «потрачено» поездки — по SOC целиком, с её старта:
+        // смешивать остаток до расхождения и SOC после нельзя.
+        if (_halTripActive && _halTripStartRemKwh != null) {
+          debugPrint('HAL trip: energy back to SOC (firehose untrusted)');
+          _halTripStartRemKwh = null;
+          _halEnergyEma = null;
+        }
+        _halTripRemOff = true;
+      }
     }
     _eventEnergy?.addFirehose(e.name, v);
   }
@@ -4201,15 +4298,28 @@ class HalTelemetryService extends ChangeNotifier
   /// v0.1.29+86: the start SOC is latched late (on the first valid frame
   /// after pull-away), so until then _halTripStartSoc is null and this
   /// returns null → the cell shows "—" honestly rather than a fake 0.
+  ///
+  /// v0.2.41+240: поездка с защёлкнутым остатком ([_halTripStartRemKwh])
+  /// считается по остатку 0x2EE: старт − сейчас. Остаток не свежий —
+  /// держится последнее значение, как при пропуске SOC. Источник один на
+  /// всю поездку; без остатка — прежний ΔSOC × ёмкость.
   double? get halTripEnergyUsedKwh {
     if (!_halTripActive) return null;
     final start = _halTripStartSoc;
     if (start == null) return null; // start SOC not captured yet → "—"
-    final now = halSocForTrip;
-    if (now == null || now >= start) {
-      return _halEnergyEma; // hold last smoothed value through transient
+    final double raw;
+    final r0 = _halTripStartRemKwh;
+    if (r0 != null) {
+      final r = halRemainingKwh;
+      if (r == null || r >= r0) return _halEnergyEma;
+      raw = r0 - r;
+    } else {
+      final now = halSocForTrip;
+      if (now == null || now >= start) {
+        return _halEnergyEma; // hold last smoothed value through transient
+      }
+      raw = (start - now) * _halPackCapacityKwh / 100.0;
     }
-    final raw = (start - now) * _halPackCapacityKwh / 100.0;
     _halEnergyEma = _halEnergyEma == null
         ? raw
         : _halEnergyEma! + _halEnergyEmaAlpha * (raw - _halEnergyEma!);

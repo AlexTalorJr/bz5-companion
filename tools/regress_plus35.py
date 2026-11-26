@@ -12741,12 +12741,12 @@ if int(pv) >= 219:
         len(_cu4_entries) == 30,
         len(_cu4_unnamed) == 24,
         _cu4_rx_ok,
-        'static const int kLiveLogMaxDids = 10;' in _cu_conn,
+        ('static const int kLiveLogMaxDids = 10;' if int(pv) < 240 else 'static const int kLiveLogMaxDids = 22;') in _cu_conn,
         'didSpecs.length > kLiveLogMaxDids' in _cu_conn,
         'if (_entries.length < ConnectionService.kLiveLogMaxDids)' in _cu_ll,
         'allBz5Ecus.where((e) => e.detailed == null).toList();' in _cu_ll,
         ".map((e) => (e.txId, e.rxId, '0105'))" in _cu_ll,
-        '.take(ConnectionService.kLiveLogMaxDids)' in _cu_ll,
+        ('.take(ConnectionService.kLiveLogMaxDids)' if int(pv) < 240 else '.take(_kIdentityChunk)') in _cu_ll,
         all(f'_LivelogPreset.identity{k + 1} => _identityChunk({k}),' in _cu_ll
             for k in range(3)),
         'ConnectionService.rxForTx(upper)' in _cu_ll,
@@ -13799,6 +13799,10 @@ if int(pv) >= 229:
     # минимума/максимума и обновлением строки; маркер в app_log.
     _dc2_i = _dc_hts.find('} else if (_halTripStartSoc != null && !_halTripStartSocPrecise) {')
     _dc2_br = _dc_hts[_dc2_i:_dc2_i + 900] if _dc2_i > -1 else ''
+    # v0.2.41+240: за веткой стоит поздняя защёлка остатка с той же
+    # проверкой окна — ветка кончается перед ней.
+    _dc2_e = _dc2_br.find('_halTripStartRemKwh == null &&')
+    if _dc2_e > -1: _dc2_br = _dc2_br[:_dc2_e]
     _dc2 = [
         "_halTripStartSoc = soc;\n_halTripStartSocPrecise =\n_heldValue('soc_precise', _socPreciseHold) != null;" in _dc_hts,
         _dc2_i > -1 and 'DateTime.now().difference(started) <= _kStartSocUpgradeWindow) {' in _dc2_br,
@@ -14016,8 +14020,8 @@ if int(pv) >= 230:
 
     # DE9: ПРЕСЕТЫ 744.
     _de9 = [
-        "_LivelogPreset.climate744 => const [\n('744', '74C', '0007'),\n('744', '74C', '0008'),\n('744', '74C', '0009'),\n('744', '74C', '0010'),\n('744', '74C', '0011'),\n('744', '74C', '0014'),\n('744', '74C', '0022'),\n]," in _de_ll,
-        "onPressed: () => _applyPreset(_LivelogPreset.climate744)," in _de_ll,
+        ('_LivelogPreset.climate744' not in _de_ll and '_LivelogPreset.climate22 => const [' in _de_ll) if int(pv) >= 240 else "_LivelogPreset.climate744 => const [\n('744', '74C', '0007'),\n('744', '74C', '0008'),\n('744', '74C', '0009'),\n('744', '74C', '0010'),\n('744', '74C', '0011'),\n('744', '74C', '0014'),\n('744', '74C', '0022'),\n]," in _de_ll,
+        ("onPressed: () => _applyPreset(_LivelogPreset.climate22)," if int(pv) >= 240 else "onPressed: () => _applyPreset(_LivelogPreset.climate744),") in _de_ll,
         ("txList: ['744'],\nstartDid: '0400',\nendDid: '0FFF'," in _de_sw and "txList: ['744'],\nstartDid: '1000',\nendDid: '1FFF'," in _de_sw) if int(pv) < 231 else
         ("txList: ['744'],\nstartDid: '0400',\nendDid: '1FFF',\nblockSize: 0x400," in _de_sw),
     ]
@@ -14212,7 +14216,7 @@ if int(pv) >= 233:
         # v0.2.35+234: выбор сумм на закрытии — _eventEnergyAt (DI3).
         ('final ev = asOf != null ? asOf.eventEnergy : _eventEnergy?.snapshot();' in _dh2_fin) if int(pv) < 234 else
         ('final ev = _eventEnergyAt(asOf);' in _dh2_fin and 'EventEnergySums? _eventEnergyAt(_HalStopSnapshot? asOf) =>\nasOf != null ? asOf.eventEnergy : _eventEnergy?.snapshot();' in _dh_hts),
-        '(ev == null ? Future<void>.value() : _queueEventEnergyWrite(db, id, ev))\n.then((_) => db.endTrip(' in _dh2_fin,
+        ('(ev == null ? Future<void>.value() : _queueEventEnergyWrite(db, id, ev))\n.then((_) => db.endTrip(' if int(pv) < 240 else '(ev == null ? Future<void>.value() : _queueEventEnergyWrite(db, id, ev))\n.then((_) => db.mergeTripExtra(id, eSrc))\n.then((_) => db.endTrip(') in _dh2_fin,
         'eventEnergy: _eventEnergy?.snapshot(),' in _dh_hts,
         '_halTripDbId = null;\n_eventEnergy = null;' in _dh_hts,
         "String toExtraPatch() =>\njsonEncode({'v': 1, extraKey: toJson()});" in _dh_es and "static const String extraKey = 'evE';" in _dh_es,
@@ -14579,7 +14583,7 @@ if int(pv) >= 236:
     _dk2_get = _dk_fn(_dk_hts, 'ChargeStage? get halChargeStage {')
     _dk2_con = _dk_fn(_dk_hts, 'bool? get halChargerConnected {')
     _dk2_use = _dk_fn(_dk_hts, 'void _consumeFirehose(String name, double d) {')
-    _dk2_trk = _dk_fn(_dk_hts, 'void _trackChargeStage() {')
+    _dk2_trk = _dk_fn(_dk_hts, 'void _trackChargeStage() {' if int(pv) < 240 else 'void _trackChargeStage({bool storedRise = false}) {')
     _dk2_prs = _dk_fn(_dk_hts, 'void _trackChargePresence(String name, double v) {')
     _dk2 = [
         'enum ChargeStage {\nnone,\nplugged,\nhandshake,\ncharging,\nfinished,\n}' in _dk_cs,
@@ -14587,16 +14591,16 @@ if int(pv) >= 236:
         # Память подключения: ставят 1 и 2, снимает только «пистолета нет»;
         # ведёт её _trackChargeStage до расчёта этапа, сбрасывают старт и
         # остановка потока и сброс флагов кабеля.
-        and "if (gun != null && gun.round() == 1) return false;\nif (deviceState != null) {\nfinal int ds = deviceState.round();\nif (ds == 1 || ds == 2) return true;\n}\nreturn prev;" in _dk_fn(_dk_cs, 'bool nextChargedThisPlugIn(bool prev, {double? deviceState, double? gun}) {')
-        and -1 < _dk2_trk.find('_chargedThisPlugIn = _running &&\nnextChargedThisPlugIn(_chargedThisPlugIn,\ndeviceState: i.ds, gun: i.gun);') < _dk2_trk.find('final stage = halChargeStage;')
+        and ("if (gun != null && gun.round() == 1) return false;\nif (deviceState != null) {\nfinal int ds = deviceState.round();\nif (ds == 1 || ds == 2) return true;\n}\nreturn prev;" in _dk_fn(_dk_cs, 'bool nextChargedThisPlugIn(bool prev, {double? deviceState, double? gun}) {') if int(pv) < 240 else "if (gun != null && gun.round() == 1) return false;\nif (storedRise) return true;\nif (deviceState != null) {\nfinal int ds = deviceState.round();\nif (ds == 1 || ds == 2) return true;\n}\nreturn prev;" in _dk_fn(_dk_cs, 'bool nextChargedThisPlugIn(bool prev,\n{double? deviceState, double? gun, bool storedRise = false}) {'))
+        and -1 < _dk2_trk.find(('_chargedThisPlugIn = _running &&\nnextChargedThisPlugIn(_chargedThisPlugIn,\ndeviceState: i.ds, gun: i.gun);' if int(pv) < 240 else '_chargedThisPlugIn = _running &&\nnextChargedThisPlugIn(_chargedThisPlugIn,\ndeviceState: i.ds, gun: i.gun, storedRise: storedRise);')) < _dk2_trk.find('final stage = halChargeStage;')
         and '_gunConnectLastVal = null;\n_chargedThisPlugIn = false;' in _dk_hts and _dk_hts.count('_chargedThisPlugIn = false;') == 4,
         "final fds = _fhFresh('fh_charging_device_state');\nfinal fgun = _fhFresh('fh_charging_gun_connect_state');" in _dk2_in and "ds: fds ?? halValue('charging_device_state')," in _dk2_in and "gun: fgun != null ? fgun + 1 : halValue('charging_gun_connect_state')," in _dk2_in and 'double? _fhFresh(String name) => halFresh(name) ? halValue(name) : null;' in _dk_hts,
         'if (!_running) return null;\nfinal i = _chargeInputs;\nreturn chargeStageOf(\ndeviceState: i.ds,\ngun: i.gun,\nchargedThisPlugIn: _chargedThisPlugIn,\n);' in _dk2_get and 'if (!_running) return false;\nfinal stage = halChargeStage;\nif (stage != null) return stage == ChargeStage.charging;' in _dk_fn(_dk_hts, 'bool get halChargingActive {'),
         'final stage = halChargeStage;\nif (stage != null) return stage != ChargeStage.none;\nfinal gun = halValue(\'charging_gun_connect_state\');' in _dk2_con,
         "String? get halChargerTypeLabel => chargeTypeOf(\ngun: _chargeInputs.gun,\nfhType: _fhFresh('fh_charging_type'),\n);" in _dk_hts,
         'final guard = _fhConsumed[name];\nif (guard == null) return;\nif (_firehoseCheck.state == FirehoseCheck.mismatch) return;\nif (d < guard.$1 || d > guard.$2) return;' in _dk2_use and '_latest[name] = (value: d, at: DateTime.now());' in _dk2_use and 'if (_fhChargeNames.contains(name)) _trackChargeStage();' in _dk2_use and _dk_hts.count('_consumeFirehose(') == 2,
-        ("static const Map<String, (double, double)> _fhConsumed = {\n'fh_charging_device_state': (0, 15),\n'fh_charging_gun_connect_state': (0, 7),\n'fh_charging_type': (0, 15),\n'fh_temp_out_c': (-50, 60),\n'gb_cycle_regen_kwh': (0, 6553.5),\n" + ("};" if int(pv) < 237 else "'dcdc_load_current_a': (0, 127.5),\n};")) in _dk_hts and all(("'" + n + "': Duration(seconds: 10),") in _dk_hts for n in ('fh_charging_device_state', 'fh_charging_gun_connect_state', 'fh_charging_type', 'fh_temp_out_c')) and "'gb_cycle_regen_kwh': Duration(seconds: 90)," in _dk_hts,
-        'if (st == FirehoseCheck.mismatch) _dropFirehoseConsumed();' in _dk_hts and ('void _dropFirehoseConsumed() {\nfor (final n in _fhConsumed.keys) {\n_latest.remove(n);\n}\n_trackChargeStage();\n}' if int(pv) < 237 else ('void _dropFirehoseConsumed() {\nfor (final n in _fhConsumed.keys) {\n_latest.remove(n);\n}\n_eventEnergy?.clearBoard12();\n_trackChargeStage();\n}' if int(pv) < 239 else 'void _dropFirehoseConsumed() {\nfor (final n in _fhConsumed.keys) {\n_latest.remove(n);\n}\n_board12Hold.reset();\n_eventEnergy?.clearBoard12();\n_trackChargeStage();\n}')) in _dk_hts,
+        ("static const Map<String, (double, double)> _fhConsumed = {\n'fh_charging_device_state': (0, 15),\n'fh_charging_gun_connect_state': (0, 7),\n'fh_charging_type': (0, 15),\n'fh_temp_out_c': (-50, 60),\n'gb_cycle_regen_kwh': (0, 6553.5),\n" + ("};" if int(pv) < 237 else ("'dcdc_load_current_a': (0, 127.5),\n};" if int(pv) < 240 else "'gb_remaining_energy_kwh': (0, StoredEnergyTracker.maxKwh),\n'dcdc_load_current_a': (0, 127.5),\n};"))) in _dk_hts and all(("'" + n + "': Duration(seconds: 10),") in _dk_hts for n in ('fh_charging_device_state', 'fh_charging_gun_connect_state', 'fh_charging_type', 'fh_temp_out_c')) and "'gb_cycle_regen_kwh': Duration(seconds: 90)," in _dk_hts,
+        ('if (st == FirehoseCheck.mismatch) _dropFirehoseConsumed();' if int(pv) < 240 else 'if (st == FirehoseCheck.mismatch) {\n_dropFirehoseConsumed();') in _dk_hts and ('void _dropFirehoseConsumed() {\nfor (final n in _fhConsumed.keys) {\n_latest.remove(n);\n}\n_trackChargeStage();\n}' if int(pv) < 237 else ('void _dropFirehoseConsumed() {\nfor (final n in _fhConsumed.keys) {\n_latest.remove(n);\n}\n_eventEnergy?.clearBoard12();\n_trackChargeStage();\n}' if int(pv) < 239 else 'void _dropFirehoseConsumed() {\nfor (final n in _fhConsumed.keys) {\n_latest.remove(n);\n}\n_board12Hold.reset();\n_eventEnergy?.clearBoard12();\n_trackChargeStage();\n}')) in _dk_hts,
         "debugPrint('Charge: stage ${stage?.name ?? 'unknown'}'" in _dk2_trk and '_chargeStageLogged = stage;\n_scheduleNotify();' in _dk2_trk and "name != 'charging_device_state') {\nreturn;\n}\n_trackChargeStage();" in _dk2_prs,
         "'charging_device_state': (0, 15)," in _dk_hts and "static const _kChargeEventNames = {\n'charging_gun_connect_state',\n'charger_connect_state',\n'charging_device_state',\n'charging_working_status',\n};" in _dk_hts and '_logHalDiag(e, d,\nevery: _kChargeEventNames.contains(e.name)\n? Duration.zero\n: _halDiagThrottle);' in _dk_on,
         'final stage = hal.halChargeStage;\nfinal stageWord = switch (stage) {\nChargeStage.plugged => S.of(\'chg.stage_idle\'),\nChargeStage.handshake => S.of(\'chg.stage_wait\'),\nChargeStage.finished => S.of(\'chg.stage_done\'),\n_ => null,\n};' in _dk_ban and 'chargeStageOf' not in _dk_ban and 'chargeStageOf' not in _dk_view and "ChargeStage.plugged => S.of('chg.stage_idle'),\nChargeStage.handshake => S.of('chg.stage_wait'),\nChargeStage.finished => S.of('chg.stage_done')," in _dk_view,
@@ -14929,6 +14933,105 @@ if int(pv) >= 239:
     else: fail(f'DN2 window test drifted: {_dn2}')
 else:
     ok(f"Part DN skipped (build +{pv}, 12 V hold by frame period lands in +239)")
+
+# ─────────────── Part DO — +240: остаток 0x2EE, «закончена» после сна, событие атласа по установленному окну, климат 22 DID, одна пара ячеек ───────────────
+if int(pv) >= 240:
+    _do_rd = lambda pth: re.sub(r'\n\s*\n', '\n', re.sub(r'\n[ \t]+', '\n', _strip_comments_safe((root / pth).read_text())))
+    _do_ht = _do_rd('lib/services/hal_telemetry_service.dart')
+    _do_cs = _do_rd('lib/services/charge_state.dart')
+    _do_ta = _do_rd('lib/services/trip_aggregates.dart')
+    _do_bg = _do_rd('lib/services/bg_trip_builder.dart')
+    _do_sp = _do_rd('lib/services/speed_profile_service.dart')
+    _do_co = _do_rd('lib/services/connection.dart')
+    _do_ll = _do_rd('lib/screens/live_log.dart')
+    _do_sw = _do_rd('lib/screens/sweep.dart')
+    _do_dw = _do_rd('lib/screens/wide/dashboard_wide.dart')
+    _do_ce = _do_rd('lib/screens/cells.dart')
+    _do_t_cs = (root / 'test/charge_state_test.dart').read_text()
+    _do_t_ta = (root / 'test/trip_aggregates_test.dart').read_text() if (root / 'test/trip_aggregates_test.dart').exists() else ''
+    _do_t_sp = (root / 'test/speed_profile_engine_test.dart').read_text()
+
+    # DO1: ОСТАТОК 0x2EE ПЕРВЫМ. Поле в _latest только при доверенном
+    # firehose, окно 90 с (группа gb_*, BZ3 раз в 30 с); запас хода и
+    # «потрачено» поездки — по остатку, SOC — запасной; источник один на
+    # поездку: подхват хвоста и недостоверный firehose переводят её на SOC.
+    _do1_e = _dk_fn(_do_ht, 'double? get halTripEnergyUsedKwh {')
+    _do1 = [
+        "'gb_remaining_energy_kwh': Duration(seconds: 90)," in _do_ht and "'gb_remaining_energy_kwh': (0, StoredEnergyTracker.maxKwh)," in _do_ht,
+        "double? get halRemainingKwh => _fhFresh('gb_remaining_energy_kwh');" in _do_ht,
+        'final remainingKwh = halRemainingKwh ?? _halPackCapacityKwh * soc / 100.0;' in _do_ht,
+        'final r0 = _halTripStartRemKwh;\nif (r0 != null) {\nfinal r = halRemainingKwh;\nif (r == null || r >= r0) return _halEnergyEma;\nraw = r0 - r;\n} else {' in _do1_e and 'raw = (start - now) * _halPackCapacityKwh / 100.0;' in _do1_e,
+        '_heldValue(\'soc_precise\', _socPreciseHold) != null;\nif (!_halTripRemOff) _halTripStartRemKwh = halRemainingKwh;' in _do_ht,
+        '_halTripStartRemKwh == null &&\n!_halTripRemOff) {' in _do_ht and 'DateTime.now().difference(started) <= _kStartSocUpgradeWindow) {\n_halTripStartRemKwh = r;\n_halEnergyEma = null;' in _do_ht,
+        'void _adoptJoinedTail(_HalJoinTail j) {\n_halTripStartedAt = j.start;\n_halTripStartRemKwh = null;\n_halTripRemOff = true;' in _do_ht,
+        'if (_halTripActive && _halTripStartRemKwh != null) {' in _do_ht and "debugPrint('HAL trip: energy back to SOC (firehose untrusted)');\n_halTripStartRemKwh = null;\n_halEnergyEma = null;\n}\n_halTripRemOff = true;" in _do_ht,
+        _do_ht.count('_halTripStartRemKwh = null;') == 4 and _do_ht.count('_halTripRemOff = false;') == 3,
+        ".then((_) => db.mergeTripExtra(id, eSrc))" in _do_ht and "'esrc': _halTripStartRemKwh != null ? 'rem' : 'soc'," in _do_ht,
+        'if (startRemainingKwh != null && endRemainingKwh != null) {\nif (startRemainingKwh > endRemainingKwh) {\nenergyUsedKwh = startRemainingKwh - endRemainingKwh;\n}\n} else if (startSocPct != null &&' in _do_ta,
+        "startRemainingKwh: firstOf('gb_remaining_energy_kwh'),\nendRemainingKwh: lastOf('gb_remaining_energy_kwh')," in _do_bg and 'RemainingKwh' not in _do_co,
+        "expect(d.energyUsedKwh, closeTo(2.1, 1e-9));" in _do_t_ta and "expect(_derive(r0: 50.2, r1: 50.4).energyUsedKwh, isNull);" in _do_t_ta,
+    ]
+    if all(_do1): ok('DO1 remaining energy 0x2EE first: trusted firehose only, 90 s window, range and trip energy by it with SOC x 65.28 as fallback, one source per trip (joined tail and untrusted firehose move the whole trip to SOC), source and SOC figure in extra, background builder by it when the window carries it, connection.dart untouched')
+    else: fail(f'DO1 remaining energy drifted: {_do1}')
+
+    # DO2: «ЗАКОНЧЕНА» ПОСЛЕ СНА. Подтверждённый рост остатка ставит память
+    # подключения; пистолет «нет» её снимает; решение — в chargeStageOf.
+    _do2 = [
+        'if (gun != null && gun.round() == 1) return false;\nif (storedRise) return true;' in _do_cs,
+        '_persistStoredEnergy(sum: true);\n_trackChargeStage(storedRise: true);\n_scheduleNotify();' in _do_ht,
+        'deviceState: i.ds, gun: i.gun, storedRise: storedRise);' in _do_ht,
+        "test('+240: рост остатка после сна — «закончена», пока пистолет '" in _do_t_cs and 'ChargeStage.finished);' in _do_t_cs,
+    ]
+    if all(_do2): ok('DO2 finished after head-unit sleep: a confirmed rise of the remaining energy sets the plug-in memory, gun out clears it, the stage is still decided in chargeStageOf')
+    else: fail(f'DO2 finished after sleep drifted: {_do2}')
+
+    # DO3: СОБЫТИЕ АТЛАСА ПО УСТАНОВЛЕННОМУ ОКНУ. Переход в предварительный
+    # период откладывает событие (pCrossed, в prefs); создаёт его перенос —
+    # на десятой минуте и в конце сессии; снимки ждут цепочку событий.
+    _do3_set = _dk_fn(_do_sp, 'void _settleProvisional(_AtlasLedger l, double? tempC, int nowMs,\n{required bool live}) {')
+    _do3 = [
+        'if (crossed && provisional) {\ncell.pCrossed = true;\n} else if (crossed) {' in _do_sp,
+        "if (pCrossed) 'px': true," in _do_sp and "pCrossed: j['px'] == true," in _do_sp and 'pStartMs = null;\npCrossed = false;' in _do_sp,
+        'if (band != null && src.pCrossed) revealBands.add(band);' in _do3_set and 'for (final band in revealBands) {\nfinal c = l.cells[_AtlasLedger.cellKey(band, win)];' in _do3_set,
+        _do3_set.find('_maybeGenerateReveal(band, win, c.energyKwh / c.distKm * 100.0);') > -1 and _do3_set.find('_maybeGenerateReveal(') < _do3_set.find('if (!live) return;') < _do3_set.find('_freezeChunk('),
+        _do_sp.count('await _revealChain;') == 2 and 'await _revealChain;\ntry {\nawait _db.insertAtlasSnapshot(row);' in _do_sp,
+        "expect(p['window'], 0);" in _do_t_sp and "expect(p['window'], 10);" in _do_t_sp and 'expect(await db.countAtlasReveals(), 0);' in _do_t_sp,
+    ]
+    if all(_do3): ok('DO3 atlas summary event by the settled window: a crossing in the provisional period is deferred (kept in prefs) and created by the settle at minute 10 or at session end, snapshots wait for the event chain')
+    else: fail(f'DO3 atlas event window drifted: {_do3}')
+
+    # DO4: КЛИМАТ. 22 DID (744 ×12, 722 ×6, 755 ×4), пауза ≥ 250 мс,
+    # пресеты имён по 10, свип драйверов 0400–1FFF с оценкой по Другу 3.
+    _do4_cl = _dk_fn(_do_ll, '_LivelogPreset.climate22 => const [') if '_LivelogPreset.climate22 => const [' in _do_ll else ''
+    _do4_i = _do_ll.find('_LivelogPreset.climate22 => const [')
+    _do4_list = _do_ll[_do4_i:_do_ll.find('],', _do4_i)]
+    _do4 = [
+        'static const int kLiveLogMaxDids = 22;' in _do_co,
+        re.findall(r"\('(7[0-9A-F]{2})', '[0-9A-F]{3}', '([0-9A-F]{4})'\)", _do4_list) == [('744', d) for d in ('0007', '0008', '0009', '0010', '0011', '0012', '0013', '0014', '0015', '0017', '0021', '0022')] + [('722', d) for d in ('0001', '0004', '0005', '000E', '0100', '0200')] + [('755', d) for d in ('0111', '0112', '0113', '0116')] and
+        _do4_list.count("('744', '74C', '") == 12 and _do4_list.count("('722', '72A', '") == 6 and _do4_list.count("('755', '75D', '") == 4 and "'0105'" not in _do4_list and "'0018'" not in _do4_list and "'0024'" not in _do4_list,
+        'int get minGapMs => this == _LivelogPreset.climate22 ? 250 : 0;' in _do_ll and 'minGapMs: _preset?.minGapMs ?? 0,' in _do_ll,
+        'if (gapMs < minGapMs && (prevEcu != null || _liveLogCycle > 1)) {\ngapMs = minGapMs;\n}\nif (gapMs > 0) {' in _do_co and 'int minGapMs = 0,' in _do_co,
+        'const int _kIdentityChunk = 10;' in _do_ll and '.skip(chunk * _kIdentityChunk)' in _do_ll and 'climate744' not in _do_ll,
+        "txList: ['722', '755', '760', '716'],\nstartDid: '0400',\nendDid: '1FFF',\nblockSize: 0x400,\nsecPerDid: 120 / 1024," in _do_sw and '(preset.secPerDid ?? _kSecPerDid))' in _do_sw,
+    ]
+    if all(_do4): ok('DO4 climate: Live Log preset of 22 DIDs (744 x12, 722 x6, 755 x4, no 0105 / 0018 / 0024) with gaps of at least 250 ms, limit 22 in one constant, identity presets kept in chunks of 10, sweep of 722/755/760/716 0400-1FFF in 0x400 blocks with the ETA by Friend 3')
+    else: fail(f'DO4 climate presets drifted: {_do4}')
+
+    # DO5: ОДНА ПАРА ЯЧЕЕК НА ВСЕХ ЭКРАНАХ. Нет годной пары — последняя
+    # годная до 10 с (монотонные часы), затем прочерк; в базу — только пара.
+    _do5_g = _dk_fn(_do_ht, 'CellTriple? get halCellTripleForDisplay {')
+    _do5 = [
+        'final t = halCellTripleForRecord;\nfinal now = _cellDisplayClock.elapsedMilliseconds;' in _do5_g and 'if (at != null && now - at <= _kCellDisplayHoldMs) return _cellDisplayPair;\nreturn null;' in _do5_g,
+        'static const int _kCellDisplayHoldMs = 10000;' in _do_ht and 'final Stopwatch _cellDisplayClock = Stopwatch()..start();' in _do_ht,
+        'double? get halCellSpreadMv => halCellTripleForDisplay?.spreadMv;' in _do_ht and '?.spreadMv ?? 0' not in _do_ht,
+        'final cellPair = halCumulative ? hal.halCellTripleForDisplay : null;\nfinal exMinV = halCumulative ? cellPair?.minMv : minV;\nfinal exMaxV = halCumulative ? cellPair?.maxMv : maxV;' in _do_dw and 'hal.halCellVLowest' not in _do_dw,
+        'final cellPair = hal.halCellTripleForDisplay;' in _do_ce and 'hal.halCellVLowest' not in _do_ce,
+        'final spread = halCellTripleForRecord?.spreadMv;' in _do_ht,
+    ]
+    if all(_do5): ok('DO5 one cell pair on every screen: Driving, Battery and Vehicle take min, max and spread from the display pair, the last valid pair is held 10 s by the monotonic clock then a dash, records stay on the real pair')
+    else: fail(f'DO5 cell pair drifted: {_do5}')
+else:
+    ok(f"Part DO skipped (build +{pv}, remaining energy and climate 22 DID land in +240)")
 
 # ────────────────────────────── report ──────────────────────────────
 print("=" * 64)

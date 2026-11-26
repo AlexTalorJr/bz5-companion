@@ -73,6 +73,32 @@ void main() {
       expect(nextChargedThisPlugIn(true, deviceState: 15, gun: 1), isFalse);
       expect(nextChargedThisPlugIn(true, deviceState: 1, gun: 1), isFalse);
     });
+
+    test('+240: рост остатка после сна — «закончена», пока пистолет '
+        'вставлен', () {
+      // Утро 25.11: остаток 24.4 → 65.2, DEVICE_STATE 15, AC вставлен.
+      var charged = nextChargedThisPlugIn(false,
+          deviceState: 15, gun: 2, storedRise: true);
+      expect(charged, isTrue);
+      expect(
+          chargeStageOf(deviceState: 15, gun: 2, chargedThisPlugIn: charged),
+          ChargeStage.finished);
+      // Следующие кадры без роста признак держат.
+      charged = nextChargedThisPlugIn(charged, deviceState: 15, gun: 2);
+      expect(charged, isTrue);
+      // Пистолет вынули — снято; вставили снова — «подключено».
+      charged = nextChargedThisPlugIn(charged, deviceState: 15, gun: 1);
+      expect(charged, isFalse);
+      charged = nextChargedThisPlugIn(charged, deviceState: 15, gun: 2);
+      expect(
+          chargeStageOf(deviceState: 15, gun: 2, chargedThisPlugIn: charged),
+          ChargeStage.plugged);
+      // Рост при вынутом пистолете признак не ставит.
+      expect(
+          nextChargedThisPlugIn(false,
+              deviceState: 15, gun: 1, storedRise: true),
+          isFalse);
+    });
   });
 
   group('chargeTypeOf', () {

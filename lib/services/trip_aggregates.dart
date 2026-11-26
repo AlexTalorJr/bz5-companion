@@ -58,13 +58,25 @@ TripDerived computeTripDerived({
   required double speedSum,
   required int speedSamples,
   required double batteryCapacityKwh,
+  double? startRemainingKwh,
+  double? endRemainingKwh,
 }) {
   double? distanceKm;
   if (startOdoKm != null && endOdoKm != null && endOdoKm > startOdoKm) {
     distanceKm = endOdoKm - startOdoKm;
   }
+  // v0.2.41+240: остаток пака по BMS (0x2EE), если он есть на обоих
+  // концах, — первым и единственным источником: при росте остатка энергия
+  // пуста, к SOC не переходим (два источника в одной поездке). Пути
+  // connection.dart его не передают и считают по SOC, как прежде.
   double? energyUsedKwh;
-  if (startSocPct != null && endSocPct != null && startSocPct > endSocPct) {
+  if (startRemainingKwh != null && endRemainingKwh != null) {
+    if (startRemainingKwh > endRemainingKwh) {
+      energyUsedKwh = startRemainingKwh - endRemainingKwh;
+    }
+  } else if (startSocPct != null &&
+      endSocPct != null &&
+      startSocPct > endSocPct) {
     energyUsedKwh = (startSocPct - endSocPct) * batteryCapacityKwh / 100.0;
   }
   double? avgConsumptionKwh100km;

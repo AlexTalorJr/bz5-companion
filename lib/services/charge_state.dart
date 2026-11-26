@@ -83,8 +83,17 @@ ChargeStage? chargeStageOf({
 /// Ставится состоянием 1 или 2, снимается, когда пистолета нет; иначе
 /// держится. Состояние 15 его не снимает: это и есть «закончена, кабель
 /// вставлен».
-bool nextChargedThisPlugIn(bool prev, {double? deviceState, double? gun}) {
+///
+/// v0.2.41+240: ставит его и [storedRise] — подтверждённый рост остатка
+/// после сна головы ([StoredEnergyTracker]). Зарядка шла, пока голова
+/// спала, и единицы поток не видел; утро 25.11: остаток 24.4 → 65.2,
+/// состояние 15, пистолет вставлен, экран показывал «подключено, зарядка
+/// не идёт». Пистолет «нет» снимает признак, как и прежде: вынули и снова
+/// вставили на той же стоянке — снова «подключено».
+bool nextChargedThisPlugIn(bool prev,
+    {double? deviceState, double? gun, bool storedRise = false}) {
   if (gun != null && gun.round() == 1) return false;
+  if (storedRise) return true;
   if (deviceState != null) {
     final int ds = deviceState.round();
     if (ds == 1 || ds == 2) return true;

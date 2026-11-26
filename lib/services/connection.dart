@@ -4556,7 +4556,10 @@ class ConnectionService extends ChangeNotifier {
   /// v0.2.20+219: Live Log DID limit. One constant for the service check
   /// and for the screen's add button (the screen stopped at 7 while the
   /// service accepted 10).
-  static const int kLiveLogMaxDids = 10;
+  /// v0.2.41+240: 10 → 22 — the climate preset (744 ×12, 722 ×6, 755 ×4,
+  /// Friend 3, 26.11). Each DID writes its own row, so the 30 s watchdog
+  /// is fed per DID, not per cycle.
+  static const int kLiveLogMaxDids = 22;
 
   /// Standard BZ5 UDS addressing: RX = TX + 8 (790→798, 791→799,
   /// 740→748; every ECU in `allBz5Ecus` follows it). Moved here from the
@@ -5796,6 +5799,7 @@ class ConnectionService extends ChangeNotifier {
     String? carState,
     String? notes,
     void Function(int cycle)? onCycle,
+    int minGapMs = 0,
   }) async {
     if (_client == null) return null;
     if (_liveLogRunning) return null;
@@ -5959,8 +5963,11 @@ class ConnectionService extends ChangeNotifier {
           final did = spec.$3.toUpperCase();
 
           // Pre-request adaptive gap.
+          // v0.2.41+240: [minGapMs] — floor for every gap, the first DID of
+          // a later cycle included (it followed the previous cycle's last
+          // DID with no pause). Friend 3: climate blocks, at least 250 ms.
+          int gapMs = 0;
           if (prevEcu != null) {
-            int gapMs;
             if (prevEcu != txEcu) {
               gapMs = 80;
               sameEcuRun = 0;
@@ -5972,6 +5979,11 @@ class ConnectionService extends ChangeNotifier {
                   ? sameEcuRun - 1
                   : schedule.length - 1];
             }
+          }
+          if (gapMs < minGapMs && (prevEcu != null || _liveLogCycle > 1)) {
+            gapMs = minGapMs;
+          }
+          if (gapMs > 0) {
             // v0.1.29+22: race the delay against kill signal so a cancel
             // command doesn't have to wait out a full 800ms gap.
             await Future.any<void>([

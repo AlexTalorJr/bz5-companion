@@ -68,8 +68,13 @@ class _LiveLogScreenState extends State<LiveLogScreen> {
 
   /// v0.1.26: apply a built-in preset to the form (entry list + car state
   /// + notes). Used by the preset chips above the DID list.
+  /// v0.2.41+240: последний применённый пресет — его наименьшая пауза
+  /// между запросами ([_LivelogPresetX.minGapMs]) уходит в runLiveLog.
+  _LivelogPreset? _preset;
+
   void _applyPreset(_LivelogPreset preset) {
     setState(() {
+      _preset = preset;
       _entries
         ..clear()
         ..addAll(preset.entries.map((t) =>
@@ -227,14 +232,15 @@ class _LiveLogScreenState extends State<LiveLogScreen> {
                 label: const Text('GPS in motion'),
                 onPressed: () => _applyPreset(_LivelogPreset.gpsInMotion),
               ),
-              // v0.2.31+230: климатический блок 744 по ступеням климата.
+              // v0.2.41+240: климат, 22 DID блоков 744/722/755 по шагам
+              // Друга 3 (заменил «Climate 744» из семи DID).
               ActionChip(
                 avatar: const Icon(Icons.ac_unit, size: 16),
-                label: const Text('Climate 744'),
-                onPressed: () => _applyPreset(_LivelogPreset.climate744),
+                label: const Text('Climate, 22 DID'),
+                onPressed: () => _applyPreset(_LivelogPreset.climate22),
               ),
               // v0.2.20+219: part number (0105) of every registry ECU that
-              // has no confirmed name yet, in chunks of kLiveLogMaxDids.
+              // has no confirmed name yet, in chunks of [_kIdentityChunk].
               for (final p in const [
                 _LivelogPreset.identity1,
                 _LivelogPreset.identity2,
@@ -453,6 +459,7 @@ class _LiveLogScreenState extends State<LiveLogScreen> {
       didSpecs: specs,
       carState: _carStateCtrl.text.trim().isEmpty ? null : _carStateCtrl.text.trim(),
       notes: _notesCtrl.text.trim().isEmpty ? null : _notesCtrl.text.trim(),
+      minGapMs: _preset?.minGapMs ?? 0,
     );
     if (!mounted) return;
     if (id != null) {
@@ -627,11 +634,12 @@ enum _LivelogPreset {
   /// to ECU discovery. See handoff doc → pending sweeps.
   gpsInMotion,
 
-  /// v0.2.31+230: climate box 744/74C, seven DIDs, raw answers only (744
-  /// has no detailed spec, so nothing is scaled). Run on P through the
-  /// climate steps: 60 s off, 60 s AUTO 23, 60 s HI fan 7, off; then
-  /// windscreen defrost and recirculation on/off.
-  climate744,
+  /// v0.2.41+240: climate, 22 DIDs (Friend 3, 26.11): 744 refrigerant
+  /// side ×12, 722 compressor drive ×6, 755 heater ×4. Raw answers only.
+  /// Not polled: 0105 (part numbers) and the static 744 0018 / 0024. Run on
+  /// P, 2 min per step: climate off → AUTO 23 → HI, fan 7 → A/C and LO →
+  /// off. Read 0x22 only, no session change, gaps of at least 250 ms.
+  climate22,
 
   /// v0.2.20+219: read part number DID 0105 from every ECU in
   /// `allBz5Ecus` without a detailed spec (24 ECUs: all except 702, 740,
@@ -648,9 +656,14 @@ enum _LivelogPreset {
 final List<EcuRegistryEntry> _unnamedEcus =
     allBz5Ecus.where((e) => e.detailed == null).toList();
 
+/// v0.2.41+240: identity presets stay in chunks of 10 (10 + 10 + 4) —
+/// tied to the Live Log limit they would merge into one run of 22 when the
+/// limit grew, and three chips would become one.
+const int _kIdentityChunk = 10;
+
 List<(String, String, String)> _identityChunk(int chunk) => _unnamedEcus
-    .skip(chunk * ConnectionService.kLiveLogMaxDids)
-    .take(ConnectionService.kLiveLogMaxDids)
+    .skip(chunk * _kIdentityChunk)
+    .take(_kIdentityChunk)
     .map((e) => (e.txId, e.rxId, '0105'))
     .toList();
 
@@ -688,14 +701,29 @@ extension _LivelogPresetX on _LivelogPreset {
             ('790', '798', '002D'),
             ('791', '799', '0020'),
           ],
-        _LivelogPreset.climate744 => const [
+        _LivelogPreset.climate22 => const [
             ('744', '74C', '0007'),
-            ('744', '74C', '0008'),
-            ('744', '74C', '0009'),
-            ('744', '74C', '0010'),
-            ('744', '74C', '0011'),
+            ('744', '74C', '0008'), // evaporator outlet pressure, kPa?
+            ('744', '74C', '0009'), // compressor outlet pressure, kPa (~1.0 MPa)
+            ('744', '74C', '0010'), // refrigerant temperature, −40
+            ('744', '74C', '0011'), // second temperature, −40
+            ('744', '74C', '0012'),
+            ('744', '74C', '0013'),
             ('744', '74C', '0014'),
+            ('744', '74C', '0015'),
+            ('744', '74C', '0017'),
+            ('744', '74C', '0021'),
             ('744', '74C', '0022'),
+            ('722', '72A', '0001'), // compressor drive
+            ('722', '72A', '0004'),
+            ('722', '72A', '0005'),
+            ('722', '72A', '000E'),
+            ('722', '72A', '0100'),
+            ('722', '72A', '0200'),
+            ('755', '75D', '0111'), // heater
+            ('755', '75D', '0112'),
+            ('755', '75D', '0113'),
+            ('755', '75D', '0116'),
           ],
         _LivelogPreset.gpsInMotion => const [
             ('757', '75F', '0120'), // GPS data slot 1 (null when parked)
@@ -728,8 +756,12 @@ extension _LivelogPresetX on _LivelogPreset {
         _LivelogPreset.chargeStateHunt => 'AC plug/unplug toggle',
         _LivelogPreset.defaultDriving => 'driving',
         _LivelogPreset.gpsInMotion => 'driving, GPS test',
-        _LivelogPreset.climate744 => 'P+Ready, climate steps',
+        _LivelogPreset.climate22 => 'P+Ready, climate steps',
       };
+
+  /// v0.2.41+240: smallest gap between requests, ms (0 — the adaptive
+  /// schedule of runLiveLog as is).
+  int get minGapMs => this == _LivelogPreset.climate22 ? 250 : 0;
 
   String get notes => switch (this) {
         _LivelogPreset.identity1 ||
@@ -743,8 +775,8 @@ extension _LivelogPresetX on _LivelogPreset {
         _LivelogPreset.defaultDriving => '',
         _LivelogPreset.gpsInMotion =>
             'Looking for live lat/lon in 757/0120-0122 with motion + IMU fusion',
-        _LivelogPreset.climate744 =>
-            'Climate 744: 60 s off, 60 s AUTO 23, 60 s HI fan 7, off; '
-                'then windscreen defrost and recirculation on/off. Raw only.',
+        _LivelogPreset.climate22 =>
+            'Climate 22 DID: 2 min per step — climate off, AUTO 23, HI fan 7, '
+                'A/C and LO, off (10 min). Raw only; recon marks the steps.',
       };
 }

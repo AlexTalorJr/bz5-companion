@@ -283,6 +283,10 @@ class BgTripBuilder {
       speedSum: speedSum,
       speedSamples: speedSamples,
       batteryCapacityKwh: batteryCapacityKwh,
+      // v0.2.41+240: остаток 0x2EE, если окно его несёт (строки Dart-
+      // сервиса); фоновый журнал Kotlin поля gb_* не пишет — тогда SOC.
+      startRemainingKwh: firstOf('gb_remaining_energy_kwh'),
+      endRemainingKwh: lastOf('gb_remaining_energy_kwh'),
     );
 
     final dist = derived.distanceKm;

@@ -487,6 +487,11 @@ class _AtlasCell {
   double pTempTimeS;
   int? pStartMs;
 
+  /// v0.2.41+240: клетка перешла порог зрелости в предварительный период.
+  /// Событие итогов отложено до установления окна: окно перехода могло
+  /// быть ложным (тёплый гараж), а снимок ляжет в установленное.
+  bool pCrossed;
+
   bool get hasProvisional => pTimeS > 1e-9;
 
   void clearProvisional() {
@@ -496,6 +501,7 @@ class _AtlasCell {
     pTempSum = 0;
     pTempTimeS = 0;
     pStartMs = null;
+    pCrossed = false;
   }
 
   _AtlasCell({
@@ -515,6 +521,7 @@ class _AtlasCell {
     this.pTempSum = 0,
     this.pTempTimeS = 0,
     this.pStartMs,
+    this.pCrossed = false,
   });
 
   /// Steady seconds earned by the current atlas session (micro-loot).
@@ -550,6 +557,8 @@ class _AtlasCell {
         if (pTimeS > 1e-9) 'ps': pTempSum,
         if (pTimeS > 1e-9) 'pq': pTempTimeS,
         if (pTimeS > 1e-9 && pStartMs != null) 'pa': pStartMs,
+        // v0.2.41+240: отложенное событие переживает смерть процесса.
+        if (pCrossed) 'px': true,
       };
 
   static _AtlasCell fromJson(Map<String, dynamic> j) => _AtlasCell(
@@ -570,6 +579,7 @@ class _AtlasCell {
         pTempSum: (j['ps'] as num?)?.toDouble() ?? 0,
         pTempTimeS: (j['pq'] as num?)?.toDouble() ?? 0,
         pStartMs: (j['pa'] as num?)?.toInt(),
+        pCrossed: j['px'] == true,
       );
 }
 
@@ -1772,7 +1782,12 @@ class SpeedProfileService extends ChangeNotifier {
     final retry = cell.timeS >= kBandMinSeconds &&
         !cell.hasProvisional &&
         _freezeRetry.remove(key);
-    if (crossed) {
+    if (crossed && provisional) {
+      // v0.2.41+240: окно ещё не установлено — событие откладывается до
+      // _settleProvisional и выйдет с установленным окном (25.11: событие
+      // по предварительному окну, снимок — по установленному).
+      cell.pCrossed = true;
+    } else if (crossed) {
       // kwh in the payload is the value AT THE CROSSING — realtime
       // correction continues afterwards; the card renders from the
       // payload, an honest moment-in-time snapshot (spec §1.1).
@@ -1787,8 +1802,8 @@ class SpeedProfileService extends ChangeNotifier {
       // stops living in prefs the instant it is complete.
       // +236: клетка с предварительной долей ждёт установления окна —
       // запись делает _settleProvisional (десятая минута) либо
-      // _freezeMatured (конец сессии). Событие итогов выше уже создано:
-      // оно про поездку и ждать не должно.
+      // _freezeMatured (конец сессии). Событие итогов тоже ждёт (+240,
+      // признак pCrossed) и создаётся там же, по установленному окну.
       _freezeChunk(key, cell, band, win, nowMs);
     }
     _dirtySincePersist = true;
@@ -1897,6 +1912,10 @@ class SpeedProfileService extends ChangeNotifier {
         'session=${l.sessionUid.substring(0, 8)}…');
     unawaited(() async {
       var inserted = false;
+      // v0.2.41+240: снимок — после событий, поставленных раньше него.
+      // Событие проверяет «есть ли снимок полосы»; вставка, дошедшая до
+      // базы первой, гасила band_matured и cell_new своей же клетки.
+      await _revealChain;
       try {
         await _db.insertAtlasSnapshot(row);
         inserted = true;
@@ -1963,12 +1982,16 @@ class SpeedProfileService extends ChangeNotifier {
   /// клетки пишутся сразу. false — конец сессии раньше десятой минуты:
   /// запись делает вызывающий (_freezeMatured).
   ///
-  /// Событие итогов создаётся здесь только для клетки, которая дозрела
-  /// самим переносом; дозревшая до него уже получила событие на переходе.
+  /// v0.2.41+240: события итогов предварительного периода создаются
+  /// ЗДЕСЬ, по установленному окну [tempC], и на десятой минуте, и в конце
+  /// сессии: для полос, дозревших в предварительный период (pCrossed), и
+  /// для клеток, дозревших самим переносом. Создание — до записи снимков
+  /// (запись ждёт цепочку событий, см. _freezeChunk).
   void _settleProvisional(_AtlasLedger l, double? tempC, int nowMs,
       {required bool live}) {
     final int? win = tempC == null ? null : atlasWindowOfTemp(tempC);
     var moved = 0;
+    final revealBands = <int>{};
     for (final key in l.cells.keys.toList()) {
       final src = l.cells[key]!;
       if (!src.hasProvisional) continue;
@@ -1976,6 +1999,7 @@ class SpeedProfileService extends ChangeNotifier {
       final band = int.tryParse(key.substring(0, sep));
       final ws = key.substring(sep + 1);
       final int? srcWin = ws == 'u' ? null : int.tryParse(ws);
+      if (band != null && src.pCrossed) revealBands.add(band);
       if (band == null || srcWin == win) {
         src.clearProvisional();
         continue;
@@ -1998,19 +2022,23 @@ class SpeedProfileService extends ChangeNotifier {
       // Клетка состояла из одной предварительной доли — её больше нет.
       if (src.timeS <= 1e-6 && !src.hasFrozenChunk) l.cells.remove(key);
       moved++;
-      if (live &&
-          !srcMatured &&
+      if (!srcMatured &&
           destBefore < kBandMinSeconds &&
-          dest.timeS >= kBandMinSeconds &&
-          dest.distKm > 1e-6) {
-        _maybeGenerateReveal(
-            band, win, dest.energyKwh / dest.distKm * 100.0);
+          dest.timeS >= kBandMinSeconds) {
+        revealBands.add(band);
       }
+    }
+    for (final band in revealBands) {
+      final c = l.cells[_AtlasLedger.cellKey(band, win)];
+      if (c == null || c.timeS < kBandMinSeconds || c.distKm <= 1e-6) {
+        continue;
+      }
+      _maybeGenerateReveal(band, win, c.energyKwh / c.distKm * 100.0);
     }
     _dirtySincePersist = true;
     debugPrint('Atlas: outside window settled → ${win ?? 'u'} '
         '(t=${tempC?.toStringAsFixed(0) ?? '-'}°, moved=$moved, '
-        '${live ? 'minute 10' : 'session end'})');
+        '${live ? 'minute 10' : 'session end'}, reveals=${revealBands.length})');
     if (!live) return;
     l.settled = true;
     if (win != null) l.activeWindow = win;
@@ -2229,6 +2257,9 @@ class SpeedProfileService extends ChangeNotifier {
     // INSERTs before the ledger persist (R2); Drift serialises writes,
     // overlapping funnels both end on an idempotent post-reset persist.
     unawaited(() async {
+      // v0.2.41+240: как в _freezeChunk — снимки после событий, которые
+      // поставил перенос предварительных долей в конце сессии.
+      await _revealChain;
       try {
         for (final r in rows) {
           await _db.insertAtlasSnapshot(r);

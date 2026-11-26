@@ -37,6 +37,9 @@ class _SweepPreset {
   final String endDid;
   /// v0.2.32+231: DIDs per queue run; 0 — the whole range in one run.
   final int blockSize;
+  /// v0.2.41+240: seconds per DID for the ETA when the screen-wide
+  /// [_SweepScreenState._kSecPerDid] does not fit; null — that value.
+  final double? secPerDid;
   const _SweepPreset({
     required this.name,
     required this.description,
@@ -44,6 +47,7 @@ class _SweepPreset {
     required this.startDid,
     required this.endDid,
     this.blockSize = 0,
+    this.secPerDid,
   });
 }
 
@@ -136,6 +140,21 @@ class _SweepScreenState extends State<SweepScreen> {
       startDid: '0400',
       endDid: '1FFF',
       blockSize: 0x400,
+    ),
+    // v0.2.41+240: compressor drive, heaters and the fourth climate
+    // candidate above 0x03FF, every ECU in 0x400 blocks (Friend 3, 26.11:
+    // duty values are looked for above 0x03FF). Most DIDs there do not
+    // exist and answer at once: about 2 min per block of 1024 (Friend 3),
+    // not the 0.44 s per DID of a populated range.
+    _SweepPreset(
+      name: 'Climate drivers 0400–1FFF',
+      description: '722, 755, 760, 716 — 0x0400..0x1FFF each, blocks of 0x400 '
+          '(28 runs, ~1 h at ~2 min per block of absent DIDs)',
+      txList: ['722', '755', '760', '716'],
+      startDid: '0400',
+      endDid: '1FFF',
+      blockSize: 0x400,
+      secPerDid: 120 / 1024,
     ),
     _SweepPreset(
       name: 'GPS Asensing',
@@ -510,7 +529,10 @@ class _SweepScreenState extends State<SweepScreen> {
     final start = int.parse(preset.startDid, radix: 16);
     final end = int.parse(preset.endDid, radix: 16);
     final total = end - start + 1;
-    final etaSec = (total * preset.txList.length * _kSecPerDid).round();
+    final etaSec = (total *
+            preset.txList.length *
+            (preset.secPerDid ?? _kSecPerDid))
+        .round();
 
     final confirmed = await showDialog<bool>(
       context: context,
